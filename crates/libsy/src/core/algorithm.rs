@@ -151,12 +151,31 @@ impl Driver {
             output_tokens = tracing::field::Empty,
             total_tokens = tracing::field::Empty,
             reasoning_tokens = tracing::field::Empty,
+            // Shared route-selection vocabulary. Names must match GenericKeys / LangfuseKeys.
+            switchyard.route.id = tracing::field::Empty,
+            switchyard.routing.algorithm = tracing::field::Empty,
+            switchyard.routing.selected_target = tracing::field::Empty,
+            switchyard.call.role = tracing::field::Empty,
+            switchyard.call.target = tracing::field::Empty,
+            langfuse.session.id = tracing::field::Empty,
+            langfuse.observation.metadata.switchyard.route_id = tracing::field::Empty,
+            langfuse.observation.metadata.switchyard.algorithm = tracing::field::Empty,
+            langfuse.observation.metadata.switchyard.selected_target = tracing::field::Empty,
+            langfuse.observation.metadata.switchyard.call_role = tracing::field::Empty,
+            langfuse.observation.metadata.switchyard.call_target = tracing::field::Empty,
         )
     )]
     pub async fn call_model(&self, mut request: Request, models: Vec<ModelId>) -> Result<Response> {
         let Some(selected_model_id) = models.first().cloned() else {
             return Err(LibsyError::NoTargets);
         };
+        // Record before stamping the candidate so route id stays the inbound route.
+        observability::record_internal_call(
+            &tracing::Span::current(),
+            &self.algorithm,
+            &request,
+            selected_model_id.as_str(),
+        );
         request.llm_request.model = Some(selected_model_id.to_string());
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
@@ -346,7 +365,8 @@ impl RoutingIdentity {
 /// # Observability
 ///
 /// [`run_stream`](Self::run_stream) creates a `libsy.run` span, and each offloaded model
-/// call creates a `libsy.llm_call` span. Routing decisions and failures are emitted through
+/// call creates a `libsy.llm_call` span tagged as a routing dependency. Both emit the
+/// shared route-selection vocabulary. Routing decisions and failures are emitted through
 /// `tracing`; metrics use the global OpenTelemetry meter provider. The provider call
 /// itself belongs to the host, and is instrumented by whoever makes it.
 #[async_trait]

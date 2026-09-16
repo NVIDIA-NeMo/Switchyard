@@ -9,11 +9,61 @@ use futures::Stream;
 use opentelemetry::{Array as OtelArray, StringValue, Value as OtelValue};
 use switchyard_libsy::{LibsyError, Result};
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream,
-    LlmResponseStreamEvent, Message, Response, ResponseAccumulator, StopReason, Usage,
+    AggLlmResponse, CallRole, GenericKeys, LangfuseKeys, LlmClientError, LlmRequest, LlmResponse,
+    LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Message, Response,
+    ResponseAccumulator, StopReason, Usage,
 };
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+/// Records immutable route-selection context on a `libsy.client_call` span.
+///
+/// `route_id` is the inbound route, not the stamped candidate. Empty sessions stay
+/// off `langfuse.session.id`. Call role and call target identify this attempt only.
+pub(crate) fn record_client_call_context(
+    span: &Span,
+    algorithm: &str,
+    route_id: Option<&str>,
+    session_id: Option<&str>,
+    call_role: CallRole,
+    call_target: &str,
+) {
+    record_pair(
+        span,
+        GenericKeys::ALGORITHM,
+        LangfuseKeys::ALGORITHM,
+        algorithm,
+    );
+    if let Some(route_id) = route_id {
+        record_pair(
+            span,
+            GenericKeys::ROUTE_ID,
+            LangfuseKeys::ROUTE_ID,
+            route_id,
+        );
+    }
+    if let Some(session_id) = session_id.filter(|session| !session.is_empty()) {
+        span.record(LangfuseKeys::SESSION_ID, session_id);
+    }
+    record_pair(
+        span,
+        GenericKeys::CALL_ROLE,
+        LangfuseKeys::CALL_ROLE,
+        call_role.as_str(),
+    );
+    record_pair(
+        span,
+        GenericKeys::CALL_TARGET,
+        LangfuseKeys::CALL_TARGET,
+        call_target,
+    );
+}
+
+/// Writes the same value to a generic key and its Langfuse observation metadata key.
+fn record_pair(span: &Span, generic_key: &'static str, langfuse_key: &'static str, value: &str) {
+    span.record(generic_key, value);
+    span.record(langfuse_key, value);
+}
 
 /// Records request parameters represented directly by the neutral IR.
 pub(crate) fn record_gen_ai_request(span: &Span, request: &LlmRequest) {
