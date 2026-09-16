@@ -17,6 +17,88 @@ use common::{
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn url_citations_survive_chat_responses_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let citation = json!({
+        "start_index": 13, "end_index": 20,
+        "url": "https://example.test/source", "title": "Example"
+    });
+    let chat_annotations = json!([{"type": "url_citation", "url_citation": citation}]);
+    let mut flat_citation = citation;
+    flat_citation["type"] = json!("url_citation");
+    let responses_annotations = json!([flat_citation]);
+    let chat = json!({
+        "choices": [{"message": {
+            "role": "assistant", "content": "According to Example.",
+            "annotations": chat_annotations
+        }, "finish_reason": "stop"}]
+    });
+    let responses = json!({
+        "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [{
+            "type": "output_text", "text": "According to Example.",
+            "annotations": responses_annotations
+        }]}]
+    });
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiChat,
+                WireFormat::OpenAiResponses,
+                &chat,
+                &policy,
+            )?
+            .body;
+        assert_eq!(
+            output["output"][0]["content"][0]["annotations"],
+            responses_annotations
+        );
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiChat,
+                &responses,
+                &policy,
+            )?
+            .body;
+        assert_eq!(
+            output["choices"][0]["message"]["annotations"],
+            chat_annotations
+        );
+
+        // Responses text parts and messages are concatenated in Chat.
+        let mut multipart = responses.clone();
+        multipart["output"][0]["content"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"type": "output_text", "text": "🌍 "}));
+        multipart["output"].as_array_mut().unwrap().insert(
+            0,
+            json!({"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "é"}
+            ]}),
+        );
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiChat,
+                &multipart,
+                &policy,
+            )?
+            .body;
+        let mut shifted = chat_annotations.clone();
+        shifted[0]["url_citation"]["start_index"] = json!(16);
+        shifted[0]["url_citation"]["end_index"] = json!(23);
+        assert_eq!(
+            output["choices"][0]["message"]["content"],
+            "é🌍 According to Example."
+        );
+        assert_eq!(output["choices"][0]["message"]["annotations"], shifted);
+    }
+    Ok(())
+}
+
 // Verifies OpenAI Chat responses map to Anthropic message responses.
 #[test]
 fn openai_chat_response_translates_to_anthropic_message() -> TestResult {

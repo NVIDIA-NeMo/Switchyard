@@ -90,6 +90,7 @@ fn tool_call_turn() -> Response {
                     name: "bash".to_string(),
                     arguments: serde_json::json!({}),
                 })],
+                url_citations: Vec::new(),
                 stop_reason: None,
             }],
             ..AggLlmResponse::default()
@@ -107,6 +108,7 @@ fn tool_use_stop_turn() -> Response {
                 content: vec![ContentBlock::Text {
                     text: "calling a tool".to_string(),
                 }],
+                url_citations: Vec::new(),
                 stop_reason: Some(StopReason::ToolUse),
             }],
             ..AggLlmResponse::default()
@@ -126,6 +128,7 @@ fn reasoning_only_turn() -> Response {
                     signature: None,
                     details: Vec::new(),
                 }],
+                url_citations: Vec::new(),
                 stop_reason: None,
             }],
             ..AggLlmResponse::default()
@@ -141,6 +144,7 @@ fn empty_turn() -> Response {
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
                 content: Vec::new(),
+                url_citations: Vec::new(),
                 stop_reason: None,
             }],
             ..AggLlmResponse::default()
@@ -837,6 +841,7 @@ async fn pattern_trigger_matches_on_tool_call_turns() {
                         arguments: serde_json::json!({}),
                     }),
                 ],
+                url_citations: Vec::new(),
                 stop_reason: Some(StopReason::ToolUse),
             }],
             ..AggLlmResponse::default()

@@ -213,6 +213,7 @@ impl FormatCodec for MinimalCustomCodec {
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
                 outputs: vec![ResponseOutput {
+                    url_citations: Vec::new(),
                     role: Role::Assistant,
                     content: vec![switchyard_translation::ContentBlock::Text {
                         text: body

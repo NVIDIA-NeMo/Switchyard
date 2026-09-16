@@ -294,12 +294,29 @@ impl FormatCodec for OpenAiResponsesCodec {
         let mut role = Role::Assistant;
         let mut stop_reason = None;
         let mut has_output = false;
+        let mut url_citations = Vec::new();
+        let mut text_offset = 0;
         if let Some(items) = body.get("output").and_then(Value::as_array) {
             for item in items {
                 if let Some(output) = decode_responses_output_item(item, &mut diagnostics, policy)?
                 {
                     has_output = true;
                     role = output.role;
+                    for mut citation in output.url_citations {
+                        citation.start_index += text_offset;
+                        citation.end_index += text_offset;
+                        url_citations.push(citation);
+                    }
+                    text_offset += output
+                        .content
+                        .iter()
+                        .map(|block| match block {
+                            ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+                                text.chars().count()
+                            }
+                            _ => 0,
+                        })
+                        .sum::<usize>();
                     content.extend(output.content);
                     if output.stop_reason.is_some() {
                         stop_reason = output.stop_reason;
@@ -319,12 +336,14 @@ impl FormatCodec for OpenAiResponsesCodec {
         }
         let outputs = vec![if has_output {
             ResponseOutput {
+                url_citations,
                 role,
                 content,
                 stop_reason,
             }
         } else {
             ResponseOutput {
+                url_citations: Vec::new(),
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: String::new(),
@@ -1660,11 +1679,13 @@ fn decode_responses_output_item(
     };
     match item.get("type").and_then(Value::as_str) {
         Some("message") => Ok(Some(ResponseOutput {
+            url_citations: decode_responses_url_citations(item.get("content")),
             role: role_from_responses(item.get("role").and_then(Value::as_str)),
             content: decode_responses_content(item.get("content").unwrap_or(&Value::Null)),
             stop_reason: Some(StopReason::EndTurn),
         })),
         Some("function_call") => Ok(Some(ResponseOutput {
+            url_citations: Vec::new(),
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: item
@@ -1682,6 +1703,7 @@ fn decode_responses_output_item(
             stop_reason: Some(StopReason::ToolUse),
         })),
         Some("custom_tool_call") => Ok(Some(ResponseOutput {
+            url_citations: Vec::new(),
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: item
@@ -1702,12 +1724,46 @@ fn decode_responses_output_item(
             stop_reason: Some(StopReason::ToolUse),
         })),
         Some("reasoning") => Ok(Some(ResponseOutput {
+            url_citations: Vec::new(),
             role: Role::Assistant,
             content: decode_responses_reasoning_item(item),
             stop_reason: None,
         })),
         _ => Ok(None),
     }
+}
+
+fn decode_responses_url_citations(content: Option<&Value>) -> Vec<crate::UrlCitation> {
+    let mut citations = Vec::new();
+    let mut text_offset = 0;
+    for part in content.and_then(Value::as_array).into_iter().flatten() {
+        for annotation in part
+            .get("annotations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if annotation["type"] == "url_citation"
+                && let Ok(mut citation) =
+                    serde_json::from_value::<crate::UrlCitation>(annotation.clone())
+            {
+                citation.start_index += text_offset;
+                citation.end_index += text_offset;
+                citations.push(citation);
+            }
+        }
+        let text = match part.get("type").and_then(Value::as_str) {
+            Some("input_text" | "output_text" | "text") => part.get("text"),
+            Some("refusal") => part.get("refusal"),
+            _ => None,
+        };
+        text_offset += text
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .count();
+    }
+    citations
 }
 
 // Encodes normalized response outputs into Responses output items.
@@ -1754,7 +1810,13 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                         "content": [{
                             "type": "output_text",
                             "text": text,
-                            "annotations": [],
+                            "annotations": output.url_citations.iter().map(|citation| json!({
+                                "type": "url_citation",
+                                "start_index": citation.start_index,
+                                "end_index": citation.end_index,
+                                "url": citation.url,
+                                "title": citation.title,
+                            })).collect::<Vec<_>>(),
                         }],
                     }));
                 }

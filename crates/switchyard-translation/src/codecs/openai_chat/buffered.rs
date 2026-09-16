@@ -307,6 +307,16 @@ impl FormatCodec for OpenAiChatCodec {
                 }
             }
             response.outputs.push(ResponseOutput {
+                url_citations: message
+                    .get("annotations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|annotation| annotation["type"] == "url_citation")
+                    .filter_map(|annotation| {
+                        serde_json::from_value(annotation["url_citation"].clone()).ok()
+                    })
+                    .collect(),
                 role: Role::Assistant,
                 content,
                 stop_reason: Some(map_openai_finish_reason(
@@ -365,6 +375,15 @@ impl FormatCodec for OpenAiChatCodec {
                 Value::String(content)
             },
         });
+        if let Some(output) = output.filter(|output| !output.url_citations.is_empty()) {
+            message["annotations"] = Value::Array(
+                output
+                    .url_citations
+                    .iter()
+                    .map(|citation| json!({"type": "url_citation", "url_citation": citation}))
+                    .collect(),
+            );
+        }
         if let Some(reasoning) = output
             .map(|output| reasoning_text_from_blocks(&output.content, "\n"))
             .filter(|reasoning| !reasoning.is_empty())

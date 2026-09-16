@@ -89,6 +89,7 @@ mod tests {
     fn tool_call_agg() -> AggLlmResponse {
         AggLlmResponse {
             outputs: vec![ResponseOutput {
+                url_citations: Vec::new(),
                 role: Role::Assistant,
                 content: vec![
                     ContentBlock::Text {

@@ -318,6 +318,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
             outputs: vec![ResponseOutput {
+                url_citations: Vec::new(),
                 role: Role::Assistant,
                 content,
                 stop_reason: Some(map_anthropic_stop_reason(

@@ -56,6 +56,7 @@ pub fn text_response(model: Option<String>, completion: impl Into<String>) -> Ag
     AggLlmResponse {
         model,
         outputs: vec![ResponseOutput {
+            url_citations: Vec::new(),
             role: Role::Assistant,
             content: vec![ContentBlock::Text {
                 text: completion.into(),
