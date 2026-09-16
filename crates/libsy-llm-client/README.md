@@ -228,15 +228,16 @@ fn build_multi_format_client(
 
 - The `Backend` variant sets auth: OpenAI formats send `Authorization: Bearer <key>`;
   Anthropic sends `x-api-key: <key>` plus `anthropic-version`.
-- `request.metadata.http_headers` are forwarded upstream, **except** reserved ones:
-  `host`, `content-length`, `connection`, and the backend-owned
-  login, API-key, version, and content headers. So a caller's placeholder
-  credential never overrides the backend's real key.
+- By default, only `x-request-id` from `request.metadata.http_headers` is forwarded.
+  With `forward_auth`, application headers are forwarded, while connection, destination,
+  body, and the selected provider's owned headers are removed or rebuilt.
 - `HttpBackendConfig::forward_auth` uses the caller's credential instead of the
-  backend's configured key. OpenAI backends forward `authorization`,
-  `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic backends forward
-  `authorization` or `x-api-key`; they also keep `oauth-*` values from
-  `anthropic-beta` and remove other caller-supplied beta values.
+  backend's configured key and forwards other application headers. OpenAI backends
+  normalize `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`.
+  Anthropic backends forward `authorization` or `x-api-key`; they also keep
+  `oauth-*` values from `anthropic-beta` and remove other caller-supplied beta values.
+  All backends reachable through a forwarding route must use the same provider.
+  Headers owned by other providers are preserved as application headers.
 - Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
   `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
   and `anthropic-version`. Header names are case-insensitive.

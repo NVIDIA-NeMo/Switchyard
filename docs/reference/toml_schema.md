@@ -51,7 +51,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `format` | Yes | — | `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | `base_url` | Yes | — | Upstream base URL. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
-| `forward_auth` | No | `false` | Forward the caller's provider credential to this upstream. |
+| `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. All backends reachable through the route must use the same provider. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 
@@ -76,11 +76,13 @@ values.
 
 This setting gives `base_url` the caller's login. Enable it only when that
 upstream should receive the credential, and use HTTPS unless the upstream runs
-on loopback. Forwarding clients do not follow HTTP redirects. Check every
-forwarding client used by a route, including classifier and judge targets. The
-server rejects an Anthropic forwarding route called through an OpenAI endpoint,
-or an OpenAI forwarding route called through an Anthropic endpoint, before it
-calls an upstream.
+on loopback. All backends reachable through the route must use the same
+provider because other application headers are preserved and may contain
+provider-specific credentials. Forwarding clients do not follow HTTP redirects.
+Check every forwarding client used by a route, including classifier and judge
+targets. The server rejects an Anthropic forwarding route called through an
+OpenAI endpoint, or an OpenAI forwarding route called through an Anthropic
+endpoint, before it calls an upstream.
 
 ## `[targets.<name>]`
 

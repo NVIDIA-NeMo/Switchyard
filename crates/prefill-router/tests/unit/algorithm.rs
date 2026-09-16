@@ -76,6 +76,7 @@ async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<
                     switchyard_protocol::text_response(None, "unused"),
                 ),
                 metadata: None,
+                upstream_headers: Default::default(),
             }))
         },
     )

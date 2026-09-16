@@ -25,6 +25,7 @@ pub(super) struct GatedTurn {
     /// response, its own preservation intact.
     pub(super) agg: AggLlmResponse,
     pub(super) metadata: Option<Metadata>,
+    pub(super) upstream_headers: http::HeaderMap,
 }
 
 impl GatedTurn {
@@ -40,6 +41,7 @@ impl GatedTurn {
         Response {
             llm_response,
             metadata: self.metadata,
+            upstream_headers: self.upstream_headers,
         }
     }
 }
@@ -50,11 +52,13 @@ impl GatedTurn {
 /// turn fails whole.
 pub(super) async fn buffer_turn(executor: &str, response: Response) -> Result<GatedTurn> {
     let metadata = response.metadata;
+    let upstream_headers = response.upstream_headers;
     match response.llm_response {
         LlmResponse::Agg(agg) => Ok(GatedTurn {
             events: None,
             agg,
             metadata,
+            upstream_headers,
         }),
         LlmResponse::Stream(mut stream) => {
             let mut events = Vec::new();
@@ -88,6 +92,7 @@ pub(super) async fn buffer_turn(executor: &str, response: Response) -> Result<Ga
                 events: Some(events),
                 agg: accumulator.finish(),
                 metadata,
+                upstream_headers,
             })
         }
     }

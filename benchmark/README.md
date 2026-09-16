@@ -302,6 +302,60 @@ SWITCHYARD_DOCKER_BUILD=0 bash benchmark/run-baseline.sh ...
 
 Only reuse the image when you know it already contains the current Rust `switchyard-server` binary.
 
+## DeepSWE v1.1
+
+DeepSWE uses Harbor's task format but its own runner, [Pier](https://github.com/datacurve-ai/pier)
+(required since v1.1 for the separate-verifier/collect-hook pattern). It is not part of
+`run-baseline.sh`.
+
+```bash
+git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
+uv tool install 'datacurve-pier>0.3.0'
+```
+
+Direct upstream:
+
+```bash
+export OPENAI_API_KEY="..."
+pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent --model openai/gpt-5.5
+```
+
+Switchyard routing: start the server, then point the agent's OpenAI client at it through `--ae`.
+Pier's Docker environment routes all agent traffic through a policy proxy whose `Safe_ports` ACL
+only allows ports 80/443, so bind Switchyard to 443:
+
+```bash
+switchyard-server --config benchmark/server-configs/deepswe-single.toml \
+  --host 0.0.0.0 --port 443
+
+pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent \
+  --model openai/deepswe-single \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
+`--agent codex` reads the same `OPENAI_BASE_URL`/`OPENAI_API_KEY` pair through `--ae`:
+
+```bash
+pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
+  --model openai/deepswe-single \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
+`host.docker.internal` requires Docker Desktop; on Linux, pass the host's Docker-bridge address
+instead. Binding port 443 needs elevated privileges on most Linux hosts (`sudo`, or
+`setcap 'cap_net_bind_service=+ep'` on the binary).
+
+Smoke subset:
+
+```bash
+pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent \
+  --model openai/gpt-5.5 --n-tasks 1 --sample-seed 0
+```
+
+Results land under `jobs/<job-name>/`, per Pier's own layout.
+
 ## Troubleshooting
 
 If the runner reports that the current Harbor patch is not applied cleanly, recreate or reinstall the

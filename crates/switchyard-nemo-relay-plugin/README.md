@@ -10,8 +10,29 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-The plugin requires NeMo Relay `>=0.8.1,<0.9.0`, a Rust toolchain, and Python 3
-for the packaging script. Run every command from the repository root.
+The plugin requires NeMo Relay `>=0.8.0, <1.0.0`.
+
+### Install a released bundle
+
+Released bundles are published in the
+[NeMo Relay Plugins repository](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases).
+Find the `switchyard-plugin` release that corresponds to the Switchyard version
+or source commit you need. The release's `.json` sidecar records the exact
+Switchyard source commit and Relay version used to validate each platform
+artifact.
+
+Download the archive and matching `.sha256` file for your platform, verify the
+checksum, extract the archive into a directory you plan to keep, then register
+the extracted `relay-plugin.toml` with Relay using step 3 below. The release
+version is independent of the Switchyard workspace version, so use the release
+metadata rather than assuming that version numbers match.
+
+### Build from source
+
+Build from source when you need a Switchyard commit that does not have a
+released bundle or when you need to customize the plugin. This path requires a
+Rust toolchain and Python 3 for the packaging script. Run every command from
+the repository root.
 
 **1. Build the shared library.**
 

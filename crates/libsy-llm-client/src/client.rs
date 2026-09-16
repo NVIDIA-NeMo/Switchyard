@@ -13,13 +13,13 @@ use futures_util::{StreamExt, stream};
 use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Metadata, ModelId, Request,
     Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    WireFormat, decode_aggregated_response, decode_request, decode_stream,
+    TranslationError, WireFormat, decode_aggregated_response, decode_request, decode_stream,
     encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
 };
 use tracing::Instrument;
@@ -29,28 +29,27 @@ use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
 
-// Headers this client owns or that are hop-by-hop. Backends apply an explicitly
-// enabled caller credential after generic metadata forwarding skips these.
-// Azure/OpenAI credentials and tenant selectors are also backend-owned.
-const RESERVED_HEADERS: &[&str] = &[
+// Caller headers safe to send when caller auth forwarding is disabled.
+const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id"];
+
+// Headers tied to the inbound connection, destination, or body. The HTTP client
+// must rebuild these for the upstream request, even when forwarding auth.
+const NON_FORWARDABLE_HEADERS: &[&str] = &[
     "host",
     "content-length",
     "connection",
-    "authorization",
-    "proxy-authorization",
+    "proxy-connection",
+    "keep-alive",
     "proxy-authenticate",
-    "cookie",
-    "set-cookie",
-    "x-api-key",
-    "chatgpt-account-id",
-    "x-openai-fedramp",
-    "api-key",
-    "openai-organization",
-    "openai-project",
-    "anthropic-beta",
-    "anthropic-version",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
     "content-type",
+    "content-encoding",
     "accept-encoding",
+    "expect",
 ];
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -341,7 +340,7 @@ impl TranslatingLlmClient {
             &self.client
         };
         let builder = client.post(url).json(body);
-        let builder = forward_metadata_headers(builder, metadata);
+        let builder = forward_metadata_headers(builder, metadata, backend);
         let builder = backend.apply_forwarded_auth(builder, metadata);
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
@@ -364,6 +363,7 @@ impl TranslatingLlmClient {
                 metrics::record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming(response));
             }
+            let upstream_headers = response.headers().clone();
             let body = match response.bytes().await {
                 Ok(body) => body,
                 Err(error) => {
@@ -379,6 +379,7 @@ impl TranslatingLlmClient {
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
                 body: body.to_vec(),
+                upstream_headers,
             });
         }
 
@@ -394,7 +395,7 @@ impl TranslatingLlmClient {
                 });
             }
         };
-        let body = backend.redact_forwarded_auth(body, metadata);
+        let body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
@@ -465,10 +466,11 @@ impl TranslatingLlmClient {
             )
             .await?;
 
-        let llm_response = match http_response {
+        let (llm_response, upstream_headers) = match http_response {
             EncodedResponse::Streaming(http_response) => {
                 // Adapt the reqwest body stream to plain bytes; the SSE-decode itself is
                 // transport-agnostic and lives in `switchyard-translation`.
+                let upstream_headers = http_response.headers().clone();
                 let bytes = http_response.bytes_stream().map(|chunk| {
                     chunk
                         .map(|bytes| bytes.to_vec())
@@ -479,7 +481,7 @@ impl TranslatingLlmClient {
                 // error event on an HTTP 200. Classify the first event before returning
                 // the stream: nothing has reached the caller yet, so an overflow can
                 // still fail the call and let routing try the next candidate.
-                match chunks.next().await {
+                let llm_response = match chunks.next().await {
                     None => LlmResponse::Stream(stream::empty().boxed()),
                     Some(first) => {
                         if let Some(message) = first_event_overflow(&first, backend) {
@@ -490,21 +492,43 @@ impl TranslatingLlmClient {
                         }
                         LlmResponse::Stream(stream::once(ready(first)).chain(chunks).boxed())
                     }
-                }
+                };
+                (llm_response, upstream_headers)
             }
-            EncodedResponse::Buffered { body, .. } => {
+            EncodedResponse::Buffered {
+                body,
+                upstream_headers,
+                ..
+            } => {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
-                let agg = decode_aggregated_response(&body, wire_format)
-                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-                LlmResponse::Agg(agg)
+                // Map a provider's failed generation to 502, even under HTTP 200.
+                // Redact forwarded credentials before returning the provider error.
+                let agg =
+                    decode_aggregated_response(&body, wire_format).map_err(
+                        |error| match error {
+                            TranslationError::UpstreamFailure { error } => {
+                                LlmClientError::UpstreamHttp {
+                                    status: StatusCode::BAD_GATEWAY,
+                                    body: redact_forwarded_headers(
+                                        json!({ "error": error }).to_string(),
+                                        metadata.as_ref(),
+                                        backend.is_forwarding_auth(),
+                                    ),
+                                }
+                            }
+                            error => LlmClientError::ResponseTranslation(error.to_string()),
+                        },
+                    )?;
+                (LlmResponse::Agg(agg), upstream_headers)
             }
         };
 
         Ok(Response {
             llm_response,
             metadata,
+            upstream_headers,
         })
     }
 
@@ -520,8 +544,10 @@ impl TranslatingLlmClient {
     /// model that answered rather than the route the caller addressed.
     ///
     /// `http_headers` are carried through as the request's
-    /// [`Metadata::http_headers`] and forwarded to the upstream (minus the reserved
-    /// set); pass `None` to forward nothing.
+    /// [`Metadata::http_headers`]. Backends with `forward_auth` disabled forward only
+    /// allowed metadata headers; `forward_auth` backends forward all application
+    /// headers. All backends reachable through a forwarding route must use the same
+    /// provider. Transport headers are always rebuilt. Pass `None` to forward nothing.
     pub async fn call_rewrite_model_raw(
         &self,
         raw_http_request: Value,
@@ -606,7 +632,11 @@ impl UpstreamEndpoint {
 }
 
 enum EncodedResponse {
-    Buffered { status: u16, body: Vec<u8> },
+    Buffered {
+        status: u16,
+        body: Vec<u8>,
+        upstream_headers: HeaderMap,
+    },
     Streaming(reqwest::Response),
 }
 
@@ -721,21 +751,29 @@ fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     }
 }
 
-// Forwards caller-supplied metadata headers except credentials and client-owned headers.
+// Forwards safe metadata headers, or all application headers when forwarding auth.
 fn forward_metadata_headers(
-    mut builder: RequestBuilder,
+    builder: RequestBuilder,
     metadata: Option<&Metadata>,
+    backend: &Backend,
 ) -> RequestBuilder {
     let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
         return builder;
     };
+    let mut forwarded = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
-        if is_reserved_header(name.as_str()) {
+        let is_allowed = if backend.is_forwarding_auth() {
+            !is_non_forwardable_header(name.as_str(), headers)
+                && !backend.is_provider_owned_header(name.as_str())
+        } else {
+            is_allowed_metadata_header(name.as_str())
+        };
+        if !is_allowed {
             continue;
         }
-        builder = builder.header(name, value);
+        forwarded.append(name, value.clone());
     }
-    builder
+    builder.headers(forwarded)
 }
 
 // Adds the backend's custom per-call headers.
@@ -1061,11 +1099,48 @@ fn ensure_openai_stream_usage(body: &mut Value) {
     }
 }
 
-// Case-insensitive membership test against RESERVED_HEADERS.
-fn is_reserved_header(name: &str) -> bool {
-    RESERVED_HEADERS
+fn is_allowed_metadata_header(name: &str) -> bool {
+    ALLOWED_METADATA_HEADERS
         .iter()
-        .any(|reserved| name.eq_ignore_ascii_case(reserved))
+        .any(|allowed| name.eq_ignore_ascii_case(allowed))
+}
+
+fn is_non_forwardable_header(name: &str, headers: &HeaderMap) -> bool {
+    NON_FORWARDABLE_HEADERS
+        .iter()
+        .any(|blocked| name.eq_ignore_ascii_case(blocked))
+        || headers.get_all("connection").iter().any(|value| {
+            value
+                .as_bytes()
+                .split(|byte| *byte == b',')
+                .any(|option| option.trim_ascii().eq_ignore_ascii_case(name.as_bytes()))
+        })
+}
+
+// Unknown application headers can carry credentials when auth forwarding is enabled.
+fn redact_forwarded_headers(
+    mut body: String,
+    metadata: Option<&Metadata>,
+    is_forwarding_auth: bool,
+) -> String {
+    if !is_forwarding_auth {
+        return body;
+    }
+    let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
+        return body;
+    };
+    for (name, value) in headers {
+        if is_non_forwardable_header(name.as_str(), headers) {
+            continue;
+        }
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        if !value.is_empty() {
+            body = body.replace(value, "[REDACTED]");
+        }
+    }
+    body
 }
 
 #[cfg(test)]
@@ -1078,7 +1153,7 @@ mod tests {
     use std::thread::JoinHandle;
 
     use serde_json::json;
-    use switchyard_protocol::{LlmRequest, completion_text, text_request};
+    use switchyard_protocol::{completion_text, text_request};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1100,6 +1175,14 @@ mod tests {
     fn config_with_retries(base_url: &str, max_retries: u32) -> HttpBackendConfig {
         HttpBackendConfig {
             max_retries,
+            ..config(base_url)
+        }
+    }
+
+    fn forwarding_config(base_url: &str) -> HttpBackendConfig {
+        HttpBackendConfig {
+            api_key: None,
+            forward_auth: true,
             ..config(base_url)
         }
     }
@@ -1225,6 +1308,15 @@ mod tests {
             raw_request: None,
             metadata: None,
         }
+    }
+
+    fn request_with_headers(model: &str, headers: HeaderMap) -> Request {
+        let mut request = request_for(Some(model), false);
+        request.metadata = Some(Metadata {
+            http_headers: Some(headers),
+            ..Default::default()
+        });
+        request
     }
 
     #[tokio::test]
@@ -2223,7 +2315,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forwards_metadata_headers_except_reserved()
+    async fn forwards_only_allowlisted_metadata_headers()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2245,53 +2337,154 @@ mod tests {
             http::HeaderValue::from_static("Bearer client-key"),
         );
         headers.insert(
-            "accept-encoding",
-            http::HeaderValue::from_static("gzip, br"),
+            "x-goog-api-key",
+            http::HeaderValue::from_static("client-google-key"),
         );
         headers.insert(
-            "api-key",
-            http::HeaderValue::from_static("client-azure-key"),
+            "x-custom-internal-secret",
+            http::HeaderValue::from_static("client-custom-key"),
         );
-        headers.insert(
-            "openai-organization",
-            http::HeaderValue::from_static("org-client"),
-        );
-        headers.insert(
-            "openai-project",
-            http::HeaderValue::from_static("proj-client"),
-        );
-        let request = Request {
-            llm_request: LlmRequest {
-                model: Some("gpt".to_string()),
-                ..LlmRequest::default()
-            },
-            raw_request: None,
-            metadata: Some(Metadata {
-                session_id: None,
-                agent_id: None,
-                task_id: None,
-                correlation_id: None,
-                extra_metadata: None,
-                http_headers: Some(headers),
-                wire_format: None,
-                ..Default::default()
-            }),
-        };
+        let request = request_with_headers("gpt", headers);
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
-        // Matchers assert forwarded x-request-id survives and reserved
-        // authorization is the backend's, not the client's.
+        // The allowed request id survives and caller authorization cannot replace
+        // the backend's credential.
         client.call_rewrite_model(request, None).await?;
         let received = server
             .received_requests()
             .await
             .ok_or("request recording should be enabled")?;
         let received = received.first().ok_or("expected one upstream request")?;
-        assert!(!received.headers.contains_key("accept-encoding"));
-        assert!(!received.headers.contains_key("api-key"));
-        assert!(!received.headers.contains_key("openai-organization"));
-        assert!(!received.headers.contains_key("openai-project"));
+        assert!(!received.headers.contains_key("x-goog-api-key"));
+        assert!(!received.headers.contains_key("x-custom-internal-secret"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn forwards_application_headers_with_forward_auth()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer client-key",
+            ))
+            .and(wiremock::matchers::header(
+                "x-goog-api-key",
+                "client-google-key",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1", "model": "gpt",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static("Bearer client-key"),
+        );
+        headers.insert(
+            "x-goog-api-key",
+            http::HeaderValue::from_static("client-google-key"),
+        );
+        headers.insert("host", http::HeaderValue::from_static("client.example"));
+        headers.insert("content-type", http::HeaderValue::from_static("text/plain"));
+        headers.insert("connection", http::HeaderValue::from_static("x-hop-by-hop"));
+        headers.insert(
+            "x-hop-by-hop",
+            http::HeaderValue::from_static("client-only"),
+        );
+        let request = request_with_headers("gpt", headers);
+        let backend_config = forwarding_config(&format!("{}/v1", server.uri()));
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(backend_config),
+            None,
+        )])?;
+
+        client.call_rewrite_model(request, None).await?;
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let received = received.first().ok_or("expected one upstream request")?;
+        assert_ne!(received.headers["host"], "client.example");
+        assert_eq!(received.headers["content-type"], "application/json");
+        assert!(!received.headers.contains_key("connection"));
+        assert!(!received.headers.contains_key("x-hop-by-hop"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn forward_auth_preserves_anthropic_headers_and_redacts_errors()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(|request: &wiremock::Request| {
+                request
+                    .headers
+                    .get("anthropic-beta")
+                    .and_then(|value| value.to_str().ok())
+                    == Some("oauth-2025-04-20")
+                    && request.headers.get_all("anthropic-version").iter().count() == 1
+                    && request
+                        .headers
+                        .get("anthropic-version")
+                        .and_then(|value| value.to_str().ok())
+                        == Some("2023-06-01")
+            })
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "error": {"message": "rejected client-google-key"}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static("Bearer client-key"),
+        );
+        headers.insert(
+            "x-goog-api-key",
+            http::HeaderValue::from_static("client-google-key"),
+        );
+        headers.insert(
+            "anthropic-beta",
+            http::HeaderValue::from_static("oauth-2025-04-20,prompt-caching-2024-07-31"),
+        );
+        headers.insert(
+            "anthropic-version",
+            http::HeaderValue::from_static("caller-version"),
+        );
+        let backend_config = forwarding_config(&server.uri());
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend_config),
+            None,
+        )])?;
+        let raw = json!({
+            "model": "claude",
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+
+        let Err(LlmClientError::UpstreamHttp { body, .. }) = client
+            .call_rewrite_model_raw(
+                raw,
+                Some(headers),
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
+            )
+            .await
+        else {
+            panic!("expected an upstream HTTP error");
+        };
+        assert_eq!(body, r#"{"error":{"message":"rejected [REDACTED]"}}"#);
         Ok(())
     }
 
@@ -2605,7 +2798,7 @@ mod tests {
         Ok(())
     }
 
-    // Raw path forwards caller headers (minus the reserved set) to the upstream.
+    // Raw path forwards allowed caller headers to the upstream.
     #[tokio::test]
     async fn call_rewrite_model_raw_forwards_headers()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -2631,8 +2824,8 @@ mod tests {
 
         let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
         let raw = json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}]});
-        // Matchers assert the forwarded x-request-id survives and reserved
-        // authorization is the backend's, not the client's.
+        // The allowed request id survives and caller authorization cannot replace
+        // the backend's credential.
         client
             .call_rewrite_model_raw(
                 raw,

@@ -9,6 +9,9 @@ use crate::codecs::common::{
     first_nonempty_string, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
     reasoning_text_from_details, text_from_blocks,
 };
+use crate::codecs::openai_media::{
+    ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
+};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -1066,116 +1069,22 @@ fn openai_text_part(text: &str) -> Value {
     json!({"type": "text", "text": text})
 }
 
-// Maps IR image sources to OpenAI Chat image content parts when possible.
 fn openai_image_part(source: &ImageSource) -> Option<Value> {
-    match source {
-        ImageSource::Url { url, detail } => {
-            let mut image_url = json!({"url": url});
-            if let Some(detail) = detail {
-                image_url["detail"] = Value::String(detail.clone());
-            }
-            Some(json!({"type": "image_url", "image_url": image_url}))
-        }
-        ImageSource::Base64 { media_type, data } => media_type.as_ref().map(|media_type| {
-            json!({
-                "type": "image_url",
-                "image_url": {"url": format!("data:{media_type};base64,{data}")},
-            })
-        }),
-        ImageSource::Raw(raw) => openai_raw_image_part(raw),
+    let ImagePayload { url, detail } = image_payload(source)?;
+    let mut image_url = json!({});
+    image_url["url"] = Value::String(url);
+    if let Some(detail) = detail {
+        image_url["detail"] = Value::String(detail);
     }
+    let mut part = json!({"type": "image_url"});
+    part["image_url"] = image_url;
+    Some(part)
 }
 
-// Recognizes common raw image shapes emitted by Anthropic and Responses.
-fn openai_raw_image_part(raw: &Value) -> Option<Value> {
-    let object = raw.as_object()?;
-    let object = if object.get("type").and_then(Value::as_str) == Some("image") {
-        let source = object.get("source").and_then(Value::as_object)?;
-        if !matches!(
-            source.get("type").and_then(Value::as_str),
-            Some("base64" | "url")
-        ) {
-            return None;
-        }
-        source
-    } else {
-        object
-    };
-    if let Some(url) = object.get("url").and_then(Value::as_str) {
-        return Some(json!({"type": "image_url", "image_url": {"url": url}}));
-    }
-    if let Some(url) = object.get("image_url").and_then(Value::as_str) {
-        return Some(json!({"type": "image_url", "image_url": {"url": url}}));
-    }
-    let data = object.get("data").and_then(Value::as_str)?;
-    let media_type = object
-        .get("media_type")
-        .and_then(Value::as_str)
-        .unwrap_or("application/octet-stream");
-    Some(json!({
-        "type": "image_url",
-        "image_url": {"url": format!("data:{media_type};base64,{data}")},
-    }))
-}
-
-// Converts image sources to deterministic text fallback content.
-fn image_source_text(source: &ImageSource) -> String {
-    match source {
-        ImageSource::Url { url, detail } => json_string(&json!({
-            "url": url,
-            "detail": detail,
-        })),
-        ImageSource::Base64 { media_type, data } => json_string(&json!({
-            "media_type": media_type,
-            "data": data,
-        })),
-        ImageSource::Raw(raw) => json_string(raw),
-    }
-}
-
-// Maps IR file sources to OpenAI Chat file content parts when possible.
 fn openai_file_part(source: &FileSource) -> Option<Value> {
-    match source {
-        FileSource::FileId(file_id) => Some(json!({"type": "file", "file": {"file_id": file_id}})),
-        FileSource::FileData { data, filename } => {
-            let mut file = json!({"file_data": data});
-            if let Some(filename) = filename {
-                file["filename"] = Value::String(filename.clone());
-            }
-            Some(json!({"type": "file", "file": file}))
-        }
-        FileSource::Raw(raw) => openai_raw_file_part(raw),
-    }
-}
-
-// Maps portable fields from raw Anthropic documents without forwarding provider-managed IDs.
-fn openai_raw_file_part(raw: &Value) -> Option<Value> {
-    let block = raw.as_object()?;
-    if block.get("type").and_then(Value::as_str) != Some("document") {
-        return None;
-    }
-    let source = block.get("source").and_then(Value::as_object)?;
-    if source.get("type").and_then(Value::as_str) != Some("base64") {
-        return None;
-    }
-    let data = source.get("data").and_then(Value::as_str)?;
-    let mut file = json!({"file_data": data});
-    if let Some(title) = block.get("title").and_then(Value::as_str) {
-        file["filename"] = Value::String(title.to_string());
-    }
-    Some(json!({"type": "file", "file": file}))
-}
-
-// Converts file sources to deterministic text fallback content.
-fn file_source_text(source: &FileSource) -> String {
-    match source {
-        FileSource::FileId(file_id) => json_string(&json!({"file_id": file_id})),
-        FileSource::FileData { data, filename } => json_string(&json!({
-            "file_data": data,
-            "filename": filename,
-        })),
-        FileSource::Raw(raw) => json_string(raw),
-    }
+    let mut part = json!({"type": "file"});
+    part["file"] = Value::Object(file_payload(source)?);
+    Some(part)
 }
 
 // Converts unsupported media sources to deterministic text fallback content.

@@ -93,11 +93,12 @@ The same tag publishes these crates to crates.io in dependency order:
 2. `switchyard-translation`
 3. `switchyard-libsy`
 4. `switchyard-llm-client`
-5. `switchyard-runner`
-6. `switchyard-server`
+5. `prefill-router`
+6. `switchyard-runner`
+7. `switchyard-server`
 
 Add a repository Actions secret named `CARGO_REGISTRY_TOKEN` containing a crates.io API token that
-can publish all six crates and create new crates. The job waits for each version to reach the
+can publish all seven crates and create new crates. The job waits for each version to reach the
 crates.io index before publishing its dependents. If publication stops partway through, use
 GitHub's **Re-run failed jobs** action so successful crate jobs are not repeated.
 

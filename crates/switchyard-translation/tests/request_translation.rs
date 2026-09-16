@@ -49,6 +49,27 @@ fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
     Ok(())
 }
 
+// Rebuilding for target instructions must preserve the Responses conversation link.
+#[test]
+fn responses_previous_response_id_survives_target_prompt() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({"model": "route", "input": "hi", "previous_response_id": "resp_1"});
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
+
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(output["instructions"], "target prompt");
+    assert_eq!(output["previous_response_id"], "resp_1");
+    Ok(())
+}
+
 // Model-only preparation retains provider fields while aligning exact replay with the target.
 #[test]
 fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {
@@ -2881,6 +2902,115 @@ fn responses_parallel_custom_tool_calls_pair_with_their_outputs() -> TestResult 
             ("custom_tool_call", "call-b"),
             ("custom_tool_call_output", "call-b"),
         ]
+    );
+    Ok(())
+}
+
+// Verifies Chat image and file parts encode as wire-valid Responses input parts,
+// not serialized IR enums (image_url must be a string and file fields must be flat).
+#[test]
+fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe these."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,YQ==", "detail": "high"}
+                },
+                {"type": "file", "file": {"file_id": "file_123"}},
+                {
+                    "type": "file",
+                    "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                }
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["input"][0]["content"],
+        json!([
+            {"type": "input_text", "text": "Describe these."},
+            {
+                "type": "input_image",
+                "image_url": "data:image/png;base64,YQ==",
+                "detail": "high"
+            },
+            {"type": "input_file", "file_id": "file_123"},
+            {
+                "type": "input_file",
+                "file_data": "ZG9jdW1lbnQ=",
+                "filename": "report.pdf"
+            }
+        ])
+    );
+    Ok(())
+}
+
+// Verifies Anthropic base64 media becomes valid Responses image and file parts.
+#[test]
+fn anthropic_base64_media_translates_to_responses() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 64,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is this?"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "aW1hZ2U="
+                    }
+                },
+                {
+                    "type": "document",
+                    "title": "report.pdf",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": "ZG9jdW1lbnQ="
+                    }
+                }
+            ]
+        }]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["input"][0]["content"],
+        json!([
+            {"type": "input_text", "text": "What is this?"},
+            {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
+            {
+                "type": "input_file",
+                "file_data": "ZG9jdW1lbnQ=",
+                "filename": "report.pdf"
+            }
+        ])
     );
     Ok(())
 }

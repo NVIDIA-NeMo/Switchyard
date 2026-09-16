@@ -249,11 +249,14 @@ impl AdvisorGate {
         let decision = self.trigger.classify(&signals);
         // The stall checkpoint fires once per conversation regardless of the
         // turn's shape. Only a stall with no simultaneous trigger latches
-        // (atomically — one winner per conversation), so a refunded review
-        // leaves the checkpoint re-armed.
+        // (atomically — one winner per conversation). The latch is provisional
+        // until a review completes: a refunded consult or a spent budget
+        // re-arms it so a later eligible turn is reviewed instead of silently
+        // passing through.
+        let stall_key = stall_key(&request);
         let stall = decision.fired.is_none()
             && decision.stalled
-            && self.budget.try_mark_stall_fired(stall_key(&request));
+            && self.budget.try_mark_stall_fired(stall_key);
         if decision.fired.is_none() && !stall {
             return Ok(RoutingOutcome::answered(
                 served_executor.clone(),
@@ -262,6 +265,9 @@ impl AdvisorGate {
             ));
         }
         if !self.budget.try_reserve(scope) {
+            if stall {
+                self.budget.clear_stall_fired(stall_key);
+            }
             return Ok(RoutingOutcome::answered(
                 served_executor.clone(),
                 request,
@@ -306,6 +312,9 @@ impl AdvisorGate {
             }
             Ok(ConsultOutcome::Failed { reason }) => {
                 self.budget.refund_failure(scope);
+                if stall {
+                    self.budget.clear_stall_fired(stall_key);
+                }
                 driver.set_evidence(serde_json::json!({
                     "source": "advisor",
                     "verdict": "fail_open",
@@ -320,6 +329,9 @@ impl AdvisorGate {
             }
             Err(error) => {
                 self.budget.refund_failure(scope);
+                if stall {
+                    self.budget.clear_stall_fired(stall_key);
+                }
                 Err(error)
             }
         }

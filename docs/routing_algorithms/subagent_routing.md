@@ -110,6 +110,13 @@ that is not registered as a route is rejected before sub-agent classification.
 `message_hash_fallback` is not supported for sub-agent routing because affinity
 requires harness-provided child identity.
 
+Claude Code sends child identity (`x-claude-code-agent-id`) starting with version
+2.1.139. Older builds send only the session id, so Switchyard cannot tell a
+sub-agent request from the parent's and routes it through the parent route.
+When a route with a `subagents` table sees an older Claude Code, Switchyard logs
+one warning that a harness upgrade may be required. Upgrade Claude Code to
+2.1.139 or later.
+
 To send every delegated sub-agent request to one fixed target without calling a
 classifier, replace the `subagents` table above with:
 

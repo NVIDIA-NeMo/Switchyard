@@ -886,6 +886,7 @@ mod tests {
                     Ok(Response {
                         llm_response: LlmResponse::Agg(text_response(None, completion)),
                         metadata: request.metadata,
+                        upstream_headers: http::HeaderMap::new(),
                     })
                 }
             }
@@ -904,6 +905,7 @@ mod tests {
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, format!("answer from {model}"))),
                 metadata: request.metadata,
+                upstream_headers: http::HeaderMap::new(),
             })
         }
     }
@@ -1125,6 +1127,7 @@ mod tests {
                     Ok(Response {
                         llm_response: LlmResponse::Agg(text_response(None, text)),
                         metadata: None,
+                        upstream_headers: Default::default(),
                     })
                 }
             }

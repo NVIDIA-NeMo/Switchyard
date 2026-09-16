@@ -651,6 +651,34 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn failed_responses_return_upstream_failure_with_provider_message() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_failed",
+        "object": "response",
+        "model": "gpt-4o",
+        "status": "failed",
+        "error": {"code": "server_error", "message": "deterministic upstream failure"},
+        "output": [],
+        "usage": null
+    });
+
+    let target = WireFormat::OpenAiChat;
+    let error = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            target,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .err()
+        .ok_or_else(|| format!("{target:?} accepted a failed response"))?;
+    assert_eq!(error.kind(), "UpstreamFailure");
+    assert!(error.to_string().contains("deterministic upstream failure"));
+    Ok(())
+}
+
 // Verifies a moderation stop stays distinguishable from a normal turn in both
 // directions, and that a named refusal category survives re-encoding.
 #[test]

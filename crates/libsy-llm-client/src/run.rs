@@ -566,6 +566,7 @@ mod tests {
             Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(Some(model.to_string()), model)),
                 metadata: None,
+                upstream_headers: http::HeaderMap::new(),
             })
         }
     }
@@ -581,6 +582,7 @@ mod tests {
                 .boxed(),
             ),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         }
     }
 

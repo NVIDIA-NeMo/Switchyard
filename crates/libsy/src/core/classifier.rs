@@ -14,8 +14,8 @@ pub struct Score {
     /// The target (model / tier) being recommended.
     pub target: ModelId,
     /// The category `target` was drawn from, when the classifier picked one. The rest of
-    /// that category is what the turn falls through on failure, so a decision made without
-    /// a category — an affinity replay, say — leaves this `None`.
+    /// that category is what the turn falls through on failure. A decision made without
+    /// a category leaves this `None`.
     pub category: Option<Category>,
 }
 

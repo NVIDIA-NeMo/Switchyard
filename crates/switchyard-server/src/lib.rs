@@ -63,7 +63,27 @@ pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
+const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
+    "baggage",
+    "openai-processing-ms",
+    // Anthropic spells its correlation id without the `x-` prefix.
+    "request-id",
+    "traceparent",
+    "tracestate",
+    "x-request-id",
+];
+const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
+    &["anthropic-ratelimit-", "x-ratelimit-", "x-upstream-"];
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
+
+/// Whether an upstream header is safe and useful to expose downstream.
+fn should_forward_upstream_header(name: &HeaderName) -> bool {
+    let name = name.as_str();
+    FORWARDED_UPSTREAM_HEADERS.contains(&name)
+        || FORWARDED_UPSTREAM_HEADER_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
@@ -1022,7 +1042,7 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
-    let response = if let Some(served_model) = served_model.as_ref() {
+    let mut response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
             .map(|probe| state.stats.prefix_eligibility(served_model, probe))
@@ -1039,12 +1059,22 @@ async fn handle_llm_request(
         response
     };
 
+    let upstream_headers = std::mem::take(&mut response.upstream_headers);
     let response_model = served_model.as_ref().map(ToString::to_string);
     let mut response =
         match into_http_response(response, wire_format, response_model, request_extensions) {
             Ok(response) => response,
             Err(error) => return server_error(error.to_string()),
         };
+    // Forward upstream headers before Switchyard writes its own so any header
+    // this server emits always overrides an upstream echo of the same name.
+    let response_headers = response.headers_mut();
+    for (name, value) in upstream_headers.iter() {
+        if !should_forward_upstream_header(name) {
+            continue;
+        }
+        response_headers.append(name.clone(), value.clone());
+    }
     if let Some(served_model) = served_model.as_ref() {
         attach_routing_headers(&mut response, served_model.as_str());
     }
@@ -1222,12 +1252,7 @@ fn client_error(error: &LlmClientError) -> Response {
             "invalid_request_error",
             "context_length_exceeded",
         ),
-        LlmClientError::UpstreamHttp { status, body } => error_response(
-            *status,
-            upstream_error_message(body),
-            "upstream_error",
-            "upstream_error",
-        ),
+        LlmClientError::UpstreamHttp { status, body } => upstream_error(*status, body),
         LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
             error_response(
                 StatusCode::BAD_GATEWAY,
@@ -1253,26 +1278,25 @@ fn client_error(error: &LlmClientError) -> Response {
     }
 }
 
-// Provider errors are often JSON documents; expose their message without
-// embedding the entire document as an escaped string in our error envelope.
-fn upstream_error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|body| {
-            body.pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| body.to_string())
+// Keep the provider's message and nonempty string code in our error JSON.
+fn upstream_error(status: StatusCode, body: &str) -> Response {
+    let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
+    let error = &parsed["error"];
+    let message = error["message"].as_str().unwrap_or(body);
+    let code = error["code"]
+        .as_str()
+        .filter(|code| !code.is_empty())
+        .unwrap_or("upstream_error");
+    error_response(status, message, "upstream_error", code)
 }
 
-// Error metadata retained until the client-facing endpoint selects an envelope.
+// Keep error details until the endpoint chooses its response format.
 #[derive(Clone)]
 struct ApiError {
     status: StatusCode,
     message: String,
     error_type: &'static str,
-    code: &'static str,
+    code: String,
 }
 
 impl ApiError {
@@ -1280,13 +1304,13 @@ impl ApiError {
         status: StatusCode,
         message: impl Into<String>,
         error_type: &'static str,
-        code: &'static str,
+        code: impl Into<String>,
     ) -> Self {
         Self {
             status,
             message: message.into(),
             error_type,
-            code,
+            code: code.into(),
         }
     }
 
@@ -1357,7 +1381,7 @@ fn error_response(
     status: StatusCode,
     message: impl Into<String>,
     error_type: &'static str,
-    code: &'static str,
+    code: impl Into<String>,
 ) -> Response {
     ApiError::new(status, message, error_type, code).into_response(WireFormat::OpenAiChat)
 }

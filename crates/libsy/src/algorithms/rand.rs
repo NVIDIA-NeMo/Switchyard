@@ -3,8 +3,8 @@
 
 //! Random routing as a stateless [`FallThrough`] composition.
 //!
-//! [`RandomClassifier`] selects one target; [`FallThrough`] owns the common
-//! processor/classifier/target-call orchestration.
+//! [`RandomClassifier`] selects one target; [`FallThrough`] builds the candidate list.
+//! [`Random`] removes zero-weight targets from that list.
 
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ use switchyard_protocol::{Category, Request, Response};
 /// Stateless weighted classifier used by random fall-through routing.
 pub struct RandomClassifier {
     distribution: Option<WeightedIndex<f64>>,
-    weight_count: Option<usize>,
+    weights: Option<Vec<f64>>,
     rng: Mutex<StdRng>,
 }
 
@@ -40,8 +40,7 @@ impl RandomClassifier {
     /// Returns an error if explicit weights are negative or non-finite, or contain no
     /// positive value.
     pub fn new(weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Self> {
-        let weight_count = weights.as_ref().map(Vec::len);
-        let distribution = if let Some(weights) = weights {
+        let distribution = if let Some(weights) = weights.as_ref() {
             if weights
                 .iter()
                 .any(|weight| !weight.is_finite() || *weight < 0.0)
@@ -65,7 +64,7 @@ impl RandomClassifier {
         };
         Ok(Self {
             distribution,
-            weight_count,
+            weights,
             rng: Mutex::new(rng),
         })
     }
@@ -93,7 +92,7 @@ where
         if options.is_empty() {
             return Err(LibsyError::NoTargets);
         }
-        if let Some(weight_count) = self.weight_count
+        if let Some(weight_count) = self.weights.as_ref().map(Vec::len)
             && weight_count != options.len()
         {
             return Err(invalid_weights(format!(
@@ -121,9 +120,10 @@ where
     }
 }
 
-/// Random router implemented as a stateless fall-through composition.
+/// Random router with fallbacks restricted to targets with positive weights.
 pub struct Random {
     inner: FallThrough<()>,
+    classifier: Arc<RandomClassifier>,
 }
 
 impl Random {
@@ -132,8 +132,8 @@ impl Random {
         let classifier = Arc::new(RandomClassifier::new(weights, seed)?);
         let inner = FallThrough::<()>::new()
             .with_name("random")
-            .with_classifier(classifier);
-        Ok(Self { inner })
+            .with_classifier(classifier.clone());
+        Ok(Self { inner, classifier })
     }
 }
 
@@ -148,7 +148,18 @@ impl Algorithm for Random {
         driver: Driver,
         request: Request,
     ) -> Result<crate::RoutingOutcome> {
-        self.inner.execute(driver, request).await
+        let mut outcome = self.inner.execute(driver.clone(), request).await?;
+        if let Some(weights) = &self.classifier.weights {
+            // FallThrough includes all runtime targets, but zero weights disable fallbacks too.
+            for (model, weight) in driver.models_for(&Category::Any).iter().zip(weights) {
+                if *weight == 0.0 {
+                    outcome
+                        .selected_model_ids
+                        .retain(|candidate| candidate != model);
+                }
+            }
+        }
+        Ok(outcome)
     }
 }
 

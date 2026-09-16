@@ -6,11 +6,10 @@
 from os import PathLike
 from typing import TYPE_CHECKING, Any, final
 
-from typing_extensions import Self
-
 from switchyard_rust._native import load_native
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
 
     class ServerConfigError(RuntimeError):
         """Raised when a native server deployment configuration is invalid."""

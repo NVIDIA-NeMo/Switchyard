@@ -12,6 +12,9 @@ use crate::codecs::common::{
     is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::openai_media::{
+    ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
+};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -19,9 +22,9 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, InstructionBlock, LlmRequest, MediaSource, Message, OutputParams,
-    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason,
-    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -259,6 +262,19 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
+        // Providers can return HTTP 200 when generation fails. Check `status`
+        // before treating an empty `output` as a completed turn.
+        if body.get("status").and_then(Value::as_str) == Some("failed") {
+            return Err(TranslationError::UpstreamFailure {
+                error: body
+                    .get("error")
+                    .filter(|error| error.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        json!({ "message": "provider reported status \"failed\" without error details" })
+                    }),
+            });
+        }
         let mut diagnostics = Vec::new();
         let mut content = Vec::new();
         let mut role = Role::Assistant;
@@ -1407,9 +1423,17 @@ fn encode_responses_content(
             ContentBlock::Refusal { text } => {
                 blocks.push(json!({"type": "refusal", "refusal": text}));
             }
-            ContentBlock::Image { source } => {
-                blocks.push(json!({"type": "input_image", "image_url": source}));
-            }
+            ContentBlock::Image { source } => match responses_image_part(source) {
+                Some(part) => blocks.push(part),
+                None => {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses codec could not map image content",
+                    )?;
+                    blocks.push(json!({"type": "input_text", "text": image_source_text(source)}));
+                }
+            },
             ContentBlock::Audio { source } => blocks.push(match source {
                 MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
                 MediaSource::Url { url, media_type } => json!({
@@ -1434,9 +1458,17 @@ fn encode_responses_content(
                     "video": {"media_type": media_type, "data": data},
                 }),
             }),
-            ContentBlock::File { source } => {
-                blocks.push(json!({"type": "input_file", "file": source}));
-            }
+            ContentBlock::File { source } => match responses_file_part(source) {
+                Some(part) => blocks.push(part),
+                None => {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses codec could not map file content",
+                    )?;
+                    blocks.push(json!({"type": "input_text", "text": file_source_text(source)}));
+                }
+            },
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
                     diagnostics,
@@ -1451,6 +1483,22 @@ fn encode_responses_content(
         }
     }
     Ok(Value::Array(blocks))
+}
+
+fn responses_image_part(source: &ImageSource) -> Option<Value> {
+    let ImagePayload { url, detail } = image_payload(source)?;
+    let mut part = json!({"type": "input_image"});
+    part["image_url"] = Value::String(url);
+    if let Some(detail) = detail {
+        part["detail"] = Value::String(detail);
+    }
+    Some(part)
+}
+
+fn responses_file_part(source: &FileSource) -> Option<Value> {
+    let mut part = file_payload(source)?;
+    part.insert("type".to_string(), Value::String("input_file".to_string()));
+    Some(Value::Object(part))
 }
 
 // Encodes normalized tool definitions into Responses tool JSON.
@@ -1795,6 +1843,7 @@ fn copy_responses_request_extensions(
     for field in [
         "metadata",
         "parallel_tool_calls",
+        "previous_response_id",
         "prompt_cache_key",
         "prompt_cache_retention",
         "safety_identifier",

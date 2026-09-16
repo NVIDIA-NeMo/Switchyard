@@ -86,8 +86,10 @@ A client can set `forward_auth = true` instead of `api_key_env` to send the
 caller's credential to the configured upstream. OpenAI clients forward
 `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
 forward `authorization` or `x-api-key`. Enable this only when every forwarding
-client's `base_url` should receive the caller's login. A forwarding route must
-be called through the matching provider API.
+client's `base_url` should receive the caller's login. All backends reachable
+through the route must use the same provider. Other application headers are
+preserved and may contain provider-specific credentials. A forwarding route
+must be called through the matching provider API.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
 Target-level `system_prompt` values are prepended when that target serves a completion.
@@ -109,6 +111,11 @@ totals for that normalized session ID, normally supplied as `x-switchyard-sessio
 served model. The legacy `proxy_x_session_id` remains a fallback when no normalized session ID is
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
+
+Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
+`origin` field in each routing record. Missing, empty, or non-text header values produce
+`"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.
+Older records without `origin` remain readable by the session stats endpoint.
 
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
