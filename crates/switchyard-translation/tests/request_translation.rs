@@ -16,36 +16,88 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-// A target prompt makes every preserved provider body stale.
+// Verifies target preparation restamps the model, prepends native instructions, and preserves all
+// other provider fields.
 #[test]
-fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
+fn openai_target_prompt_preserves_native_request_fields() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
-    let body = json!({
-        "model": "route",
-        "messages": [
-            {"role": "system", "name": "caller", "content": "client prompt"},
-            {"role": "user", "content": "hi"}
-        ]
-    });
-    let mut request = engine
-        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
-        .request;
+    for (format, body) in [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "route",
+                "messages": [
+                    {"role": "system", "name": "caller", "content": "client prompt"},
+                    {"role": "user", "content": "hi"}
+                ],
+                "moderation": {"policy": "strict"},
+                "stop": ["<END>"],
+                "prompt_cache_options": {"retention": "24h"},
+                "logprobs": true,
+                "top_logprobs": 2,
+                "modalities": ["text", "audio"],
+                "audio": {"voice": "alloy", "format": "wav"},
+                "web_search_options": {"search_context_size": "high"},
+                "n": 2,
+                "logit_bias": {"42": -1},
+                "frequency_penalty": 0.2,
+                "presence_penalty": 0.3,
+                "seed": 7,
+                "prediction": {"type": "content", "content": "prefix"},
+                "verbosity": "low",
+                "functions": [{"name": "legacy", "parameters": {"type": "object"}}],
+                "function_call": {"name": "legacy"}
+            }),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({
+                "model": "route",
+                "instructions": "caller prompt",
+                "input": "hi",
+                "moderation": {"policy": "strict"},
+                "prompt_cache_options": {"retention": "24h"},
+                "reasoning": {
+                    "effort": "high",
+                    "context": "large",
+                    "mode": "detailed",
+                    "summary": "auto"
+                },
+                "include": ["reasoning.encrypted_content"],
+                "previous_response_id": "resp_previous",
+                "context_management": [{"type": "compaction", "compact_threshold": 1000}],
+                "tools": [
+                    {"type": "web_search_preview"},
+                    {"type": "file_search", "vector_store_ids": ["vs_1"]},
+                    {"type": "mcp", "server_label": "inventory", "server_url": "https://fixture.invalid/mcp"}
+                ]
+            }),
+        ),
+    ] {
+        let mut expected = body.clone();
+        expected["model"] = json!("selected/model");
+        match format {
+            WireFormat::OpenAiChat => expected["messages"]
+                .as_array_mut()
+                .ok_or("expected messages")?
+                .insert(0, json!({"role": "system", "content": "target prompt"})),
+            WireFormat::OpenAiResponses => {
+                expected["instructions"] = json!("target prompt\n\ncaller prompt");
+            }
+            WireFormat::AnthropicMessages => unreachable!(),
+        }
 
-    prepare_request_for_target(
-        &mut request,
-        &"selected/model".into(),
-        Some("target prompt"),
-    );
+        let mut request = engine.decode_request(format, &body, &policy)?.request;
+        prepare_request_for_target(
+            &mut request,
+            &"selected/model".into(),
+            Some("target prompt"),
+        );
+        let encoded = engine.encode_request(format, &request, &policy)?.body;
 
-    assert!(request.preservation.requests.is_empty());
-    let encoded = engine
-        .encode_request(WireFormat::OpenAiChat, &request, &policy)?
-        .body;
-    assert_eq!(encoded["model"], "selected/model");
-    assert_eq!(encoded["messages"][0]["content"], "target prompt");
-    assert_eq!(encoded["messages"][1]["content"], "client prompt");
-    assert!(encoded["messages"][1].get("name").is_none());
+        assert_eq!(encoded, expected);
+    }
     Ok(())
 }
 

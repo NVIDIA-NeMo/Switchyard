@@ -317,6 +317,12 @@ fn prepare_preserved_requests(
         body.insert("model".to_string(), Value::String(target.to_string()));
         match prompt {
             None => true,
+            Some(prompt) if format.as_str() == WireFormat::OpenAiChat.as_str() => {
+                prepend_openai_chat_system(body, prompt)
+            }
+            Some(prompt) if format.as_str() == WireFormat::OpenAiResponses.as_str() => {
+                prepend_openai_responses_instructions(body, prompt)
+            }
             Some(prompt) if format.as_str() == WireFormat::AnthropicMessages.as_str() => {
                 body.remove(crate::codecs::common::ANTHROPIC_REQUEST_KEY);
                 prepend_anthropic_system(body, prompt)
@@ -324,6 +330,39 @@ fn prepare_preserved_requests(
             Some(_) => false,
         }
     });
+}
+
+// Prepends a target prompt without rebuilding or otherwise changing a Chat request.
+fn prepend_openai_chat_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    let message = json!({"role": "system", "content": prompt});
+    match body.get_mut("messages") {
+        None | Some(Value::Null) => {
+            body.insert("messages".to_string(), Value::Array(vec![message]));
+        }
+        Some(Value::Array(messages)) => messages.insert(0, message),
+        Some(_) => return false,
+    }
+    true
+}
+
+// Prepends a target prompt without rebuilding or otherwise changing a Responses request.
+fn prepend_openai_responses_instructions(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    match body.get_mut("instructions") {
+        None | Some(Value::Null) => {
+            body.insert(
+                "instructions".to_string(),
+                Value::String(prompt.to_string()),
+            );
+        }
+        Some(Value::String(instructions)) if instructions.is_empty() => {
+            *instructions = prompt.to_string();
+        }
+        Some(Value::String(instructions)) => {
+            instructions.insert_str(0, &format!("{prompt}\n\n"));
+        }
+        Some(_) => return false,
+    }
+    true
 }
 
 // Prepends a target prompt without rebuilding or otherwise changing an Anthropic request.
