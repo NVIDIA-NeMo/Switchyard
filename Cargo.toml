@@ -18,7 +18,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 authors = ["NVIDIA Corporation"]
 edition = "2024"
 license = "Apache-2.0"
@@ -37,18 +37,18 @@ jsonschema = { version = "0.49.4", default-features = false }
 jsonptr = { version = "0.8.1", default-features = false, features = ["std", "json", "resolve"] }
 nemo-relay-plugin = ">=0.8.0, <1.0.0"
 parking_lot = "0.12"
-prefill-router = { path = "crates/prefill-router", version = "0.2.0" }
+prefill-router = { path = "crates/prefill-router", version = "0.3.0" }
 rand = "0.10"
 regex = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-switchyard-libsy = { path = "crates/libsy", version = "0.2.0" }
-switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.2.0" }
-switchyard-protocol = { path = "crates/protocol", version = "0.2.0" }
-switchyard-runner = { path = "crates/switchyard-runner", version = "0.2.0" }
-switchyard-server = { path = "crates/switchyard-server", version = "0.2.0" }
-switchyard-translation = { path = "crates/switchyard-translation", version = "0.2.0" }
+switchyard-libsy = { path = "crates/libsy", version = "0.3.0" }
+switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.3.0" }
+switchyard-protocol = { path = "crates/protocol", version = "0.3.0" }
+switchyard-runner = { path = "crates/switchyard-runner", version = "0.3.0" }
+switchyard-server = { path = "crates/switchyard-server", version = "0.3.0" }
+switchyard-translation = { path = "crates/switchyard-translation", version = "0.3.0" }
 strum_macros = "0.28"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

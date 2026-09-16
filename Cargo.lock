@@ -1539,7 +1539,7 @@ dependencies = [
 
 [[package]]
 name = "prefill-router"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "pyo3",
@@ -2321,7 +2321,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "switchyard-libsy"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2347,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-llm-client"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2372,7 +2372,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-nemo-relay-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures-util",
  "http",
@@ -2391,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-protocol"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-py"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "futures",
  "http",
@@ -2420,7 +2420,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-runner"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-server"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-skill-distillation"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-soak"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "clap",
@@ -2504,7 +2504,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-translation"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "base64",

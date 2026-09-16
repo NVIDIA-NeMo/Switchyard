@@ -17,7 +17,7 @@ publish = ["crates-io"]
 prefill-router = ["dep:prefill-router"]
 
 [dependencies]
-libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.2.0" }
+libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.3.0" }
 prefill-router = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true
