@@ -22,7 +22,7 @@ pub struct LlmCallObservation {
     pub usage: Option<Usage>,
 }
 
-/// A request-scoped observation emitted inline while serving an algorithm run.
+/// Events emitted inline while [`crate::run`] serves a routing request.
 #[derive(Clone, Debug)]
 pub enum RunObservation {
     /// Metadata attached to the completed routing outcome.

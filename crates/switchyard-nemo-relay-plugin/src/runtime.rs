@@ -391,7 +391,7 @@ impl SwitchyardRuntime {
     }
 }
 
-/// Keeps supported telemetry fields while rejecting wrong types and overlong string values.
+/// Projects documented, bounded evidence into Relay mark data.
 fn evidence_for_mark(evidence: Option<Json>) -> Option<Json> {
     let Some(Json::Object(mut evidence)) = evidence else {
         return None;
@@ -979,6 +979,7 @@ mod tests {
         }
     }
 
+    // Routing succeeds before answer candidates exhaust, so the error keeps its metadata.
     #[tokio::test]
     async fn failed_answer_keeps_routing_outcome_in_error_mark() {
         let server = MockServer::start().await;
@@ -1190,6 +1191,7 @@ mod tests {
         assert!(!mark.data.to_string().contains(secret));
     }
 
+    // Custom algorithms can supply evidence, so the Relay boundary filters it.
     #[test]
     fn decision_evidence_keeps_only_documented_bounded_fields() {
         let evidence = evidence_for_mark(Some(json!({
