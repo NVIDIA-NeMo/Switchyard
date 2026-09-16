@@ -21,7 +21,7 @@ use http::StatusCode;
 use parking_lot::Mutex;
 use switchyard_libsy::{Algorithm, CallModel, LibsyError, Result, drive};
 use switchyard_protocol::{
-    LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
+    CallRole, LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
 };
 
 use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
@@ -46,6 +46,7 @@ pub async fn run(
     observer: Option<RunObserver>,
 ) -> Result<(ModelId, Response)> {
     let algorithm_name = algorithm.name().to_string();
+    let inbound = InboundContext::from_request(&request);
     let run_started = Instant::now();
     let routing_clients = clients.clone();
     // This says if we have an observer, put Some(..) in routing_observations.
@@ -53,7 +54,15 @@ pub async fn run(
     let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
     let outcome = drive(algorithm, request, {
         let routing_observations = routing_observations.clone();
-        move |call| serve(routing_clients.clone(), call, routing_observations.clone())
+        let inbound = inbound.clone();
+        move |call| {
+            serve(
+                routing_clients.clone(),
+                call,
+                routing_observations.clone(),
+                inbound.clone(),
+            )
+        }
     })
     .await;
     let answered_model = outcome
@@ -84,6 +93,8 @@ pub async fn run(
             &algorithm_name,
             &outcome.request,
             &models,
+            CallKind::Answer,
+            &inbound,
             &observe,
         )
         .await;
@@ -133,6 +144,7 @@ async fn serve(
     clients: ClientRouter,
     call: CallModel,
     observations: Option<Arc<Mutex<Vec<LlmCallObservation>>>>,
+    inbound: InboundContext,
 ) -> Result<()> {
     let observe = |observation| {
         if let Some(observations) = &observations {
@@ -144,10 +156,48 @@ async fn serve(
         &call.algorithm,
         &call.request,
         &call.models,
+        CallKind::RoutingDependency,
+        &inbound,
         &observe,
     )
     .await;
     call.respond(result)
+}
+
+/// Inbound route and session captured before candidates are stamped onto the request.
+#[derive(Clone)]
+struct InboundContext {
+    route_id: Option<ModelId>,
+    session_id: Option<String>,
+}
+
+impl InboundContext {
+    fn from_request(request: &Request) -> Self {
+        Self {
+            route_id: request.model_id(),
+            session_id: request
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.session_id.clone())
+                .filter(|session| !session.is_empty()),
+        }
+    }
+}
+
+/// Whether this candidate loop is a routing-time offload or the terminal answer.
+#[derive(Clone, Copy)]
+enum CallKind {
+    RoutingDependency,
+    Answer,
+}
+
+/// Routing offloads are always `routing_dependency`; answer index 0 is primary, later are fallback.
+fn call_role(kind: CallKind, index: usize) -> CallRole {
+    match kind {
+        CallKind::RoutingDependency => CallRole::RoutingDependency,
+        CallKind::Answer if index == 0 => CallRole::AnswerPrimary,
+        CallKind::Answer => CallRole::AnswerFallback,
+    }
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.
@@ -156,6 +206,8 @@ async fn call_first_available(
     algorithm: &str,
     request: &Request,
     models: &[ModelId],
+    kind: CallKind,
+    inbound: &InboundContext,
     observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
@@ -165,6 +217,9 @@ async fn call_first_available(
             target,
             request,
             algorithm,
+            inbound.route_id.as_deref(),
+            inbound.session_id.as_deref(),
+            call_role(kind, index),
             observe,
             index,
             models.len(),
@@ -227,6 +282,16 @@ async fn call_first_available(
         otel.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
         error = tracing::field::Empty,
+        // Shared route-selection vocabulary. Names must match GenericKeys / LangfuseKeys.
+        switchyard.route.id = tracing::field::Empty,
+        switchyard.routing.algorithm = tracing::field::Empty,
+        switchyard.call.role = tracing::field::Empty,
+        switchyard.call.target = tracing::field::Empty,
+        langfuse.session.id = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.route_id = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.algorithm = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.call_role = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.call_target = tracing::field::Empty,
     )
 )]
 async fn call_one(
@@ -234,6 +299,9 @@ async fn call_one(
     model_id: &ModelId,
     request: Request,
     algorithm: &str,
+    route_id: Option<&str>,
+    session_id: Option<&str>,
+    call_role: CallRole,
     observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
     // index is for span log
     index: usize,
@@ -241,6 +309,14 @@ async fn call_one(
     count: usize,
 ) -> Result<Response> {
     let span = tracing::Span::current();
+    observability::record_client_call_context(
+        &span,
+        algorithm,
+        route_id,
+        session_id,
+        call_role,
+        model_id.as_str(),
+    );
     observability::record_gen_ai_request(&span, &request.llm_request);
     if let Some(session_id) = request
         .metadata

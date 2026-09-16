@@ -12,7 +12,9 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use switchyard_protocol::{LlmRequest, LlmResponse, Response};
+use switchyard_protocol::{
+    GenericKeys, LangfuseKeys, LlmRequest, LlmResponse, Response, ResponseOrigin,
+};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
@@ -60,6 +62,18 @@ pub(crate) fn request_span(headers: &HeaderMap) -> tracing::Span {
         // input/output, which map from these attributes.
         gen_ai.prompt = tracing::field::Empty,
         gen_ai.completion = tracing::field::Empty,
+        // Shared route-selection vocabulary. Names must match GenericKeys / LangfuseKeys.
+        switchyard.route.id = tracing::field::Empty,
+        switchyard.routing.algorithm = tracing::field::Empty,
+        switchyard.routing.selected_target = tracing::field::Empty,
+        switchyard.response.served_target = tracing::field::Empty,
+        switchyard.response.origin = tracing::field::Empty,
+        langfuse.session.id = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.route_id = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.algorithm = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.selected_target = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.served_target = tracing::field::Empty,
+        langfuse.observation.metadata.switchyard.response_origin = tracing::field::Empty,
     );
     let _ = span.set_parent(parent);
     span
@@ -76,6 +90,87 @@ pub(crate) fn record_root_input(span: &tracing::Span, request: &LlmRequest) {
     if let Ok(json) = serde_json::to_string(&request.messages) {
         span.record("gen_ai.prompt", json);
     }
+}
+
+/// Records inbound route, algorithm, and non-empty session on the root span.
+///
+/// Empty sessions stay off `langfuse.session.id`. Call this after the route
+/// resolves and before execute, so failures still identify the route without a
+/// fabricated terminal outcome.
+pub(crate) fn record_root_route_context(
+    span: &tracing::Span,
+    route_id: Option<&str>,
+    algorithm: &str,
+    session_id: Option<&str>,
+) {
+    record_pair(
+        span,
+        GenericKeys::ALGORITHM,
+        LangfuseKeys::ALGORITHM,
+        algorithm,
+    );
+    if let Some(route_id) = route_id {
+        record_pair(
+            span,
+            GenericKeys::ROUTE_ID,
+            LangfuseKeys::ROUTE_ID,
+            route_id,
+        );
+    }
+    if let Some(session_id) = session_id.filter(|session| !session.is_empty()) {
+        span.record(LangfuseKeys::SESSION_ID, session_id);
+    }
+}
+
+/// Records the successful terminal selection on the root span.
+///
+/// `served_target` is the target that actually served the answer. `None` means
+/// Switchyard generated the response, so origin is `routing_generated` and
+/// served target is left unset.
+pub(crate) fn record_root_outcome(
+    span: &tracing::Span,
+    selected_target: &str,
+    served_target: Option<&str>,
+) {
+    record_pair(
+        span,
+        GenericKeys::SELECTED_TARGET,
+        LangfuseKeys::SELECTED_TARGET,
+        selected_target,
+    );
+    match served_target {
+        Some(served_target) => {
+            record_pair(
+                span,
+                GenericKeys::SERVED_TARGET,
+                LangfuseKeys::SERVED_TARGET,
+                served_target,
+            );
+            record_pair(
+                span,
+                GenericKeys::RESPONSE_ORIGIN,
+                LangfuseKeys::RESPONSE_ORIGIN,
+                ResponseOrigin::Target.as_str(),
+            );
+        }
+        None => record_pair(
+            span,
+            GenericKeys::RESPONSE_ORIGIN,
+            LangfuseKeys::RESPONSE_ORIGIN,
+            ResponseOrigin::RoutingGenerated.as_str(),
+        ),
+    }
+}
+
+/// Writes the same value to a generic key and its Langfuse observation metadata key.
+fn record_pair(
+    span: &tracing::Span,
+    generic_key: &'static str,
+    langfuse_key: &'static str,
+    value: &str,
+) {
+    span.record(generic_key, value);
+    span.record(langfuse_key, value);
 }
 
 /// Records a response's output on the root span so Langfuse populates trace-level output.
@@ -201,7 +296,7 @@ mod tests {
     use opentelemetry::trace::{TraceContextExt, TracerProvider as _};
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt as _};
 
     use super::request_span;
 
@@ -236,19 +331,20 @@ mod tests {
 
     #[test]
     fn record_root_input_and_output_populates_gen_ai_prompt_and_completion() {
+        use super::{record_root_input, record_root_output};
         use opentelemetry_sdk::trace::InMemorySpanExporter;
         use switchyard_protocol::{
-            AggLlmResponse, ContentBlock, LlmRequest, LlmResponse, Message, Response, ResponseOutput, Role,
+            AggLlmResponse, ContentBlock, LlmRequest, LlmResponse, Message, Response,
+            ResponseOutput, Role,
         };
-        use super::{record_root_input, record_root_output};
 
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
             .build();
         let tracer = provider.tracer("record-root-test");
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
 
         tracing::subscriber::with_default(subscriber, || {
             let span = request_span(&HeaderMap::new());
@@ -274,9 +370,7 @@ mod tests {
             record_root_output(&span, &response);
         });
 
-        let spans = exporter
-            .get_finished_spans()
-            .expect("failed to get spans");
+        let spans = exporter.get_finished_spans().expect("failed to get spans");
         let root_span = spans
             .iter()
             .find(|s| s.name == "switchyard.request")
@@ -299,17 +393,17 @@ mod tests {
 
     #[test]
     fn record_root_input_skips_empty_messages() {
+        use super::record_root_input;
         use opentelemetry_sdk::trace::InMemorySpanExporter;
         use switchyard_protocol::LlmRequest;
-        use super::record_root_input;
 
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
             .build();
         let tracer = provider.tracer("record-root-input-test");
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
 
         tracing::subscriber::with_default(subscriber, || {
             let span = request_span(&HeaderMap::new());
@@ -317,9 +411,7 @@ mod tests {
             record_root_input(&span, &request);
         });
 
-        let spans = exporter
-            .get_finished_spans()
-            .expect("failed to get spans");
+        let spans = exporter.get_finished_spans().expect("failed to get spans");
         let root_span = spans
             .iter()
             .find(|s| s.name == "switchyard.request")
@@ -335,19 +427,17 @@ mod tests {
 
     #[test]
     fn record_root_output_skips_completion_for_agg_with_empty_outputs() {
-        use opentelemetry_sdk::trace::InMemorySpanExporter;
-        use switchyard_protocol::{
-            AggLlmResponse, LlmResponse, Response,
-        };
         use super::record_root_output;
+        use opentelemetry_sdk::trace::InMemorySpanExporter;
+        use switchyard_protocol::{AggLlmResponse, LlmResponse, Response};
 
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_simple_exporter(exporter.clone())
             .build();
         let tracer = provider.tracer("record-root-output-test");
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
 
         tracing::subscriber::with_default(subscriber, || {
             let span = request_span(&HeaderMap::new());
@@ -362,9 +452,7 @@ mod tests {
             record_root_output(&span, &response);
         });
 
-        let spans = exporter
-            .get_finished_spans()
-            .expect("failed to get spans");
+        let spans = exporter.get_finished_spans().expect("failed to get spans");
         let root_span = spans
             .iter()
             .find(|s| s.name == "switchyard.request")
@@ -376,5 +464,219 @@ mod tests {
                 .any(|a| a.key.as_str() == "gen_ai.completion"),
             "gen_ai.completion should not be recorded for Agg response with empty outputs"
         );
+    }
+
+    use std::collections::BTreeMap;
+    use std::fmt;
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use tracing::Subscriber;
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::registry::LookupSpan;
+
+    use super::{record_root_outcome, record_root_route_context};
+    use switchyard_protocol::{GenericKeys, LangfuseKeys, ResponseOrigin};
+
+    #[derive(Clone, Default)]
+    struct SpanRecord {
+        name: String,
+        fields: BTreeMap<String, String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CaptureStore {
+        spans: Arc<Mutex<BTreeMap<u64, SpanRecord>>>,
+    }
+
+    impl CaptureStore {
+        fn root(&self) -> SpanRecord {
+            self.spans
+                .lock()
+                .values()
+                .find(|span| span.name == "switchyard.request")
+                .cloned()
+                .expect("missing switchyard.request span")
+        }
+    }
+
+    struct FieldVisitor<'a>(&'a mut BTreeMap<String, String>);
+
+    impl Visit for FieldVisitor<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    struct CaptureLayer {
+        store: CaptureStore,
+    }
+
+    impl<S> Layer<S> for CaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, _ctx: LayerContext<'_, S>) {
+            let mut fields = BTreeMap::new();
+            attrs.record(&mut FieldVisitor(&mut fields));
+            self.store.spans.lock().insert(
+                id.into_u64(),
+                SpanRecord {
+                    name: attrs.metadata().name().to_string(),
+                    fields,
+                },
+            );
+        }
+
+        fn on_record(&self, id: &Id, values: &Record<'_>, _ctx: LayerContext<'_, S>) {
+            if let Some(record) = self.store.spans.lock().get_mut(&id.into_u64()) {
+                values.record(&mut FieldVisitor(&mut record.fields));
+            }
+        }
+    }
+
+    fn capture_root(record: impl FnOnce(&tracing::Span)) -> SpanRecord {
+        let store = CaptureStore::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer {
+            store: store.clone(),
+        });
+        tracing::subscriber::with_default(subscriber, || {
+            let span = request_span(&HeaderMap::new());
+            record(&span);
+        });
+        store.root()
+    }
+
+    fn assert_pair(span: &SpanRecord, generic: &str, langfuse: &str, value: &str) {
+        assert_eq!(
+            span.fields.get(generic).map(String::as_str),
+            Some(value),
+            "{generic}"
+        );
+        assert_eq!(
+            span.fields.get(langfuse).map(String::as_str),
+            Some(value),
+            "{langfuse}"
+        );
+    }
+
+    fn assert_absent(span: &SpanRecord, key: &str) {
+        assert_eq!(span.fields.get(key), None, "{key} should be absent");
+    }
+
+    fn assert_route_context(span: &SpanRecord, route: &str, algorithm: &str, session: &str) {
+        assert_pair(span, GenericKeys::ROUTE_ID, LangfuseKeys::ROUTE_ID, route);
+        assert_pair(
+            span,
+            GenericKeys::ALGORITHM,
+            LangfuseKeys::ALGORITHM,
+            algorithm,
+        );
+        assert_eq!(
+            span.fields
+                .get(LangfuseKeys::SESSION_ID)
+                .map(String::as_str),
+            Some(session)
+        );
+    }
+
+    #[test]
+    fn successful_request_summarizes_matching_selected_and_served_target() {
+        let span = capture_root(|span| {
+            record_root_route_context(span, Some("auto"), "random", Some("session-1"));
+            record_root_outcome(span, "primary", Some("primary"));
+        });
+        assert_route_context(&span, "auto", "random", "session-1");
+        assert_pair(
+            &span,
+            GenericKeys::SELECTED_TARGET,
+            LangfuseKeys::SELECTED_TARGET,
+            "primary",
+        );
+        assert_pair(
+            &span,
+            GenericKeys::SERVED_TARGET,
+            LangfuseKeys::SERVED_TARGET,
+            "primary",
+        );
+        assert_pair(
+            &span,
+            GenericKeys::RESPONSE_ORIGIN,
+            LangfuseKeys::RESPONSE_ORIGIN,
+            ResponseOrigin::Target.as_str(),
+        );
+        assert_absent(&span, GenericKeys::CALL_ROLE);
+        assert_absent(&span, GenericKeys::CALL_TARGET);
+    }
+
+    #[test]
+    fn fallback_success_keeps_selected_target_distinct_from_served() {
+        let span = capture_root(|span| {
+            record_root_route_context(span, Some("auto"), "llm_task_classifier", Some("session-2"));
+            record_root_outcome(span, "weak", Some("strong"));
+        });
+        assert_route_context(&span, "auto", "llm_task_classifier", "session-2");
+        assert_pair(
+            &span,
+            GenericKeys::SELECTED_TARGET,
+            LangfuseKeys::SELECTED_TARGET,
+            "weak",
+        );
+        assert_pair(
+            &span,
+            GenericKeys::SERVED_TARGET,
+            LangfuseKeys::SERVED_TARGET,
+            "strong",
+        );
+        assert_pair(
+            &span,
+            GenericKeys::RESPONSE_ORIGIN,
+            LangfuseKeys::RESPONSE_ORIGIN,
+            ResponseOrigin::Target.as_str(),
+        );
+    }
+
+    #[test]
+    fn routing_generated_response_does_not_claim_a_target_served_it() {
+        let span = capture_root(|span| {
+            record_root_route_context(span, Some("auto"), "noop", Some("session-3"));
+            record_root_outcome(span, "auto", None);
+        });
+        assert_route_context(&span, "auto", "noop", "session-3");
+        assert_pair(
+            &span,
+            GenericKeys::SELECTED_TARGET,
+            LangfuseKeys::SELECTED_TARGET,
+            "auto",
+        );
+        assert_pair(
+            &span,
+            GenericKeys::RESPONSE_ORIGIN,
+            LangfuseKeys::RESPONSE_ORIGIN,
+            ResponseOrigin::RoutingGenerated.as_str(),
+        );
+        assert_absent(&span, GenericKeys::SERVED_TARGET);
+        assert_absent(&span, LangfuseKeys::SERVED_TARGET);
+    }
+
+    #[test]
+    fn execute_failure_does_not_fabricate_a_terminal_outcome() {
+        let span = capture_root(|span| {
+            record_root_route_context(span, Some("auto"), "random", Some("session-4"));
+        });
+        assert_route_context(&span, "auto", "random", "session-4");
+        assert_absent(&span, GenericKeys::SELECTED_TARGET);
+        assert_absent(&span, LangfuseKeys::SELECTED_TARGET);
+        assert_absent(&span, GenericKeys::SERVED_TARGET);
+        assert_absent(&span, LangfuseKeys::SERVED_TARGET);
+        assert_absent(&span, GenericKeys::RESPONSE_ORIGIN);
+        assert_absent(&span, LangfuseKeys::RESPONSE_ORIGIN);
     }
 }

@@ -38,11 +38,14 @@ use switchyard_libsy::{
     LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, StageRouter,
     StageRouterConfig, Step, TaskClassifierConfig,
 };
-use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
+use switchyard_llm_client::{
+    Backend, ClientRouter, HttpBackendConfig, ModelConfig, RunObservation, RunObserver,
+    TranslatingLlmClient,
+};
 use switchyard_protocol::ModelId;
 use switchyard_protocol::{
-    ContentBlock, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
-    RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
+    CallRole, ContentBlock, GenericKeys, LangfuseKeys, LlmRequest, LlmResponse, Message, Metadata,
+    Request, Response, Role, RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
@@ -508,6 +511,58 @@ impl Algorithm for RoutingCallAlgo {
     }
 }
 
+/// Calls a judge during routing, then publishes a selected target plus a fallback.
+struct JudgeThenFallback {
+    name: String,
+    judge: ModelId,
+    selected: ModelId,
+    fallback: ModelId,
+}
+
+#[async_trait]
+impl Algorithm for JudgeThenFallback {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn route(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+    ) -> switchyard_libsy::Result<RoutingOutcome> {
+        let _ = driver
+            .call_model(request.clone(), vec![self.judge.clone()])
+            .await?;
+        Ok(RoutingOutcome::route_to(
+            self.selected.clone(),
+            vec![self.fallback.clone()],
+            request,
+        ))
+    }
+}
+
+/// Serves every target except `fail`, which overflows so candidate fallback can proceed.
+struct FallbackClient {
+    fail: ModelId,
+}
+
+#[async_trait]
+impl RoutedLlmClient for FallbackClient {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        let model = request.model_id().unwrap_or_default();
+        if model == self.fail {
+            return Err(LlmClientError::ContextWindowExceeded {
+                model,
+                message: "too long".to_string(),
+            });
+        }
+        Ok(Response {
+            llm_response: LlmResponse::Agg(text_response(Some(model.to_string()), "answer")),
+            metadata: None,
+        })
+    }
+}
+
 fn request_with_metadata(session_id: &str, correlation_id: &str) -> Request {
     Request {
         llm_request: text_request(Some("auto".to_string()), "hi"),
@@ -577,6 +632,55 @@ fn find_span(spans: &[SpanRecord], name: &str, field: &str, value: &str) -> Span
         Some(span) => span.clone(),
         None => panic!("no '{name}' span with {field}={value} in {spans:?}"),
     }
+}
+
+fn assert_pair(span: &SpanRecord, generic: &str, langfuse: &str, value: &str) {
+    assert_eq!(
+        span.fields.get(generic).map(String::as_str),
+        Some(value),
+        "{generic}"
+    );
+    assert_eq!(
+        span.fields.get(langfuse).map(String::as_str),
+        Some(value),
+        "{langfuse}"
+    );
+}
+
+fn assert_client_call_context(
+    span: &SpanRecord,
+    route: &str,
+    algorithm: &str,
+    session: Option<&str>,
+    role: &str,
+    target: &str,
+) {
+    assert_eq!(span.parent.as_deref(), None);
+    assert_pair(span, GenericKeys::ROUTE_ID, LangfuseKeys::ROUTE_ID, route);
+    assert_pair(
+        span,
+        GenericKeys::ALGORITHM,
+        LangfuseKeys::ALGORITHM,
+        algorithm,
+    );
+    match session {
+        Some(session) => assert_eq!(
+            span.fields
+                .get(LangfuseKeys::SESSION_ID)
+                .map(String::as_str),
+            Some(session)
+        ),
+        None => assert_eq!(span.fields.get(LangfuseKeys::SESSION_ID), None),
+    }
+    assert_pair(span, GenericKeys::CALL_ROLE, LangfuseKeys::CALL_ROLE, role);
+    assert_pair(
+        span,
+        GenericKeys::CALL_TARGET,
+        LangfuseKeys::CALL_TARGET,
+        target,
+    );
+    assert_eq!(span.fields.get(GenericKeys::SERVED_TARGET), None);
+    assert_eq!(span.fields.get(GenericKeys::RESPONSE_ORIGIN), None);
 }
 
 fn find_otel_span(exporter: &InMemorySpanExporter, name: &str, model: &str) -> SpanData {
@@ -1124,6 +1228,14 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
             "unexpected {field}"
         );
     }
+    assert_client_call_context(
+        &client_span,
+        "auto",
+        ALGO,
+        Some("obs-stream-session"),
+        CallRole::AnswerPrimary.as_str(),
+        MODEL,
+    );
     let otel_span = find_otel_span(span_exporter, "chat obs-stream-model", MODEL);
     assert!(matches!(
         otel_attribute(&otel_span, "gen_ai.response.finish_reasons"),
@@ -1469,6 +1581,239 @@ async fn fallback_decision_logs_the_routing_tier() -> switchyard_libsy::Result<(
                     .is_some_and(|tier| tier.contains("strong"))
         }),
         "fallback selection logged without its routing tier: {events:?}"
+    );
+    Ok(())
+}
+
+/// Primary answer success: the client call keeps the inbound route and records
+/// this attempt as answer_primary against the selected target.
+#[tokio::test]
+async fn client_call_records_answer_primary_vocabulary() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "t3-primary-algo";
+    const MODEL: &str = "t3-primary-model";
+    let client = Arc::new(UsageClient {
+        usage: Usage::default(),
+    }) as Arc<dyn RoutedLlmClient>;
+    let (selected, response) = run(
+        algo(ALGO, MODEL),
+        client,
+        request_with_metadata("t3-primary-session", "t3-primary-corr"),
+    )
+    .await?;
+    assert_eq!(selected, MODEL);
+    assert_eq!(response.served_model().map(ModelId::as_str), Some(MODEL));
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("outcome").map(String::as_str),
+        Some("ok")
+    );
+    assert_client_call_context(
+        &client_span,
+        "auto",
+        ALGO,
+        Some("t3-primary-session"),
+        CallRole::AnswerPrimary.as_str(),
+        MODEL,
+    );
+    Ok(())
+}
+
+/// Routing-time judge calls are routing_dependency; a failed primary and a
+/// successful fallback keep distinct roles and call targets.
+#[tokio::test]
+async fn client_call_distinguishes_routing_dependency_from_answer_fallback()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "t3-fallback-algo";
+    const JUDGE: &str = "t3-fallback-judge";
+    const SELECTED: &str = "t3-fallback-selected";
+    const FALLBACK: &str = "t3-fallback-served";
+    let client = Arc::new(FallbackClient {
+        fail: SELECTED.into(),
+    }) as Arc<dyn RoutedLlmClient>;
+    let algorithm = Arc::new(JudgeThenFallback {
+        name: ALGO.to_string(),
+        judge: JUDGE.into(),
+        selected: SELECTED.into(),
+        fallback: FALLBACK.into(),
+    }) as Arc<dyn Algorithm>;
+    let (selected, response) = run(
+        algorithm,
+        client,
+        request_with_metadata("t3-fallback-session", "t3-fallback-corr"),
+    )
+    .await?;
+    assert_eq!(selected.as_str(), SELECTED);
+    assert_eq!(response.served_model().map(ModelId::as_str), Some(FALLBACK));
+
+    let spans = store.spans();
+    let judge = find_span(&spans, "libsy.client_call", "selected_model", JUDGE);
+    assert_client_call_context(
+        &judge,
+        "auto",
+        ALGO,
+        Some("t3-fallback-session"),
+        CallRole::RoutingDependency.as_str(),
+        JUDGE,
+    );
+    assert_eq!(judge.fields.get("outcome").map(String::as_str), Some("ok"));
+
+    let primary = find_span(&spans, "libsy.client_call", "selected_model", SELECTED);
+    assert_client_call_context(
+        &primary,
+        "auto",
+        ALGO,
+        Some("t3-fallback-session"),
+        CallRole::AnswerPrimary.as_str(),
+        SELECTED,
+    );
+    assert_eq!(
+        primary.fields.get("outcome").map(String::as_str),
+        Some("error")
+    );
+
+    let fallback = find_span(&spans, "libsy.client_call", "selected_model", FALLBACK);
+    assert_client_call_context(
+        &fallback,
+        "auto",
+        ALGO,
+        Some("t3-fallback-session"),
+        CallRole::AnswerFallback.as_str(),
+        FALLBACK,
+    );
+    assert_eq!(
+        fallback.fields.get("outcome").map(String::as_str),
+        Some("ok")
+    );
+    Ok(())
+}
+
+/// A failed attempt still names the target that was tried and does not invent
+/// a served target or response origin.
+#[tokio::test]
+async fn failed_client_call_identifies_attempt_without_terminal_outcome() {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "t3-failure-algo";
+    const MODEL: &str = "t3-failure-model";
+    let result = run(
+        algo(ALGO, MODEL),
+        Arc::new(TimeoutClient),
+        request_with_metadata("t3-failure-session", "t3-failure-corr"),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(LibsyError::ClientCall {
+            source: LlmClientError::Timeout { .. },
+            ..
+        })
+    ));
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("outcome").map(String::as_str),
+        Some("error")
+    );
+    assert_eq!(
+        client_span.fields.get("error.type").map(String::as_str),
+        Some("timeout")
+    );
+    assert_client_call_context(
+        &client_span,
+        "auto",
+        ALGO,
+        Some("t3-failure-session"),
+        CallRole::AnswerPrimary.as_str(),
+        MODEL,
+    );
+}
+
+/// Backend retries stay inside one client_call; the attempt target does not change.
+#[tokio::test]
+async fn client_call_keeps_attempt_target_through_retries() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "t3-retry-algo";
+    const MODEL: &str = "t3-retry-model";
+    let server = wiremock::MockServer::start().await;
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed_calls = Arc::clone(&calls);
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .respond_with(move |_request: &wiremock::Request| {
+            let mut calls = observed_calls.lock();
+            calls.push(MODEL.to_string());
+            if calls.len() < 3 {
+                wiremock::ResponseTemplate::new(503)
+                    .insert_header("retry-after", "0")
+                    .set_body_string("unavailable")
+            } else {
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "answer",
+                    "model": MODEL,
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {}
+                }))
+            }
+        })
+        .mount(&server)
+        .await;
+
+    let client = Arc::new(
+        TranslatingLlmClient::new(&[ModelConfig::new(
+            MODEL,
+            Backend::OpenAiChat(HttpBackendConfig {
+                base_url: format!("{}/v1", server.uri()),
+                api_key: None,
+                forward_auth: false,
+                extra_headers: BTreeMap::new(),
+                extra_body: BTreeMap::new(),
+                max_retries: 2,
+            }),
+            None,
+        )])
+        .map_err(|error| LibsyError::external("building test client", error))?,
+    ) as Arc<dyn RoutedLlmClient>;
+    let (selected, response) = run(
+        algo(ALGO, MODEL),
+        client,
+        request_with_metadata("t3-retry-session", "t3-retry-corr"),
+    )
+    .await?;
+    assert_eq!(selected.as_str(), MODEL);
+    assert_eq!(response.served_model().map(ModelId::as_str), Some(MODEL));
+    assert_eq!(&*calls.lock(), &[MODEL, MODEL, MODEL]);
+
+    let spans = store.spans();
+    let client_spans = spans
+        .iter()
+        .filter(|span| {
+            span.name == "libsy.client_call"
+                && span.fields.get("selected_model").map(String::as_str) == Some(MODEL)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(client_spans.len(), 1);
+    assert_client_call_context(
+        client_spans[0],
+        "auto",
+        ALGO,
+        Some("t3-retry-session"),
+        CallRole::AnswerPrimary.as_str(),
+        MODEL,
+    );
+    assert_eq!(
+        client_spans[0].fields.get("outcome").map(String::as_str),
+        Some("ok")
     );
     Ok(())
 }
