@@ -112,7 +112,24 @@ impl Runner {
         outcome: &RoutingOutcome,
     ) -> Option<DecisionDescription> {
         let route = self.route(model.as_str())?;
-        let resolve = |selected: &ModelId| route.decision_target(selected);
+        let resolve = |selected: &ModelId| {
+            let mut target = route.decision_target(selected)?;
+            let mut url = reqwest::Url::parse(&target.base_url).ok()?;
+            let query: Vec<_> = url
+                .query_pairs()
+                .filter(|(name, _)| !matches!(name.as_ref(), "key" | "api_key"))
+                .map(|(name, value)| (name.into_owned(), value.into_owned()))
+                .collect();
+            if query.len() != url.query_pairs().count() {
+                url.set_query(None);
+                if !query.is_empty() {
+                    url.query_pairs_mut().extend_pairs(query);
+                }
+                // Only the returned metadata changes; inference still needs its credentials.
+                target.base_url = url.into();
+            }
+            Some(target)
+        };
         let mut model_ids = outcome.selected_model_ids.iter();
         Some(DecisionDescription {
             selected: resolve(model_ids.next()?)?,

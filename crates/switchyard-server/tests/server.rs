@@ -1375,6 +1375,70 @@ base_threshold = 0.5
     Ok(())
 }
 
+#[tokio::test]
+async fn decision_removes_api_keys_from_selected_and_fallback_urls() -> TestResult {
+    let judge_upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.judge]
+format = "openai_chat"
+base_url = "{judge_url}"
+
+[llm_clients.model]
+format = "openai_chat"
+base_url = "https://example.test/v1?key=secret&api_version=2026&api_key=other-secret"
+
+[targets.judge]
+id = "model/classifier"
+llm_client = "judge"
+
+[targets.quality]
+id = "model/strong"
+llm_client = "model"
+
+[targets.economy]
+id = "model/weak"
+llm_client = "model"
+
+[routes.classify]
+id = "switchyard/classify"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "quality"
+weak_target = "economy"
+base_threshold = 0.5
+"#,
+        judge_url = judge_upstream.base_url,
+    ))?;
+    let app = build_switchyard_router(state);
+    let response = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/classify",
+                "messages": [{"role": "user", "content": "bounded task"}]
+            }
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let response = response.json()?;
+    assert_eq!(response["fallbacks"].as_array().map(Vec::len), Some(1));
+    for target in [&response["selected"], &response["fallbacks"][0]] {
+        assert_eq!(
+            target["llm_client"]["base_url"],
+            "https://example.test/v1?api_version=2026"
+        );
+    }
+    Ok(())
+}
+
 /// Decision-only routing returns callable metadata and preserves any answer produced while routing.
 #[tokio::test]
 async fn decision_returns_callable_target_and_routing_answer() -> TestResult {
