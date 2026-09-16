@@ -70,6 +70,43 @@ fn responses_previous_response_id_survives_target_prompt() -> TestResult {
     Ok(())
 }
 
+// Target preparation must preserve Anthropic's explicit tool failure signal.
+#[test]
+fn anthropic_tool_result_error_survives_target_prompt() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "route",
+        "max_tokens": 32,
+        "messages": [
+            {"role": "assistant", "content": [{
+                "type": "tool_use",
+                "id": "toolu_error_probe",
+                "name": "opaque_probe",
+                "input": {}
+            }]},
+            {"role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_error_probe",
+                "content": "opaque-result-42",
+                "is_error": true
+            }]}
+        ]
+    });
+
+    let mut request = engine
+        .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+        .request;
+    prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
+
+    let output = engine
+        .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .body;
+
+    assert_eq!(output["messages"][1]["content"][0]["is_error"], true);
+    Ok(())
+}
+
 // Model-only preparation retains provider fields while aligning exact replay with the target.
 #[test]
 fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {

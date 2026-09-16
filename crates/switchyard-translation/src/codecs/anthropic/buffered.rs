@@ -907,11 +907,15 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Vec<Value> {
                         .collect(),
                 )
             };
-            vec![json!({
+            let mut item = json!({
                 "type": "tool_result",
                 "tool_use_id": sanitize_anthropic_tool_use_id(&result.tool_call_id),
                 "content": content,
-            })]
+            });
+            if let Some(is_error) = result.is_error {
+                item["is_error"] = Value::Bool(is_error);
+            }
+            vec![item]
         }
         ContentBlock::Image { source } => vec![match source {
             ImageSource::Url { url, .. } => match split_base64_data_uri(url) {
