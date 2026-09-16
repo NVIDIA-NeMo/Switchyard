@@ -58,6 +58,9 @@ const CLAUDE_PARENT_AGENT_ID_HEADER: &str = "x-claude-code-parent-agent-id";
 // OpenCode session header — used for session_id correlation only (not a routing signal).
 const OPENCODE_SESSION_ID_HEADER: &str = "x-session-id";
 
+// Front-door user id set by Envoy from the API-key client id; correlation only.
+const USER_ID_HEADER: &str = "x-user-id";
+
 // Generic Codex-compatible correlation headers.
 const SESSION_ID_HEADER: &str = "session-id";
 const THREAD_ID_HEADER: &str = "thread-id";
@@ -147,6 +150,7 @@ const HEADER_CONFIG: &HeaderConfig = &[
         SWITCHYARD_SESSION_FINAL_HEADER,
         &[SWITCHYARD_SESSION_FINAL_HEADER, DYNAMO_SESSION_FINAL_HEADER],
     ),
+    (USER_ID_HEADER, &[USER_ID_HEADER]),
 ];
 
 /// Correlation and routing metadata attached to a request or response.
@@ -160,6 +164,8 @@ const HEADER_CONFIG: &HeaderConfig = &[
 pub struct Metadata {
     /// Stable id for a multi-request session/conversation.
     pub session_id: Option<String>,
+    /// Id of the user the request belongs to, from the front-door `x-user-id` header.
+    pub user_id: Option<String>,
     /// Id of the agent making the request.
     pub agent_id: Option<String>,
     /// Id of the parent agent, when this request comes from a child agent.
@@ -203,6 +209,7 @@ impl Metadata {
 
         Metadata {
             session_id: sy_header(headers, SWITCHYARD_SESSION_ID_HEADER),
+            user_id: sy_header(headers, USER_ID_HEADER),
             agent_id: sy_header(headers, SWITCHYARD_AGENT_ID_HEADER),
             parent_agent_id,
             is_subagent,
@@ -645,5 +652,16 @@ mod tests {
 
         // A non-subagent request is never work, whatever its kind says.
         assert!(!Metadata::default().is_subagent_work());
+    }
+
+    #[test]
+    fn parses_user_id_header() {
+        // The front-door `x-user-id` header populates the user id, mirroring session_id.
+        let with_user = metadata(&[("x-user-id", "kcasamento")]);
+        assert_eq!(with_user.user_id.as_deref(), Some("kcasamento"));
+
+        // Without the header the user id stays absent, exactly as before this change.
+        let without_user = metadata(&[("x-switchyard-session-id", "session-1")]);
+        assert_eq!(without_user.user_id, None);
     }
 }
