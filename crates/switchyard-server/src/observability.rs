@@ -69,6 +69,7 @@ pub(crate) fn request_span(headers: &HeaderMap) -> tracing::Span {
         switchyard.response.served_target = tracing::field::Empty,
         switchyard.response.origin = tracing::field::Empty,
         langfuse.session.id = tracing::field::Empty,
+        langfuse.user.id = tracing::field::Empty,
         langfuse.observation.metadata.switchyard.route_id = tracing::field::Empty,
         langfuse.observation.metadata.switchyard.algorithm = tracing::field::Empty,
         langfuse.observation.metadata.switchyard.selected_target = tracing::field::Empty,
@@ -92,16 +93,17 @@ pub(crate) fn record_root_input(span: &tracing::Span, request: &LlmRequest) {
     }
 }
 
-/// Records inbound route, algorithm, and non-empty session on the root span.
+/// Records inbound route, algorithm, non-empty session, and non-empty user id on the root span.
 ///
-/// Empty sessions stay off `langfuse.session.id`. Call this after the route
-/// resolves and before execute, so failures still identify the route without a
-/// fabricated terminal outcome.
+/// Empty sessions stay off `langfuse.session.id` and empty user ids off
+/// `langfuse.user.id`. Call this after the route resolves and before execute, so
+/// failures still identify the route without a fabricated terminal outcome.
 pub(crate) fn record_root_route_context(
     span: &tracing::Span,
     route_id: Option<&str>,
     algorithm: &str,
     session_id: Option<&str>,
+    user_id: Option<&str>,
 ) {
     record_pair(
         span,
@@ -119,6 +121,9 @@ pub(crate) fn record_root_route_context(
     }
     if let Some(session_id) = session_id.filter(|session| !session.is_empty()) {
         span.record(LangfuseKeys::SESSION_ID, session_id);
+    }
+    if let Some(user_id) = user_id.filter(|user| !user.is_empty()) {
+        span.record(LangfuseKeys::USER_ID, user_id);
     }
 }
 
@@ -590,7 +595,7 @@ mod tests {
     #[test]
     fn successful_request_summarizes_matching_selected_and_served_target() {
         let span = capture_root(|span| {
-            record_root_route_context(span, Some("auto"), "random", Some("session-1"));
+            record_root_route_context(span, Some("auto"), "random", Some("session-1"), Some("user-1"));
             record_root_outcome(span, "primary", Some("primary"));
         });
         assert_route_context(&span, "auto", "random", "session-1");
@@ -619,7 +624,7 @@ mod tests {
     #[test]
     fn fallback_success_keeps_selected_target_distinct_from_served() {
         let span = capture_root(|span| {
-            record_root_route_context(span, Some("auto"), "llm_task_classifier", Some("session-2"));
+            record_root_route_context(span, Some("auto"), "llm_task_classifier", Some("session-2"), Some("user-2"));
             record_root_outcome(span, "weak", Some("strong"));
         });
         assert_route_context(&span, "auto", "llm_task_classifier", "session-2");
@@ -646,7 +651,7 @@ mod tests {
     #[test]
     fn routing_generated_response_does_not_claim_a_target_served_it() {
         let span = capture_root(|span| {
-            record_root_route_context(span, Some("auto"), "noop", Some("session-3"));
+            record_root_route_context(span, Some("auto"), "noop", Some("session-3"), Some("user-3"));
             record_root_outcome(span, "auto", None);
         });
         assert_route_context(&span, "auto", "noop", "session-3");
@@ -669,7 +674,7 @@ mod tests {
     #[test]
     fn execute_failure_does_not_fabricate_a_terminal_outcome() {
         let span = capture_root(|span| {
-            record_root_route_context(span, Some("auto"), "random", Some("session-4"));
+            record_root_route_context(span, Some("auto"), "random", Some("session-4"), Some("user-4"));
         });
         assert_route_context(&span, "auto", "random", "session-4");
         assert_absent(&span, GenericKeys::SELECTED_TARGET);
@@ -678,5 +683,24 @@ mod tests {
         assert_absent(&span, LangfuseKeys::SERVED_TARGET);
         assert_absent(&span, GenericKeys::RESPONSE_ORIGIN);
         assert_absent(&span, LangfuseKeys::RESPONSE_ORIGIN);
+    }
+
+    #[test]
+    fn present_user_id_records_langfuse_user_id_on_root_span() {
+        let span = capture_root(|span| {
+            record_root_route_context(span, Some("auto"), "random", Some("session-1"), Some("kcasamento"));
+        });
+        assert_eq!(
+            span.fields.get(LangfuseKeys::USER_ID).map(String::as_str),
+            Some("kcasamento")
+        );
+    }
+
+    #[test]
+    fn absent_user_id_records_no_langfuse_user_id_on_root_span() {
+        let span = capture_root(|span| {
+            record_root_route_context(span, Some("auto"), "random", Some("session-1"), None);
+        });
+        assert_absent(&span, LangfuseKeys::USER_ID);
     }
 }

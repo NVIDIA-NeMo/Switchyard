@@ -46,6 +46,8 @@ pub struct LangfuseKeys;
 impl LangfuseKeys {
     /// Session identifier that groups an observation.
     pub const SESSION_ID: &str = "langfuse.session.id";
+    /// User identifier attributed to an observation.
+    pub const USER_ID: &str = "langfuse.user.id";
     /// Observation metadata key for the route id.
     pub const ROUTE_ID: &str = "langfuse.observation.metadata.switchyard.route_id";
     /// Observation metadata key for the routing algorithm.
@@ -139,6 +141,7 @@ mod tests {
     #[test]
     fn langfuse_keys_match_the_contract() {
         assert_eq!(LangfuseKeys::SESSION_ID, "langfuse.session.id");
+        assert_eq!(LangfuseKeys::USER_ID, "langfuse.user.id");
         assert_eq!(
             LangfuseKeys::ROUTE_ID,
             "langfuse.observation.metadata.switchyard.route_id"

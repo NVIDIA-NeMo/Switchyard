@@ -814,6 +814,11 @@ async fn handle_llm_request(
             .as_ref()
             .and_then(|metadata| metadata.session_id.as_deref())
             .filter(|session| !session.is_empty()),
+        request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.user_id.as_deref())
+            .filter(|user| !user.is_empty()),
     );
     let observer = stats_observer(
         state.stats.clone(),
