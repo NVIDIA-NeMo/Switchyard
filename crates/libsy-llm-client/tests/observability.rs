@@ -1380,14 +1380,21 @@ async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_lib
         judge_model: JUDGE.into(),
         outcome: JudgeOutcome::CallFailure,
     }) as Arc<dyn RoutedLlmClient>;
-    run_classifier(
+    let result = run_classifier(
         JUDGE,
         "redaction-weak",
         "redaction-strong",
         client,
         classifier_request(),
     )
-    .await?;
+    .await;
+    assert!(matches!(
+        result,
+        Err(LibsyError::ClientCall {
+            source: LlmClientError::UpstreamHttp { status, body },
+            ..
+        }) if status == http::StatusCode::INTERNAL_SERVER_ERROR && body.contains(LEAKED_CONTENT)
+    ));
 
     let spans = store.spans();
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", JUDGE);
@@ -1402,6 +1409,13 @@ async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_lib
         .unwrap_or("");
     assert!(error.contains("upstream HTTP 500"), "{client_span:?}");
     assert!(!error.contains(LEAKED_CONTENT), "{client_span:?}");
+    assert!(!spans.iter().any(|span| {
+        span.name == "libsy.client_call"
+            && matches!(
+                span.fields.get("selected_model").map(String::as_str),
+                Some("redaction-weak" | "redaction-strong")
+            )
+    }));
     Ok(())
 }
 
@@ -1576,22 +1590,19 @@ async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_
 }
 
 #[tokio::test]
-async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::Result<()> {
+async fn classifier_stops_on_client_errors_and_records_verdict_fallback()
+-> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (_store, exporter, provider, _, _) = telemetry();
+    let (_, exporter, provider, _, _) = telemetry();
 
     let cases = [
-        ("fo-call", JudgeOutcome::CallFailure, Some("upstream_5xx")),
+        ("fo-call", JudgeOutcome::CallFailure, None),
         (
             "fo-parse",
             JudgeOutcome::Reply("not json at all"),
             Some("parse_error"),
         ),
-        (
-            "fo-stream-decode",
-            JudgeOutcome::StreamDecodeFailure,
-            Some("invalid_response"),
-        ),
+        ("fo-stream-decode", JudgeOutcome::StreamDecodeFailure, None),
         (
             "fo-valid",
             JudgeOutcome::Reply(
@@ -1605,15 +1616,26 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
         let client = Arc::new(JudgeClient {
             judge_model: judge_model.into(),
             outcome,
-        }) as Arc<dyn RoutedLlmClient>;
-        run_classifier(
+        });
+        let result = run_classifier(
             judge_model,
             "fo-weak",
             "fo-strong",
-            client,
+            client.clone(),
             classifier_request(),
         )
-        .await?;
+        .await;
+        match client.outcome {
+            JudgeOutcome::CallFailure => assert!(result.is_err(), "{judge_model}"),
+            JudgeOutcome::StreamDecodeFailure => assert!(matches!(
+                result,
+                Err(LibsyError::ClientCall {
+                    source: LlmClientError::ResponseTranslation { .. },
+                    ..
+                })
+            )),
+            JudgeOutcome::Reply(_) => assert_eq!(result?.0.as_str(), "fo-strong"),
+        }
 
         let snapshots = flushed_metrics(exporter, provider);
         match expected_reason {
@@ -1633,7 +1655,7 @@ async fn classifier_fail_open_records_each_failure_stage() -> switchyard_libsy::
                     &[("judge_model", judge_model)],
                 ),
                 None,
-                "a valid verdict was counted as a fail-open"
+                "client failures and valid verdicts must not increment switchyard.classifier_fail_open"
             ),
         }
     }

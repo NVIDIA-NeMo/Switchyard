@@ -10,8 +10,8 @@
 //!
 //! libsy owns the stream mechanics; what this module adds is per-target request preparation,
 //! ordered candidate fallback, and the `libsy.client_call` span around each candidate. Each
-//! candidate exhausts its backend retry budget before fallback advances, so the worst case is
-//! `candidates × (max_retries + 1)` upstream attempts plus every candidate's backoff.
+//! completion candidate exhausts its backend retry budget before fallback advances. Routing
+//! calls stop on the first candidate's failure. A timeout stops either kind of call.
 //!
 //! A Responses continuation can refer to state held by one provider through
 //! `previous_response_id` or `conversation`. When completion targets use different clients,
@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use futures_util::StreamExt;
+use futures::{StreamExt, TryStreamExt, stream};
 use http::StatusCode;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -30,8 +30,8 @@ use switchyard_libsy::{
     Algorithm, CallModel, LibsyError, OutcomeMetadata, Result, RoutingOutcome, RuntimeModels, drive,
 };
 use switchyard_protocol::{
-    LlmClientError, LlmResponse, ModelId, Request, Response, RoutedLlmClient,
-    RoutingFallbackReason, WireFormat,
+    LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, ModelId, Request, Response,
+    RoutedLlmClient, RoutingFallbackReason, WireFormat,
 };
 use switchyard_translation::prepare_request_for_target;
 
@@ -48,8 +48,8 @@ use crate::{metrics, observability};
 /// a per-call lookup, not one client for the whole run. Use
 /// [`ClientRouter::single`](ClientRouter::single) when one client serves every target.
 ///
-/// Routing-time model failures are forwarded back into the algorithm. Once routing completes,
-/// this client exhausts backend retries and then the outcome's ordered candidate fallbacks.
+/// Routing calls are buffered; a client failure stops the request before the algorithm continues.
+/// Once routing completes, non-timeout failures may try the outcome's ordered fallback candidates.
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
@@ -98,7 +98,6 @@ pub async fn run(
             &algorithm_name,
             &outcome.request,
             &outcome.selected_model_ids,
-            CallPhase::Completion,
             &observe,
         )
         .await;
@@ -171,8 +170,7 @@ fn emit_routing_observations(
 
 /// Serve one offloaded call and fulfill its promise.
 ///
-/// Errors only when the promise itself could not be fulfilled; a call that failed on every
-/// candidate is forwarded to the algorithm as an `Err`.
+/// A client failure stops the driver before the algorithm can issue another call.
 async fn serve(
     clients: ClientRouter,
     call: CallModel,
@@ -183,21 +181,20 @@ async fn serve(
             observations.lock().push(observation);
         }
     };
-    let result = call_first_available(
+    let target = call.models.first().ok_or(LibsyError::NoTargets)?;
+    let request = clients.prepare_routing_request(call.request.clone(), target);
+    let response = call_one(
         &clients,
+        target,
+        request,
         &call.algorithm,
-        &call.request,
-        &call.models,
-        CallPhase::Routing,
         &observe,
+        0,
+        call.models.len(),
+        true,
     )
-    .await;
-    call.respond(result)
-}
-
-enum CallPhase {
-    Routing,
-    Completion,
+    .await?;
+    call.respond(Ok(response))
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.
@@ -206,14 +203,10 @@ async fn call_first_available(
     algorithm: &str,
     request: &Request,
     models: &[ModelId],
-    phase: CallPhase,
     observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
-        let request = match phase {
-            CallPhase::Routing => clients.prepare_routing_request(request.clone(), target),
-            CallPhase::Completion => clients.prepare_completion_request(request.clone(), target),
-        };
+        let request = clients.prepare_completion_request(request.clone(), target);
         match call_one(
             clients,
             target,
@@ -222,6 +215,7 @@ async fn call_first_available(
             observe,
             index,
             models.len(),
+            false,
         )
         .await
         {
@@ -291,6 +285,7 @@ async fn call_one(
     index: usize,
     // count is for span log
     count: usize,
+    buffer: bool,
 ) -> Result<Response> {
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &request.llm_request);
@@ -305,10 +300,14 @@ async fn call_one(
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(model_id);
     let started = Instant::now();
-    let result = match client {
-        Ok(client) => client.call(request).await,
-        Err(error) => Err(error),
+    let result = async {
+        let mut response = client?.call(request).await?;
+        if buffer && let LlmResponse::Stream(chunks) = response.llm_response {
+            response.llm_response = LlmResponse::Stream(buffer_routing_stream(chunks).await?);
+        }
+        Ok(response)
     }
+    .await
     .map_err(|source| LibsyError::client_call(model_id.clone(), source));
     let duration = started.elapsed();
 
@@ -330,6 +329,31 @@ async fn call_one(
     result
 }
 
+// Preserve signed provider events while checking the complete routing response.
+async fn buffer_routing_stream(
+    mut chunks: LlmResponseStream,
+) -> std::result::Result<LlmResponseStream, LlmClientError> {
+    let mut events = Vec::new();
+    while let Some(event) = chunks.try_next().await? {
+        for chunk in event.normalized() {
+            match chunk {
+                LlmResponseChunk::DecodeError { message } => {
+                    return Err(LlmClientError::ResponseTranslation(message.clone()));
+                }
+                LlmResponseChunk::StreamError { message } => {
+                    return Err(LlmClientError::UpstreamHttp {
+                        status: StatusCode::BAD_GATEWAY,
+                        body: message.clone(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        events.push(event);
+    }
+    Ok(stream::iter(events.into_iter().map(Ok)).boxed())
+}
+
 /// Whether a failed candidate is worth routing around.
 fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
     let LibsyError::ClientCall { source, .. } = error else {
@@ -337,9 +361,7 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
     };
     match source {
         LlmClientError::ContextWindowExceeded { .. } => Some(RoutingFallbackReason::ContextWindow),
-        LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => {
-            Some(RoutingFallbackReason::Unavailable)
-        }
+        LlmClientError::Transport { .. } => Some(RoutingFallbackReason::Unavailable),
         LlmClientError::UpstreamHttp { status, .. }
             if matches!(
                 *status,
@@ -967,6 +989,7 @@ mod tests {
                         extra_body: BTreeMap::from([("store".to_string(), json!(store))]),
                         reasoning_effort: None,
                         max_retries: 0,
+                        timeout: None,
                     };
                     let backend = if responses {
                         Backend::OpenAiResponses(config)
@@ -1335,6 +1358,7 @@ mod tests {
                 extra_body: BTreeMap::new(),
                 reasoning_effort: None,
                 max_retries: 2,
+                timeout: None,
             })
         };
         let client = Arc::new(
@@ -1432,6 +1456,7 @@ mod tests {
                 extra_body: BTreeMap::new(),
                 reasoning_effort: None,
                 max_retries: 0,
+                timeout: None,
             })
         };
         let client = Arc::new(

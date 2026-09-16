@@ -67,8 +67,18 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 - `uncertain` and `unmatched` use `base_threshold + threshold_step`.
 - `unsupported` uses `base_threshold + 2 * threshold_step`.
 
-An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
+An invalid, inconsistent, or unparseable verdict routes to
 `strong_target`. Raising either knob sends more traffic to the strong model.
+
+To stop waiting for a judge that accepts the request but never finishes its
+response, set `timeout_ms` on the judge's `[llm_clients]` entry
+(see the [TOML schema](../reference/toml_schema.md)); it covers the judge's
+retries and the complete verdict body. When the deadline expires, the Rust server returns
+`504` without calling `strong_target` or `weak_target`. Other HTTP client failures
+also stop routing after retries. The deadline applies to every call
+through that client. Give the judge its own entry if the answering models need a
+different deadline, even when they use the same provider. Without a deadline,
+the request can wait indefinitely for the judge.
 
 ## Judge model compatibility
 

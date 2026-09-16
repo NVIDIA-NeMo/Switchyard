@@ -86,9 +86,12 @@ flowchart LR
     class t,p,s,c,j,w,l box;
 ```
 
-A judge that times out, errors, or returns an unparseable verdict fails open: the
-turn serves the buffered weak reply and the existing streak is held rather than
-cleared. A judge failure never creates a strong-tier latch.
+An unparseable verdict serves the buffered weak reply and holds the existing
+streak. The Rust runner stops the request if an HTTP model call fails after
+retries. To bound both the weak-model response and the judge response, set
+`timeout_ms` on each `[llm_clients]` entry they use. The deadline applies separately
+to each call, even when both models share a client. Expiry returns `504` without
+calling another target or selecting the strong tier for subsequent session turns.
 
 ## Judge model compatibility
 

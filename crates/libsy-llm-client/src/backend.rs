@@ -3,6 +3,7 @@
 
 //! Per-provider backend configuration: wire format, upstream URL, and auth.
 
+use std::time::Duration;
 use std::{collections::BTreeMap, fmt};
 
 use reqwest::RequestBuilder;
@@ -62,6 +63,9 @@ pub struct HttpBackendConfig {
     pub reasoning_effort: Option<String>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
+    /// Deadline for one complete response, including retries, retry delays, and stream reads.
+    /// `None` leaves the wait unbounded.
+    pub timeout: Option<Duration>,
 }
 
 impl fmt::Debug for HttpBackendConfig {
@@ -74,6 +78,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_body_keys", &self.extra_body.keys())
             .field("reasoning_effort", &self.reasoning_effort)
             .field("max_retries", &self.max_retries)
+            .field("timeout", &self.timeout)
             .finish()
     }
 }
@@ -256,6 +261,11 @@ impl Backend {
         self.config().max_retries
     }
 
+    /// Deadline for all attempts and the complete response; `None` leaves the wait unbounded.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.config().timeout
+    }
+
     /// Whether this backend speaks the Anthropic Messages wire format — the only
     /// one with a `count_tokens` endpoint.
     pub fn is_anthropic(&self) -> bool {
@@ -348,6 +358,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             reasoning_effort: None,
             max_retries: 0,
+            timeout: None,
         }
     }
 

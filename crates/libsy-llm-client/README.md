@@ -36,8 +36,8 @@ It depends on `switchyard-libsy`, `switchyard-protocol`, and
   `anthropic-version`).
 - **Model rewrite.** The resolved [`ModelId`] is both the map key and the model id
   sent upstream — it overwrites whatever `model` the request arrived with.
-- **Streaming is chosen by the request.** If the encoded body has `stream: true`
-  (i.e. `request.llm_request.stream`), you get `LlmResponse::Stream`; otherwise
+- **Streaming is chosen by the encoded request body.** If the body has
+  `stream: true` after `extra_body` is applied, you get `LlmResponse::Stream`; otherwise
   `LlmResponse::Agg`. OpenAI Chat streaming requests default
   `stream_options.include_usage` to `true`; an explicit caller value is preserved.
 
@@ -69,7 +69,9 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        reasoning_effort: None,
         max_retries: 2,
+        timeout: None,
     };
 
     let models = [ModelConfig::new(
@@ -247,13 +249,23 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `HttpBackendConfig::timeout` bounds one complete response, including retries,
+  retry delays, and every stream read. Expiry returns `LlmClientError::Timeout`,
+  either from the call or from the returned stream, which then ends. `None` leaves
+  the wait unbounded.
 
-Retries replay the same upstream request to the same model. Each candidate's
-`max_retries` budget is exhausted before candidate fallback advances to the next
-model. The worst case is `candidates × (max_retries + 1)` upstream requests, and
-total latency includes every candidate's capped `Retry-After` backoff. A transport
-failure can duplicate a request that the provider processed but did not finish
-returning.
+`run` and `decide` collect streams used during routing, including answers that an
+algorithm must inspect, before returning them to the algorithm. They retain the
+provider events for replay. After the configured retries, a client failure stops
+`run` or `decide` before the algorithm can choose another routing candidate. This
+also applies when `timeout` is `None` or an advisor has `fail_open = true`.
+`libsy` and custom hosts that drive it directly are unchanged.
+
+Retries replay the same upstream request to the same model. After routing completes,
+non-timeout failures may try another completion candidate. A timeout stops the call.
+A transport failure can duplicate a request that the provider processed but did not
+finish returning. Each attempt is counted once; expiry during a retry delay or
+after a stream has started does not count another attempt.
 
 ## Errors
 

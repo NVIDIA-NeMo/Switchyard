@@ -224,8 +224,9 @@ impl TranslatingLlmClient {
     /// forwarded headers plus the backend's static headers and auth, and return the
     /// successful upstream response. A
     /// buffered response is fully collected within the retry boundary; a streamed
-    /// response has its first decoded event checked within that boundary. A non-success
-    /// status maps to a typed error — a 400 is classified as a context-window
+    /// response has its first decoded event checked within that boundary. The backend's
+    /// deadline, when set, spans every attempt, retry delay, and subsequent stream read. A
+    /// non-success status maps to a typed error — a 400 is classified as a context-window
     /// overflow via the backend's provider rules. Shared by
     /// [`call_rewrite_model`](Self::call_rewrite_model) (which POSTs to the
     /// backend's completion URL and decodes a response) and
@@ -269,15 +270,47 @@ impl TranslatingLlmClient {
         let url = endpoint.url(backend);
         record_gen_ai_request(&url, model, streaming);
 
+        self.send_with_retries(&url, backend, &body, metadata, model, streaming)
+            .await
+    }
+
+    // Sends the encoded body, retrying retryable failures within the backend's retry budget.
+    async fn send_with_retries(
+        &self,
+        url: &str,
+        backend: &Backend,
+        body: &Value,
+        metadata: Option<&Metadata>,
+        model: &ModelId,
+        streaming: bool,
+    ) -> Result<EncodedResponse> {
         let max_retries = u64::from(backend.max_retries());
         let max_attempts = max_retries + 1;
+        let expires_at = backend
+            .timeout()
+            .map(|timeout| (tokio::time::sleep(timeout).deadline(), timeout));
+        let deadline = async {
+            match expires_at {
+                Some((at, timeout)) => {
+                    tokio::time::sleep_until(at).await;
+                    timeout
+                }
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(deadline);
         let mut attempt = 0_u64;
         loop {
+            if let Some((at, timeout)) = expires_at
+                && tokio::time::Instant::now() >= at
+            {
+                return Err(deadline_error(timeout));
+            }
             let span = tracing::debug_span!(
                 target: "libsy",
                 "libsy.upstream_attempt",
                 model = %model,
-                wire_format = %wire_format,
+                wire_format = %backend.wire_format(),
                 attempt = attempt + 1,
                 max_attempts,
                 retry = attempt > 0,
@@ -287,10 +320,22 @@ impl TranslatingLlmClient {
                 will_retry = tracing::field::Empty,
                 retry_delay_ms = tracing::field::Empty,
             );
-            let result = self
-                .send_once(&url, backend, &body, metadata, model, streaming)
-                .instrument(span.clone())
-                .await;
+            let mut attempt_started = false;
+            let result = tokio::select! {
+                biased;
+                timeout = &mut deadline => {
+                    if attempt_started {
+                        metrics::record_upstream_attempt(None);
+                    }
+                    span.record("outcome", "error");
+                    span.record("will_retry", false);
+                    return Err(deadline_error(timeout));
+                }
+                result = async {
+                    attempt_started = true;
+                    self.send_once(url, backend, body, metadata, model, streaming).await
+                }.instrument(span.clone()) => result,
+            };
             // The retained handle updates this same attempt span with its outcome.
             match result {
                 Ok(response) => {
@@ -300,7 +345,18 @@ impl TranslatingLlmClient {
                     if attempt > 0 {
                         metrics::record_retry_recovered();
                     }
-                    return Ok(response);
+                    return Ok(match response {
+                        EncodedResponse::Streaming {
+                            status,
+                            chunks,
+                            upstream_headers,
+                        } => EncodedResponse::Streaming {
+                            status,
+                            chunks: stream_with_deadline(chunks, expires_at),
+                            upstream_headers,
+                        },
+                        buffered => buffered,
+                    });
                 }
                 Err(failure) => {
                     let will_retry = attempt < max_retries && failure.is_retryable();
@@ -317,7 +373,11 @@ impl TranslatingLlmClient {
                     span.record("retry_delay_ms", duration_millis(delay));
                     // Close the attempt span before sleeping so backoff is not attempt latency.
                     drop(span);
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        biased;
+                        timeout = &mut deadline => return Err(deadline_error(timeout)),
+                        _ = tokio::time::sleep(delay) => {}
+                    }
                     attempt += 1;
                 }
             }
@@ -653,6 +713,18 @@ struct AttemptFailure {
     retry_after: Option<Duration>,
 }
 
+fn deadline_error(timeout: Duration) -> LlmClientError {
+    LlmClientError::Timeout {
+        source: Box::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "response did not finish within {} ms, retries included",
+                duration_millis(timeout)
+            ),
+        )),
+    }
+}
+
 impl AttemptFailure {
     fn is_retryable(&self) -> bool {
         match &self.error {
@@ -663,6 +735,26 @@ impl AttemptFailure {
             _ => false,
         }
     }
+}
+
+fn stream_with_deadline(
+    chunks: LlmResponseStream,
+    deadline: Option<(tokio::time::Instant, Duration)>,
+) -> LlmResponseStream {
+    let Some((at, timeout)) = deadline else {
+        return chunks;
+    };
+    stream::unfold(Some(chunks), move |chunks| async move {
+        let mut chunks = chunks?;
+        let chunk = tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(at) => return Some((Err(deadline_error(timeout)), None)),
+            chunk = chunks.next() => chunk?,
+        };
+        let next = chunk.is_ok().then_some(chunks);
+        Some((chunk, next))
+    })
+    .boxed()
 }
 
 async fn prepare_response_stream(
@@ -1199,6 +1291,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             reasoning_effort: None,
             max_retries: 0,
+            timeout: None,
         }
     }
 
@@ -2209,6 +2302,52 @@ mod tests {
             } if body == "attempt 3"
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deadline_expires_before_send_or_stream_poll()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "data: {\"id\":\"test\",\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                "text/event-stream",
+            ))
+            .mount(&server)
+            .await;
+        for timeout in [Duration::ZERO, Duration::from_millis(200)] {
+            let mut backend = config(&server.uri());
+            backend.timeout = Some(timeout);
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "gpt",
+                Backend::OpenAiChat(backend),
+                None,
+            )])?;
+            let result = client
+                .call_rewrite_model(request_for(Some("gpt"), true), None)
+                .await;
+            if timeout.is_zero() {
+                assert!(matches!(result, Err(LlmClientError::Timeout { .. })));
+                assert!(
+                    server
+                        .received_requests()
+                        .await
+                        .expect("recorded requests")
+                        .is_empty()
+                );
+            } else {
+                let LlmResponse::Stream(mut chunks) = result?.llm_response else {
+                    return Err("expected a streaming response".into());
+                };
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                assert!(matches!(
+                    chunks.next().await,
+                    Some(Err(LlmClientError::Timeout { .. }))
+                ));
+                assert!(chunks.next().await.is_none());
+            }
+        }
         Ok(())
     }
 

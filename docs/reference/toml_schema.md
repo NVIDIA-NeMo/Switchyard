@@ -54,9 +54,22 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. All backends reachable through the route must use the same provider. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
+| `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
+
+`timeout_ms` applies separately to every call through the client, including judge
+verdicts and answers. To give a judge a short deadline without limiting the
+answering models, put the judge on its own `[llm_clients]` entry; two entries may
+share a `base_url`. When the deadline expires, the server returns `504` without
+trying another target. If the final answer has already started streaming, the
+server sends a framed error and ends the stream without a success marker.
+
+The Rust runner collects streams used during routing before the algorithm
+continues, preserving provider events for replay. After the configured retries,
+an HTTP client failure stops routing. This also applies when `timeout_ms` is
+unset or an advisor has `fail_open = true`.
 
 Set `forward_auth = true` to use each caller's credential instead of a
 server-owned key:
@@ -222,8 +235,9 @@ Existing configurations that contain `escalation` but omit `mode` remain valid.
 
 Custom mode validates the judge's JSON against `response_schema`, resolves the
 policy selector, and routes to a runtime model group. A verdict names a group and
-the first model in it serves the turn; if that call fails the client falls through
-the rest of that group, then through whatever `models.any` adds.
+the first model in it serves the turn. An eligible non-timeout failure tries the
+rest of that group, then any remaining models in `models.any`. A timeout stops
+the request without trying another model.
 
 The `[routes.<name>.models]` table takes any group name you choose. `any` and
 `judge` are reserved and required; `capable` and `efficient` are reserved for the
@@ -232,12 +246,12 @@ how one route chooses between more than two models.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `models.any` | Yes | — | Every selectable completion target, in last-resort fallback order. Every other group's targets must also appear here; one that does not is rejected at configuration load. |
-| `models.judge` | Yes | — | One or more ordered judge candidates. Not a completion destination. |
-| `models.capable` | No | — | Ordered capable-tier models. A `capable` verdict selects the first and falls through the rest in order. |
-| `models.efficient` | No | — | Ordered efficient-tier models. An `efficient` verdict selects the first and falls through the rest in order. |
-| `models.<your name>` | No | — | A group you name. A verdict naming it selects its first model and falls through the rest in order. |
-| `default_target` | Yes | — | Group used when the judge fails or its verdict cannot be routed. Any group except `judge`, and it must contain at least one target. |
+| `models.any` | Yes | — | Every selectable completion target, in fallback order for eligible non-timeout failures. Every other group's targets must also appear here; one that does not is rejected at configuration load. |
+| `models.judge` | Yes | — | One or more ordered judge candidates. The Rust runner calls the first and stops on a client error after retries. Not a completion destination. |
+| `models.capable` | No | — | Ordered capable-tier models. A `capable` verdict selects the first; eligible non-timeout failures try the rest in order. |
+| `models.efficient` | No | — | Ordered efficient-tier models. An `efficient` verdict selects the first; eligible non-timeout failures try the rest in order. |
+| `models.<your name>` | No | — | A group you name. A verdict naming it selects its first model; eligible non-timeout failures try the rest in order. |
+| `default_target` | Yes | — | Group used when the judge's verdict cannot be parsed or routed. HTTP client failures stop the request after retries. Any group except `judge`, and it must contain at least one target. |
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |

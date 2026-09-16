@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use libsy::RuntimeModels;
 use serde::de::DeserializeOwned;
@@ -558,6 +559,8 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -634,6 +637,11 @@ fn build_backend(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
+    if config.timeout_ms == Some(0) {
+        return Err(RunnerError::configuration(format!(
+            "llm client {client_name} timeout_ms must be at least 1"
+        )));
+    }
     if config.forward_auth && config.api_key_env.is_some() {
         return Err(RunnerError::configuration(format!(
             "llm client {client_name} cannot set both forward_auth and api_key_env"
@@ -669,6 +677,7 @@ fn build_backend(
         extra_body: extra_body.clone(),
         reasoning_effort,
         max_retries: config.max_retries,
+        timeout: config.timeout_ms.map(Duration::from_millis),
     };
     let backend = match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
@@ -1087,17 +1096,22 @@ new = ["send_message"]
 
     #[test]
     fn rejects_invalid_unreferenced_llm_client() {
-        let invalid = format!(
-            "{VALID_CONFIG}\n\
-             [llm_clients.unused]\n\
-             format = \"openai_chat\"\n\
-             base_url = \"not a url\"\n"
-        );
-        let message = error_message(&invalid);
-        assert!(
-            message.contains("base_url must be an absolute HTTP(S) URL"),
-            "unexpected error: {message}"
-        );
+        for (settings, expected) in [
+            (
+                "base_url = \"not a url\"",
+                "base_url must be an absolute HTTP(S) URL",
+            ),
+            (
+                "base_url = \"https://example.test\"\ntimeout_ms = 0",
+                "timeout_ms must be at least 1",
+            ),
+        ] {
+            let invalid = format!(
+                "{VALID_CONFIG}\n[llm_clients.unused]\nformat = \"openai_chat\"\n{settings}"
+            );
+            let message = error_message(&invalid);
+            assert!(message.contains(expected), "unexpected error: {message}");
+        }
     }
 
     #[test]
@@ -1578,6 +1592,27 @@ target = "azure"
                 .and_then(|value| value.get("enable_thinking")),
             Some(&json!(false))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn client_deadline_defaults_and_rejects_zero() -> RunnerResult<()> {
+        for (setting, expected) in [
+            ("", None),
+            ("timeout_ms = 1500", Some(1500)),
+            ("timeout_ms = 0", Some(0)),
+        ] {
+            let source = format!(
+                "format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\n{setting}"
+            );
+            let config: LlmClientConfig = toml::from_str(&source).expect("valid deadline config");
+            let backend = build_backend("test", &config, &BTreeMap::new(), None);
+            if expected == Some(0) {
+                assert!(backend.is_err());
+            } else {
+                assert_eq!(backend?.timeout(), expected.map(Duration::from_millis));
+            }
+        }
         Ok(())
     }
 

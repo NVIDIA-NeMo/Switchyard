@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`timeout_ms` on `[llm_clients.<name>]`** — one deadline covers all attempts,
+  retry delays, and the complete response, including stream reads. Unset leaves
+  the wait unbounded; `0` is rejected. A timeout returns `504` without trying another
+  model, or a framed error if the final answer has already started streaming.
+  Timed-out attempts are counted in metrics.
 - **Per-target `reasoning_effort`** — a target can force the reasoning effort
   of every request it serves, replacing the caller's value (`reasoning.effort`
   on the Responses wire, `reasoning_effort` on Chat Completions), so a strong
@@ -89,6 +94,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **HTTP client errors stop routing** — after the configured retries, the Rust
+  runner stops the request instead of letting the routing algorithm choose a
+  fallback. This also applies when `timeout_ms` is unset or an advisor has
+  `fail_open = true`. The runner collects streams used during routing and preserves
+  provider events for replay. Invalid judge verdicts keep their existing fallback.
 - **`Algorithm::route` returns `Result<RoutingOutcome>`** — instead of the
   bare final `Result`, so callers observe the full routing outcome (see #458
   for the design). (#459)

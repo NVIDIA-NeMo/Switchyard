@@ -730,6 +730,7 @@ fn random_state_with_retries(
         extra_body: BTreeMap::new(),
         reasoning_effort: None,
         max_retries,
+        timeout: None,
     });
     let target_models = routes
         .iter()
@@ -4635,7 +4636,7 @@ fn gate_count(stats: &Value, path: &[&str]) -> u64 {
 // process-global, so this is the only test that emits redo / consult-failure
 // metrics and the only one that may assert their exact counts.
 #[tokio::test]
-async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
+async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let app = build_switchyard_router(advisor_state_no_retry(&upstream.base_url)?);
     let before = send(&app, "GET", "/v1/stats", None).await?.json()?;
@@ -4673,7 +4674,7 @@ async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
     assert!(feedback.starts_with("A senior reviewer examined your work"));
     assert!(feedback.ends_with("run the tests"));
 
-    // Fail-open: the advisor 503s once (no retries) and the turn still flows.
+    // A failed HTTP advisor call stops the request before the algorithm can approve it.
     let response = send_with_headers(
         &app,
         "POST",
@@ -4682,8 +4683,8 @@ async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
         &[("proxy_x_session_id", "fail-flow")],
     )
     .await?;
-    assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.json()?["error"]["type"], "upstream_error");
     assert_eq!(
         upstream.models().await,
         [
@@ -4696,9 +4697,8 @@ async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
     );
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    // State-owned accumulator: two client-visible executor answers; the discarded REDO attempt
-    // is routing work. The failed advisor consult is counted separately.
-    assert_eq!(stats["models"]["model/executor"]["calls"], 2);
+    // Only the successful redo request returns an executor answer.
+    assert_eq!(stats["models"]["model/executor"]["calls"], 1);
     assert_eq!(stats["classifier"]["total_errors"], 1);
     // Projection deltas for the metrics only this test emits.
     let redo = gate_count(&stats, &["reviews", "redo", "total"])
@@ -4725,10 +4725,10 @@ async fn advisor_route_redo_fail_open_and_stats_projection() -> TestResult {
         gate_count(&stats, &["discarded", "tokens", "output"]),
         gate_count(&before, &["discarded", "tokens", "output"]) + 2
     );
-    // The 503 maps to the bounded upstream_5xx reason label.
+    // The host stops before the algorithm records a fail-open advisor decision.
     assert_eq!(
         gate_count(&stats, &["consult_failures", "upstream_5xx"]),
-        gate_count(&before, &["consult_failures", "upstream_5xx"]) + 1
+        gate_count(&before, &["consult_failures", "upstream_5xx"])
     );
 
     // Reset re-baselines the projection: the redo/discard counts this test
