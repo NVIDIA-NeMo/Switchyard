@@ -51,6 +51,7 @@ mod transcript;
 mod trigger;
 mod turn;
 
+use super::util::buffered_response::{BufferedResponse, buffer_response};
 use budget::{ReviewBudget, ScopeKey, budget_scope, stall_key};
 use signals::{GateSignalProcessor, GateSignals};
 use telemetry::{
@@ -61,7 +62,7 @@ use transcript::{VERDICT_PATTERN, Verdict, advisor_reply_text, parse_verdict, re
 use trigger::TriggerClassifier;
 #[cfg(test)]
 use turn::has_tool_use;
-use turn::{GatedTurn, buffer_turn, reasoning_text, visible_text};
+use turn::{reasoning_text, visible_text};
 
 /// APPROVE/REDO reviewer contract sent as the advisor's system prompt.
 pub const REVIEWER_SYSTEM_PROMPT: &str =
@@ -238,7 +239,7 @@ impl AdvisorGate {
             .served_model()
             .cloned()
             .unwrap_or_else(|| executor.clone());
-        let turn = buffer_turn(served_executor.as_str(), response).await?;
+        let turn = buffer_response(served_executor.as_str(), response).await?;
 
         // Response-side signals fold in after it: the terminal turn never
         // appears on a later request, so the trigger runs on this event.
@@ -346,7 +347,7 @@ impl AdvisorGate {
         executor_fallbacks: &[ModelId],
         served_executor: &ModelId,
         request: Request,
-        turn: GatedTurn,
+        turn: BufferedResponse,
         plan: &str,
     ) -> RoutingOutcome {
         record_discarded(&turn.agg.usage);

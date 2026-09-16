@@ -121,6 +121,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Responses continuations stay with the provider that holds their state** — a
+  request with `previous_response_id` or `conversation` could reach another
+  provider and fail with `400 state_not_found`. When answer targets use different
+  `[llm_clients]` entries, Switchyard records which model served each stored
+  Responses ID and conversation ID. Known continuations return to that model
+  without running the algorithm or trying another provider. Each route keeps up
+  to 65,536 IDs per process without discarding older records. Recording another
+  model for an existing ID returns `response_state_conflict`; exceeding the cap
+  returns `response_state_limit_exceeded`. Buffered replies use HTTP 409 and 503,
+  respectively; streams emit an error and stop. These checks happen after the
+  provider has done work. Records are lost on restart. A separate classifier
+  client does not affect routes whose answer targets share one client.
 - **Cross-format tool results keep image and file content** — an Anthropic
   `tool_result` carrying image or document blocks reached a Responses target
   as text only, and an image-only result became an empty `output`. In the other

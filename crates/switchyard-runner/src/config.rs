@@ -378,8 +378,17 @@ impl DeploymentConfig {
             prompts,
             routing_answer_target,
         } = self.build_route_target_prompts(route_name, route)?;
-        let router =
-            ClientRouter::new_with_target_prompts(by_model, prompts, routing_answer_target);
+        let completion_targets = route
+            .routing_target_names()
+            .into_iter()
+            .map(|name| self.targets[name].id.clone())
+            .collect::<Vec<_>>();
+        let router = ClientRouter::new_with_completion_targets(
+            by_model,
+            prompts,
+            routing_answer_target,
+            &completion_targets,
+        );
         Ok((router, caller_auth))
     }
 

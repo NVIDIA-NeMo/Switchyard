@@ -1040,7 +1040,18 @@ async fn handle_llm_request(
 
     let output = match route.execute(request, Some(observer)).await {
         Ok(output) => output,
-        Err(error) => return runner_error(error),
+        Err(error) => {
+            if let RunnerError::Algorithm(LibsyError::ClientCall {
+                target,
+                source:
+                    LlmClientError::ResponseStateLimitExceeded { .. }
+                    | LlmClientError::ResponseStateConflict,
+            }) = &error
+            {
+                state.stats.record_response_error(target);
+            }
+            return runner_error(error);
+        }
     };
     let RunOutput {
         selected_model,
@@ -1245,6 +1256,18 @@ fn runner_error(error: RunnerError) -> Response {
 
 fn client_error(error: &LlmClientError) -> Response {
     match error {
+        LlmClientError::ResponseStateLimitExceeded { .. } => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            error.to_string(),
+            "server_error",
+            "response_state_limit_exceeded",
+        ),
+        LlmClientError::ResponseStateConflict => error_response(
+            StatusCode::CONFLICT,
+            error.to_string(),
+            "server_error",
+            "response_state_conflict",
+        ),
         LlmClientError::InvalidRequest { message }
         | LlmClientError::RequestTranslation(message) => error_response(
             StatusCode::BAD_REQUEST,

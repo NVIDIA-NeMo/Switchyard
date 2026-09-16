@@ -250,6 +250,51 @@ identity are judged every time. Clients can send `x-switchyard-session-id`, or
 enable `message_hash_fallback` to key on the first user-message text under
 `new_session`.
 
+### Responses continuations by ID
+
+A Responses API client can continue without resending the conversation history:
+`previous_response_id` refers to a stored response, and `conversation` refers to
+a provider's conversation. When answer targets use different `[llm_clients]`
+entries, Switchyard records the model that served each stored Responses ID and
+conversation ID. A request with a recorded ID returns to that exact model
+without a judge call or fallback to another provider. This applies to every
+`classify_trigger` and to `stage_router` and `composite` routes. Classifier-only
+clients do not count; when answer targets share one client, routing proceeds as
+usual.
+
+Switchyard tracks buffered and streamed Responses replies, including answers
+returned by `/v1/decision`. It does not record Chat Completions or Anthropic
+Messages response IDs as Responses continuation IDs. A provider's `store` value
+takes precedence over the request value. If that value is `false`, Switchyard
+skips the response ID but still records the conversation ID.
+
+Each route keeps up to 65,536 distinct ID-to-model records per process. This
+limit counts response and conversation IDs recorded over the process's lifetime,
+not tokens or simultaneous requests. Records do not expire, and Switchyard does
+not remove older records to make room. The map stores copies of IDs and model
+names, with no transcript storage.
+
+If recording new IDs would exceed the limit, a buffered reply returns HTTP 503
+with code `response_state_limit_exceeded`. If an ID is already recorded for a
+different model, it returns HTTP 409 with code `response_state_conflict`. Neither
+failure changes existing records. Switchyard checks both IDs before adding
+either from a response or stream event.
+
+These checks run after the provider has returned a response or stream event, so
+the error does not mean the provider did no work. A stream that has already sent
+HTTP headers emits a framed error and stops; it cannot change the HTTP status.
+Switchyard logs these errors. For `/v1/responses`, buffered and streamed failures
+increment `/v1/stats` `total_errors`. Other routes continue independently.
+
+An existing ID can still be used at capacity if the reply adds no new IDs. For
+example, `store: false` can suppress a new response ID, but it does not suppress
+conversation-ID tracking. A stored follow-up normally creates a new response ID
+and therefore fails when the map is full.
+
+A restart removes all records, and each replica has its own map. Unknown IDs use
+normal routing and can still fail at the selected provider. To keep dynamic
+routing across turns, send the full history instead of an ID.
+
 ## Run the route
 
 After [installing the Rust server](../getting_started.md#install-the-server), export

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod affinity;
+pub(crate) mod buffered_response;
 pub(crate) mod classifier_contract;
 pub mod escalation;
 pub(crate) mod llm_judge;

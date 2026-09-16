@@ -10,7 +10,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
@@ -60,6 +60,7 @@ impl MockUpstream {
                 "/v1/responses",
                 post(upstream_responses_requires_forwarded_auth),
             )
+            .route("/silo/{silo}/responses", post(upstream_responses_silo))
             .route("/capture", post(upstream_redirect_capture))
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
             .route(
@@ -557,6 +558,95 @@ async fn upstream_buffered_responses(
         ));
     }
     Json(response)
+}
+
+/// A local Responses provider whose IDs normally contain its name. It returns `state_not_found`
+/// for another provider's ID, except `resp_shared_conflict`, which tests duplicate ownership.
+/// The judge selects the strong tier when the input contains `ROUTE_B`.
+async fn upstream_responses_silo(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    Path(silo): Path<String>,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    let mut calls = calls.lock().await;
+    calls.push(body.clone());
+    let model = body["model"].as_str().unwrap_or_default().to_string();
+    if model == "model/judge" {
+        let strong = body.to_string().contains("ROUTE_B");
+        let verdict = if body["text"]["format"]["schema"]["properties"]
+            .get("escalate")
+            .is_some()
+        {
+            json!({"escalate": strong, "reason": "state probe"})
+        } else {
+            json!({
+                "crux": "state probe", "primary_rule": if strong { "LIM-1" } else { "SUP-1" },
+                "capability_boundary": if strong { "unsupported" } else { "supported" },
+                "p_solve": if strong { 0.1 } else { 0.9 },
+            })
+        };
+        return Json(responses_body("resp_judge", &model, &verdict.to_string())).into_response();
+    }
+    let minted_prefix = format!("resp_{silo}_");
+    if silo == "A" && body.to_string().contains("owner-unavailable") {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": {"message": "provider A is unavailable"}})),
+        )
+            .into_response();
+    }
+    if let Some(previous) = body["previous_response_id"].as_str()
+        && !previous.starts_with(&minted_prefix)
+        && previous != "resp_shared_conflict"
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({"error": {"code": "state_not_found", "message": format!(
+                    "previous_response_id {previous} is not present in provider {silo}"
+                )}}),
+            ),
+        )
+            .into_response();
+    }
+    let id = if body.to_string().contains("state-id-conflict") {
+        "resp_shared_conflict".to_string()
+    } else {
+        format!("{minted_prefix}{}", calls.len())
+    };
+    let text = format!("served-by:{silo}");
+    let mut response = responses_body(&id, &model, &text);
+    response["store"] = body.get("store").cloned().unwrap_or(json!(true));
+    response["conversation"] = body.get("conversation").cloned().unwrap_or(Value::Null);
+    if body["stream"] == true {
+        let mut created = response.clone();
+        created["status"] = json!("in_progress");
+        created["output"] = json!([]);
+        let events = [
+            json!({"type": "response.created", "response": created}),
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": text}),
+            json!({"type": "response.completed", "response": response}),
+        ];
+        let stream = futures_util::stream::iter(events.into_iter().map(|event| {
+            Ok::<Event, Infallible>(
+                Event::default()
+                    .event(event["type"].as_str().unwrap_or_default())
+                    .data(event.to_string()),
+            )
+        }));
+        return Sse::new(stream).into_response();
+    }
+    Json(response).into_response()
+}
+
+fn responses_body(id: &str, model: &str, text: &str) -> Value {
+    json!({
+        "id": id, "object": "response", "created_at": 1, "model": model, "status": "completed",
+        "output": [{"id": "msg_1", "type": "message", "status": "completed", "role": "assistant",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+                  "output_tokens_details": {"reasoning_tokens": 0}}
+    })
 }
 
 async fn upstream_redirect_capture(
@@ -1435,6 +1525,214 @@ base_threshold = 0.5
             target["llm_client"]["base_url"],
             "https://example.test/v1?api_version=2026"
         );
+    }
+    Ok(())
+}
+
+/// Configure classifier and escalation routes over two Responses providers.
+/// `route/shared` uses one answer client; the other routes must return known continuations
+/// to the model that served their state, even when the judge would select another provider.
+fn state_silo_config(base_url: &str) -> String {
+    let root = base_url.trim_end_matches("/v1");
+    format!(
+        r#"
+schema_version = 1
+[llm_clients.judge]
+format = "openai_responses"
+base_url = "{root}/silo/judge"
+[llm_clients.a]
+format = "openai_responses"
+base_url = "{root}/silo/A"
+max_retries = 0
+[llm_clients.b]
+format = "openai_responses"
+base_url = "{root}/silo/B"
+[targets.judge]
+id = "model/judge"
+llm_client = "judge"
+[targets.a]
+id = "model/provider-a"
+llm_client = "a"
+[targets.b]
+id = "model/provider-b"
+llm_client = "b"
+[targets.shared_b]
+id = "model/shared-b"
+llm_client = "a"
+[routes.shared]
+id = "route/shared"
+type = "llm_classifier"
+classifier_target = "judge"
+weak_target = "a"
+strong_target = "shared_b"
+base_threshold = 0.5
+classify_trigger = "every_request"
+[routes.escalation]
+id = "route/escalation"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+weak_target = "a"
+strong_target = "b"
+escalation = {{ confirmations = 1 }}
+[routes.dynamic]
+id = "route/dynamic"
+type = "llm_classifier"
+classifier_target = "judge"
+weak_target = "a"
+strong_target = "b"
+base_threshold = 0.5
+classify_trigger = "every_request"
+"#
+    )
+}
+
+#[tokio::test]
+async fn responses_continuations_preserve_state_ownership() -> TestResult {
+    for (route, stream, endpoint) in [
+        ("route/dynamic", false, "/v1/responses"),
+        ("route/dynamic", true, "/v1/responses"),
+        ("route/escalation", false, "/v1/decision"),
+        ("route/escalation", true, "/v1/decision"),
+        ("route/shared", false, "/v1/responses"),
+    ] {
+        let upstream = MockUpstream::start().await?;
+        let app =
+            build_switchyard_router(load_test_config(&state_silo_config(&upstream.base_url))?);
+        let mut request =
+            json!({"model": route, "input": "ROUTE_A remember mango", "stream": stream});
+        if endpoint == "/v1/decision" {
+            request = json!({"input_format": "openai_responses", "request": request});
+        }
+        let seed = send(&app, "POST", endpoint, Some(request)).await?;
+        assert_eq!(seed.status, StatusCode::OK, "{}", seed.text()?);
+        let body = if endpoint == "/v1/decision" {
+            seed.json()?["response"].clone()
+        } else if stream {
+            sse_events(seed.text()?)
+                .into_iter()
+                .find(|event| event["type"] == "response.completed")
+                .ok_or("stream ended without response.completed")?["response"]
+                .clone()
+        } else {
+            seed.json()?
+        };
+        assert!(
+            body["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("resp_A_"))
+        );
+        let mut follow_request = json!({"model": route, "input": "ROUTE_B recall mango", "previous_response_id": body["id"]});
+        let before = upstream.models().await.len();
+        let follow = send(&app, "POST", "/v1/responses", Some(follow_request.clone())).await?;
+        assert_eq!(follow.status, StatusCode::OK, "{}", follow.text()?);
+        let expected = if route == "route/shared" {
+            vec!["model/judge", "model/shared-b"]
+        } else {
+            vec!["model/provider-a"]
+        };
+        assert_eq!(&upstream.models().await[before..], expected);
+        assert_eq!(
+            follow.headers["x-model-router-selected-model"],
+            *expected.last().ok_or("missing target")?
+        );
+        if route == "route/dynamic" {
+            follow_request["previous_response_id"] = follow.json()?["id"].clone();
+            let chained = send(&app, "POST", "/v1/responses", Some(follow_request.clone())).await?;
+            assert_eq!(chained.status, StatusCode::OK);
+            assert_eq!(
+                chained.headers["x-model-router-selected-model"],
+                "model/provider-a"
+            );
+            let before = upstream.models().await.len();
+            let fresh = send(
+                &app,
+                "POST",
+                "/v1/responses",
+                Some(json!({"model": route, "input": "ROUTE_B a new task"})),
+            )
+            .await?;
+            assert_eq!(fresh.status, StatusCode::OK);
+            assert_eq!(
+                fresh.headers["x-model-router-selected-model"],
+                "model/provider-b"
+            );
+            assert_eq!(
+                &upstream.models().await[before..],
+                ["model/judge", "model/provider-b"]
+            );
+            follow_request["input"] = json!("ROUTE_B owner-unavailable");
+            let before = upstream.models().await.len();
+            let unavailable = send(&app, "POST", "/v1/responses", Some(follow_request)).await?;
+            assert_eq!(unavailable.status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(&upstream.models().await[before..], ["model/provider-a"]);
+        }
+    }
+    for (route, stream, endpoint) in [
+        ("route/dynamic", false, "/v1/responses"),
+        ("route/dynamic", true, "/v1/responses"),
+        ("route/escalation", false, "/v1/decision"),
+        ("route/escalation", true, "/v1/decision"),
+    ] {
+        let upstream = MockUpstream::start().await?;
+        let app =
+            build_switchyard_router(load_test_config(&state_silo_config(&upstream.base_url))?);
+        let decision = endpoint == "/v1/decision";
+        let input = if decision {
+            "ROUTE_B state-id-conflict"
+        } else {
+            "ROUTE_A state-id-conflict"
+        };
+        let seed = send(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({"model": route, "input": input})),
+        )
+        .await?;
+        assert_eq!(seed.status, StatusCode::OK);
+        let owner = seed.headers["x-model-router-selected-model"].clone();
+        let input = if decision {
+            "ROUTE_A state-id-conflict"
+        } else {
+            "ROUTE_B state-id-conflict"
+        };
+        let mut request = json!({"model": route, "input": input, "stream": stream});
+        if decision {
+            request = json!({"input_format": "openai_responses", "request": request});
+        }
+        let before = upstream.models().await.len();
+        let rejected = send(&app, "POST", endpoint, Some(request)).await?;
+        if stream && !decision {
+            assert_eq!(rejected.status, StatusCode::OK);
+            let events = sse_events(rejected.text()?);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0]["type"], "error");
+        } else {
+            assert_eq!(
+                rejected.status,
+                StatusCode::CONFLICT,
+                "{}",
+                rejected.text()?
+            );
+            assert_eq!(rejected.json()?["error"]["code"], "response_state_conflict");
+        }
+        assert_eq!(
+            &upstream.models().await[before..],
+            if decision {
+                ["model/provider-a", "model/judge"]
+            } else {
+                ["model/judge", "model/provider-b"]
+            }
+        );
+        if !decision {
+            let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+            assert_eq!(stats["total_requests"], 2);
+            assert_eq!(stats["total_errors"], 1);
+        }
+        let follow = send(&app, "POST", "/v1/responses", Some(json!({"model": route, "input": "ROUTE_B recall", "previous_response_id": seed.json()?["id"], "store": false}))).await?;
+        assert_eq!(follow.status, StatusCode::OK);
+        assert_eq!(follow.headers["x-model-router-selected-model"], owner);
     }
     Ok(())
 }

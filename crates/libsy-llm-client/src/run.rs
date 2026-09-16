@@ -12,18 +12,26 @@
 //! ordered candidate fallback, and the `libsy.client_call` span around each candidate. Each
 //! candidate exhausts its backend retry budget before fallback advances, so the worst case is
 //! `candidates × (max_retries + 1)` upstream attempts plus every candidate's backoff.
+//!
+//! A Responses continuation can refer to state held by one provider through
+//! `previous_response_id` or `conversation`. When completion targets use different clients,
+//! [`ClientRouter`] records which model served that state and sends known continuations
+//! back to it without running the algorithm or trying another provider.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures_util::StreamExt;
 use http::StatusCode;
 use parking_lot::Mutex;
+use serde_json::{Value, json};
 use switchyard_libsy::{
-    Algorithm, CallModel, LibsyError, Result, RoutingOutcome, RuntimeModels, drive,
+    Algorithm, CallModel, LibsyError, OutcomeMetadata, Result, RoutingOutcome, RuntimeModels, drive,
 };
 use switchyard_protocol::{
-    LlmClientError, ModelId, Request, Response, RoutedLlmClient, RoutingFallbackReason,
+    LlmClientError, LlmResponse, ModelId, Request, Response, RoutedLlmClient,
+    RoutingFallbackReason, WireFormat,
 };
 use switchyard_translation::prepare_request_for_target;
 
@@ -55,11 +63,16 @@ pub async fn run(
     // This says if we have an observer, put Some(..) in routing_observations.
     // No observer means we don't want any routing_observations.
     let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
-    let outcome = drive(algorithm, request, models, {
-        let routing_observations = routing_observations.clone();
-        move |call| serve(routing_clients.clone(), call, routing_observations.clone())
-    })
-    .await;
+    let outcome = match clients.stored_state_owner(&request) {
+        Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
+        None => {
+            drive(algorithm, request, models, {
+                let routing_observations = routing_observations.clone();
+                move |call| serve(routing_clients.clone(), call, routing_observations.clone())
+            })
+            .await
+        }
+    };
     let answered_model = outcome
         .as_ref()
         .ok()
@@ -98,6 +111,8 @@ pub async fn run(
         );
         (result, Some(answer_duration))
     };
+    let result =
+        result.and_then(|response| clients.remember_state_owner(&outcome.request, response));
     metrics::record_routed_request(&selected_model_id, answer_duration, &result);
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
@@ -116,12 +131,21 @@ pub async fn decide(
     models: Arc<RuntimeModels>,
 ) -> Result<RoutingOutcome> {
     let routing_clients = clients.clone();
-    let mut outcome = drive(algorithm, request, models, move |call| {
-        serve(routing_clients.clone(), call, None)
-    })
-    .await?;
+    let mut outcome = match clients.stored_state_owner(&request) {
+        Some(owner) => continue_on(owner, algorithm.name(), request),
+        None => {
+            drive(algorithm, request, models, move |call| {
+                serve(routing_clients.clone(), call, None)
+            })
+            .await?
+        }
+    };
     let selected_model_id = outcome.selected_model_id()?.clone();
     outcome.request = clients.prepare_completion_request(outcome.request, &selected_model_id);
+    outcome.response = outcome
+        .response
+        .map(|response| clients.remember_state_owner(&outcome.request, response))
+        .transpose()?;
     Ok(outcome)
 }
 
@@ -328,6 +352,83 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
     }
 }
 
+/// Route to `owner` without fallbacks and record why the algorithm did not run.
+fn continue_on(owner: StateOwner, algorithm: &str, request: Request) -> RoutingOutcome {
+    tracing::debug!(
+        target = %owner.model,
+        trigger = owner.trigger,
+        "routing Responses continuation to the model that holds its state"
+    );
+    let mut outcome = RoutingOutcome::route_to(owner.model, Vec::new(), request);
+    outcome.metadata = Some(OutcomeMetadata::new(
+        algorithm.to_string(),
+        Some(json!({"source": "stored_state", "trigger": owner.trigger})),
+    ));
+    outcome
+}
+
+/// The model that served the stored state and the request field that refers to it.
+struct StateOwner {
+    model: ModelId,
+    trigger: &'static str,
+}
+
+/// Stored Responses IDs and conversation IDs, mapped to the model that served them.
+///
+/// Keep earlier response IDs because a client can continue from any stored response.
+/// Reject new IDs at capacity rather than forgetting where an earlier response is stored.
+#[derive(Default)]
+struct StateOwners {
+    by_id: HashMap<String, ModelId>,
+}
+
+const MAX_STATE_OWNERS: usize = 65_536;
+
+impl StateOwners {
+    fn owner(&self, id: &str) -> Option<&ModelId> {
+        self.by_id.get(id)
+    }
+
+    fn remember(
+        &mut self,
+        response_id: Option<&str>,
+        conversation_id: Option<&str>,
+        model: &ModelId,
+    ) -> std::result::Result<(), LlmClientError> {
+        let ids = [
+            response_id,
+            conversation_id.filter(|id| Some(*id) != response_id),
+        ];
+        let mut new_ids = 0;
+        for id in ids.into_iter().flatten() {
+            match self.by_id.get(id) {
+                Some(owner) if owner != model => return Err(LlmClientError::ResponseStateConflict),
+                None => new_ids += 1,
+                _ => {}
+            }
+        }
+        if self.by_id.len() + new_ids > MAX_STATE_OWNERS {
+            return Err(LlmClientError::ResponseStateLimitExceeded {
+                limit: MAX_STATE_OWNERS,
+            });
+        }
+        for id in ids.into_iter().flatten() {
+            if !self.by_id.contains_key(id) {
+                self.by_id.insert(id.to_owned(), model.clone());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Read the Responses `conversation` ID from a string or an object.
+fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
+    let conversation = fields.get("conversation")?;
+    conversation
+        .as_str()
+        .or_else(|| conversation.get("id").and_then(Value::as_str))
+}
+
 /// Resolves a routed call's selected model to the client that serves it.
 ///
 /// An algorithm routes among named targets; which provider each target lives on is the
@@ -345,6 +446,9 @@ struct ClientRouting {
     routing: Routing,
     target_prompts: HashMap<ModelId, String>,
     routing_answer_target: Option<ModelId>,
+    /// Track state only when completion targets use different clients. A separate
+    /// classifier client does not require tracking when all completion targets share a client.
+    state_owners: Option<Mutex<StateOwners>>,
 }
 
 enum Routing {
@@ -365,16 +469,48 @@ impl ClientRouter {
     /// `routing_answer_target` identifies a routing-time call whose response may become the
     /// answer. Pass `None` when routing only selects a later completion target. Prompt keys and
     /// `routing_answer_target` use the resolved model IDs stored in `by_model`.
+    /// This constructor treats every model in `by_model` as a possible completion target.
+    /// Use [`Self::new_with_completion_targets`] to exclude classifier-only models from the
+    /// comparison of completion clients.
     pub fn new_with_target_prompts(
         by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>,
         target_prompts: HashMap<ModelId, String>,
         routing_answer_target: Option<ModelId>,
     ) -> Self {
+        let completion_targets = by_model.keys().cloned().collect::<Vec<_>>();
+        Self::new_with_completion_targets(
+            by_model,
+            target_prompts,
+            routing_answer_target,
+            &completion_targets,
+        )
+    }
+
+    /// Build a router with an explicit list of models that can answer requests.
+    ///
+    /// `by_model` contains every callable model, including classifiers. Only the model IDs in
+    /// `completion_targets` determine whether completion clients differ and Responses state
+    /// needs tracking. Classifier-only models remain callable without affecting that comparison.
+    /// `target_prompts` and `routing_answer_target` have the same meaning as in
+    /// [`Self::new_with_target_prompts`].
+    pub fn new_with_completion_targets(
+        by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>,
+        target_prompts: HashMap<ModelId, String>,
+        routing_answer_target: Option<ModelId>,
+        completion_targets: &[ModelId],
+    ) -> Self {
+        let mut clients = completion_targets
+            .iter()
+            .filter_map(|model| by_model.get(model));
+        let spans_providers = clients
+            .next()
+            .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)));
         Self {
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
                 target_prompts,
                 routing_answer_target,
+                state_owners: spans_providers.then(Mutex::default),
             }),
         }
     }
@@ -390,6 +526,7 @@ impl ClientRouter {
                 routing: Routing::Single(client),
                 target_prompts: HashMap::new(),
                 routing_answer_target: None,
+                state_owners: None,
             }),
         }
     }
@@ -412,6 +549,94 @@ impl ClientRouter {
                     })
             }
         }
+    }
+
+    /// Return the recorded model for the requested response or conversation ID.
+    fn stored_state_owner(&self, request: &Request) -> Option<StateOwner> {
+        let owners = self.inner.state_owners.as_ref()?;
+        let fields = &request.llm_request.extensions.fields;
+        let (trigger, id) = match fields.get("previous_response_id").and_then(Value::as_str) {
+            Some(id) => ("previous_response_id", id),
+            None => ("conversation", conversation_id(fields)?),
+        };
+        let model = owners.lock().owner(id)?.clone();
+        Some(StateOwner { model, trigger })
+    }
+
+    /// Record state reported by a Responses provider. Other response formats have IDs
+    /// that cannot be continued through the Responses API.
+    fn remember_state_owner(&self, request: &Request, mut response: Response) -> Result<Response> {
+        if self.inner.state_owners.is_none() {
+            return Ok(response);
+        }
+        let Some(model) = response.served_model().cloned() else {
+            return Ok(response);
+        };
+        let fields = &request.llm_request.extensions.fields;
+        let store = fields.get("store").and_then(Value::as_bool) != Some(false);
+        let conversation = conversation_id(fields).map(str::to_owned);
+        response.llm_response = match response.llm_response {
+            LlmResponse::Agg(agg) => {
+                if let Some(body) = agg
+                    .preservation
+                    .responses
+                    .get(&WireFormat::OpenAiResponses.into())
+                {
+                    self.remember_response(body, &model, store, conversation.as_deref())
+                        .map_err(|error| LibsyError::client_call(model.clone(), error))?;
+                }
+                LlmResponse::Agg(agg)
+            }
+            LlmResponse::Stream(stream) => {
+                let router = self.clone();
+                LlmResponse::Stream(Box::pin(futures_util::stream::try_unfold(
+                    (stream, router, model, conversation),
+                    move |(mut stream, router, model, conversation)| async move {
+                        let Some(event) = stream.next().await else {
+                            return Ok(None);
+                        };
+                        let event = event?;
+                        if let Some(preserved) = event.preservation()
+                            && preserved.source().as_str() == WireFormat::OpenAiResponses.as_str()
+                            && let Some(body) = preserved.raw().get("response")
+                        {
+                            router.remember_response(
+                                body,
+                                &model,
+                                store,
+                                conversation.as_deref(),
+                            )?;
+                        }
+                        Ok(Some((event, (stream, router, model, conversation))))
+                    },
+                )))
+            }
+        };
+        Ok(response)
+    }
+
+    /// Check both IDs from a response or stream event before recording either. The response's
+    /// `store` value overrides the request value; `false` skips only the response ID.
+    fn remember_response(
+        &self,
+        body: &Value,
+        model: &ModelId,
+        store: bool,
+        conversation: Option<&str>,
+    ) -> std::result::Result<(), LlmClientError> {
+        if let Some(owners) = &self.inner.state_owners {
+            let mut owners = owners.lock();
+            let response_id = body
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|_| body.get("store").and_then(Value::as_bool).unwrap_or(store));
+            let conversation = body.as_object().and_then(conversation_id).or(conversation);
+            if let Err(error) = owners.remember(response_id, conversation, model) {
+                tracing::error!(error = %error, "could not record Responses state owner");
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     /// Prepare a completion candidate with its configured target prompt.
@@ -691,6 +916,204 @@ mod tests {
             [RunObservation::AnswerCall(answer), RunObservation::LlmCall(judge)]
                 if answer.selected_model == "answer" && judge.selected_model == "judge"
         ));
+    }
+
+    #[tokio::test]
+    async fn responses_state_tracking_uses_upstream_storage_and_format() -> Result<()> {
+        for (responses, store, conversation) in [
+            (true, true, None),
+            (true, false, None),
+            (true, false, Some(json!("conv_plain"))),
+            (true, false, Some(json!({"id": "conv_object"}))),
+            (false, true, None),
+        ] {
+            for stream in [false, true] {
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .respond_with(move |request: &wiremock::Request| {
+                        let body: Value = serde_json::from_slice(&request.body).expect("request JSON");
+                        let response = if responses {
+                            json!({
+                                "id": "resp_seed", "object": "response", "model": "weak",
+                                "status": "completed", "output": [], "store": body["store"],
+                                "conversation": body["conversation"],
+                            })
+                        } else if stream {
+                            json!({"id": "resp_seed", "model": "weak", "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]})
+                        } else {
+                            json!({"id": "resp_seed", "model": "weak", "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]})
+                        };
+                        if stream {
+                            let event = if responses { json!({"type": "response.completed", "response": response}) } else { response };
+                            ResponseTemplate::new(200)
+                                .insert_header("content-type", "text/event-stream")
+                                .set_body_string(if responses {
+                                    format!("event: response.completed\ndata: {event}\n\n")
+                                } else {
+                                    format!("data: {event}\n\ndata: [DONE]\n\n")
+                                })
+                        } else {
+                            ResponseTemplate::new(200).set_body_json(response)
+                        }
+                    })
+                    .mount(&server).await;
+                let mut clients = HashMap::new();
+                for model in ["weak", "strong"] {
+                    let config = HttpBackendConfig {
+                        base_url: server.uri(),
+                        api_key: None,
+                        forward_auth: false,
+                        extra_headers: BTreeMap::new(),
+                        extra_body: BTreeMap::from([("store".to_string(), json!(store))]),
+                        reasoning_effort: None,
+                        max_retries: 0,
+                    };
+                    let backend = if responses {
+                        Backend::OpenAiResponses(config)
+                    } else {
+                        Backend::OpenAiChat(config)
+                    };
+                    let client: Arc<dyn RoutedLlmClient> = Arc::new(
+                        TranslatingLlmClient::new(&[ModelConfig::new(model, backend, None)])
+                            .map_err(|error| LibsyError::external("building test client", error))?,
+                    );
+                    clients.insert(ModelId::from(model), client);
+                }
+                let clients = ClientRouter::new(clients);
+                let mut seed = request();
+                seed.llm_request.stream = stream;
+                if let Some(conversation) = &conversation {
+                    seed.llm_request
+                        .extensions
+                        .fields
+                        .insert("conversation".to_string(), conversation.clone());
+                }
+                let (_, response) = run(
+                    Arc::new(switchyard_libsy::Passthrough),
+                    clients.clone(),
+                    seed,
+                    to_category_map(&["weak"]),
+                    None,
+                )
+                .await?;
+                response
+                    .llm_response
+                    .into_agg()
+                    .await
+                    .map_err(|error| LibsyError::client_call("weak", error))?;
+                let mut continuations = vec![(
+                    "previous_response_id",
+                    json!("resp_seed"),
+                    responses && store,
+                )];
+                if let Some(conversation) = conversation.clone() {
+                    continuations.push(("conversation", conversation, true));
+                }
+                for (field, id, pinned) in continuations {
+                    let mut follow = request();
+                    follow
+                        .llm_request
+                        .extensions
+                        .fields
+                        .insert(field.to_string(), id);
+                    let outcome = decide(
+                        Arc::new(switchyard_libsy::Passthrough),
+                        clients.clone(),
+                        follow,
+                        to_category_map(&["strong"]),
+                    )
+                    .await?;
+                    assert_eq!(
+                        outcome.selected_model_id()?.as_str(),
+                        if pinned { "weak" } else { "strong" },
+                        "responses={responses}, store={store}, stream={stream}, field={field}"
+                    );
+                }
+                let requests = server.received_requests().await.expect("request recording");
+                assert_eq!(requests.len(), 1);
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&requests[0].body).expect("request JSON")["store"],
+                    store
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn state_owners_preserve_existing_records_at_capacity()
+    -> std::result::Result<(), LlmClientError> {
+        let mut owners = StateOwners::default();
+        let model = ModelId::from("model/a");
+        for id in 0..MAX_STATE_OWNERS - 1 {
+            owners.remember(Some(&format!("resp_{id}")), None, &model)?;
+        }
+        assert!(matches!(
+            owners.remember(Some("new_response"), Some("new_conversation"), &model),
+            Err(LlmClientError::ResponseStateLimitExceeded {
+                limit: MAX_STATE_OWNERS
+            })
+        ));
+        assert!(owners.owner("new_response").is_none());
+        assert!(owners.owner("new_conversation").is_none());
+        owners.remember(Some("last_id"), Some("last_id"), &model)?;
+        owners.remember(Some("last_id"), Some("resp_0"), &model)?;
+        assert!(matches!(
+            owners.remember(Some("over_limit"), None, &model),
+            Err(LlmClientError::ResponseStateLimitExceeded { .. })
+        ));
+        assert!(matches!(
+            owners.remember(Some("resp_0"), None, &ModelId::from("model/b")),
+            Err(LlmClientError::ResponseStateConflict)
+        ));
+        assert_eq!(owners.owner("resp_0"), Some(&model));
+        assert_eq!(owners.by_id.len(), MAX_STATE_OWNERS);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_state_owners_do_not_exceed_capacity() {
+        let model = ModelId::from("model/a");
+        let owners = Arc::new(Mutex::new(StateOwners {
+            by_id: (0..MAX_STATE_OWNERS - 16)
+                .map(|id| (format!("existing_{id}"), model.clone()))
+                .collect(),
+        }));
+        let barrier = Arc::new(std::sync::Barrier::new(32));
+        let accepted = std::thread::scope(|scope| {
+            let handles = (0..32)
+                .map(|id| {
+                    let owners = owners.clone();
+                    let barrier = barrier.clone();
+                    let model = model.clone();
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let result = owners.lock().remember(
+                            Some(&format!("resp_{id}")),
+                            Some(&format!("conv_{id}")),
+                            &model,
+                        );
+                        match result {
+                            Ok(()) => Some(id),
+                            Err(LlmClientError::ResponseStateLimitExceeded { .. }) => None,
+                            other => panic!("unexpected state tracking result: {other:?}"),
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().expect("request thread panicked"))
+                .collect::<Vec<_>>()
+        });
+        let owners = owners.lock();
+        assert_eq!(accepted.len(), 8);
+        assert_eq!(owners.by_id.len(), MAX_STATE_OWNERS);
+        assert_eq!(owners.owner("existing_0"), Some(&model));
+        for id in accepted {
+            assert_eq!(owners.owner(&format!("resp_{id}")), Some(&model));
+            assert_eq!(owners.owner(&format!("conv_{id}")), Some(&model));
+        }
     }
 
     #[tokio::test]

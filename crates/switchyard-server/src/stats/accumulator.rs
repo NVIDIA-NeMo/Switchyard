@@ -68,8 +68,9 @@ impl StatsAccumulator {
         stats.errors = stats.errors.saturating_add(1);
     }
 
-    /// Records a stream failure after its routed call was already counted.
-    pub(crate) fn record_stream_error(&self, model: impl Into<ModelId>) {
+    /// Record a failure while processing a buffered response or stream after its routed call
+    /// was already counted.
+    pub(crate) fn record_response_error(&self, model: impl Into<ModelId>) {
         let mut inner = self.lock();
         inner.total_errors = inner.total_errors.saturating_add(1);
         let stats = inner.model_stats_mut(model.into());

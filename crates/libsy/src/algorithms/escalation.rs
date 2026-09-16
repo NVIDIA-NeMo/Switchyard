@@ -7,9 +7,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use switchyard_protocol::{
-    AggLlmResponse, Category, LlmClientError, LlmResponse, Message, Request, Response, Role,
+    AggLlmResponse, Category, LlmClientError, Message, Request, Response, Role,
 };
 
+use super::util::buffered_response::buffer_response;
 use super::util::classifier_contract::ClassifierContractConfig;
 use super::util::decisive;
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
@@ -109,41 +110,37 @@ impl Classifier<State> for EscalationClassifier {
         };
         // The call resolves when its stream handle arrives; context and transport failures can
         // still occur while buffering.
-        let agg = match efficient_response.llm_response.into_agg().await {
-            Ok(agg) => agg,
-            Err(LlmClientError::ContextWindowExceeded { .. }) => {
+        let efficient_response = match buffer_response(efficient.as_str(), efficient_response).await
+        {
+            Ok(response) => response,
+            Err(LibsyError::ClientCall {
+                source: LlmClientError::ContextWindowExceeded { .. },
+                ..
+            }) => {
                 driver.set_evidence(serde_json::json!({
                     "source": "fallback",
                     "reason_code": "context_window",
                 }));
                 return Ok((decisive(&capable), None));
             }
-            Err(LlmClientError::Transport { .. }) => {
+            Err(LibsyError::ClientCall {
+                source: LlmClientError::Transport { .. },
+                ..
+            }) => {
                 driver.set_evidence(serde_json::json!({
                     "source": "fallback",
                     "reason_code": "transport",
                 }));
                 return Ok((decisive(&capable), None));
             }
-            Err(source) => {
-                return Err(LibsyError::client_call(efficient.clone(), source));
-            }
+            Err(error) => return Err(error),
         };
         // Append the efficient reply so the judge reads this turn's completed trajectory.
         let mut judge_request = request.clone();
         judge_request
             .llm_request
             .messages
-            .push(assistant_message(&agg));
-        let efficient_response = Response {
-            llm_response: if request.llm_request.stream {
-                LlmResponse::Stream(agg.into_stream())
-            } else {
-                LlmResponse::Agg(agg)
-            },
-            metadata: efficient_response.metadata,
-            upstream_headers: efficient_response.upstream_headers,
-        };
+            .push(assistant_message(&efficient_response.agg));
 
         let (classification, _) = self.judge.score(state, &mut judge_request, driver).await?;
 
@@ -174,7 +171,10 @@ impl Classifier<State> for EscalationClassifier {
             }));
         }
 
-        Ok((decisive(&efficient), Some(efficient_response)))
+        Ok((
+            decisive(&efficient),
+            Some(efficient_response.into_response()),
+        ))
     }
 }
 
