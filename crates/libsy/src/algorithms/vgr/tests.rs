@@ -5,7 +5,8 @@ use switchyard_protocol::{
     ContentBlock, ImageSource, LlmRequest, Message, Request, Role, text_request,
 };
 
-use super::{Branch, TaskType, derive_capabilities, select_branch};
+use super::decide::{Route, Signals, Tri, decide_from_signals};
+use super::{Branch, TaskType, ToolErrorCount, derive_capabilities, select_branch};
 
 fn request(text: &str) -> Request {
     Request {
@@ -79,4 +80,113 @@ fn judged_transcript_is_redacted_and_bounded() {
     let oversized = request(&"x".repeat(24_000));
     let caps = derive_capabilities(&oversized, "completed", None, None);
     assert_eq!(select_branch(&caps), Branch::Unknown);
+}
+
+#[test]
+fn policy_exposes_only_verified_local_commits() {
+    let request = request("complete the task");
+    let cases = [
+        (
+            None,
+            None,
+            Signals::default(),
+            Branch::DefaultVerified,
+            Route::Cloud,
+        ),
+        (
+            None,
+            None,
+            Signals {
+                readout: Some(0.7),
+                ..Default::default()
+            },
+            Branch::DefaultVerified,
+            Route::Local,
+        ),
+        (
+            Some(TaskType::Coding),
+            None,
+            Signals {
+                readout: Some(0.25),
+                cloud_judge: Some(Tri::Yes),
+                ..Default::default()
+            },
+            Branch::Coding,
+            Route::Local,
+        ),
+        (
+            Some(TaskType::Coding),
+            None,
+            Signals {
+                readout: Some(0.95),
+                cloud_judge: Some(Tri::Unknown),
+                ..Default::default()
+            },
+            Branch::Coding,
+            Route::Cloud,
+        ),
+        (
+            Some(TaskType::Coding),
+            None,
+            Signals {
+                readout: Some(0.95),
+                deliberation: Some(1.0),
+                strict_evidence: Some(Tri::Yes),
+                cloud_judge: Some(Tri::No),
+            },
+            Branch::Coding,
+            Route::Cloud,
+        ),
+        (
+            Some(TaskType::Agentic),
+            Some(ToolErrorCount::Host(0)),
+            Signals {
+                readout: Some(0.25),
+                ..Default::default()
+            },
+            Branch::Agentic,
+            Route::Local,
+        ),
+        (
+            Some(TaskType::Agentic),
+            Some(ToolErrorCount::Untrusted(0)),
+            Signals {
+                readout: Some(1.0),
+                ..Default::default()
+            },
+            Branch::Agentic,
+            Route::Cloud,
+        ),
+    ];
+
+    for (task_type, tool_errors, signals, branch, route) in cases {
+        let caps = derive_capabilities(&request, "completed", task_type, tool_errors);
+        let decision = decide_from_signals(&caps, &signals);
+        assert_eq!((decision.branch, decision.route), (branch, route));
+    }
+}
+
+#[test]
+fn reported_tool_errors_veto_every_attempt_judging_branch() {
+    let request = request("complete the task");
+    let signals = Signals {
+        readout: Some(1.0),
+        deliberation: Some(1.0),
+        cloud_judge: Some(Tri::Yes),
+        strict_evidence: Some(Tri::Yes),
+    };
+    for task_type in [
+        TaskType::Coding,
+        TaskType::Agentic,
+        TaskType::Answer,
+        TaskType::Chat,
+    ] {
+        let caps = derive_capabilities(
+            &request,
+            "completed",
+            Some(task_type),
+            Some(ToolErrorCount::Host(1)),
+        );
+        assert_eq!(decide_from_signals(&caps, &signals).route, Route::Cloud);
+    }
 }
