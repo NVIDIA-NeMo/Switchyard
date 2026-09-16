@@ -120,6 +120,7 @@ impl TranslationEngine {
     ) -> Result<RequestIrOutput> {
         let source = source.into();
         let decoded = self.registry.codec(source)?.decode_request(body, policy)?;
+        crate::util::validate_tool_call_pairing(&decoded.request)?;
         Ok(RequestIrOutput {
             request: decoded.request,
             diagnostics: decoded.diagnostics,
@@ -158,6 +159,7 @@ impl TranslationEngine {
             .registry
             .codec(source.clone())?
             .decode_request(body, policy)?;
+        crate::util::validate_tool_call_pairing(&decoded.request)?;
         let encoded = self
             .registry
             .codec(target.clone())?

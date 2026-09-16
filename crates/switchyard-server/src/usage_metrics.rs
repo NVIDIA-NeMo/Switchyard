@@ -27,6 +27,8 @@ pub(crate) fn observe(
         metadata,
         upstream_headers,
     } = response;
+    let routing_log =
+        routing_log.map(|(log, context)| (log, context.with_response_metadata(metadata.as_ref())));
     let model = model.to_string();
 
     let llm_response = match llm_response {

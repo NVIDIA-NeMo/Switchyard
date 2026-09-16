@@ -178,6 +178,51 @@ impl TranslatingLlmClient {
         self.backend_for(model, operation.wire_format()).is_some()
     }
 
+    /// Reads llama.cpp model properties through the backend's configured auth and headers.
+    ///
+    /// Redirects are disabled so credentials cannot move to another origin.
+    pub async fn get_model_properties(
+        &self,
+        model: &ModelId,
+        format: WireFormat,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let backend =
+            self.backend_for(model, format)
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model} has no backend for {format:?}"),
+                })?;
+        let mut url = reqwest::Url::parse(backend.base_url()).map_err(|error| {
+            LlmClientError::Configuration {
+                message: format!("model {model} has an invalid backend URL: {error}"),
+            }
+        })?;
+        let root = url
+            .path()
+            .trim_end_matches('/')
+            .strip_suffix("/v1")
+            .unwrap_or_else(|| url.path().trim_end_matches('/'))
+            .to_string();
+        url.set_path(&format!("{}/props", root.trim_end_matches('/')));
+        url.set_query(None);
+
+        let builder = self.forward_auth_client.get(url).timeout(timeout);
+        let builder = apply_extra_headers(builder, backend);
+        let response = backend
+            .apply_auth(builder)
+            .send()
+            .await
+            .map_err(convert_reqwest_error)?
+            .error_for_status()
+            .map_err(convert_reqwest_error)?;
+        response
+            .json()
+            .await
+            .map_err(|source| LlmClientError::InvalidResponse {
+                source: Box::new(source),
+            })
+    }
+
     /// Calls a model-bearing auxiliary provider operation.
     ///
     /// Returns an error when the model has no compatible backend or the upstream
@@ -259,6 +304,7 @@ impl TranslatingLlmClient {
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
         if matches!(backend, Backend::Anthropic(_)) {
+            normalize_anthropic_thinking_sampling(&mut body);
             enable_anthropic_prompt_caching(&mut body);
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
@@ -1048,6 +1094,22 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     }
 }
 
+// Anthropic requires default sampling while thinking is active.
+fn normalize_anthropic_thinking_sampling(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    let thinking_type = object
+        .get("thinking")
+        .and_then(|thinking| thinking.get("type"))
+        .and_then(Value::as_str);
+    if matches!(thinking_type, Some("adaptive" | "enabled")) {
+        object.remove("temperature");
+        object.remove("top_p");
+        object.remove("top_k");
+    }
+}
+
 // Anthropic and Bedrock both cap a request at four blocks carrying
 // `cache_control`, counting tools, system blocks and message blocks together.
 const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
@@ -1261,6 +1323,33 @@ mod tests {
             Backend::Anthropic(config(base_url)),
             None,
         )]
+    }
+
+    #[tokio::test]
+    async fn model_properties_uses_the_backends_configured_auth()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/props"))
+            .and(wiremock::matchers::header("authorization", "Bearer secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "default_generation_settings": {"n_ctx": 65_536}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+
+        let properties = client
+            .get_model_properties(
+                &ModelId::from("gpt"),
+                WireFormat::OpenAiChat,
+                Duration::from_secs(1),
+            )
+            .await?;
+
+        assert_eq!(properties["default_generation_settings"]["n_ctx"], 65_536);
+        Ok(())
     }
 
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
@@ -1991,6 +2080,62 @@ mod tests {
             "context_management": {
                 "edits": [{"type": "clear_thinking_20251015"}]
             }
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_adaptive_thinking_drops_incompatible_sampling()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                body.get("temperature").is_none()
+                    && body.get("top_p").is_none()
+                    && body.get("top_k").is_none()
+                    && body["thinking"] == json!({"type": "adaptive"})
+                    && body["output_config"] == json!({"effort": "high"})
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut backend = config(&server.uri());
+        backend.extra_body = BTreeMap::from([
+            ("thinking".to_string(), json!({"type": "adaptive"})),
+            ("output_config".to_string(), json!({"effort": "high"})),
+        ]);
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        let raw = json!({
+            "model": "client-facing",
+            "max_tokens": 7,
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "top_k": 40
         });
 
         client
@@ -2752,6 +2897,10 @@ mod tests {
                 "name": "search",
                 "namespace": "mcp__open_websearch",
                 "arguments": "{}"
+            }, {
+                "type": "function_call_output",
+                "call_id": "call_0",
+                "output": "completed"
             }],
             "tool_choice": {
                 "type": "function",

@@ -1,0 +1,10 @@
+configure-git-webserver
+fix-git
+fix-ocaml-gc
+git-leak-recovery
+multi-source-data-merger
+chess-best-move
+cobol-modernization
+custom-memory-heap-crash
+dna-assembly
+large-scale-text-editing

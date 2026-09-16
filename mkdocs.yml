@@ -19,6 +19,7 @@ nav:
   - Home: index.md
   - Get Started:
       - Getting Started: getting_started.md
+      - Use VGR from an Agent: vgr_agent_setup.md
       - Known Issues: known_issues.md
   - Concepts:
       - Core Concepts: core_concepts.md
@@ -34,6 +35,7 @@ nav:
       - Composite Routing: routing_algorithms/composite_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
+      - Verification-Gated Routing: routing_algorithms/vgr_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
       - Soak Testing: operations/soak_test.md

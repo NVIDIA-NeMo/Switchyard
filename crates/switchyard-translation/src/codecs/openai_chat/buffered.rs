@@ -959,6 +959,10 @@ fn copy_openai_chat_request_extensions(
         "service_tier",
         "store",
         "stream_options",
+        // Chat gates `top_logprobs` behind `logprobs`, so preserving one
+        // without the other leaves the request asking for alternatives it
+        // never enabled.
+        "logprobs",
         "top_logprobs",
         "user",
     ] {

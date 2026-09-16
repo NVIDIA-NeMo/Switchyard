@@ -159,6 +159,11 @@ impl Route {
         self.capabilities
     }
 
+    /// Returns completion targets in algorithm routing order.
+    pub fn decision_targets(&self) -> &[DecisionTarget] {
+        &self.decision_targets
+    }
+
     /// Returns the forwarded caller credential family.
     pub fn caller_auth(&self) -> Option<CallerAuthKind> {
         self.caller_auth

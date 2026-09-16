@@ -319,6 +319,61 @@ instead. The stage table takes no `picker`: the classifier supplies that tier pe
 classifier cannot reach falls open to the efficient tier. Leaving out
 `classifier` is recommended: that judge runs ahead of the fall-open tier.
 
+### `vgr`
+
+Verification-gated routing. The local tier answers, the router gathers evidence
+about *that answer* — a checker's test run, agreement with an independently
+produced answer, a cheap probability readout — and either serves it or escalates
+to the capable tier. See [Verification-Gated Routing](../routing_algorithms/vgr_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `local_target` | Yes | — | Tier that produces the attempt being verified. |
+| `cloud_target` | Yes | — | Tier a request escalates to when the attempt is not licensed. |
+| `local_supports_images` | No | `false` | Set `true` only when the local tier accepts image content. Otherwise image-bearing requests, including images nested in tool results, go directly to the capable tier. |
+| `judge_target` | No | local tier | Answers the cheap local verification rungs. Not a routing destination. |
+| `cloud_judge_target` | No | unset | Answers the cloud confirmation rungs. Unset removes them, which the rules read as evidence never gathered rather than as indeterminate. Not a routing destination. |
+| `mode` | No | `off` | Serving authority: `off`, `evaluate`, `shadow`, or `active`. See below. |
+| `active_approval` | With `active` | — | Approval attestation validated verbatim as `prospective-validation-and-canary-approved`. |
+| `deadline_seconds` | No | `30` | Budget for the whole decision, verification included. Exceeding it ends evidence gathering, and what was not established escalates. |
+| `task_typing` | No | `true` | Types the request with one cheap local call before deriving capabilities. Set `false` to opt out; without it the answer and conversational regimes are unreachable. |
+| `latch_escalation` | No | `false` | A session that escalated stays on the capable tier, skipping verification on later turns. |
+| `speculation_carry` | No | `false` | An escalation carries the rejected attempt forward as unverified reference. Measured to help on research-style work and hurt on conversational work, so it is per-route. |
+| `structured_answer` | No | `false` | Declares that this surface enforces a schema-validated terse final answer, which is the only place typed agreement counts as evidence. |
+| `breaker_threshold` | No | `5` | Consecutive local-tier failures that stop the local tier being called. |
+| `breaker_cooldown_seconds` | No | `30` | How long the local tier is skipped before one trial request is allowed through. |
+| `checker.tests_dir` | Yes, in `[checker]` | — | Directory holding the task's tests. Snapshotted and hashed at startup. |
+| `checker.materialize_command` | Yes, in `[checker]` | — | Trusted host argv that materializes the attempted source tree under `WORKSPACE_DIR`. |
+| `checker.command` | Yes, in `[checker]` | — | Argv list, never a shell string. `{tests}` and `{workdir}` are substituted. |
+| `checker.sandbox_attestation` | Yes, in `[checker]` | — | The operator's declaration that a deployment sandbox confines the checker, verbatim: `vgr-checker-runs-in-deployment-sandbox`. |
+| `checker.timeout_seconds` | No | `120` | How long one checker run may take. |
+| `checker.validated` | Yes, in `[checker]` | — | Must be `true`; the checker handle is bound to its pinned manifest identity at construction. |
+
+**Serving modes.** Deciding and serving are separate steps, which is what lets a
+deployment measure the router before it routes anything. `off` makes no decisions
+and spends nothing. `shadow` decides and records but always serves the capable
+tier. `evaluate` serves the *ungated* decision and is for isolated measurement
+only: it will serve routes the gates exist to refuse. `active` requires the
+approval attestation and serves the readiness-gated route. It does not provide
+native privacy/no-egress enforcement or an operator runtime kill switch;
+deployments that require those controls must supply them outside the runner.
+
+The local and cloud targets must resolve to distinct model IDs, even when their
+target or client names differ, because the runtime client router is keyed only
+by model ID.
+
+**Transcript tool evidence.** `switchyard-server` is not a tool executor, but
+VGR trusts normalized tool results supplied in request history as Host evidence.
+This enables native-runner agentic commits and also means a client that controls
+the conversation history can report a clean tool record. Agentic judged views
+include user task text, the bounded assistant/tool trajectory, and the current
+attempt; framework system and developer instructions are omitted.
+
+**The checker runs natively on Unix and Windows.** Unix process groups and
+Windows Job Objects terminate the complete checker process tree on timeout or
+cancellation. Commands remain platform-specific argv lists; use native Windows
+paths and executables in a Windows deployment.
+
 ### `advisor`
 
 Serves every client-visible turn from the executor and has a stronger advisor

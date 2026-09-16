@@ -139,6 +139,10 @@ impl Backend {
         }
     }
 
+    pub(crate) fn base_url(&self) -> &str {
+        &self.config().base_url
+    }
+
     /// The fully resolved upstream URL for this backend's endpoint.
     ///
     /// Tolerates base URLs that already include the provider path (or a bare

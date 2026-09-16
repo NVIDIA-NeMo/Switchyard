@@ -13,6 +13,7 @@ use std::time::SystemTime;
 use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
+use switchyard_runner::RouteErrorSummary;
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
@@ -48,8 +49,21 @@ impl RoutingLog {
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
+        failure: Option<(&str, &RouteErrorSummary)>,
     ) -> std::io::Result<()> {
         let usage = token_usage(usage);
+        let terminal_tier = tier
+            .map(str::to_string)
+            .or_else(|| context.vgr_served.clone())
+            .unwrap_or_default();
+        let (route, failure_kind, upstream_status) =
+            failure.map_or((None, None, None), |(route, failure)| {
+                (
+                    Some(route),
+                    Some(failure.kind.as_str()),
+                    failure.upstream_status,
+                )
+            });
         let record = RoutingRecord {
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
@@ -58,8 +72,17 @@ impl RoutingLog {
             task: context.task.map(Cow::Owned),
             trial_id: context.trial_id.map(Cow::Owned),
             session_id: context.session_id.map(Cow::Owned),
+            vgr_predicted: context.vgr_predicted.map(Cow::Owned),
+            vgr_effective: context.vgr_effective.map(Cow::Owned),
+            vgr_served: context.vgr_served.map(Cow::Owned),
+            vgr_branch: context.vgr_branch.map(Cow::Owned),
+            vgr_readiness_gate: context.vgr_readiness_gate.map(Cow::Owned),
+            vgr_short_circuit: context.vgr_short_circuit.map(Cow::Owned),
+            route: route.map(Cow::Borrowed),
             model: model.into(),
-            tier: tier.unwrap_or("").into(),
+            tier: terminal_tier.into(),
+            failure_kind: failure_kind.map(Cow::Borrowed),
+            upstream_status,
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
@@ -108,6 +131,12 @@ pub(crate) struct RoutingLogContext {
     task: Option<String>,
     trial_id: Option<String>,
     session_id: Option<String>,
+    vgr_predicted: Option<String>,
+    vgr_effective: Option<String>,
+    vgr_served: Option<String>,
+    vgr_branch: Option<String>,
+    vgr_readiness_gate: Option<String>,
+    vgr_short_circuit: Option<String>,
 }
 
 impl RoutingLogContext {
@@ -131,7 +160,24 @@ impl RoutingLogContext {
                     .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
                     .map(str::to_string)
             }),
+            vgr_predicted: None,
+            vgr_effective: None,
+            vgr_served: None,
+            vgr_branch: None,
+            vgr_readiness_gate: None,
+            vgr_short_circuit: None,
         }
+    }
+
+    /// Adds the VGR labels propagated to the terminal response.
+    pub(crate) fn with_response_metadata(mut self, metadata: Option<&Metadata>) -> Self {
+        self.vgr_predicted = vgr_label(metadata, "switchyard.vgr.predicted");
+        self.vgr_effective = vgr_label(metadata, "switchyard.vgr.effective");
+        self.vgr_served = vgr_label(metadata, "switchyard.vgr.served");
+        self.vgr_branch = vgr_label(metadata, "switchyard.vgr.branch");
+        self.vgr_readiness_gate = vgr_label(metadata, "switchyard.vgr.readiness_gate");
+        self.vgr_short_circuit = vgr_label(metadata, "switchyard.vgr.short_circuit");
+        self
     }
 
     /// Attaches the resolved route identity shared by every log entry for this request.
@@ -159,8 +205,26 @@ struct RoutingRecord<'a> {
     trial_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     session_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    vgr_predicted: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    vgr_effective: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    vgr_served: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    vgr_branch: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    vgr_readiness_gate: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    vgr_short_circuit: Option<Cow<'a, str>>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    route: Option<Cow<'a, str>>,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    failure_kind: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream_status: Option<u16>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
@@ -247,6 +311,15 @@ fn nonempty_header<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a s
         .and_then(|v| v.to_str().ok())
 }
 
+fn vgr_label(metadata: Option<&Metadata>, key: &str) -> Option<String> {
+    metadata?
+        .extra_metadata
+        .as_ref()?
+        .get(key)
+        .filter(|value| !value.is_empty())
+        .cloned()
+}
+
 fn routing_log_error(path: &Path, error: std::io::Error) -> ServerError {
     ServerError::new(format!(
         "failed to initialize routing log {}: {error}",
@@ -314,5 +387,72 @@ mod tests {
         assert_eq!(stats.models["m1"].calls, 1);
         assert_eq!(stats.models["unknown"].prompt_tokens, 5);
         assert!(snapshot(&path, "missing").expect("read log").is_none());
+    }
+
+    #[test]
+    fn terminal_record_correlates_vgr_decision_with_request_and_usage() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("routing.jsonl");
+        let request_metadata = Metadata {
+            session_id: Some("session-1".to_string()),
+            http_headers: Some(http::HeaderMap::from_iter([
+                (
+                    http::HeaderName::from_static(TASK_HEADER),
+                    http::HeaderValue::from_static("task-1"),
+                ),
+                (
+                    http::HeaderName::from_static(TRIAL_ID_HEADER),
+                    http::HeaderValue::from_static("trial-1"),
+                ),
+            ])),
+            ..Default::default()
+        };
+        let response_metadata = Metadata {
+            extra_metadata: Some(BTreeMap::from([
+                ("switchyard.vgr.predicted".to_string(), "local".to_string()),
+                ("switchyard.vgr.effective".to_string(), "cloud".to_string()),
+                ("switchyard.vgr.served".to_string(), "cloud".to_string()),
+                ("switchyard.vgr.branch".to_string(), "checks".to_string()),
+                (
+                    "switchyard.vgr.readiness_gate".to_string(),
+                    "secure_checker_missing".to_string(),
+                ),
+                (
+                    "switchyard.vgr.short_circuit".to_string(),
+                    "none".to_string(),
+                ),
+            ])),
+            ..Default::default()
+        };
+        let context = RoutingLogContext::from_metadata(&request_metadata)
+            .with_response_metadata(Some(&response_metadata));
+        let mut log = RoutingLog::new(&path).expect("routing log");
+        log.append(
+            context,
+            "cloud-model",
+            None,
+            &Usage {
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("append routing record");
+
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).expect("read routing log"))
+                .expect("valid routing record");
+        assert_eq!(record["task"], "task-1");
+        assert_eq!(record["trial_id"], "trial-1");
+        assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["vgr_predicted"], "local");
+        assert_eq!(record["vgr_effective"], "cloud");
+        assert_eq!(record["vgr_served"], "cloud");
+        assert_eq!(record["vgr_branch"], "checks");
+        assert_eq!(record["vgr_readiness_gate"], "secure_checker_missing");
+        assert_eq!(record["model"], "cloud-model");
+        assert_eq!(record["tier"], "cloud");
+        assert_eq!(record["total_tokens"], 12);
     }
 }

@@ -373,9 +373,16 @@ def test_finalize_copies_harbor_result_and_marks_stats(tmp_path: Path) -> None:
     stats.write_text('{"total_requests":1}\n')
     metrics = run_dir / "server_metrics_final.prom"
     metrics.write_text("switchyard_requests_total 1\n")
+    routing_log = run_dir / "routing_requests.jsonl"
+    routing_log.write_text('{"session_id":"session-1","model":"local"}\n')
 
     module.write_manifest(
         out,
+        server={
+            "routing_log_file": str(routing_log),
+            "routing_log_status": "predicted",
+            "routing_log_digest": "sha256:missing",
+        },
         outcomes={
             "harbor_result_json": str(run_dir / "harbor_result.json"),
             "harbor_result_json_status": "predicted",
@@ -401,6 +408,8 @@ def test_finalize_copies_harbor_result_and_marks_stats(tmp_path: Path) -> None:
     assert manifest["outcomes"]["harbor_result_json_status"] == "present"
     assert manifest["outcomes"]["server_metrics_prom_status"] == "present"
     assert manifest["outcomes"]["routing_stats_json_status"] == "present"
+    assert manifest["server"]["routing_log_status"] == "present"
+    assert manifest["server"]["routing_log_digest"] == module.path_digest(routing_log)
     assert (run_dir / "harbor_result.json").is_file()
 
 

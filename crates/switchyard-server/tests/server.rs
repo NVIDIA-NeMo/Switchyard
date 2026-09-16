@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, Random};
@@ -50,6 +50,7 @@ impl MockUpstream {
     async fn start() -> TestResult<Self> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
+            .route("/props", get(upstream_props))
             .route("/v1/chat/completions", post(upstream_chat))
             .route("/buffered/responses", post(upstream_buffered_responses))
             .route(
@@ -101,6 +102,14 @@ impl Drop for MockUpstream {
     }
 }
 
+async fn upstream_props() -> Json<Value> {
+    Json(json!({
+        "default_generation_settings": {
+            "n_ctx": 98_304
+        }
+    }))
+}
+
 fn user_prompt(body: &Value) -> &str {
     body["messages"]
         .as_array()
@@ -134,6 +143,23 @@ async fn upstream_chat(
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": {"message": "upstream authentication failed"}})),
+        )
+            .into_response();
+    }
+    if prompt == "metadata-error" {
+        return (
+            StatusCode::BAD_REQUEST,
+            concat!(
+                r#"{"message":"unexpected tool_use_id nonexistent_call_id_xyz"}"#,
+                ". Received Model Group=cloud"
+            ),
+        )
+            .into_response();
+    }
+    if body["model"] == "model/vgr-cloud" && body["messages"][0]["content"] == "cloud-auth-fail" {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "cloud credential rejected"}})),
         )
             .into_response();
     }
@@ -376,7 +402,38 @@ async fn upstream_chat(
                 .map(|(_, group)| group.trim().to_string())
         })
     });
-    let content = if model == "model/classifier" && custom_target_schema {
+    // A verification-gated route's cheap readout asks for token logprobs and is
+    // scored by probability rather than read as text. Which way it leans is keyed
+    // on the target id so a test can choose a committing or an escalating run.
+    if body["logprobs"].as_bool() == Some(true) {
+        let p_yes: f64 = if model.contains("vgr-verified") {
+            0.97
+        } else if model.contains("vgr-ambiguous") {
+            0.5
+        } else {
+            0.01
+        };
+        return Json(json!({
+            "id": "chatcmpl-vgr-readout",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "yes"},
+                "logprobs": {"content": [{"top_logprobs": [
+                    {"token": "yes", "logprob": p_yes.ln()},
+                    {"token": "no", "logprob": (1.0 - p_yes).ln()}
+                ]}]},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5}
+        }))
+        .into_response();
+    }
+
+    let content = if model == "model/vgr-ambiguous-local" {
+        "coding".to_string()
+    } else if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#.to_string()
         } else {
@@ -2815,7 +2872,23 @@ target = "shared"
     assert_eq!(capabilities["declared"]["vision"], json!(true));
     assert_eq!(capabilities["restricted"]["vision"], json!(false));
     assert_eq!(capabilities["undeclared"]["vision"], json!(null));
-    assert_eq!(body["models"], json!([]));
+    let catalog = body["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            let slug = entry["slug"].as_str()?.to_string();
+            Some((slug, entry))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(catalog["declared"]["context_window"], json!(1_000_000));
+    assert_eq!(
+        catalog["declared"]["input_modalities"],
+        json!(["text", "image"])
+    );
+    assert_eq!(catalog["restricted"]["shell_type"], json!("disabled"));
+    assert_eq!(catalog["undeclared"]["context_window"], json!(null));
 
     Ok(())
 }
@@ -3883,6 +3956,28 @@ async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult
         assert_eq!(response.json()?, expected, "{path}");
     }
 
+    let trailing_metadata = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "metadata-error"}]
+        })),
+    )
+    .await?;
+    assert_eq!(trailing_metadata.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        trailing_metadata.json()?,
+        json!({
+            "error": {
+                "message": "unexpected tool_use_id nonexistent_call_id_xyz",
+                "type": "upstream_error",
+                "code": "upstream_error"
+            }
+        })
+    );
+
     let anthropic_unknown = send(
         &app,
         "POST",
@@ -4435,5 +4530,673 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some("model/a")
     );
+    Ok(())
+}
+
+/// A `type = "vgr"` deployment: the local tier answers, the router gathers
+/// evidence about that answer, and the turn is committed or escalated.
+///
+/// `local_id` picks which way the readout leans, so one config helper serves
+/// both the committing and the escalating case.
+fn vgr_config(base_url: &str, local_id: &str) -> String {
+    format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.local]
+id = "{local_id}"
+llm_client = "upstream"
+
+[targets.cloud]
+id = "model/vgr-cloud"
+llm_client = "upstream"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+mode = "evaluate"
+"#
+    )
+}
+
+#[tokio::test]
+async fn vgr_and_passthrough_routes_are_client_distinguishable() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let config = format!(
+        r#"{}
+
+[routes.diagnostic]
+id = "switchyard/diagnostic-passthrough"
+type = "passthrough"
+target = "local"
+"#,
+        vgr_config(&upstream.base_url, "model/vgr-verified-local")
+    );
+    let app = build_switchyard_router(load_test_config(&config)?);
+
+    let models = send(&app, "GET", "/v1/models", None).await?.json()?;
+    let vgr_data = models["data"]
+        .as_array()
+        .and_then(|entries| entries.iter().find(|entry| entry["id"] == "switchyard/vgr"));
+    let vgr_codex = models["models"].as_array().and_then(|entries| {
+        entries
+            .iter()
+            .find(|entry| entry["slug"] == "switchyard/vgr")
+    });
+    assert_eq!(
+        vgr_data.map(|entry| &entry["capabilities"]["context_window"]),
+        Some(&json!(98_304))
+    );
+    assert_eq!(
+        vgr_codex.map(|entry| &entry["context_window"]),
+        Some(&json!(98_304))
+    );
+    let route_types = models["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            Some((
+                entry["id"].as_str()?.to_string(),
+                entry["route_type"].as_str()?.to_string(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(route_types["switchyard/vgr"], "vgr");
+    assert_eq!(
+        route_types["switchyard/diagnostic-passthrough"],
+        "passthrough"
+    );
+    let codex_route_types = models["models"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            Some((
+                entry["slug"].as_str()?.to_string(),
+                entry["route_type"].as_str()?.to_string(),
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(codex_route_types["switchyard/vgr"], "vgr");
+    assert_eq!(
+        codex_route_types["switchyard/diagnostic-passthrough"],
+        "passthrough"
+    );
+
+    for (model, expected_route_type) in [
+        ("switchyard/vgr", "vgr"),
+        ("switchyard/diagnostic-passthrough", "passthrough"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "what is the capital of France?"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-switchyard-route-type")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_route_type)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn orphaned_tool_results_are_rejected_before_route_selection() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let config = format!(
+        r#"{}
+
+[routes.diagnostic]
+id = "switchyard/diagnostic-passthrough"
+type = "passthrough"
+target = "local"
+"#,
+        vgr_config(&upstream.base_url, "model/vgr-verified-local")
+    );
+    let app = build_switchyard_router(load_test_config(&config)?);
+    let initial_call_count = upstream.calls.lock().await.len();
+    let mut errors = Vec::new();
+
+    for model in ["switchyard/vgr", "switchyard/diagnostic-passthrough"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "Run the diagnostic."},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "nonexistent_call_id_xyz",
+                        "content": "ready"
+                    },
+                    {"role": "user", "content": "Continue."}
+                ]
+            })),
+        )
+        .await?;
+
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{model}");
+        errors.push(response.json()?);
+    }
+
+    assert_eq!(errors[0], errors[1]);
+    assert_eq!(errors[0]["error"]["type"], "invalid_request_error");
+    assert_eq!(errors[0]["error"]["code"], "invalid_body");
+    assert!(
+        errors[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("nonexistent_call_id_xyz")),
+        "{:?}",
+        errors[0]
+    );
+    assert_eq!(
+        upstream.calls.lock().await.len(),
+        initial_call_count,
+        "invalid transcripts must not reach any serving tier"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn dangling_tool_calls_are_rejected_before_route_selection() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let config = format!(
+        r#"{}
+
+[routes.diagnostic]
+id = "switchyard/diagnostic-passthrough"
+type = "passthrough"
+target = "local"
+"#,
+        vgr_config(&upstream.base_url, "model/vgr-verified-local")
+    );
+    let app = build_switchyard_router(load_test_config(&config)?);
+    let initial_call_count = upstream.calls.lock().await.len();
+    let mut errors = Vec::new();
+
+    for model in ["switchyard/vgr", "switchyard/diagnostic-passthrough"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "Run the diagnostic."},
+                    {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "dangling_call_id_xyz",
+                            "type": "function",
+                            "function": {
+                                "name": "diagnostic",
+                                "arguments": "{}"
+                            }
+                        }]
+                    },
+                    {"role": "user", "content": "Continue."}
+                ]
+            })),
+        )
+        .await?;
+
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{model}");
+        errors.push(response.json()?);
+    }
+
+    assert_eq!(errors[0], errors[1]);
+    assert_eq!(errors[0]["error"]["type"], "invalid_request_error");
+    assert_eq!(errors[0]["error"]["code"], "invalid_body");
+    assert!(
+        errors[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|message| {
+                message.contains("dangling_call_id_xyz")
+                    && message.contains("no matching tool result")
+            }),
+        "{:?}",
+        errors[0]
+    );
+    assert_eq!(
+        upstream.calls.lock().await.len(),
+        initial_call_count,
+        "invalid transcripts must not reach any serving tier"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_cloud_auth_failure_is_written_to_the_routing_log() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    let log_path = temp_dir.path().join("routing.jsonl");
+    let state = load_test_config(&vgr_config(&upstream.base_url, "model/vgr-verified-local"))?
+        .with_routing_log(&log_path)?;
+    let app = build_switchyard_router(state);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "system", "content": "cloud-auth-fail"}]
+        })),
+        &[("x-switchyard-session-id", "cloud-auth-session")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+
+    let records = std::fs::read_to_string(log_path)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let failure = records
+        .iter()
+        .find(|record| record["model"] == "model/vgr-cloud")
+        .ok_or("cloud failure row was not written")?;
+    assert_eq!(failure["route"], "switchyard/vgr");
+    assert_eq!(failure["tier"], "cloud");
+    assert_eq!(failure["failure_kind"], "upstream_http");
+    assert_eq!(failure["upstream_status"], 401);
+    assert_eq!(failure["session_id"], "cloud-auth-session");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn vgr_checker_config(
+    base_url: &str,
+    tests_dir: &std::path::Path,
+    marker: &std::path::Path,
+    mode: &str,
+    behavior: &str,
+) -> String {
+    let command = match behavior {
+        "tamper" => format!(
+            r#"["/bin/sh", "-c", "[ \"$(cat candidate.txt)\" = 'ok' ] || exit 1; printf ran > \"$1\"; chmod u+w \"$2\"; printf tampered >> \"$2\"; exit 0", "checker", "{}", "{{tests}}/case.txt"]"#,
+            marker.display()
+        ),
+        "indeterminate" => r#"["/definitely/missing/vgr-checker"]"#.to_string(),
+        _ => format!(
+            r#"["/bin/sh", "-c", "[ \"$(cat candidate.txt)\" = 'ok' ] || exit 1; printf ran > \"$1\"; exit 0", "checker", "{}"]"#,
+            marker.display()
+        ),
+    };
+    let mode_config = if mode == "active" {
+        "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\""
+            .to_string()
+    } else {
+        format!("mode = \"{mode}\"")
+    };
+    format!(
+        r#"{}
+
+[routes.vgr.checker]
+tests_dir = "{}"
+materialize_command = ["/bin/sh", "-c", 'cp "$ATTEMPT_FILE" "$WORKSPACE_DIR/candidate.txt"']
+command = {}
+sandbox_attestation = "vgr-checker-runs-in-deployment-sandbox"
+validated = true
+"#,
+        vgr_config(base_url, "model/vgr-verified-local")
+            .replace("mode = \"evaluate\"", &mode_config),
+        tests_dir.display(),
+        command,
+    )
+}
+
+#[cfg(windows)]
+fn vgr_checker_config(
+    base_url: &str,
+    tests_dir: &std::path::Path,
+    marker: &std::path::Path,
+    mode: &str,
+    behavior: &str,
+) -> String {
+    let marker = marker.to_string_lossy().replace('\'', "''");
+    let script = match behavior {
+        "tamper" => format!(
+            "if ((Get-Content -Raw -LiteralPath 'candidate.txt').Trim() -ne 'ok') {{ exit 1 }}; \
+             [IO.File]::WriteAllText('{marker}', 'ran'); \
+             $test = Join-Path $env:TESTS_DIR 'case.txt'; \
+             (Get-Item -LiteralPath $test).IsReadOnly = $false; \
+             Add-Content -LiteralPath $test -Value 'tampered'; \
+             exit 0"
+        ),
+        _ => format!(
+            "if ((Get-Content -Raw -LiteralPath 'candidate.txt').Trim() -ne 'ok') {{ exit 1 }}; \
+             [IO.File]::WriteAllText('{marker}', 'ran'); \
+             exit 0"
+        ),
+    };
+    let command = if behavior == "indeterminate" {
+        serde_json::json!(["Z:\\definitely-missing\\vgr-checker.exe"]).to_string()
+    } else {
+        serde_json::json!([
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script
+        ])
+        .to_string()
+    };
+    let materialize_command = serde_json::json!([
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Copy-Item -LiteralPath $env:ATTEMPT_FILE -Destination \
+         (Join-Path $env:WORKSPACE_DIR 'candidate.txt')"
+    ])
+    .to_string();
+    let tests_dir = serde_json::json!(tests_dir.to_string_lossy()).to_string();
+    let mode_config = if mode == "active" {
+        "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\""
+            .to_string()
+    } else {
+        format!("mode = \"{mode}\"")
+    };
+    format!(
+        r#"{}
+
+[routes.vgr.checker]
+tests_dir = {}
+materialize_command = {}
+command = {}
+sandbox_attestation = "vgr-checker-runs-in-deployment-sandbox"
+validated = true
+"#,
+        vgr_config(base_url, "model/vgr-verified-local")
+            .replace("mode = \"evaluate\"", &mode_config),
+        tests_dir,
+        materialize_command,
+        command,
+    )
+}
+
+#[tokio::test]
+async fn native_vgr_active_mode_serves_a_licensed_local_decision() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let config = vgr_config(&upstream.base_url, "model/vgr-verified-local").replace(
+        "mode = \"evaluate\"",
+        "mode = \"active\"\nactive_approval = \"prospective-validation-and-canary-approved\"",
+    );
+    let state = load_test_config(&config)?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-verified-local"),
+        "active mode must serve a readiness-gated local commit"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_evaluate_exposes_a_licensed_local_decision() -> TestResult {
+    // The point of the algorithm: the cheap tier's answer is served because
+    // evidence about *that answer* supported it, not because a pre-hoc judge
+    // predicted the request was easy.
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&vgr_config(&upstream.base_url, "model/vgr-verified-local"))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-verified-local"),
+        "a confident readout should commit the local attempt"
+    );
+    // Evaluate exposes the raw decision for isolated measurement. The attempt
+    // must be served from its buffer rather than regenerated.
+    let calls = upstream.calls.lock().await.clone();
+    let local_candidates = calls
+        .iter()
+        .filter(|call| {
+            call["model"] == "model/vgr-verified-local"
+                && call["logprobs"].as_bool() != Some(true)
+                && call["messages"][0]["role"] == "user"
+                && call["messages"][0]["content"] == "what is the capital of France?"
+        })
+        .count();
+    assert_eq!(
+        local_candidates, 1,
+        "the buffered candidate must be generated exactly once: {calls:?}"
+    );
+    let capable_generations = calls
+        .iter()
+        .filter(|call| {
+            call["model"] == "model/vgr-cloud"
+                && call["messages"][0]["role"] == "user"
+                && call["messages"][0]["content"] == "what is the capital of France?"
+        })
+        .count();
+    assert_eq!(
+        capable_generations, 0,
+        "a local decision must not generate a capable-tier answer: {calls:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_evaluate_exposes_an_unlicensed_cloud_decision() -> TestResult {
+    // Fail-closed: evidence that does not support the attempt escalates, and the
+    // capable tier answers the turn.
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&vgr_config(
+        &upstream.base_url,
+        "model/vgr-unverified-local",
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-cloud"),
+        "an unsupported attempt should escalate"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_without_a_cloud_judge_skips_cloud_confirmation() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&vgr_config(&upstream.base_url, "model/vgr-ambiguous-local"))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let calls = upstream.calls.lock().await.clone();
+    let cloud_calls = calls
+        .iter()
+        .filter(|call| call["model"] == "model/vgr-cloud")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cloud_calls.len(),
+        1,
+        "an omitted cloud judge must not make verifier calls before escalation: {calls:?}"
+    );
+    assert_eq!(
+        cloud_calls[0]["messages"][0]["content"], "what is the capital of France?",
+        "the only cloud call must be the client-visible escalation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_route_in_shadow_mode_decides_but_serves_the_capable_tier() -> TestResult {
+    // The safe observation mode: full decision records at no routing risk, which
+    // is how a deployment earns confidence before enabling local commits.
+    let upstream = MockUpstream::start().await?;
+    let config = vgr_config(&upstream.base_url, "model/vgr-verified-local")
+        .replace("mode = \"evaluate\"", "mode = \"shadow\"");
+    let state = load_test_config(&config)?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/vgr",
+            "messages": [{"role": "user", "content": "what is the capital of France?"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/vgr-cloud"),
+        "shadow mode never serves a local commit, however strong the evidence"
+    );
+    // It still produced and verified an attempt: that is what makes the record
+    // worth recording.
+    let calls = upstream.calls.lock().await.clone();
+    assert!(
+        calls
+            .iter()
+            .any(|call| call["model"] == "model/vgr-verified-local"),
+        "shadow mode still exercises the local tier: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call["logprobs"].as_bool() == Some(true)),
+        "shadow mode must run a real scored readout, not only generate a candidate: {calls:?}"
+    );
+    Ok(())
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn vgr_checker_table_runs_real_pass_shadow_and_tamper_paths() -> TestResult {
+    // These TOML-driven cases prove the native runner builds and executes the
+    // real checker, and that Active applies its readiness verdict.
+    for (mode, behavior, expected_model) in [
+        ("evaluate", "pass", "model/vgr-verified-local"),
+        ("shadow", "pass", "model/vgr-cloud"),
+        ("active", "pass", "model/vgr-verified-local"),
+        ("active", "tamper", "model/vgr-cloud"),
+        ("evaluate", "tamper", "model/vgr-cloud"),
+        ("evaluate", "indeterminate", "model/vgr-cloud"),
+    ] {
+        let upstream = MockUpstream::start().await?;
+        let root = tempfile::tempdir()?;
+        let tests = root.path().join("tests");
+        std::fs::create_dir(&tests)?;
+        std::fs::write(tests.join("case.txt"), "pinned")?;
+        let marker = root.path().join(format!("{mode}-{behavior}.ran"));
+        let config = vgr_checker_config(&upstream.base_url, &tests, &marker, mode, behavior);
+        let state = load_test_config(&config)?;
+        let app = build_switchyard_router(state);
+
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": "fix the build"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_model),
+            "mode={mode} behavior={behavior}"
+        );
+        if behavior != "indeterminate" {
+            assert_eq!(
+                std::fs::read_to_string(&marker)?,
+                "ran",
+                "the configured checker command must consume materialized candidate source"
+            );
+        }
+    }
     Ok(())
 }

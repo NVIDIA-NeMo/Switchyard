@@ -512,6 +512,11 @@ HARBOR_LOG="${RUN_DIR}/harbor.log"
 HARBOR_RESULT_JSON="${RUN_DIR}/harbor_result.json"
 SERVER_METRICS_PROM="${RUN_DIR}/server_metrics_final.prom"
 ROUTING_STATS_JSON="${RUN_DIR}/routing_stats_final.json"
+ROUTING_LOG_FILE="${RUN_DIR}/routing_requests.jsonl"
+if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
+    SERVER_CMD+=(--routing-log-file "${ROUTING_LOG_FILE}")
+    SERVER_DOCKER_CMD+=(--routing-log-file "/artifacts/routing_requests.jsonl")
+fi
 DOCKER_RUN_ID="$(printf '%s-%s' "${TS##*_}" "$$" | tr -c '[:alnum:]_.-' '-')"
 SWITCHYARD_DOCKER_NETWORK="${SWITCHYARD_DOCKER_NETWORK:-switchyard-${DOCKER_RUN_ID}}"
 SWITCHYARD_DOCKER_CONTAINER="${SWITCHYARD_DOCKER_CONTAINER:-switchyard-${DOCKER_RUN_ID}}"
@@ -791,6 +796,9 @@ MANIFEST_CMD=(python3 "${MANIFEST_HELPER}" write
     --server-metrics-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)"
     --routing-stats-json "${ROUTING_STATS_JSON}"
     --routing-stats-status "$([[ "${SWITCHYARD_ENABLED}" -eq 1 ]] && echo predicted || echo not-requested)")
+if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
+    MANIFEST_CMD+=(--routing-log-file "${ROUTING_LOG_FILE}")
+fi
 if [[ -n "${HARBOR_PATH}" ]]; then
     MANIFEST_CMD+=(--harbor-path "${HARBOR_PATH}")
 fi

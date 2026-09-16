@@ -43,7 +43,7 @@ STRIP_PATH_SUFFIXES = (
     "/v1/responses",
 )
 INTAKE_TASK_HEADER = "x-switchyard-intake-task"
-SESSION_ID_HEADER = "proxy_x_session_id"
+SESSION_ID_HEADER = "x-switchyard-session-id"
 TRIAL_ID_HEADER = "x-switchyard-trial-id"
 
 
