@@ -1,6 +1,6 @@
-Prefill router runs the request through `vllm` all the way to first token and extracts various signals. It uses those signals as input to a classifier (which you have to train). That classifier picks the model. This is a variation on using embeddings as input to the classifier.
+Prefill router runs the request through `pytorch` and `transformers` to get hidden states. It uses those states as input to a classifier which you have to train. For each model the classifier predicts if it will succeed at the task. This is a variation on using embeddings as input to the classifier.
 
-This makes it different from the other routers in that it both requires running an inference server (`vllm`) and training a classifier for the two specific models you intend to use and the specific workload you will send it. This makes it much more complex to deploy than the other routers, but potentially better if you know your workload.
+This makes it different from the other routers in that it both requires running inference (with `transformers`) and training a classifier for the specific models you intend to use and the specific workload you will send it. This makes it much more complex to deploy than the other routers, but potentially better if you know your workload.
 
 # How do I use Prefill Router?
 
