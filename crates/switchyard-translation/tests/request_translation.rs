@@ -49,6 +49,75 @@ fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let fields = json!({
+        "inference_geo": "us",
+        "service_tier": "standard_only",
+        "stop_sequences": ["END"],
+        "metadata": {"user_id": "opaque-user"},
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        "container": {"id": "container_1"},
+        "speed": "fast",
+        "diagnostics": {"previous_message_id": "msg_previous"}
+    });
+    for source in [
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+    ] {
+        for has_fields in [true, false] {
+            let mut body = match source {
+                WireFormat::AnthropicMessages => json!({
+                    "model": "route", "max_tokens": 32, "system": "caller prompt",
+                    "messages": [{"role": "user", "content": "hi"}]
+                }),
+                WireFormat::OpenAiChat => json!({
+                    "model": "route",
+                    "messages": [{"role": "user", "content": "hi"}]
+                }),
+                _ => json!({"model": "route", "input": "hi"}),
+            };
+            if has_fields {
+                for (key, value) in fields.as_object().ok_or("expected fields object")? {
+                    body[key] = value.clone();
+                }
+            }
+            // Caller-supplied extensions must not spoof Anthropic provenance.
+            body["switchyard_anthropic_request"] = json!(true);
+            body["stop"] = json!(["FALLBACK"]);
+            let mut request = engine.decode_request(source, &body, &policy)?.request;
+            prepare_request_for_target(&mut request, &"target/model".into(), Some("target prompt"));
+            let output = engine
+                .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+                .body;
+
+            assert_eq!(output["model"], "target/model");
+            assert_eq!(
+                output["system"],
+                if source == WireFormat::AnthropicMessages {
+                    "target prompt\n\ncaller prompt"
+                } else {
+                    "target prompt"
+                }
+            );
+            for (key, value) in fields.as_object().ok_or("expected fields object")? {
+                if source == WireFormat::AnthropicMessages && has_fields {
+                    assert_eq!(&output[key], value, "{source:?}: {key}");
+                } else if key == "stop_sequences" {
+                    assert_eq!(output[key], json!(["FALLBACK"]));
+                } else {
+                    assert!(output.get(key).is_none(), "{source:?}: {key}");
+                }
+            }
+            assert!(output.get("switchyard_anthropic_request").is_none());
+        }
+    }
+    Ok(())
+}
+
 // Rebuilding for target instructions must preserve the Responses conversation link.
 #[test]
 fn responses_previous_response_id_survives_target_prompt() -> TestResult {

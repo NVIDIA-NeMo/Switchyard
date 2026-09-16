@@ -7,6 +7,9 @@ use serde_json::{Map, Value};
 
 use crate::llm::ContentBlock;
 
+// Internal provenance survives mutations that invalidate exact request replay.
+pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
+
 /// Returns whether a role name is recognized by a supported provider API.
 pub(crate) fn is_known_role_name(name: &str) -> bool {
     matches!(
@@ -144,7 +147,7 @@ pub(crate) fn provider_extensions(
 ) -> Map<String, Value> {
     let mut extensions = Map::new();
     for (key, value) in object {
-        if !known.contains(&key.as_str()) {
+        if key != ANTHROPIC_REQUEST_KEY && !known.contains(&key.as_str()) {
             extensions.insert(key.clone(), value.clone());
         }
     }

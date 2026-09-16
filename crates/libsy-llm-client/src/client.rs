@@ -1067,6 +1067,10 @@ fn count_cache_control_blocks(value: &Value) -> usize {
 
 // Marks the final message content block as the Anthropic prompt-cache breakpoint.
 fn enable_anthropic_prompt_caching(body: &mut Value) {
+    // Top-level cache control manages the final breakpoint and its TTL.
+    if body.get("cache_control").is_some() {
+        return;
+    }
     // Abstain once the caller has spent the budget itself. Adding a fifth marker
     // turns a request that was valid on arrival into an upstream HTTP 400, and a
     // caller that placed four breakpoints deliberately needs them more than we
@@ -1358,6 +1362,14 @@ mod tests {
 
     #[test]
     fn anthropic_prompt_caching_marks_final_message() {
+        let caller_managed = json!({
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            "messages": [{"role": "user", "content": "hello"}]
+        });
+        let mut body = caller_managed.clone();
+        enable_anthropic_prompt_caching(&mut body);
+        assert_eq!(body, caller_managed);
+
         let mut body = json!({
             "messages": [{"role": "user", "content": "hello"}]
         });
