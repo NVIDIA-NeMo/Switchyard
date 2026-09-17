@@ -371,6 +371,81 @@ fn anthropic_thinking_response_translates_to_openai_reasoning_content() -> TestR
     let message = &output["choices"][0]["message"];
     assert_eq!(message["content"], "Visible answer");
     assert_eq!(message["reasoning_content"], "private reasoning");
+    for thinking_tokens in [0, 5] {
+        let mut body = body.clone();
+        body["usage"]["output_tokens_details"] = json!({"thinking_tokens": thinking_tokens});
+        let decoded = engine
+            .decode_response(WireFormat::AnthropicMessages, &body, &normalized_policy())?
+            .response;
+        assert_eq!(decoded.usage.reasoning_tokens, Some(thinking_tokens));
+        assert_eq!(decoded.usage.output_tokens, Some(7));
+        assert_eq!(decoded.usage.total_tokens, Some(19));
+
+        for (target, details, field) in [
+            (
+                WireFormat::OpenAiChat,
+                "completion_tokens_details",
+                "reasoning_tokens",
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                "output_tokens_details",
+                "reasoning_tokens",
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                "output_tokens_details",
+                "thinking_tokens",
+            ),
+        ] {
+            let output = engine
+                .translate_response(
+                    WireFormat::AnthropicMessages,
+                    target,
+                    &body,
+                    &normalized_policy(),
+                )?
+                .body;
+            assert_eq!(output["usage"][details][field], thinking_tokens);
+            let mut state = switchyard_translation::StreamTranslationState::new(
+                WireFormat::AnthropicMessages,
+                target,
+            );
+            engine.translate_event(
+                &mut state,
+                WireFormat::AnthropicMessages,
+                target,
+                &json!({"type": "message_start", "message": {
+                    "id": "msg_test", "model": "claude-opus", "usage": {"input_tokens": 12}
+                }}),
+            )?;
+            engine.translate_event(
+                &mut state,
+                WireFormat::AnthropicMessages,
+                target,
+                &json!({"type": "message_delta", "delta": {}, "usage": body["usage"]}),
+            )?;
+            let mut events = engine.translate_event(
+                &mut state,
+                WireFormat::AnthropicMessages,
+                target,
+                &json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 7}}),
+            )?;
+            assert_eq!(state.usage.reasoning_tokens, Some(thinking_tokens));
+            assert_eq!(state.usage.output_tokens, Some(7));
+            events.extend(engine.finish_stream(&mut state, target)?);
+            let usage = events
+                .iter()
+                .find_map(|event| {
+                    event
+                        .get("usage")
+                        .or_else(|| event.get("response")?.get("usage"))
+                })
+                .ok_or("missing terminal usage")?;
+            assert_eq!(usage[details][field], thinking_tokens);
+        }
+    }
     Ok(())
 }
 

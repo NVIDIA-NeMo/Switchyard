@@ -1197,7 +1197,11 @@ fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
         }),
         reasoning_tokens: value
             .get("output_tokens_details")
-            .and_then(|details| details.get("reasoning_tokens"))
+            .and_then(|details| {
+                details
+                    .get("thinking_tokens")
+                    .or_else(|| details.get("reasoning_tokens"))
+            })
             .and_then(Value::as_u64),
     }
 }
@@ -1213,6 +1217,9 @@ fn encode_anthropic_usage(usage: &Usage) -> Value {
     }
     if let Some(cache_creation_tokens) = usage.cache_creation_input_tokens() {
         value["cache_creation_input_tokens"] = json!(cache_creation_tokens);
+    }
+    if let Some(thinking_tokens) = usage.reasoning_tokens {
+        value["output_tokens_details"] = json!({"thinking_tokens": thinking_tokens});
     }
     value
 }

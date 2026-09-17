@@ -574,6 +574,17 @@ fn capture_anthropic_usage(state: &mut StreamTranslationState, usage: &Value) {
     if let Some(value) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
         state.usage.set_cached_input_tokens(value);
     }
+    if let Some(value) = usage
+        .get("output_tokens_details")
+        .and_then(|details| {
+            details
+                .get("thinking_tokens")
+                .or_else(|| details.get("reasoning_tokens"))
+        })
+        .and_then(Value::as_u64)
+    {
+        state.usage.reasoning_tokens = Some(value);
+    }
 }
 
 // Builds Anthropic usage payloads from normalized and provider-extra state.
@@ -595,6 +606,12 @@ fn anthropic_stream_usage(state: &StreamTranslationState) -> Value {
     }
     if let Some(value) = state.usage.cached_input_tokens() {
         usage.insert("cache_read_input_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = state.usage.reasoning_tokens {
+        usage.insert(
+            "output_tokens_details".to_string(),
+            json!({"thinking_tokens": value}),
+        );
     }
     Value::Object(usage)
 }
