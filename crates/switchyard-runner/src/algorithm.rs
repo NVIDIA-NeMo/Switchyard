@@ -1551,21 +1551,20 @@ fn build_algorithm(
                 ))
             })?;
 
+            let options = candidates
+                .iter()
+                .map(|name| {
+                    let model = resolve_target_model_id(route_name, name, targets)?;
+                    let description = candidate_descriptions
+                        .get(name)
+                        .or_else(|| target_routing_descriptions.get(name))
+                        .cloned()
+                        .unwrap_or_else(|| format!("Configured target {name} uses model {model}."));
+                    Ok(TypeSafeOption::new(name.clone(), description))
+                })
+                .collect::<AlgorithmResult<Vec<_>>>()?;
             let classifier_config = TypeSafeClassifierConfig {
-                options: candidates
-                    .iter()
-                    .map(|name| {
-                        let model = targets.get(name).expect("candidate target was validated");
-                        let description = candidate_descriptions
-                            .get(name)
-                            .or_else(|| target_routing_descriptions.get(name))
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                format!("Configured target {name} uses model {model}.")
-                            });
-                        TypeSafeOption::new(name.clone(), description)
-                    })
-                    .collect(),
+                options,
                 question: question.clone().unwrap_or_default(),
                 base_threshold: *base_threshold,
                 default_target: default_category,

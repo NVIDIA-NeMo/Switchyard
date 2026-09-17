@@ -15,7 +15,7 @@
 //! It sends one real classification request with two candidate orders (the
 //! same shape a two-candidate `type_safe_classifier` route asks in production)
 //! and prints the provider's verdict. A non-zero exit means the call failed;
-//! the printed error is TypeSafe's own response detail (never the API key).
+//! HTTP failures report only their status and never include the API key.
 
 use switchyard_libsy::{TypeSafeClassifierInput, TypeSafeOption, TypeSafeProvider};
 use switchyard_typesafe_client::TypeSafeHttpClient;

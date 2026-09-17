@@ -6,7 +6,7 @@ use std::fmt;
 /// Errors constructing a [`crate::TypeSafeHttpClient`].
 ///
 /// These are configuration-time failures (a missing or empty credential, an
-/// unparsable base URL) — never surfaced from `classify`, which folds every
+/// invalid base URL) — never surfaced from `classify`, which folds every
 /// runtime failure into `switchyard_libsy::TypeSafeProviderError` instead.
 #[derive(Debug)]
 pub enum TypeSafeClientError {
@@ -20,7 +20,7 @@ pub enum TypeSafeClientError {
         /// The environment variable that was read.
         variable: String,
     },
-    /// The supplied base URL could not be parsed.
+    /// The supplied base URL could not be parsed or did not use HTTPS.
     InvalidBaseUrl {
         /// The value that failed to parse.
         base_url: String,

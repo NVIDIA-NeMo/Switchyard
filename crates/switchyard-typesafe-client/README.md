@@ -46,9 +46,10 @@ println!("{:?}", verdict.probabilities);
 # }
 ```
 
-The API key is always read from an environment variable — [`TypeSafeHttpClient::from_env`]
-never accepts one from configuration files, and [`TypeSafeHttpClient`]'s `Debug`
-implementation redacts it.
+`switchyard-runner` always reads the API key from the environment through
+[`TypeSafeHttpClient::from_env`]. Direct library users may instead pass a key
+to [`TypeSafeHttpClient::new`]. [`TypeSafeHttpClient`]'s `Debug` implementation
+redacts the key in either case.
 
 ## Wire format
 

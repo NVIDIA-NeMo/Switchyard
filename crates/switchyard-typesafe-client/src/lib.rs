@@ -7,7 +7,7 @@
 mod error;
 pub use error::TypeSafeClientError;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -29,9 +29,9 @@ const QUESTION_PREFIX: &str = "route_";
 /// HTTP client for TypeSafe's `/v1/systemone` endpoint (the "System One Model" /
 /// Jev), implementing [`TypeSafeProvider`].
 ///
-/// Never constructed from configuration file contents: the API key always comes
-/// from an environment variable via [`TypeSafeHttpClient::from_env`], and the
-/// `Debug` implementation redacts it so a logged client value cannot leak it.
+/// `switchyard-runner` reads the API key from an environment variable through
+/// [`TypeSafeHttpClient::from_env`]. Direct library users may instead use
+/// [`TypeSafeHttpClient::new`]. The `Debug` implementation redacts the key.
 #[derive(Clone)]
 pub struct TypeSafeHttpClient {
     http: reqwest::Client,
@@ -91,18 +91,38 @@ impl TypeSafeHttpClient {
     /// # Errors
     ///
     /// Returns [`TypeSafeClientError::InvalidBaseUrl`] when `base_url` does not
-    /// parse as a URL.
+    /// parse as a URL or does not use HTTPS.
     pub fn with_base_url(
         mut self,
         base_url: impl Into<String>,
     ) -> Result<Self, TypeSafeClientError> {
         let base_url = base_url.into();
-        if let Err(error) = reqwest::Url::parse(&base_url) {
+        let parsed = reqwest::Url::parse(&base_url).map_err(|error| {
+            TypeSafeClientError::InvalidBaseUrl {
+                base_url: base_url.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        if parsed.scheme() != "https" {
             return Err(TypeSafeClientError::InvalidBaseUrl {
                 base_url,
-                reason: error.to_string(),
+                reason: "scheme must be https".to_string(),
             });
         }
+        self.base_url = base_url;
+        Ok(self)
+    }
+
+    #[cfg(test)]
+    fn with_base_url_for_test(
+        mut self,
+        base_url: impl Into<String>,
+    ) -> Result<Self, TypeSafeClientError> {
+        let base_url = base_url.into();
+        reqwest::Url::parse(&base_url).map_err(|error| TypeSafeClientError::InvalidBaseUrl {
+            base_url: base_url.clone(),
+            reason: error.to_string(),
+        })?;
         self.base_url = base_url;
         Ok(self)
     }
@@ -181,6 +201,15 @@ impl TypeSafeProvider for TypeSafeHttpClient {
         if options.is_empty() {
             return Err(TypeSafeProviderError(
                 "typesafe classification needs at least one candidate".to_string(),
+            ));
+        }
+        let unique_labels = options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect::<BTreeSet<_>>();
+        if unique_labels.len() != options.len() {
+            return Err(TypeSafeProviderError(
+                "typesafe classification requires unique candidate labels".to_string(),
             ));
         }
         let orders = option_orders(options);
@@ -296,7 +325,11 @@ impl TypeSafeProvider for TypeSafeHttpClient {
                     best
                 }
             })
-            .expect("options is non-empty");
+            .ok_or_else(|| {
+                TypeSafeProviderError(
+                    "typesafe classification needs at least one candidate".to_string(),
+                )
+            })?;
         let maximum = probabilities[&selected.label];
         let uniform = 1.0 / options.len() as f64;
         let confidence = if options.len() == 1 {
@@ -314,6 +347,7 @@ impl TypeSafeProvider for TypeSafeHttpClient {
     }
 }
 
+// Return at most three deterministic, non-duplicate orders to reduce routing bias.
 fn option_orders(options: &[TypeSafeOption]) -> Vec<Vec<&TypeSafeOption>> {
     let mut orders = vec![options.iter().collect::<Vec<_>>()];
     if options.len() > 1 {
@@ -381,6 +415,30 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn plain_http_base_url_is_rejected() {
+        let result = TypeSafeHttpClient::new("key").with_base_url("http://typesafe.example");
+        assert!(matches!(
+            result,
+            Err(TypeSafeClientError::InvalidBaseUrl { reason, .. })
+                if reason == "scheme must be https"
+        ));
+    }
+
+    #[tokio::test]
+    async fn classify_rejects_duplicate_candidate_labels() {
+        let options = [
+            TypeSafeOption::new("duplicate", "first description"),
+            TypeSafeOption::new("duplicate", "second description"),
+        ];
+        let error = TypeSafeHttpClient::new("sk-test")
+            .classify(input(), &options)
+            .await
+            .expect_err("duplicate labels should fail before the request");
+
+        assert!(error.to_string().contains("unique candidate labels"));
+    }
+
     #[tokio::test]
     async fn classify_parses_a_successful_response() {
         let server = MockServer::start().await;
@@ -428,7 +486,7 @@ mod tests {
             .await;
 
         let client = TypeSafeHttpClient::new("sk-test")
-            .with_base_url(server.uri())
+            .with_base_url_for_test(server.uri())
             .expect("mock server URI is valid");
 
         let verdict = client
@@ -453,7 +511,7 @@ mod tests {
             .await;
 
         let client = TypeSafeHttpClient::new("sk-test")
-            .with_base_url(server.uri())
+            .with_base_url_for_test(server.uri())
             .expect("mock server URI is valid");
 
         let error = client
@@ -479,7 +537,7 @@ mod tests {
             .await;
 
         let client = TypeSafeHttpClient::new("sk-test")
-            .with_base_url(server.uri())
+            .with_base_url_for_test(server.uri())
             .expect("mock server URI is valid");
 
         let error = client
@@ -513,7 +571,7 @@ mod tests {
             .await;
 
         let client = TypeSafeHttpClient::new("sk-test")
-            .with_base_url(server.uri())
+            .with_base_url_for_test(server.uri())
             .expect("mock server URI is valid");
         let error = client
             .classify(input(), &options())
