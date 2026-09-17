@@ -158,8 +158,21 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "output_config",
                 "output_format",
                 "stream",
+                // OpenAI's opaque abuse-attribution ID; derive it from Anthropic metadata below.
+                "safety_identifier",
             ],
         );
+        // OpenAI codecs share this extension for abuse attribution.
+        if let Some(user_id) = body
+            .get("metadata")
+            .and_then(|metadata| metadata.get("user_id"))
+            .and_then(Value::as_str)
+        {
+            request
+                .extensions
+                .fields
+                .insert("safety_identifier".to_string(), json!(user_id));
+        }
         request
             .extensions
             .fields
@@ -237,6 +250,13 @@ impl FormatCodec for AnthropicMessagesCodec {
                     body.insert(field.to_string(), value.clone());
                 }
             }
+        } else if let Some(identity) = request
+            .extensions
+            .fields
+            .get("safety_identifier")
+            .and_then(Value::as_str)
+        {
+            body.insert("metadata".to_string(), json!({"user_id": identity}));
         }
         if let Some(stop_sequences) =
             anthropic_stop_sequences_from_extensions(&request.extensions.fields)

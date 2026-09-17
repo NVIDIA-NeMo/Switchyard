@@ -16,6 +16,59 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn abuse_identity_survives_request_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let formats = [
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+    ];
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        for source in formats {
+            for identity in [Some("opaque-user-6cc3d8d5"), None] {
+                let mut body = match source {
+                    WireFormat::OpenAiChat => json!({
+                        "messages": [{"role": "user", "content": "hi"}]
+                    }),
+                    WireFormat::OpenAiResponses => json!({"input": "hi"}),
+                    WireFormat::AnthropicMessages => json!({
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 8
+                    }),
+                };
+                if source == WireFormat::AnthropicMessages {
+                    if let Some(identity) = identity {
+                        body["metadata"] = json!({"user_id": identity});
+                    }
+                } else {
+                    // OpenAI metadata is not an abuse-attribution identifier.
+                    body["metadata"] = json!({"user_id": "unrelated", "label": "keep"});
+                    if let Some(identity) = identity {
+                        body["safety_identifier"] = json!(identity);
+                    }
+                }
+                let request = engine.decode_request(source, &body, &policy)?.request;
+                for target in formats {
+                    let output = engine.encode_request(target, &request, &policy)?.body;
+                    let actual = if target == WireFormat::AnthropicMessages {
+                        &output["metadata"]["user_id"]
+                    } else {
+                        &output["safety_identifier"]
+                    };
+                    assert_eq!(actual, &json!(identity), "{source:?} -> {target:?}");
+                    if source != WireFormat::AnthropicMessages
+                        && target != WireFormat::AnthropicMessages
+                    {
+                        assert_eq!(output["metadata"], body["metadata"]);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // Verifies target preparation restamps the model, prepends native instructions, and preserves all
 // other provider fields.
 #[test]
