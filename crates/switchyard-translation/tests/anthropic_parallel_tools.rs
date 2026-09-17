@@ -27,9 +27,9 @@ fn translate(
 }
 
 #[test]
-fn parallel_chat_tools_emit_complete_nonoverlapping_anthropic_blocks() -> TestResult {
+fn parallel_chat_tools_stream_as_ordered_nonoverlapping_anthropic_blocks() -> TestResult {
     // Source tool indexes need not match target content indexes or arrival order.
-    for [first, second] in [[0, 1], [7, 2]] {
+    for [first, second, third] in [[0, 1, 2], [7, 2, 1]] {
         let engine = TranslationEngine::default();
         let target = WireFormat::AnthropicMessages;
         let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
@@ -41,7 +41,9 @@ fn parallel_chat_tools_emit_complete_nonoverlapping_anthropic_blocks() -> TestRe
                 {"index": first, "id": "call_paris", "type": "function",
                  "function": {"name": "weather", "arguments": ""}},
                 {"index": second, "id": "call_tokyo", "type": "function",
-                 "function": {"name": "weather", "arguments": ""}}
+                 "function": {"name": "weather", "arguments": ""}},
+                {"index": third, "id": "call_clock", "type": "function",
+                 "function": {"name": "clock", "arguments": "{}"}}
             ]}),
         )?);
         let first_fragments = translate(
@@ -115,7 +117,8 @@ fn parallel_chat_tools_emit_complete_nonoverlapping_anthropic_blocks() -> TestRe
             completed_tools,
             vec![
                 json!({"type": "tool_use", "id": "call_paris", "name": "weather", "input": {"city": "Paris"}}),
-                json!({"type": "tool_use", "id": "call_tokyo", "name": "weather", "input": {"city": "Tokyo"}})
+                json!({"type": "tool_use", "id": "call_tokyo", "name": "weather", "input": {"city": "Tokyo"}}),
+                json!({"type": "tool_use", "id": "call_clock", "name": "clock", "input": {}})
             ]
         );
         let terminal = events
@@ -124,65 +127,11 @@ fn parallel_chat_tools_emit_complete_nonoverlapping_anthropic_blocks() -> TestRe
             .ok_or("missing terminal delta")?;
         assert_eq!(terminal["delta"]["stop_reason"], "tool_use");
         assert_eq!(terminal["usage"]["output_tokens"], 6);
+        assert_eq!(
+            events.last().ok_or("missing terminal event")?["type"],
+            "message_stop"
+        );
         assert!(engine.finish_stream(&mut state, target)?.is_empty());
     }
-    Ok(())
-}
-
-#[test]
-fn pending_anthropic_tools_flush_in_arrival_order() -> TestResult {
-    let engine = TranslationEngine::default();
-    let target = WireFormat::AnthropicMessages;
-    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
-    translate(
-        &engine,
-        &mut state,
-        json!({"tool_calls": [
-            {"index": 0, "id": "call_first", "type": "function",
-             "function": {"name": "clock", "arguments": "{}"}}
-        ]}),
-    )?;
-    let pending = translate(
-        &engine,
-        &mut state,
-        json!({"tool_calls": [
-            {"index": 7, "id": "call_middle", "type": "function",
-             "function": {"name": "weather", "arguments": "{\"city\":\"To"}},
-            {"index": 2, "id": "call_last", "type": "function",
-             "function": {"name": "clock", "arguments": "{}"}}
-        ]}),
-    )?;
-    assert!(pending.is_empty());
-    let pending = translate(
-        &engine,
-        &mut state,
-        json!({"tool_calls": [
-            {"index": 7, "function": {"arguments": "kyo\"}"}}
-        ]}),
-    )?;
-    assert!(pending.is_empty());
-    let events = engine.finish_stream(&mut state, target)?;
-    assert_eq!(events.len(), 9);
-    assert_eq!(
-        &events[..7],
-        &[
-            json!({"type": "content_block_stop", "index": 0}),
-            json!({"type": "content_block_start", "index": 1,
-            "content_block": {"type": "tool_use", "id": "call_middle", "name": "weather", "input": {}}}),
-            json!({"type": "content_block_delta", "index": 1,
-            "delta": {"type": "input_json_delta", "partial_json": "{\"city\":\"Tokyo\"}"}}),
-            json!({"type": "content_block_stop", "index": 1}),
-            json!({"type": "content_block_start", "index": 2,
-            "content_block": {"type": "tool_use", "id": "call_last", "name": "clock", "input": {}}}),
-            json!({"type": "content_block_delta", "index": 2,
-            "delta": {"type": "input_json_delta", "partial_json": "{}"}}),
-            json!({"type": "content_block_stop", "index": 2}),
-        ]
-    );
-    assert_eq!(
-        events.last().ok_or("missing terminal event")?["type"],
-        "message_stop"
-    );
-    assert!(engine.finish_stream(&mut state, target)?.is_empty());
     Ok(())
 }
