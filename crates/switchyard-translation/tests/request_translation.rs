@@ -17,6 +17,77 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
+    use WireFormat::{
+        AnthropicMessages as Anthropic, OpenAiChat as Chat, OpenAiResponses as Responses,
+    };
+    let engine = TranslationEngine::default();
+    let image = json!({"type": "input_image", "file_id": "file_image", "detail": "auto"});
+    let audio =
+        json!({"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}});
+    let file = json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"});
+    let document = json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}, "title": "report.pdf"});
+    let text_file = json!({"type": "input_file", "file_data": "aGVsbG8=", "filename": "notes.txt"});
+    let text_document = json!({"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hello"}, "title": "notes.txt"});
+    for (source, target, block, expected) in [
+        (Responses, Responses, image.clone(), Some(image.clone())),
+        (Responses, Chat, image.clone(), None),
+        (Responses, Anthropic, image, None),
+        (Chat, Chat, audio.clone(), Some(audio.clone())),
+        (Chat, Responses, audio.clone(), Some(audio.clone())),
+        (Responses, Chat, audio.clone(), Some(audio.clone())),
+        (Responses, Responses, audio.clone(), Some(audio.clone())),
+        (Responses, Anthropic, audio, None),
+        (Responses, Responses, file.clone(), Some(file.clone())),
+        (Responses, Chat, file.clone(), None),
+        (Responses, Anthropic, file.clone(), Some(document.clone())),
+        (Anthropic, Chat, document.clone(), None),
+        (Anthropic, Responses, document, Some(file)),
+        (
+            Responses,
+            Anthropic,
+            text_file.clone(),
+            Some(text_document.clone()),
+        ),
+        (
+            Responses,
+            Anthropic,
+            json!({"type": "input_file", "file_data": "data:text/plain;base64,aGVsbG8=", "filename": "notes.txt"}),
+            Some(text_document.clone()),
+        ),
+        (Anthropic, Responses, text_document, Some(text_file)),
+    ] {
+        let body = if source == Responses {
+            json!({"input": [{"role": "user", "content": [block]}]})
+        } else {
+            json!({"messages": [{"role": "user", "content": [block]}], "max_tokens": 16})
+        };
+        let result = engine.translate_request(source, target, &body, &normalized_policy());
+        if let Some(expected) = expected {
+            let output = result?.body;
+            let messages = if target == Responses {
+                &output["input"]
+            } else {
+                &output["messages"]
+            };
+            assert_eq!(
+                messages[0]["content"][0], expected,
+                "{source:?} -> {target:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(switchyard_translation::TranslationError::LossyConversion(_))
+                ),
+                "{source:?} -> {target:?} must reject unsupported media"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn abuse_identity_survives_request_translation() -> TestResult {
     let engine = TranslationEngine::default();
     let formats = [

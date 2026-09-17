@@ -897,6 +897,9 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                             out.push(ContentBlock::Image { source });
                         }
                     }
+                    Some("input_audio") => out.push(ContentBlock::Audio {
+                        source: MediaSource::Raw(Value::Object(block.clone())),
+                    }),
                     Some("input_file") => out.push(ContentBlock::File {
                         source: decode_file_source(block),
                     }),
@@ -1527,18 +1530,9 @@ fn encode_responses_content(
                     blocks.push(json!({"type": "input_text", "text": image_source_text(source)}));
                 }
             },
-            ContentBlock::Audio { source } => blocks.push(match source {
-                MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
-                MediaSource::Url { url, media_type } => json!({
-                    "type": "input_audio",
-                    "audio_url": url,
-                    "media_type": media_type,
-                }),
-                MediaSource::Base64 { media_type, data } => json!({
-                    "type": "input_audio",
-                    "audio": {"media_type": media_type, "data": data},
-                }),
-            }),
+            ContentBlock::Audio { source } => {
+                blocks.push(crate::codecs::openai_media::audio_part(source)?);
+            }
             ContentBlock::Video { source } => blocks.push(match source {
                 MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
                 MediaSource::Url { url, media_type } => json!({
@@ -1598,6 +1592,12 @@ fn encode_responses_tool_output(
 }
 
 fn responses_image_part(source: &ImageSource) -> Option<Value> {
+    if let ImageSource::Raw(raw) = source
+        && raw.get("type").and_then(Value::as_str) == Some("input_image")
+        && raw.get("file_id").and_then(Value::as_str).is_some()
+    {
+        return Some(raw.clone());
+    }
     let ImagePayload { url, detail } = image_payload(source)?;
     let mut part = json!({"type": "input_image"});
     part["image_url"] = Value::String(url);

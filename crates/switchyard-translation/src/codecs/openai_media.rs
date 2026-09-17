@@ -1,11 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Image and file payloads shared by the OpenAI Chat and Responses codecs.
+//! Media payloads shared by the OpenAI Chat and Responses codecs.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value, json};
 
-use crate::llm::{FileSource, ImageSource};
+use crate::error::{Result, TranslationError};
+use crate::format::WireFormat;
+use crate::llm::{ContentBlock, FileSource, ImageSource, MediaSource};
 use crate::util::json_string;
 
 pub(super) struct ImagePayload {
@@ -107,18 +110,95 @@ fn file_data_payload(data: &str, filename: Option<&str>) -> Map<String, Value> {
 // Maps portable fields from raw Anthropic documents without forwarding provider-managed IDs.
 fn raw_file_payload(raw: &Value) -> Option<Map<String, Value>> {
     let block = raw.as_object()?;
+    if block.get("type").and_then(Value::as_str) == Some("input_file") {
+        let mut payload = block.clone();
+        payload.remove("type");
+        return Some(payload);
+    }
     if block.get("type").and_then(Value::as_str) != Some("document") {
         return None;
     }
     let source = block.get("source").and_then(Value::as_object)?;
-    if source.get("type").and_then(Value::as_str) != Some("base64") {
-        return None;
+    let filename = block.get("title").and_then(Value::as_str);
+    match source.get("type").and_then(Value::as_str)? {
+        "url" => {
+            let mut payload = Map::new();
+            payload.insert("file_url".into(), source.get("url")?.clone());
+            if let Some(filename) = filename {
+                payload.insert("filename".into(), filename.into());
+            }
+            Some(payload)
+        }
+        "text" => Some(file_data_payload(
+            &STANDARD.encode(source.get("data")?.as_str()?),
+            filename,
+        )),
+        "base64" => Some(file_data_payload(source.get("data")?.as_str()?, filename)),
+        _ => None,
     }
-    let data = source.get("data").and_then(Value::as_str)?;
-    Some(file_data_payload(
-        data,
-        block.get("title").and_then(Value::as_str),
-    ))
+}
+
+pub(super) fn audio_part(source: &MediaSource) -> Result<Value> {
+    match source {
+        MediaSource::Raw(raw)
+            if raw.get("type").and_then(Value::as_str) == Some("input_audio")
+                && raw["input_audio"]["data"].is_string()
+                && matches!(raw["input_audio"]["format"].as_str(), Some("wav" | "mp3")) =>
+        {
+            Ok(raw.clone())
+        }
+        MediaSource::Base64 {
+            media_type: Some(media_type),
+            data,
+        } => {
+            let format = match media_type.as_str() {
+                "audio/wav" => "wav",
+                "audio/mpeg" => "mp3",
+                _ => {
+                    return Err(TranslationError::LossyConversion(
+                        "unsupported input audio media type".into(),
+                    ));
+                }
+            };
+            Ok(json!({"type": "input_audio", "input_audio": {"data": data, "format": format}}))
+        }
+        MediaSource::Url { .. } => Err(TranslationError::LossyConversion(
+            "OpenAI input audio requires base64 data, not a URL; provide MediaSource::Base64 instead".into(),
+        )),
+        _ => Err(TranslationError::LossyConversion(
+            "unsupported input audio source".into(),
+        )),
+    }
+}
+
+// File IDs belong to their provider; a target cannot resolve another provider's image ID.
+pub(super) fn validate_media(block: &ContentBlock, target: WireFormat) -> Result<()> {
+    let is_unsupported = match block {
+        ContentBlock::Image {
+            source: ImageSource::Raw(raw),
+        } => raw.get("file_id").is_some() && target != WireFormat::OpenAiResponses,
+        ContentBlock::Audio { .. } => target == WireFormat::AnthropicMessages,
+        ContentBlock::File {
+            source: FileSource::Raw(raw),
+        } if target == WireFormat::OpenAiChat => {
+            raw.get("file_url").is_some()
+                || (raw.get("type").and_then(Value::as_str) == Some("document")
+                    && raw["source"]["type"].as_str() == Some("url"))
+        }
+        ContentBlock::ToolResult(result) => {
+            for block in &result.content {
+                validate_media(block, target)?;
+            }
+            false
+        }
+        _ => false,
+    };
+    if is_unsupported {
+        return Err(TranslationError::LossyConversion(format!(
+            "input media cannot be represented in {target}"
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn file_source_text(source: &FileSource) -> String {
