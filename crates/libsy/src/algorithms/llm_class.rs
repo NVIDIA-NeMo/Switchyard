@@ -92,7 +92,7 @@ impl TaskClassifierVerdict {
 /// Selects by reference and clones only what survives — a coding-agent
 /// conversation carries every tool result, so cloning it whole to keep a window
 /// would copy the transcript on each judged turn.
-fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
+pub(crate) fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
     let is_instruction = |message: &Message| matches!(message.role, Role::System | Role::Developer);
     let mut kept: Vec<&Message> = messages.iter().filter(|m| is_instruction(m)).collect();
     let Some(task) = messages.iter().position(|m| m.role == Role::User) else {
@@ -149,7 +149,7 @@ fn window_start(tail: &[&Message], recent_turn_window: usize) -> usize {
 }
 
 /// Keeps the opening task and the latest user follow-up when they differ.
-fn task_messages(messages: &[Message]) -> Vec<Message> {
+pub(crate) fn task_messages(messages: &[Message]) -> Vec<Message> {
     // Decoders also use the user role for tool results. Select ordinary user content
     // first, so a tool result cannot replace the opening task or latest follow-up.
     let is_task_content = |block: &ContentBlock| {
@@ -519,7 +519,7 @@ impl JudgePolicy for CustomPolicyRuntime {
 }
 
 /// Builds the affinity router a trigger calls for, if any.
-fn affinity_router(
+pub(crate) fn affinity_router(
     trigger: ClassifyTrigger,
     message_hash_fallback: bool,
 ) -> Option<Arc<AffinityRouter>> {

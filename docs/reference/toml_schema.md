@@ -97,6 +97,23 @@ targets. The server rejects an Anthropic forwarding route called through an
 OpenAI endpoint, or an OpenAI forwarding route called through an Anthropic
 endpoint, before it calls an upstream.
 
+## `[type_safe_client]`
+
+Optional, deployment-wide settings for [TypeSafe](https://docs.typesafe.ai/introduction)'s
+Jev "System One Model". Required when any route uses
+`type = "type_safe_classifier"`; unused otherwise. Unlike `[llm_clients.<name>]`,
+there is at most one of these per deployment — every `type_safe_classifier`
+route shares it. See [TypeSafe Classifier Routing](../routing_algorithms/type_safe_classifier_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `api_key_env` | Yes | — | Name of the environment variable holding the TypeSafe API key. |
+| `base_url` | No | `https://api.typesafe.ai` | Overrides the API root. |
+| `model` | No | `jev-latest` | Overrides the model name sent as `model`. |
+
+As with every other credential in this file, the key itself is never read from
+TOML and never logged.
+
 ## `[targets.<name>]`
 
 | Key | Required | Default | Meaning |
@@ -279,6 +296,28 @@ rather than a group, or a group you did not configure, falls back to
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`
 mode, or in the prompt in `json_object` mode.
+
+### `type_safe_classifier`
+
+Routes using a runner-owned TypeSafe (Jev "System One Model") classifier.
+Requires a [`[type_safe_client]`](#type_safe_client) table in the deployment.
+See [TypeSafe Classifier Routing](../routing_algorithms/type_safe_classifier_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `options` | Yes | — | Labeled criteria offered to TypeSafe, keyed by name. Every key must also be a key of `models`. |
+| `default_target` | Yes | — | Group used when TypeSafe fails, returns an unconfigured label, or answers below `base_threshold`. Any group except `judge`. |
+| `base_threshold` | Yes | — | Lowest confidence that is trusted, in `[0, 1]`. |
+| `question` | No | generic tier-selection prompt | Instruction sent as TypeSafe's `instructions` field. |
+| `classify_trigger` | No | `every_request` | When the classifier runs. Same semantics as `llm_classifier`. |
+| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
+| `recent_turn_window` | No | unset | When unset, TypeSafe sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `models.any` | Yes | — | Every selectable completion target. Every other group's targets must also appear here; one that does not is rejected at configuration load. |
+| `models.<option name>` | No | — | Ordered models for that `options` label. Its first model serves the turn. |
+
+There is no `models.judge` group: the judgment step is TypeSafe itself, not one
+of the deployment's own runtime models. `judge` may not be used as an `options`
+key or as `default_target`.
 
 ### `stage_router`
 

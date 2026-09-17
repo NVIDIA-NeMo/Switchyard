@@ -28,6 +28,7 @@ pub use algorithms::passthrough::Passthrough;
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};
+pub use algorithms::type_safe_class::{TypeSafeClassifierConfig, TypeSafeTaskClassifier};
 pub use algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};
 pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,
@@ -36,6 +37,10 @@ pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::append_note;
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
+pub use algorithms::util::typesafe_provider::{
+    TypeSafeClassifierInput, TypeSafeOption, TypeSafeProvider, TypeSafeProviderError,
+    TypeSafeVerdict,
+};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).

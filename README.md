@@ -255,6 +255,7 @@ Most use an LLM as a judge. All of them pick between an **efficient** model and 
 | Algorithm | How it decides | Route `type` | Benchmark |
 |---|---|---|---|
 | **[Capability](docs/routing_algorithms/llm_classifier_routing.md)** | The first request is judged by an LLM. | `llm_classifier` | 71.2% at $79.32 |
+| **[TypeSafe Classifier](docs/routing_algorithms/type_safe_classifier_routing.md)** | The first request is judged by TypeSafe's Jev, a non-generative classifier — no chat-completion judge call. | `type_safe_classifier` | not yet benchmarked |
 | **[Stage](docs/routing_algorithms/stage_router_routing.md)** | Tool responses are judged by pattern matching or an LLM. | `stage_router` | 72.7% at $68.19 |
 | **[Capability + Stage](docs/routing_algorithms/composite_routing.md)** | Combines the two above. | `composite` | not yet benchmarked |
 | **[Escalation](docs/routing_algorithms/escalation_router_routing.md)** | Starts efficient. Responses are judged by an LLM for issues, then escalated. | `llm_classifier` + `mode = "escalation"` | 75.7% at $85.00 |

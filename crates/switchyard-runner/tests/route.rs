@@ -41,7 +41,7 @@ fn plugin_route(client: Arc<dyn RoutedLlmClient>) -> Route {
         ModelId::from("semantic-target"),
     )]);
     let algorithm = spec
-        .build("switchyard", &targets)
+        .build("switchyard", &targets, None)
         .expect("identity target map should build");
     let clients = ClientRouter::new(
         BTreeMap::from([(ModelId::from("semantic-target"), client)])
