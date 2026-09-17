@@ -2432,6 +2432,7 @@ dependencies = [
  "switchyard-libsy",
  "switchyard-llm-client",
  "switchyard-protocol",
+ "switchyard-typesafe-client",
  "thiserror 2.0.18",
  "tokio",
  "toml",
@@ -2515,6 +2516,20 @@ dependencies = [
  "switchyard-protocol",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "switchyard-typesafe-client"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "switchyard-libsy",
+ "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

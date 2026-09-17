@@ -818,7 +818,7 @@ mod tests {
 
     fn runtime_for(model: &str) -> SwitchyardRuntime {
         let algorithm = AlgorithmSpec::Noop {}
-            .build("relay", &BTreeMap::new())
+            .build("relay", &BTreeMap::new(), None)
             .expect("noop route should build");
         let route = Route::new(
             algorithm,

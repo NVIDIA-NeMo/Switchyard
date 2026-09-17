@@ -8,6 +8,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **TypeSafe classifier routing** — new `type_safe_classifier` route type
+  routes through TypeSafe's Jev "System One Model" instead of a
+  chat-completion judge. `switchyard-libsy` stays I/O-free: the classifier
+  depends only on a new `TypeSafeProvider` port, and a new
+  `switchyard-typesafe-client` crate supplies the runner-owned HTTP
+  implementation, injected once per deployment via a `[type_safe_client]`
+  table. Fails open on a low-confidence, unresolved, or out-of-range verdict,
+  or a provider error. (#723)
 - **`timeout_ms` on `[llm_clients.<name>]`** — one deadline covers all attempts,
   retry delays, and the complete response, including stream reads. Unset leaves
   the wait unbounded; `0` is rejected. A timeout returns `504` without trying another
