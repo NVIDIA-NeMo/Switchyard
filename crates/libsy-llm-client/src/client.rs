@@ -24,7 +24,7 @@ use switchyard_translation::{
 };
 use tracing::Instrument;
 
-use crate::backend::Backend;
+use crate::backend::{Backend, openai_url};
 use crate::error::{LlmClientError, Result};
 use crate::metrics;
 use crate::raw::RawResponse;
@@ -101,11 +101,16 @@ impl AuxiliaryOperation {
     }
 
     fn url(self, backend: &Backend) -> String {
-        match self {
-            Self::AnthropicCountTokens => backend.count_tokens_url(),
-            Self::ResponsesInputTokens => format!("{}/input_tokens", backend.url()),
-            Self::ResponsesCompact => format!("{}/compact", backend.url()),
-        }
+        let suffix = match self {
+            Self::AnthropicCountTokens => return backend.count_tokens_url(),
+            Self::ResponsesInputTokens => "/responses/input_tokens",
+            Self::ResponsesCompact => "/responses/compact",
+        };
+        let base_url = backend.url();
+        openai_url(&base_url, suffix).unwrap_or_else(|error| {
+            tracing::error!(%error, "Unable to build OpenAI auxiliary endpoint URL");
+            base_url
+        })
     }
 }
 
@@ -1292,6 +1297,67 @@ mod tests {
             reasoning_effort: None,
             max_retries: 0,
             timeout: None,
+        }
+    }
+
+    #[test]
+    fn provider_endpoint_urls_preserve_query_and_fragment() {
+        let invalid_url = "not a URL/";
+        let backend = Backend::OpenAiResponses(config(invalid_url));
+        assert!(openai_url(invalid_url, "/responses").is_err());
+        assert_eq!(backend.url(), invalid_url);
+        assert_eq!(
+            AuxiliaryOperation::ResponsesCompact.url(&backend),
+            invalid_url
+        );
+
+        let anthropic = Backend::Anthropic(config(invalid_url));
+        assert_eq!(anthropic.url(), invalid_url);
+        assert_eq!(anthropic.count_tokens_url(), invalid_url);
+
+        for path in ["", "/v1/", "/v1/messages"] {
+            for tail in [
+                "",
+                "?api-version=2026-09-01&value=%2F/",
+                "#fragment?value=/",
+            ] {
+                let base_url = format!("https://example.com{path}{tail}");
+                let backend = Backend::Anthropic(config(&base_url));
+                assert_eq!(
+                    backend.url(),
+                    format!("https://example.com/v1/messages{tail}")
+                );
+                assert_eq!(
+                    AuxiliaryOperation::AnthropicCountTokens.url(&backend),
+                    format!("https://example.com/v1/messages/count_tokens{tail}")
+                );
+            }
+        }
+
+        for path in ["/v1", "/v1/responses/", "/v1/chat/completions"] {
+            for tail in [
+                "",
+                "?api-version=2026-09-01&value=%2F/",
+                "#fragment?value=/",
+            ] {
+                let base_url = format!("https://example.com{path}{tail}");
+                let responses = Backend::OpenAiResponses(config(&base_url));
+                let chat = Backend::OpenAiChat(config(&base_url));
+                for (actual, endpoint) in [
+                    (responses.url(), "/responses"),
+                    (chat.url(), "/chat/completions"),
+                    (
+                        AuxiliaryOperation::ResponsesCompact.url(&responses),
+                        "/responses/compact",
+                    ),
+                    (
+                        AuxiliaryOperation::ResponsesInputTokens.url(&responses),
+                        "/responses/input_tokens",
+                    ),
+                ] {
+                    assert_eq!(actual, format!("https://example.com/v1{endpoint}{tail}"));
+                }
+            }
         }
     }
 

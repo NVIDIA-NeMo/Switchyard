@@ -148,12 +148,16 @@ impl Backend {
     /// Tolerates base URLs that already include the provider path (or a bare
     /// `/v1`), matching the join rules of the existing native backends.
     pub fn url(&self) -> String {
-        let base_url = self.config().base_url.trim_end_matches('/');
-        match self {
+        let base_url = &self.config().base_url;
+        let result = match self {
             Backend::OpenAiChat(_) => openai_url(base_url, "/chat/completions"),
             Backend::OpenAiResponses(_) => openai_url(base_url, "/responses"),
-            Backend::Anthropic(_) => anthropic_url(base_url),
-        }
+            Backend::Anthropic(_) => anthropic_url(base_url, ""),
+        };
+        result.unwrap_or_else(|error| {
+            tracing::error!(%error, "Unable to build provider endpoint URL");
+            base_url.clone()
+        })
     }
 
     /// Applies this backend's configured auth and version headers to a request builder.
@@ -275,8 +279,11 @@ impl Backend {
     /// The upstream `/v1/messages/count_tokens` URL, derived from the same base
     /// URL join as [`url`](Self::url).
     pub fn count_tokens_url(&self) -> String {
-        let base_url = self.config().base_url.trim_end_matches('/');
-        format!("{}/count_tokens", anthropic_url(base_url))
+        let base_url = &self.config().base_url;
+        anthropic_url(base_url, "/count_tokens").unwrap_or_else(|error| {
+            tracing::error!(%error, "Unable to build Anthropic token-counting URL");
+            base_url.clone()
+        })
     }
 
     /// Whether an upstream 400 `body` looks like a context-window overflow for
@@ -326,23 +333,34 @@ fn oauth_beta_header(value: &HeaderValue) -> Option<HeaderValue> {
 }
 
 // Accept either a root `/v1` URL or an already-specific OpenAI endpoint URL.
-fn openai_url(base_url: &str, suffix: &str) -> String {
-    let base_root = base_url
+pub(crate) fn openai_url(base_url: &str, suffix: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url).map_err(|error| LlmClientError::Configuration {
+        message: format!("Invalid OpenAI base URL: {error}"),
+    })?;
+    let base_path = url.path().trim_end_matches('/');
+    let base_root = base_path
         .strip_suffix("/chat/completions")
-        .or_else(|| base_url.strip_suffix("/responses"))
-        .unwrap_or(base_url);
-    format!("{base_root}{suffix}")
+        .or_else(|| base_path.strip_suffix("/responses"))
+        .unwrap_or(base_path);
+    url.set_path(&format!("{base_root}{suffix}"));
+    Ok(url.into())
 }
 
 // Accept a bare host, a `/v1` root, or an already-specific `/v1/messages` URL.
-fn anthropic_url(base_url: &str) -> String {
-    if base_url.ends_with("/v1/messages") {
-        base_url.to_string()
-    } else if base_url.ends_with("/v1") {
-        format!("{base_url}/messages")
+fn anthropic_url(base_url: &str, suffix: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url).map_err(|error| LlmClientError::Configuration {
+        message: format!("Invalid Anthropic base URL: {error}"),
+    })?;
+    let base_path = url.path().trim_end_matches('/');
+    let messages_path = if base_path.ends_with("/v1/messages") {
+        base_path.to_string()
+    } else if base_path.ends_with("/v1") {
+        format!("{base_path}/messages")
     } else {
-        format!("{base_url}/v1/messages")
-    }
+        format!("{base_path}/v1/messages")
+    };
+    url.set_path(&format!("{messages_path}{suffix}"));
+    Ok(url.into())
 }
 
 #[cfg(test)]
