@@ -130,7 +130,10 @@ fn raw_file_payload(raw: &Value) -> Option<Map<String, Value>> {
             Some(payload)
         }
         "text" => Some(file_data_payload(
-            &STANDARD.encode(source.get("data")?.as_str()?),
+            &format!(
+                "data:text/plain;base64,{}",
+                STANDARD.encode(source.get("data")?.as_str()?)
+            ),
             filename,
         )),
         "base64" => Some(file_data_payload(source.get("data")?.as_str()?, filename)),
@@ -178,6 +181,9 @@ pub(super) fn validate_media(block: &ContentBlock, target: WireFormat) -> Result
             source: ImageSource::Raw(raw),
         } => raw.get("file_id").is_some() && target != WireFormat::OpenAiResponses,
         ContentBlock::Audio { .. } => target == WireFormat::AnthropicMessages,
+        ContentBlock::File {
+            source: FileSource::FileId(_),
+        } => target == WireFormat::AnthropicMessages,
         ContentBlock::File {
             source: FileSource::Raw(raw),
         } if target == WireFormat::OpenAiChat => {

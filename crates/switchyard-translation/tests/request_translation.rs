@@ -22,6 +22,18 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
         AnthropicMessages as Anthropic, OpenAiChat as Chat, OpenAiResponses as Responses,
     };
     let engine = TranslationEngine::default();
+    let untitled = json!({
+        "type": "document",
+        "source": {"type": "text", "media_type": "text/plain", "data": "hello"}
+    });
+    let body = json!({"messages": [{"role": "user", "content": [untitled]}], "max_tokens": 16});
+    for target in [Chat, Responses] {
+        let translated =
+            engine.translate_request(Anthropic, target, &body, &normalized_policy())?;
+        let restored =
+            engine.translate_request(target, Anthropic, &translated.body, &normalized_policy())?;
+        assert_eq!(restored.body["messages"][0]["content"][0], untitled);
+    }
     let image = json!({"type": "input_image", "file_id": "file_image", "detail": "auto"});
     let audio =
         json!({"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}});
@@ -33,6 +45,26 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
         (Responses, Responses, image.clone(), Some(image.clone())),
         (Responses, Chat, image.clone(), None),
         (Responses, Anthropic, image, None),
+        (
+            Responses,
+            Anthropic,
+            json!({"type": "input_file", "file_id": "file_openai"}),
+            None,
+        ),
+        (
+            Chat,
+            Anthropic,
+            json!({"type": "file", "file": {"file_id": "file_openai"}}),
+            None,
+        ),
+        (
+            Anthropic,
+            Anthropic,
+            json!({"type": "document", "source": {"type": "file", "file_id": "file_anthropic"}}),
+            Some(
+                json!({"type": "document", "source": {"type": "file", "file_id": "file_anthropic"}}),
+            ),
+        ),
         (Chat, Chat, audio.clone(), Some(audio.clone())),
         (Chat, Responses, audio.clone(), Some(audio.clone())),
         (Responses, Chat, audio.clone(), Some(audio.clone())),
@@ -55,7 +87,14 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
             json!({"type": "input_file", "file_data": "data:text/plain;base64,aGVsbG8=", "filename": "notes.txt"}),
             Some(text_document.clone()),
         ),
-        (Anthropic, Responses, text_document, Some(text_file)),
+        (
+            Anthropic,
+            Responses,
+            text_document,
+            Some(
+                json!({"type": "input_file", "file_data": "data:text/plain;base64,aGVsbG8=", "filename": "notes.txt"}),
+            ),
+        ),
     ] {
         let body = if source == Responses {
             json!({"input": [{"role": "user", "content": [block]}]})

@@ -945,6 +945,7 @@ fn encode_anthropic_file(source: &FileSource) -> Result<Value> {
 fn encode_anthropic_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
     let mut blocks = Vec::new();
     for block in content {
+        crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
         blocks.extend(encode_one_anthropic_response_block(block)?);
     }
     if blocks.is_empty() {
