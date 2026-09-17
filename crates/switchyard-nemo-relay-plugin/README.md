@@ -13,12 +13,10 @@ algorithm construction, retry policy, and route validation.
 The plugin requires NeMo Relay `>=0.8.0, <1.0.0`.
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when this native
-plugin is enabled, including for models outside its configured routes. The
-correction is targeted for Relay 0.9.1 and later. Until release, use a Relay build
-containing the native error and stream-opening fixes, or isolate unmanaged
-traffic in a plugin-disabled gateway. See [upstream error compatibility and
-validation](../../docs/integrations/nemo_relay.md#upstream-error-compatibility).
-
+plugin is enabled, including for models outside its configured routes. This is
+a known issue tracked by [NeMo Relay PR #1109](https://github.com/NVIDIA/NeMo-Relay/pull/1109).
+Until a fix is available, isolate unmanaged traffic in a plugin-disabled gateway.
+See the [upstream error compatibility note](../../docs/integrations/nemo_relay.md#upstream-error-compatibility).
 
 ### Install a released bundle
 
