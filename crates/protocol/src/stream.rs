@@ -297,7 +297,7 @@ fn push_checked_chunk(
 /// One provider-neutral streaming response chunk.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LlmResponseChunk {
-    /// Starts a response message.
+    /// Starts a response message, or fills in identity first supplied by a later frame.
     MessageStart {
         /// Provider response identifier.
         id: Option<String>,

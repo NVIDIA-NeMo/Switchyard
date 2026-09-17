@@ -67,14 +67,17 @@ fn decode_openai_chat_stream(
     }
 
     let mut out = Vec::new();
-    if !state.saw_message_start {
+    let mut identity_changed = false;
+    if state.model.is_none() {
+        state.model = string_field(object, "model");
+        identity_changed |= state.model.is_some();
+    }
+    if state.message_id.is_none() {
+        state.message_id = string_field(object, "id");
+        identity_changed |= state.message_id.is_some();
+    }
+    if !state.saw_message_start || identity_changed {
         state.saw_message_start = true;
-        if let Some(model) = string_field(object, "model") {
-            state.model = Some(model);
-        }
-        if let Some(id) = string_field(object, "id") {
-            state.message_id = Some(id);
-        }
         out.push(LlmResponseChunk::MessageStart {
             id: state.message_id.clone(),
             model: state.model.clone(),

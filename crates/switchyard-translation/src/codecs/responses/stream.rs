@@ -732,6 +732,10 @@ fn ensure_responses_created(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.response_created {
         return Vec::new();
     }
+    // A provider ID learned later must not change an already published response or item ID.
+    if state.target_message_id.is_none() {
+        state.target_message_id = Some(responses_id(state));
+    }
     state.response_created = true;
     vec![json!({
         "type": "response.created",

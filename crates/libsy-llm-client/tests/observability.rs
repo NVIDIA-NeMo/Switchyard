@@ -1068,7 +1068,7 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
     assert!(matches!(
         otel_attribute(&otel_span, "gen_ai.response.finish_reasons"),
         Some(OtelValue::Array(OtelArray::String(reasons)))
-            if reasons.len() == 1 && reasons[0].as_str() == "end_turn"
+            if reasons.len() == 1 && reasons[0].as_str() == "stop"
     ));
     assert_eq!(
         otel_attribute(&otel_span, "gen_ai.request.max_tokens"),
@@ -1243,22 +1243,21 @@ struct StreamingUsageClient;
 #[async_trait]
 impl RoutedLlmClient for StreamingUsageClient {
     async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
-        let usage = Usage {
-            input_tokens: Some(13),
-            output_tokens: Some(5),
-            cache: Usage::cache_details(Some(8), None),
-            ..Usage::default()
-        };
-        let chunks = vec![Ok(LlmResponseStreamEvent::new(vec![
-            LlmResponseChunk::MessageStart {
-                id: Some("obs-stream-response".to_string()),
-                model: request.model_id().map(|s| s.to_string()),
-            },
-            LlmResponseChunk::Usage(usage),
-            LlmResponseChunk::MessageStop {
-                reason: Some("end_turn".to_string()),
-            },
-        ]))];
+        let engine = switchyard_translation::TranslationEngine::default();
+        let mut state = switchyard_translation::StreamTranslationState::new(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+        );
+        let chunks = [
+            json!({"id": "", "model": request.model_id(), "choices": []}),
+            json!({"id": "", "choices": [{"index": 0, "delta": {"content": "hello"}}]}),
+            json!({"id": "obs-stream-response", "choices": []}),
+            json!({"id": "obs-stream-response", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 21, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 8}}}),
+        ].into_iter().map(|event| {
+            Ok(engine.decode_stream_event(&mut state, WireFormat::OpenAiChat, event)
+                .expect("valid Chat fixture"))
+        }).collect::<Vec<_>>();
         Ok(Response {
             llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter(chunks))),
             metadata: None,
@@ -1291,11 +1290,41 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
     let LlmResponse::Stream(mut stream) = response.llm_response else {
         return Err(test_error("expected a streamed response"));
     };
+    let engine = switchyard_translation::TranslationEngine::default();
+    let mut translated = switchyard_translation::StreamTranslationState::new(
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+    );
+    let mut events = Vec::new();
     while let Some(item) = stream.next().await {
-        if let Err(error) = item {
-            panic!("unexpected stream error: {error}");
-        }
+        events.extend(
+            engine
+                .encode_stream_event(
+                    &mut translated,
+                    WireFormat::OpenAiResponses,
+                    item.expect("valid stream"),
+                )
+                .expect("valid translation"),
+        );
     }
+    events.extend(
+        engine
+            .finish_stream(&mut translated, WireFormat::OpenAiResponses)
+            .expect("valid finish"),
+    );
+    let created = events
+        .iter()
+        .find(|e| e["type"] == "response.created")
+        .expect("created");
+    let completed = events
+        .iter()
+        .find(|e| e["type"] == "response.completed")
+        .expect("completed");
+    assert_eq!(created["response"]["id"], completed["response"]["id"]);
+    assert_eq!(
+        completed["response"]["output"][0]["content"][0]["text"],
+        "hello"
+    );
 
     let spans = store.spans();
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
@@ -1318,7 +1347,7 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
     assert!(matches!(
         otel_attribute(&otel_span, "gen_ai.response.finish_reasons"),
         Some(OtelValue::Array(OtelArray::String(reasons)))
-            if reasons.len() == 1 && reasons[0].as_str() == "end_turn"
+            if reasons.len() == 1 && reasons[0].as_str() == "stop"
     ));
     Ok(())
 }
