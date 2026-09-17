@@ -223,7 +223,7 @@ impl TypeSafeProvider for TypeSafeHttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn options() -> Vec<TypeSafeOption> {
@@ -273,6 +273,20 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/systemone"))
             .and(header("Authorization", "Bearer sk-test"))
+            .and(body_partial_json(serde_json::json!({
+                "state": "[user] list files in a directory",
+                "model": "jev-latest",
+                "questions": {
+                    "route": {
+                        "type": "choice",
+                        "instructions": "Which tier does this need?",
+                        "criteria": {
+                            "capable": "complex, multi-step work",
+                            "efficient": "short, simple requests"
+                        }
+                    }
+                }
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "usage": {"input_tokens": 42},
                 "answers": {"route": {"choice": "efficient", "confidence": 0.87}}
