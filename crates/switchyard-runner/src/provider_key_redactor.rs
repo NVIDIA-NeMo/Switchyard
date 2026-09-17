@@ -12,7 +12,7 @@ use serde_json::Value;
 /// are not reconstructed. This is exact substring matching, not a general secret detector.
 #[derive(Default)]
 pub struct ProviderKeyRedactor {
-    raw: Vec<String>,
+    text: Vec<String>,
     json: Vec<String>,
 }
 
@@ -30,12 +30,18 @@ impl ProviderKeyRedactor {
             })
             .collect();
         json.sort_by_key(|key| std::cmp::Reverse(key.len()));
-        Self { raw, json }
+        // Match escaped forms before any raw-key suffix they contain. Otherwise a
+        // leading backslash can survive replacement and invalidate embedded JSON.
+        let mut text = raw;
+        text.extend(json.iter().cloned());
+        text.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        text.dedup();
+        Self { text, json }
     }
 
     /// Returns whether there are no configured secrets to redact.
     pub fn is_empty(&self) -> bool {
-        self.raw.is_empty()
+        self.text.is_empty()
     }
 
     /// Redacts JSON-escaped keys in serialized JSON, preserving the server's wire behavior.
@@ -43,12 +49,12 @@ impl ProviderKeyRedactor {
         replace(value, &self.json)
     }
 
-    /// Redacts keys in plain text, including headers and error messages.
+    /// Redacts raw and JSON-escaped keys in text, including headers and error messages.
     pub fn text(&self, value: String) -> String {
-        replace(value, &self.raw)
+        replace(value, &self.text)
     }
 
-    /// Redacts string values and member names throughout a structured JSON value.
+    /// Redacts raw and JSON-escaped keys in string values and member names throughout JSON.
     pub fn value(&self, value: Value) -> Value {
         if self.is_empty() {
             return value;
@@ -127,6 +133,52 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&redactor.json(value.to_string())).unwrap(),
             sanitized
+        );
+    }
+
+    #[test]
+    fn json_escaped_credentials_are_redacted_in_error_text() {
+        for key in [r#"provider-"key"#, r"provider-\key", r#"\provider-"key"#] {
+            let redactor = ProviderKeyRedactor::new(&[key.into()]);
+            let detail = json!({"credential": key, "message": "ordinary diagnostics"});
+            let text = format!("raw: {key}; provider error: {detail}");
+            let expected = format!(
+                "raw: [REDACTED]; provider error: {}",
+                json!({"credential": "[REDACTED]", "message": "ordinary diagnostics"})
+            );
+            assert_eq!(redactor.text(text), expected);
+        }
+    }
+
+    #[test]
+    fn nested_json_strings_cannot_recover_escaped_credentials() {
+        for key in [r#"provider-"key"#, r"provider-\key", r#"\provider-"key"#] {
+            let redactor = ProviderKeyRedactor::new(&[key.into()]);
+            let arguments = json!({key: {"credential": key, "query": "ordinary text"}});
+            let response = json!({"result": {"arguments": arguments.to_string()}});
+            // Decode both layers, as a client consuming serialized tool arguments would.
+            let sanitized = redactor.value(response);
+            let decoded: Value =
+                serde_json::from_str(sanitized["result"]["arguments"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                decoded,
+                json!({"[REDACTED]": {
+                    "credential": "[REDACTED]", "query": "ordinary text"
+                }})
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_form_is_replaced_before_an_overlapping_raw_key() {
+        let key = r"\provider-key";
+        let redactor = ProviderKeyRedactor::new(&[key.into()]);
+        let text = json!({"credential": key}).to_string();
+        // Replacing the raw suffix first would leave a stray escape in the JSON string.
+        let sanitized = redactor.text(text);
+        assert_eq!(
+            serde_json::from_str::<Value>(&sanitized).unwrap(),
+            json!({"credential": "[REDACTED]"})
         );
     }
 
