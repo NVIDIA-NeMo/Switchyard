@@ -190,10 +190,18 @@ credentials, one route targeting an `openai_chat` client can serve all three
 caller formats. Separate targets and routes are not required solely for format
 translation.
 
-Where `forward_auth` is supported, the caller and target must use the same
-credential family: OpenAI-compatible (Chat Completions and Responses) or
-Anthropic (Messages). Credential forwarding through Relay is also subject to
-the limitation tracked in [NVBug 6777302](https://nvbugs/6777302) (NVIDIA internal).
+The native Relay plugin rejects routes that use `forward_auth = true` during
+configuration validation and activation. This includes routing-model calls and
+alternate targets. Relay does not provide caller credentials to the plugin's
+provider calls. Secure forwarding support is tracked in
+[NeMo Relay #1108](https://github.com/NVIDIA/NeMo-Relay/issues/1108).
+
+For deployment-owned credentials, remove `forward_auth` or set it to `false`
+and configure `api_key_env` on each authenticated client. The two options cannot
+be enabled together. If each caller must use its own provider credential, use
+standalone `switchyard-server`. Standalone forwarding requires the caller and
+target to use the same credential family: OpenAI-compatible (Chat Completions
+and Responses) or Anthropic (Messages).
 
 Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated
