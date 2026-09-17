@@ -102,6 +102,12 @@ pub(super) fn build_classifier(
     Ok(classifier)
 }
 
+/// The two tiers an escalation route moves between.
+struct Tiers<'a> {
+    capable: &'a ModelId,
+    efficient: &'a ModelId,
+}
+
 impl EscalationClassifier {
     async fn review_capable(
         &self,
@@ -109,10 +115,10 @@ impl EscalationClassifier {
         state: &mut State,
         request: &Request,
         driver: &Driver,
-        capable: &ModelId,
-        efficient: &ModelId,
+        tiers: Tiers<'_>,
         strong_calls: u32,
     ) -> Result<(Classification, Option<Response>)> {
+        let Tiers { capable, efficient } = tiers;
         let next_strong_call = strong_calls.saturating_add(1);
 
         // The call that confirms escalation is the first capable call.
@@ -242,8 +248,10 @@ impl Classifier<State> for EscalationClassifier {
                     state,
                     request,
                     driver,
-                    &capable,
-                    &efficient,
+                    Tiers {
+                        capable: &capable,
+                        efficient: &efficient,
+                    },
                     strong_calls,
                 )
                 .await;
