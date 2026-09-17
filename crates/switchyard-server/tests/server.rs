@@ -3452,6 +3452,9 @@ target = "shared"
     Ok(())
 }
 
+// Chat Completions, Responses, and Messages reject disabled inputs before dispatch.
+// Allowed Responses input retains instructions and options after translation
+// to Chat Completions.
 #[tokio::test]
 async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -3542,6 +3545,11 @@ target = "shared"
         );
         let error = response.json()?;
         assert_eq!(error["error"]["type"], "invalid_request_error");
+        if endpoint == "/v1/messages" {
+            assert_eq!(error["type"], "error");
+        } else {
+            assert_eq!(error["error"]["code"], "unsupported_capability");
+        }
         assert!(
             error["error"]["message"]
                 .as_str()
@@ -3588,6 +3596,64 @@ target = "shared"
                 .iter()
                 .any(|message| message["content"][0]["type"] == "image_url")
         }));
+    }
+    Ok(())
+}
+
+// Approval replies can resume tool use without a tools field or a decoded tool call.
+#[tokio::test]
+async fn tool_approval_replies_follow_route_capabilities() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_responses"
+base_url = "{base_url}/buffered"
+[targets.shared]
+id = "model/efficient"
+llm_client = "upstream"
+[routes.restricted]
+id = "restricted"
+type = "passthrough"
+target = "shared"
+tool_calling = false
+[routes.enabled]
+id = "enabled"
+type = "passthrough"
+target = "shared"
+tool_calling = true
+[routes.undeclared]
+id = "undeclared"
+type = "passthrough"
+target = "shared"
+"#,
+        base_url = upstream.base_url.trim_end_matches("/v1"),
+    ))?);
+    let input = json!([
+        {"type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": true}
+    ]);
+    for model in ["restricted", "enabled", "undeclared"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({"model": model, "input": input})),
+        )
+        .await?;
+        if model == "restricted" {
+            assert_eq!(response.status, StatusCode::BAD_REQUEST);
+            let error = response.json()?;
+            assert_eq!(error["error"]["code"], "unsupported_capability");
+            assert!(upstream.calls.lock().await.is_empty());
+        } else {
+            assert_eq!(response.status, StatusCode::OK);
+        }
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    for call in calls.iter() {
+        assert_eq!(call["input"], input);
     }
     Ok(())
 }

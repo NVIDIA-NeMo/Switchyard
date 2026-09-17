@@ -7,6 +7,8 @@ use serde_json::Value;
 use switchyard_protocol::{ContentBlock, LlmRequest};
 use switchyard_runner::ModelCapabilities;
 
+/// Return the first explicitly disabled capability used by decoded or preserved input.
+/// Forwarding can retain provider JSON fields that decoding omits.
 pub(crate) fn unsupported_capability(
     capabilities: ModelCapabilities,
     request: &LlmRequest,
@@ -89,7 +91,12 @@ fn unsupported_preserved_content(
         if capabilities.tool_calling == Some(false)
             && (matches!(
                 kind,
-                "additional_tools" | "tool_use" | "tool_result" | "mcp_list_tools"
+                "additional_tools"
+                    | "tool_use"
+                    | "tool_result"
+                    | "mcp_list_tools"
+                    | "mcp_approval_request"
+                    | "mcp_approval_response"
             ) || kind.ends_with("_call")
                 || kind.ends_with("_call_output")
                 || kind.ends_with("_tool_use")
@@ -105,6 +112,7 @@ fn unsupported_preserved_content(
     None
 }
 
+/// Check decoded blocks, including images nested inside tool-result content.
 fn unsupported_content(
     capabilities: ModelCapabilities,
     content: &[ContentBlock],
@@ -127,6 +135,8 @@ mod tests {
     use serde_json::json;
     use switchyard_translation::{WireFormat, decode_request, encode_request};
 
+    // Tool controls and history, including MCP approvals, can survive forwarding
+    // without appearing in decoded tools.
     #[test]
     fn rejects_tool_controls_and_history_preserved_outside_normalized_tools()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -144,6 +154,9 @@ mod tests {
             json!({"input": [{"type": "shell_call", "id": "shell_1", "call_id": "call_1", "action": {"commands": ["pwd"]}}]}),
             json!({"input": [{"type": "function_call_output", "call_id": "call_1", "output": "done"}]}),
             json!({"input": [{"type": "mcp_list_tools", "server_label": "server", "tools": []}]}),
+            json!({"input": [{"type": "mcp_approval_request", "id": "approval_1", "name": "lookup", "arguments": "{}", "server_label": "server"}]}),
+            json!({"input": [{"type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": true}]}),
+            json!({"input": [{"type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": false}]}),
         ] {
             let request = decode_request(WireFormat::OpenAiResponses, &body)?;
             assert_eq!(
@@ -151,11 +164,20 @@ mod tests {
                 Some("tool_calling"),
                 "{body}"
             );
-            assert_eq!(
-                unsupported_capability(ModelCapabilities::default(), &request, &body),
-                None,
-                "{body}"
-            );
+            for tool_calling in [None, Some(true)] {
+                assert_eq!(
+                    unsupported_capability(
+                        ModelCapabilities {
+                            tool_calling,
+                            ..Default::default()
+                        },
+                        &request,
+                        &body,
+                    ),
+                    None,
+                    "{body}"
+                );
+            }
         }
         let body = json!({"messages": [{"role": "user", "content": "hello"}], "tools": [], "functions": []});
         let request = decode_request(WireFormat::OpenAiChat, &body)?;
@@ -163,6 +185,7 @@ mod tests {
         Ok(())
     }
 
+    // Preserved reasoning controls still reach the provider when decoding omits them.
     #[test]
     fn rejects_preserved_reasoning_controls() -> Result<(), Box<dyn std::error::Error>> {
         for (format, body, pointer) in [
@@ -207,6 +230,7 @@ mod tests {
         Ok(())
     }
 
+    // Image file IDs and screenshots require inspection of the preserved request JSON.
     #[test]
     fn rejects_images_preserved_outside_normalized_content()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -239,6 +263,7 @@ mod tests {
         Ok(())
     }
 
+    // Allowing tool results must not hide unsupported images nested in their content.
     #[test]
     fn rejects_images_inside_tool_results_when_tools_are_allowed()
     -> Result<(), Box<dyn std::error::Error>> {
