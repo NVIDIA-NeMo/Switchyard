@@ -28,7 +28,7 @@ pub fn build(options: ScenarioOptions<'_>) -> Scenario {
     Scenario::chat(
         "failure-pressure",
         ScenarioGroup::Resilience,
-        "Bounded 429, 500, malformed-classifier, and truncated-stream injections.",
+        "Transient 429, persistent 500, malformed-classifier, and truncated-stream injections.",
         "Retries recover transient failures; terminal failures remain explicit and bounded.",
         ErrorExpectation::MIXED,
         sessions,
