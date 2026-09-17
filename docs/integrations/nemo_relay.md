@@ -6,6 +6,52 @@ loads Switchyard into an existing
 deployment through Relay's
 [native dynamic plugin system](https://docs.nvidia.com/nemo/relay/build-plugins/native/about).
 
+
+## Upstream Error Compatibility
+
+Relay 0.8.x and 0.9.0 have a native-plugin error propagation issue. Enabling the
+Switchyard plugin can change an upstream 401 or 403 into a generic 400 for a
+non-streaming request. A streaming request can receive HTTP 200 followed by an
+aborted body. This is not a successful response or an authentication bypass.
+
+This also affects **unmanaged models**: requested model names that do not match
+a configured Switchyard route. For example, if the route is `switchyard/core`
+and its target is `azure/openai/gpt-5.5`, requesting the target name directly
+still delegates the request to Relay.
+
+The Relay correction is targeted for **0.9.1 and later**. Until it is released,
+use a Relay build containing the native continuation-error and stream-opening
+fixes, or send unmanaged traffic through a separate Relay instance with the
+plugin disabled. Do not assume that upgrading Switchyard alone fixes this.
+The plugin's `>=0.8.0, <1.0.0` compatibility range describes which hosts can load
+it; it does not mean those older hosts preserve upstream errors correctly.
+
+The fixed host preserves the selected upstream status, body, and applicable
+headers. It also detects a stream-opening failure before sending HTTP 200.
+Already-built plugins, including the RC2 plugin, use a compatibility path that
+waits for the first stream event or clean completion before sending headers.
+A plugin rebuilt with Relay's ABI-v6 SDK can acknowledge successful opening
+before its first event is ready. Errors after streaming starts still fail the
+stream; they cannot change an HTTP status already sent to the client.
+
+### Validate a Host and Plugin Pair
+
+Build the Relay CLI and this plugin, then run the local compatibility test:
+
+```bash
+NEMO_RELAY_TEST_BIN=/absolute/path/to/nemo-relay \
+SWITCHYARD_TEST_PLUGIN_LIBRARY=/absolute/path/to/libswitchyard_nemo_relay_plugin.so \
+python -m unittest discover -s tests/relay_plugin -p test_upstream_errors.py -v
+```
+
+On macOS, use the `.dylib` library. The test packages that exact library and runs
+fresh plugin-OFF and plugin-ON gateways against a local mock upstream. It checks
+401/403 status, error bytes, and headers for Chat, Responses, and Messages in
+both response modes. It also checks healthy streams and a managed route, which
+proves that the real plugin is active. It needs no provider account or API key.
+The test is skipped when either artifact path is unset; setting both paths is
+required for compatibility qualification.
+
 ## Why Use Switchyard with NeMo Relay?
 
 Switchyard's routing algorithms select a model for each LLM request or step in
@@ -26,8 +72,9 @@ latency, and token use through Relay telemetry. Use it to answer:
 The plugin runs inside Relay, so the agent does not need to change and
 Switchyard does not need to run as a separate service.
 
-Requests for models that Switchyard does not manage continue through Relay as
-usual.
+Requests for models that Switchyard does not manage are passed to Relay.
+See the [upstream error compatibility note](#upstream-error-compatibility) before
+using older Relay versions.
 
 Routing does not require Relay. You can instead run the
 [standalone server](../getting_started.md#server-path) or embed
