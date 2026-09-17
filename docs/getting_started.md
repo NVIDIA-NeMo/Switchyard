@@ -186,8 +186,8 @@ picks a target and hands the model call back to you.
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
