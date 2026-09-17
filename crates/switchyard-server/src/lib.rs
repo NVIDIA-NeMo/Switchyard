@@ -3,6 +3,7 @@
 
 //! Rust HTTP server for libsy algorithms.
 
+mod capabilities;
 pub mod config;
 mod metrics;
 mod observability;
@@ -1007,6 +1008,18 @@ fn resolve_route(
             ),
             "invalid_request_error",
             "invalid_request_error",
+        ));
+    }
+    if let Some(capability) =
+        capabilities::unsupported_capability(route.capabilities(), &llm_request, &body)
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "route {requested_model} declares {capability} = false; remove the unsupported input or select another route"
+            ),
+            "invalid_request_error",
+            "unsupported_capability",
         ));
     }
     let request = Request {

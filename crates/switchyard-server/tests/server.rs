@@ -3452,6 +3452,146 @@ target = "shared"
     Ok(())
 }
 
+#[tokio::test]
+async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets.shared]
+id = "model/weak"
+llm_client = "upstream"
+[routes.restricted]
+id = "switchyard/text-only"
+type = "passthrough"
+target = "shared"
+vision = false
+reasoning = false
+tool_calling = false
+[routes.enabled]
+id = "enabled"
+type = "passthrough"
+target = "shared"
+vision = true
+reasoning = true
+tool_calling = true
+[routes.undeclared]
+id = "undeclared"
+type = "passthrough"
+target = "shared"
+"#,
+        base_url = upstream.base_url,
+    ))?);
+    let cases = [
+        (
+            "/v1/chat/completions",
+            "vision",
+            json!({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}]}]}),
+        ),
+        (
+            "/v1/messages",
+            "vision",
+            json!({"messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}}]}]}),
+        ),
+        (
+            "/v1/responses",
+            "vision",
+            json!({"input": [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.test/image.png"}]}]}),
+        ),
+        (
+            "/v1/chat/completions",
+            "reasoning",
+            json!({"messages": [{"role": "user", "content": "hello"}], "reasoning_effort": "high"}),
+        ),
+        (
+            "/v1/messages",
+            "reasoning",
+            json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "enabled", "budget_tokens": 1024}}),
+        ),
+        (
+            "/v1/responses",
+            "reasoning",
+            json!({"input": "hello", "reasoning": {"summary": "auto"}}),
+        ),
+        (
+            "/v1/chat/completions",
+            "tool_calling",
+            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "exec_command", "parameters": {"type": "object"}}}]}),
+        ),
+        (
+            "/v1/messages",
+            "tool_calling",
+            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"name": "exec_command", "input_schema": {"type": "object"}}]}),
+        ),
+        (
+            "/v1/responses",
+            "tool_calling",
+            json!({"input": [{"type": "additional_tools", "tools": [{"type": "function", "name": "exec_command", "parameters": {"type": "object"}}]}, {"role": "user", "content": "hello"}]}),
+        ),
+    ];
+    for (endpoint, capability, mut body) in cases {
+        body["model"] = json!("switchyard/text-only");
+        let response = send(&app, "POST", endpoint, Some(body)).await?;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{endpoint}: {capability}"
+        );
+        let error = response.json()?;
+        assert_eq!(error["error"]["type"], "invalid_request_error");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("{capability} = false"))
+        );
+    }
+    assert!(upstream.calls.lock().await.is_empty());
+
+    for model in ["switchyard/text-only", "enabled", "undeclared"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({
+                "model": model, "instructions": "Keep the caller's instructions.", "input": "hello"
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+    }
+    for model in ["enabled", "undeclared"] {
+        let response = send(&app, "POST", "/v1/responses", Some(json!({
+            "model": model,
+            "instructions": "Keep the caller's instructions.",
+            "input": [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.test/image.png"}]}],
+            "reasoning": {"effort": "high"},
+            "tools": [{"type": "function", "name": "exec_command", "parameters": {"type": "object"}}]
+        }))).await?;
+        assert_eq!(response.status, StatusCode::OK);
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 5);
+    assert!(
+        calls
+            .iter()
+            .all(|call| has_system_prompt(call, "Keep the caller's instructions."))
+    );
+    for call in &calls[3..] {
+        assert_eq!(call["reasoning_effort"], "high");
+        assert_eq!(call["tools"][0]["function"]["name"], "exec_command");
+        assert!(call["messages"].as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message["content"][0]["type"] == "image_url")
+        }));
+    }
+    Ok(())
+}
+
 // Tool results and blank user messages must not replace the classifier's task text.
 #[tokio::test]
 async fn subagent_tool_continuations_are_classified_on_every_request_across_apis() -> TestResult {

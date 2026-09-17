@@ -17,7 +17,9 @@ use crate::DecisionTarget;
 /// Capabilities declared for one route.
 ///
 /// `GET /v1/models` includes `context_window`, `tool_calling`, and `vision` in each
-/// standard `data` entry, using `null` for unset values. `reasoning` remains route metadata.
+/// standard `data` entry, using `null` for unset values. It omits `reasoning`.
+/// The server rejects tool inputs, reasoning controls, or images when the
+/// corresponding declaration is explicitly `false` for the selected route.
 #[derive(Clone, Copy, Default)]
 pub struct ModelCapabilities {
     pub context_window: Option<u32>,

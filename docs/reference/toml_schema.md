@@ -132,9 +132,9 @@ Every route takes the common keys below, plus the keys for its type.
 | `id` | Yes | — | Public model ID that callers send in requests. |
 | `type` | Yes | — | Routing algorithm for this route. |
 | `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
-| `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
-| `reasoning` | No | unset | Declared reasoning support, stored in route metadata. The server does not include it in `GET /v1/models`. |
-| `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. Unset values appear as `null`. Declare `true` only when every target the route can select accepts images. |
+| `tool_calling` | No | unset | Tool-calling support advertised by `GET /v1/models`. When `false`, the server rejects tool definitions, tool controls, and tool history with HTTP 400 before dispatch. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. |
+| `reasoning` | No | unset | When `false`, the server rejects reasoning controls with HTTP 400 before dispatch. Explicit `true` and unset values do not restrict requests. The server does not include this declaration in `GET /v1/models`. |
+| `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. When `false`, the server rejects images with HTTP 400 before dispatch, including images in tool results. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. Declare `true` only when every target the route can select accepts images. |
 
 ### `noop`
 

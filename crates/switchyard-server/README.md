@@ -152,6 +152,17 @@ with `codex --model route-id`; route aliases do not appear automatically in Code
 picker. Unknown aliases use Codex's generic defaults and do not receive Switchyard's
 route-specific context limits or tool settings.
 
+For registered routes, the server returns HTTP 400 before dispatch when a request
+contains inputs disabled by `vision = false`, `reasoning = false`, or
+`tool_calling = false`. OpenAI errors use the `unsupported_capability` code;
+Anthropic errors use `invalid_request_error`. Remove the unsupported input or select
+a compatible route. Explicit `true` and unset declarations do not restrict requests.
+
+Codex keeps its own model settings, so it may still send inputs that the server rejects.
+The server preserves caller instructions and does not remove images, reasoning controls,
+or tools to make a request fit. These checks apply to registered server routes;
+transparent forwarding through `fallback_client` and direct library calls remain unchanged.
+
 To add instructions for a target, set `system_prompt` on its `[targets.<name>]` entry.
 Switchyard prepends that text when the selected target serves a completion and retains
 the caller's instructions. Omit the setting to add no target instructions.
