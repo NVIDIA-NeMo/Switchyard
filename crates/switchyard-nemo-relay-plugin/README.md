@@ -14,18 +14,35 @@ The plugin requires NeMo Relay `>=0.8.0, <1.0.0`.
 
 ### Install a released bundle
 
-Released bundles are published in the
+Official plugin bundles are distributed through the
 [NeMo Relay Plugins repository](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases).
-Find the `switchyard-plugin` release that corresponds to the Switchyard version
-or source commit you need. The release's `.json` sidecar records the exact
-Switchyard source commit and Relay version used to validate each platform
-artifact.
+Each bundle includes the native library, a completed `relay-plugin.toml`, the
+configuration schema, and license notices. Installing a bundle requires no
+Rust build or separate `switchyard-nemo-relay-plugin` crate installation.
 
-Download the archive and matching `.sha256` file for your platform, verify the
-checksum, extract the archive into a directory you plan to keep, then register
-the extracted `relay-plugin.toml` with Relay using step 3 below. The release
-version is independent of the Switchyard workspace version, so use the release
-metadata rather than assuming that version numbers match.
+The repository currently requires NVIDIA GitHub repository access. Sign in
+with an account that has access and complete organization SSO/SAML authorization
+where required, including for credentials used by `gh`. An HTTP 404 can mean
+that your account or credentials lack access; it does not prove that a bundle
+is missing.
+
+1. Select a published `switchyard-plugin-<version>` release for Switchyard
+   `0.3.0`. Plugin versions are managed separately and can match the Switchyard
+   version. Confirm the source commit in the release notes and `.json` metadata
+   rather than relying on the version number alone. A Switchyard release does
+   not itself publish a plugin bundle. If no matching published bundle is
+   available, use [Build from source](#build-from-source).
+2. Download the archive for your platform and its matching `.sha256` and `.json`
+   sidecars. For Linux x86_64, the archive is named
+   `switchyard-plugin-<version>-linux-x86_64.tar.gz`. Check the metadata's
+   `source_commit`, `platform`, and `relay` fields for the source and tested host.
+3. Verify the downloaded archive against its `.sha256` file before extracting
+   it. On Linux, run `sha256sum -c <archive>.sha256` from the download directory,
+   replacing `<archive>` with the archive's filename.
+4. Extract the archive into a directory you plan to keep, then follow
+   [Register and enable the plugin](#register-and-enable-the-plugin). Use the
+   actual path to the extracted `relay-plugin.toml`; the examples below use
+   `./plugins/switchyard/relay-plugin.toml`.
 
 ### Build from source
 
@@ -68,7 +85,11 @@ python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
 Pass `--archive switchyard-plugin.tar.gz` (or `.zip`) to also produce an
 archive for distribution.
 
-**3. Register the plugin.**
+### Register and enable the plugin
+
+These steps apply to both a downloaded bundle and a bundle built from source.
+
+**1. Register the plugin.**
 
 ```bash
 nemo-relay plugins validate ./plugins/switchyard/relay-plugin.toml
@@ -80,10 +101,10 @@ nemo-relay plugins add --user ./plugins/switchyard/relay-plugin.toml
 The plugin is not enabled yet; enabling before the deployment is configured
 fails validation because the plugin requires a Switchyard configuration.
 
-**4. Configure the deployment and trust policy** in that `plugins.toml`, as
+**2. Configure the deployment and trust policy** in that `plugins.toml`, as
 described in [Configure Relay](#configure-relay).
 
-**5. Enable and validate the plugin**, then restart Relay. The manifest ships
+**3. Enable and validate the plugin**, then restart Relay. The manifest ships
 with `enabled = false`; Relay validates a disabled plugin but never loads it.
 
 ```bash

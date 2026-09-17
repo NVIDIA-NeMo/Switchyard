@@ -125,11 +125,27 @@ and
 
 ## Set Up the Plugin
 
-Follow the [plugin README](../../crates/switchyard-nemo-relay-plugin/README.md)
-to install a released bundle from the
-[NeMo Relay Plugins repository](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases)
-or build and package the native library from source, then register and enable
-it in Relay and configure its deployment. Relay documents how to
+For Switchyard `0.3.0`, select a matching published `switchyard-plugin` bundle
+from the
+[NeMo Relay Plugins releases](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases).
+Confirm its Switchyard source commit in the release metadata. Plugin versions
+are managed separately and can match the Switchyard version. The bundle
+includes the native library, completed manifest, schema, and license notices;
+no separate plugin crate installation is needed.
+
+The repository currently requires NVIDIA GitHub repository access and
+organization SSO/SAML authorization where required. An HTTP 404 can indicate
+missing access. A Switchyard release does not guarantee that a matching plugin
+bundle has been published.
+
+Follow the
+[bundle installation steps](../../crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle)
+to download the archive and sidecars, verify the checksum, and extract the
+bundle. If a matching published bundle is unavailable or you need a custom
+build, follow
+[Build from source](../../crates/switchyard-nemo-relay-plugin/README.md#build-from-source).
+Then register the manifest, configure the deployment and trust policy, enable
+the plugin, and restart Relay. Relay documents how to
 [add and enable a discoverable plugin](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin)
 and how it
 [validates the package before loading code](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#validate-before-loading-code).

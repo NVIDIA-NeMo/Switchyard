@@ -102,6 +102,42 @@ can publish all seven crates and create new crates. The job waits for each versi
 crates.io index before publishing its dependents. If publication stops partway through, use
 GitHub's **Re-run failed jobs** action so successful crate jobs are not repeated.
 
+## Relay Plugin Bundles
+
+Official Relay plugin bundles are built and distributed by
+[NeMo Relay Plugins](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases).
+They contain the native library, completed manifest, schema, and license
+notices. This delivery path does not require publishing
+`switchyard-nemo-relay-plugin` to crates.io or adding it to the crate list above.
+
+For Switchyard `0.3.0`, coordinate a plugin release pinned to the intended
+Switchyard release commit. The plugin's `release.toml` records its own version
+and `source.sha`. Versions can match, but the source pin establishes which
+Switchyard code is bundled. Follow the plugin repository's
+[release process](https://github.com/NVIDIA/NeMo-Relay-Plugins/blob/main/RELEASE.md)
+to review and publish its draft. A Switchyard tag alone does not publish it.
+
+Keep source-build validation and published-bundle validation as separate QA
+results. Before publication, build and package the exact source revision under
+test. Passing that path does not validate the eventual downloaded archive,
+sidecars, or repository access. Keep published-bundle validation pending until
+the official release is available.
+
+After publication, validate the delivery path from
+[the user installation guide](../../crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle):
+
+1. Confirm the intended users can access the published release. Verify the
+   documented repository access and SSO/SAML requirements.
+2. Download each supported platform's archive and matching `.sha256` and
+   `.json` sidecars from that release. Verify the archive checksum and check
+   the metadata's source commit, platform, and tested Relay version.
+3. Extract the downloaded archive into a fresh installation directory. Follow
+   the documented registration, deployment configuration, trust policy, and
+   enablement steps using a supported official Relay runtime.
+4. Restart Relay and run a routed-request smoke test with the installed bundle.
+   Record the release tag, source commit, archive checksum, platform, Relay
+   version, and result. A local rebuild is not a substitute for this check.
+
 ## Local Metadata Helper
 
 To preview the metadata stamp locally:
