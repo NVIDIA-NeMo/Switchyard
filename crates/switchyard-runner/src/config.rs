@@ -232,7 +232,20 @@ impl DeploymentConfig {
         let clients = self.build_clients(&mut provider_api_keys)?;
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
-        let type_safe_provider = self.build_type_safe_provider()?;
+        // Only construct the TypeSafe provider when a route actually uses it: the
+        // `[type_safe_client]` table is documented as unused otherwise, and building it
+        // unconditionally would fail a deployment that configures the table (for later
+        // use, say) without setting its `api_key_env` variable, even though nothing
+        // calls it yet.
+        let uses_type_safe_classifier = self
+            .routes
+            .values()
+            .any(|route| matches!(route.algorithm, AlgorithmSpec::TypeSafeClassifier { .. }));
+        let type_safe_provider = if uses_type_safe_classifier {
+            self.build_type_safe_provider()?
+        } else {
+            None
+        };
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             for target_name in config.callable_target_names() {
@@ -503,6 +516,19 @@ impl DeploymentConfig {
             RunnerError::configuration_source(format!("type_safe_client: {error}"), error)
         })?;
         if let Some(base_url) = &config.base_url {
+            // The API key travels as a bearer token on every request to this URL, so an
+            // http:// override must be rejected before it reaches the client (which stays
+            // permissive about scheme, since its own tests point it at a plain-http mock
+            // server).
+            if let Ok(parsed) = reqwest::Url::parse(base_url)
+                && parsed.scheme() != "https"
+            {
+                return Err(RunnerError::configuration(format!(
+                    "type_safe_client.base_url must be an absolute https:// URL (got scheme {:?}); \
+                     the API key must not travel over plaintext HTTP",
+                    parsed.scheme()
+                )));
+            }
             client = client.with_base_url(base_url.clone()).map_err(|error| {
                 RunnerError::configuration_source(format!("type_safe_client: {error}"), error)
             })?;
@@ -1027,6 +1053,44 @@ models = {{ any = ["strong", "weak"], capable = ["strong"], efficient = ["weak"]
             std::env::remove_var(KEY_ENV);
         }
         assert!(error.contains("base_threshold"), "{error}");
+    }
+
+    #[test]
+    fn type_safe_client_table_is_unused_without_a_type_safe_classifier_route() -> RunnerResult<()> {
+        // No route in `VALID_CONFIG` uses `type_safe_classifier`, and `api_key_env` here
+        // names a variable deliberately left unset. Building must still succeed: the
+        // `[type_safe_client]` table is documented as unused unless a route references it,
+        // so the provider must not be constructed (and therefore must not read the
+        // environment) when nothing calls it.
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[type_safe_client]
+api_key_env = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_DELIBERATELY_UNSET"
+"#
+        );
+        runner_from_toml(&config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn type_safe_client_base_url_rejects_plain_http() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_HTTP_BASE_URL";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV).replace(
+            &format!("api_key_env = \"{KEY_ENV}\""),
+            &format!("api_key_env = \"{KEY_ENV}\"\nbase_url = \"http://example.test\""),
+        );
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("type_safe_client.base_url must be an absolute https:// URL"),
+            "{error}"
+        );
     }
 
     #[test]
