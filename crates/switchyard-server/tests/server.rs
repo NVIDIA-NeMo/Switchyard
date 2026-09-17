@@ -3464,7 +3464,8 @@ selector = "/decision/target"
     Ok(())
 }
 
-// Compaction uses the parent classifier; review tasks use the subagent worker.
+// Codex's structured kind takes precedence over the flat `collab_spawn` header:
+// maintenance uses the parent classifier; delegated work uses the subagent route.
 #[tokio::test]
 async fn codex_maintenance_uses_the_parent_classifier_across_apis() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -3490,6 +3491,7 @@ subagents = {{ type = "passthrough", target = "strong" }}
     let cases = [
         (Some("compact"), None, "model/weak"),
         (Some("review"), None, "model/strong"),
+        (Some("thread_spawn"), None, "model/strong"),
         (Some("collab_spawn"), None, "model/strong"),
         (Some("unknown"), None, "model/weak"),
         (Some("memory_consolidation"), None, "model/weak"),
@@ -3506,15 +3508,16 @@ subagents = {{ type = "passthrough", target = "strong" }}
         (
             "/v1/messages",
             json!({"model":"agent","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}),
-            &cases[..2],
+            &cases[..3],
         ),
         (
             "/v1/responses",
             json!({"model":"agent","input":"hi"}),
-            &cases[..2],
+            &cases[..3],
         ),
     ] {
         for (kind, explicit, expected) in cases {
+            let mut headers = Vec::new();
             let mut metadata = json!({
                 "thread_id": "child",
                 "parent_thread_id": "root",
@@ -3522,9 +3525,10 @@ subagents = {{ type = "passthrough", target = "strong" }}
             });
             if let Some(kind) = kind {
                 metadata["subagent_kind"] = json!(kind);
+                headers.push(("x-openai-subagent", "collab_spawn"));
             }
             let metadata = metadata.to_string();
-            let mut headers = vec![("x-codex-turn-metadata", metadata.as_str())];
+            headers.push(("x-codex-turn-metadata", metadata.as_str()));
             if let Some(explicit) = explicit {
                 headers.push(("x-switchyard-is-subagent", explicit));
             }
@@ -3538,7 +3542,7 @@ subagents = {{ type = "passthrough", target = "strong" }}
     for (model, expected) in [
         ("model/classifier", 7),
         ("model/weak", 7),
-        ("model/strong", 5),
+        ("model/strong", 8),
     ] {
         assert_eq!(
             models.iter().filter(|actual| *actual == model).count(),

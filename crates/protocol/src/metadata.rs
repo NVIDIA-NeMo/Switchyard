@@ -75,7 +75,7 @@ const CLAUDE_CHILD_IDENTITY_VERSION: [u64; 3] = [2, 1, 139];
 /// Harness-defined sub-agent kinds that carry delegated user work rather than
 /// harness maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds
 /// are excluded deliberately; extend with captured request fixtures.
-const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "review"];
+const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "thread_spawn", "review"];
 
 /// Ordered candidate lookup paths for each correlation field, keyed by the field's
 /// canonical `x-switchyard-*` header name.
@@ -267,9 +267,9 @@ fn parse_sub_agent(headers: &http::HeaderMap) -> (Option<String>, bool, bool) {
     let parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
         .or_else(|| claude_parent.map(str::to_string));
 
-    // Current Codex releases identify spawned children through lineage rather than
-    // `subagent_kind`. Require both fields so a parent id used only for correlation
-    // cannot accidentally route an ordinary turn as delegated work.
+    // Codex child lineage requires both a parent id and `thread_source = subagent`.
+    // A parent id used only for correlation must not route an ordinary turn as
+    // delegated work.
     let codex_child = parent.is_some()
         && resolve_path(headers, CODEX_THREAD_SOURCE_PATH).as_deref() == Some("subagent");
 
