@@ -130,7 +130,7 @@ fn parallel_chat_tools_emit_complete_nonoverlapping_anthropic_blocks() -> TestRe
 }
 
 #[test]
-fn pending_anthropic_tools_flush_one_at_a_time() -> TestResult {
+fn pending_anthropic_tools_flush_in_arrival_order() -> TestResult {
     let engine = TranslationEngine::default();
     let target = WireFormat::AnthropicMessages;
     let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
@@ -146,14 +146,23 @@ fn pending_anthropic_tools_flush_one_at_a_time() -> TestResult {
         &engine,
         &mut state,
         json!({"tool_calls": [
-            {"index": 1, "id": "call_middle", "type": "function",
-             "function": {"name": "weather", "arguments": "{\"city\":\"Tokyo\"}"}},
+            {"index": 7, "id": "call_middle", "type": "function",
+             "function": {"name": "weather", "arguments": "{\"city\":\"To"}},
             {"index": 2, "id": "call_last", "type": "function",
              "function": {"name": "clock", "arguments": "{}"}}
         ]}),
     )?;
     assert!(pending.is_empty());
+    let pending = translate(
+        &engine,
+        &mut state,
+        json!({"tool_calls": [
+            {"index": 7, "function": {"arguments": "kyo\"}"}}
+        ]}),
+    )?;
+    assert!(pending.is_empty());
     let events = engine.finish_stream(&mut state, target)?;
+    assert_eq!(events.len(), 9);
     assert_eq!(
         &events[..7],
         &[

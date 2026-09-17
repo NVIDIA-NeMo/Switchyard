@@ -268,13 +268,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         }
     }
 
-    let pending_tools: Vec<_> = state
-        .tool_states
-        .iter()
-        .filter(|(_, tool)| tool.content_index.is_none() && tool.name.is_some())
-        .map(|(&index, _)| index)
-        .collect();
-    for index in pending_tools {
+    for index in std::mem::take(&mut state.deferred_anthropic_tools) {
         out.extend(encode_anthropic_tool_delta(state, index, None, None, None));
         if let Some(tool) = state.tool_states.get_mut(&index) {
             if let Some(content_index) = tool.content_index {
@@ -505,6 +499,9 @@ fn encode_anthropic_tool_delta(
 
     // Chat can interleave calls until EOF; Anthropic callbacks require one open block.
     if other_tool_started {
+        if !state.deferred_anthropic_tools.contains(&index) {
+            state.deferred_anthropic_tools.push(index);
+        }
         return out;
     }
 
