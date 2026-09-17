@@ -266,10 +266,10 @@ fn truncate_middle(text: &str, limit: usize) -> String {
 
 /// Renders a compact role-labelled transcript for the judge.
 ///
-/// The framing anchors — system/developer messages and the first user message, where agent
-/// harnesses put the task statement — are kept unconditionally and capped individually. The
-/// trailing window carries recent activity. A coverage header states how much history is not
-/// shown, so the judge can reason about pace rather than assuming it sees everything.
+/// Task-framing user messages are capped individually. System/developer instructions share
+/// the remaining budget after reserving space for task framing and the newest window entry.
+/// The trailing window carries recent activity. A coverage header states how much history is
+/// not shown, so the judge can reason about pace rather than assuming it sees everything.
 ///
 /// When the assembled text still exceeds `max_request_chars`, the oldest window lines go
 /// first: for a trajectory judge the newest evidence is strictly the most valuable.
@@ -279,6 +279,7 @@ fn summarize_for_judge(
     turn: usize,
     config: &EscalationJudgeConfig,
 ) -> String {
+    let mut instruction_anchors: Vec<String> = Vec::new();
     let mut anchors: Vec<String> = Vec::new();
     let mut window: Vec<String> = Vec::new();
     let mut assistant_seen = false;
@@ -286,7 +287,7 @@ fn summarize_for_judge(
     for instruction in instructions {
         let mut parts = Vec::new();
         collect_text(&instruction.content, &mut parts);
-        anchors.push(format!(
+        instruction_anchors.push(format!(
             "[{}] {}",
             role_label(instruction.role),
             truncate_middle(&parts.join(" "), SYSTEM_CHARS)
@@ -296,7 +297,7 @@ fn summarize_for_judge(
     for message in messages {
         let text = message_text(message);
         match message.role {
-            Role::System | Role::Developer => anchors.push(format!(
+            Role::System | Role::Developer => instruction_anchors.push(format!(
                 "[{}] {}",
                 role_label(message.role),
                 truncate_middle(&text, SYSTEM_CHARS)
@@ -325,23 +326,34 @@ fn summarize_for_judge(
         window.drain(..window.len() - config.recent_turn_window);
     }
 
-    let assemble = |window: &[String]| {
+    let assemble = |instructions: Option<&str>, window: &[String]| {
         let header = format!(
             "Conversation turn {turn}; showing the last {} of {} messages after the task framing.",
             window.len(),
             messages.len(),
         );
         std::iter::once(header)
+            .chain(instructions.map(str::to_owned))
             .chain(anchors.iter().cloned())
             .chain(window.iter().cloned())
             .collect::<Vec<_>>()
             .join("\n")
     };
 
-    let mut text = assemble(&window);
+    let reserved = assemble(None, &window[window.len().saturating_sub(1)..])
+        .chars()
+        .count();
+    let instruction_budget = MAX_REQUEST_CHARS.saturating_sub(reserved + 1);
+    // The remaining budget may be smaller than truncate_middle's minimum retained span.
+    let instruction_text = truncate_middle(&instruction_anchors.join("\n"), instruction_budget)
+        .chars()
+        .take(instruction_budget)
+        .collect::<String>();
+    let instructions = (!instruction_text.is_empty()).then_some(instruction_text.as_str());
+    let mut text = assemble(instructions, &window);
     while text.chars().count() > MAX_REQUEST_CHARS && !window.is_empty() {
         window.remove(0);
-        text = assemble(&window);
+        text = assemble(instructions, &window);
     }
     if text.chars().count() > MAX_REQUEST_CHARS {
         let keep = MAX_REQUEST_CHARS.saturating_sub(TRUNCATION_SUFFIX.chars().count() + 1);
@@ -452,6 +464,24 @@ mod tests {
             Some(super::super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
         );
         assert!(built.llm_request.output.response_format.is_some());
+
+        judged.llm_request.instructions.extend(vec![
+            InstructionBlock {
+                role: Role::Developer,
+                content: Message::text(Role::Developer, "x".repeat(SYSTEM_CHARS)).content,
+            };
+            MAX_REQUEST_CHARS / SYSTEM_CHARS + 1
+        ]);
+        let built = judge.build_request(&State::default(), &judged);
+        let summary = built.llm_request.messages[0]
+            .text_content("")
+            .expect("summary");
+        assert!(summary.chars().count() <= MAX_REQUEST_CHARS);
+        assert!(summary.contains(TRIM_MARKER));
+        assert!(summary.contains("[system] system constraint"));
+        assert!(summary.contains("[developer] developer constraint"));
+        assert!(summary.contains("[user (task)] What is 2+2?"));
+        assert!(summary.contains("[assistant] this turn's reply"));
         Ok(())
     }
 
