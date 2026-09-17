@@ -141,6 +141,53 @@ fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn same_format_decode_failure_emits_terminal_error() -> TestResult {
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({"choices": [{"index": 0, "delta": {"content": "partial"}}]}),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "text_delta", "text": "partial"}
+            }),
+        ),
+    ];
+    let engine = TranslationEngine::default();
+    for (format, text) in cases {
+        let mut decode_state = StreamTranslationState::new(format, format);
+        let mut encode_state = StreamTranslationState::new(format, format);
+        let preserved = engine.decode_stream_event(&mut decode_state, format, text.clone())?;
+        assert_eq!(
+            engine.encode_stream_event(&mut encode_state, format, preserved)?,
+            vec![text.clone()]
+        );
+
+        let invalid = engine.decode_stream_event(&mut decode_state, format, Value::Null)?;
+        let errors = engine.encode_stream_event(&mut encode_state, format, invalid)?;
+        assert_eq!(errors.len(), 1, "{format:?}");
+        assert!(
+            errors[0]["error"]["message"].is_string(),
+            "{format:?}: {errors:?}"
+        );
+        if format == WireFormat::AnthropicMessages {
+            assert_eq!(errors[0]["type"], "error");
+        }
+
+        let later = engine.decode_stream_event(&mut decode_state, format, text)?;
+        assert!(
+            engine
+                .encode_stream_event(&mut encode_state, format, later)?
+                .is_empty()
+        );
+        assert!(engine.finish_stream(&mut encode_state, format)?.is_empty());
+    }
+    Ok(())
+}
+
 // Replay emits the preserved event without running the encoder, so the encoder never sees the
 // stop it would normally record. Replay must still leave the stream marked finished or
 // `finish_stream` synthesizes a terminal the client already received.

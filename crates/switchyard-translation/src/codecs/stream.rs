@@ -300,7 +300,11 @@ pub(crate) fn encode_response_stream_event(
     let (preservation, normalized) = event.into_parts();
     if let Some(preservation) = preservation {
         let (source, raw) = preservation.into_parts();
-        if &source == target {
+        // Invalid protocol data must become an error frame, not be replayed as ordinary data.
+        let has_decode_error = normalized
+            .iter()
+            .any(|chunk| matches!(chunk, LlmResponseChunk::DecodeError { .. }));
+        if &source == target && !has_decode_error {
             // Exact replay bypasses the target encoder's emitted JSON, but the encoder must
             // still observe every normalized chunk. Otherwise `finish` starts from empty state:
             // a clean EOF after a nonterminal provider event can omit or synthesize malformed
