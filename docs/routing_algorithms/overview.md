@@ -10,16 +10,51 @@ configuration and tuning. For the vocabulary these pages use, see
 
 ## Choose a strategy
 
+Start with **Auto**. Choose Task or Execution when you want more control over
+how requests move between an efficient model and a capable one.
+
+| Choice | Use it when | Route `type` |
+|---|---|---|
+| **[Auto](#auto)** | You want Switchyard's recommended preset. | `auto` |
+| **[Task](llm_classifier_routing.md)** | You want an LLM to judge which model can handle the task. | `llm_classifier` |
+| **[Execution](stage_router_routing.md)** | You want tool results and agent progress to guide each request. | `stage_router` |
+
+Task uses the LLM classifier's `capability` mode. Its `classify_trigger` setting
+controls whether the judge runs for each request, each user turn, or once per
+session. Execution uses the stage router, which reads tool-result history and
+can optionally call an LLM judge. The TOML configuration keys are unchanged.
+
+### Auto
+
+Auto is a preset, not a separate routing algorithm. It currently uses Execution
+with `picker = "efficient_first"`, `confidence_threshold = 0.5`, and no LLM
+judge. It does not compare strategies at runtime. Use `stage_router` directly
+to tune these settings.
+
+> Auto requires a [source build](../getting_started.md#build-from-source) until v0.3.0 is published.
+
+See the [Auto configuration reference](../reference/toml_schema.md#auto) for
+the required targets.
+
+## More options
+
+These options remain available when you need a different routing policy.
+
 | Strategy | Use it when | Route `type` |
 |---|---|---|
+| [Composite](composite_routing.md) | Combine Task and Execution. A classifier sets the stage router's default tier. | `composite` |
+| [Escalation](escalation_router_routing.md) | Start on the efficient model and escalate when an LLM judge detects trouble. | `llm_classifier` with `mode = "escalation"` |
+| [Custom](llm_classifier_routing.md#custom-multi-target-routing) | Route among two or more models using your own classification schema and rules. | `llm_classifier` with `mode = "custom"` |
+| [Advisor Gate](advisor_gate_routing.md) | Keep one executor model and have a stronger advisor review its plans and completion claims. | `advisor` |
 | [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough` or `stage_router` with `subagents` |
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
-| [LLM Classifier Routing](llm_classifier_routing.md) | Request content should decide whether a turn needs the weak or strong tier. | `llm_classifier` |
-| [Stage-Router Routing](stage_router_routing.md) | Built-in or configured tool-activity signals should route most turns without an extra classifier call. | `stage_router` |
-| Auto Routing | You want a recommended default instead of picking a strategy yourself. For a deeper dive on the current default, see [Stage-Router Routing](stage_router_routing.md); for full control, pick one of the strategies above instead. | `auto` |
-| [Composite Routing](composite_routing.md) | Routing algorithms are composed, one setting the configuration of another before handing off. Today an LLM classifier sets a stage router's default tier. | `composite` |
-| [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
-| [Advisor-Gate Routing](advisor_gate_routing.md) | One model should serve every turn, with a stronger reviewer approving its "done" claims or sending back a redo plan. | `advisor` |
+| [Fixed Model](#direct-model-routes) | Send every request to one target without a routing decision. | `passthrough` |
+
+### Experimental
+
+[Prefill Router](../reference/toml_schema.md#prefill_router) uses a
+checkpoint-backed classifier. It is experimental in v0.3.0. Switchyard does not
+provide or support a checkpoint, exporter, or compatible encoder assets.
 
 ## Common route shape
 

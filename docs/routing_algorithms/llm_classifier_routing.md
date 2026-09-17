@@ -1,7 +1,11 @@
 # LLM Classifier Routing
 
-LLM classifier routing supports capability classification, trajectory escalation,
-and custom schema-driven routing across two or more targets.
+**Task** routing uses the LLM classifier's `capability` mode to judge whether
+an efficient model can handle the task or a capable model is needed. Configure
+it with `type = "llm_classifier"` and `mode = "capability"`.
+
+The same classifier also supports [escalation](escalation_router_routing.md)
+and [custom routing](#custom-multi-target-routing) across two or more targets.
 
 ## Configure a classifier route
 

@@ -1,5 +1,8 @@
 # Stage-Router Routing
 
+**Execution** routing uses the stage router to choose a model from tool results
+and agent progress. Configure it with `type = "stage_router"`.
+
 Stage-router routing sends each request to either a **capable** model or a
 cheaper **efficient** one, depending on where the agent is in its run. The goal
 is to spend the capable model on the turns that need it (exploration, error

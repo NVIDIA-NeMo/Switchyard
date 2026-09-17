@@ -249,24 +249,24 @@ export OPENAI_BASE_URL="http://localhost:4000/v1"
 
 ## Routing Algorithms
 
-Most use an LLM as a judge. All of them pick between an **efficient** model and a
-**capable** one; what differs is when the decision is made and how.
+Start with **Auto**. Choose Task or Execution when you want more control over
+how requests move between an efficient model and a capable one.
 
-| Algorithm | How it decides | Route `type` | Benchmark |
-|---|---|---|---|
-| **[Capability](docs/routing_algorithms/llm_classifier_routing.md)** | The first request is judged by an LLM. | `llm_classifier` | 71.2% at $79.32 |
-| **[Stage](docs/routing_algorithms/stage_router_routing.md)** | Tool responses are judged by pattern matching or an LLM. | `stage_router` | 72.7% at $68.19 |
-| **[Capability + Stage](docs/routing_algorithms/composite_routing.md)** | Combines the two above. | `composite` | not yet benchmarked |
-| **[Escalation](docs/routing_algorithms/escalation_router_routing.md)** | Starts efficient. Responses are judged by an LLM for issues, then escalated. | `llm_classifier` + `mode = "escalation"` | 75.7% at $85.00 |
-| **[Advisor Gate](docs/routing_algorithms/advisor_gate_routing.md)** | One model serves every turn; a stronger advisor approves its plans and "done" claims, or sends it back. | `advisor` | lifts a weak executor 43.8% → 54.7% |
-| **[Sub-Agent-Aware](docs/routing_algorithms/subagent_routing.md)** | Delegated sub-agent traffic routes separately from the parent agent. | `subagents` on `passthrough` or `stage_router` | not yet benchmarked |
-| **[Custom](docs/routing_algorithms/llm_classifier_routing.md#custom-multi-target-routing)** | The first request is judged by an LLM against criteria you define, routing among 2+ of your own models. | `llm_classifier` + `target_selector` policy | not yet benchmarked |
-| **[Random](docs/routing_algorithms/random_routing.md)** | Each request is routed at random, uniform or weighted. | `random` | baseline mechanism |
+| Choice | Use it when | Route `type` |
+|---|---|---|
+| **[Auto](docs/routing_algorithms/overview.md#auto)** | You want Switchyard's recommended preset. | `auto` |
+| **[Task](docs/routing_algorithms/llm_classifier_routing.md)** | You want an LLM to judge which model can handle the task. | `llm_classifier` |
+| **[Execution](docs/routing_algorithms/stage_router_routing.md)** | You want tool results and agent progress to guide each request. | `stage_router` |
 
-Benchmarks are Terminal-Bench 2.1 against a $98.06 Opus 4.8 baseline at 76.0%.
-A `passthrough` route registers one target under one model ID with no routing
-decision. See the [Routing Overview](docs/routing_algorithms/overview.md) for
-the common route shape and self-hosted targets.
+Auto currently uses Execution with fixed defaults and no LLM judge. Task uses
+the LLM classifier's capability mode. Execution uses the stage router.
+These names do not change the TOML configuration keys.
+
+> Auto requires a [source build](docs/getting_started.md#build-from-source) until v0.3.0 is published. The quickstart above uses `stage_router` directly.
+
+See the [full routing catalog](docs/routing_algorithms/overview.md#more-options)
+for composite routing, escalation, custom policies, and other options.
+Performance results are listed under [Benchmark Provenance](#benchmark-provenance).
 
 ## Documentation
 
@@ -285,9 +285,9 @@ the common route shape and self-hosted targets.
 | Configuration | Accuracy | Total cost | vs. Opus 4.8 baseline |
 |---|---:|---:|---|
 | Opus 4.8 baseline | 76.0% | $98.06 | — |
-| **[Escalation](#routing-algorithms)** | 75.7% | $85.00 | 99.6% of accuracy, 13.3% cheaper |
-| **[Stage](#routing-algorithms)** | 72.7% | $68.19 | 95.7% of accuracy, 30.5% cheaper |
-| **[Capability](#routing-algorithms)** | 71.2% | $79.32 | 93.7% of accuracy, 19.1% cheaper |
+| **[Escalation](docs/routing_algorithms/escalation_router_routing.md)** | 75.7% | $85.00 | 99.6% of accuracy, 13.3% cheaper |
+| **[Execution (Stage)](docs/routing_algorithms/stage_router_routing.md)** | 72.7% | $68.19 | 95.7% of accuracy, 30.5% cheaper |
+| **[Task (Capability)](docs/routing_algorithms/llm_classifier_routing.md)** | 71.2% | $79.32 | 93.7% of accuracy, 19.1% cheaper |
 | Kimi K2.6 alone | 55.8% | $76.28 | |
 | GLM 5.2 alone | 52.4% | $16.47 | |
 | DeepSeek V4 Pro alone | 48.7% | $96.92 | |
