@@ -12,9 +12,9 @@
 //! cargo run -p switchyard-typesafe-client --example live_check
 //! ```
 //!
-//! It sends one real classification request (the same "capable vs. efficient"
-//! shape a `type_safe_classifier` route asks in production) and prints the
-//! provider's verdict plus token usage. A non-zero exit means the call failed;
+//! It sends one real classification request with two candidate orders (the
+//! same shape a two-candidate `type_safe_classifier` route asks in production)
+//! and prints the provider's verdict. A non-zero exit means the call failed;
 //! the printed error is TypeSafe's own response detail (never the API key).
 
 use switchyard_libsy::{TypeSafeClassifierInput, TypeSafeOption, TypeSafeProvider};
@@ -52,8 +52,10 @@ async fn main() {
     match client.classify(input, &options).await {
         Ok(verdict) => {
             println!("OK");
-            println!("  label:      {}", verdict.label);
-            println!("  confidence: {:.3}", verdict.confidence);
+            println!("  label:         {}", verdict.label);
+            println!("  confidence:    {:.3}", verdict.confidence);
+            println!("  probabilities: {:?}", verdict.probabilities);
+            println!("  latency_ms:    {}", verdict.decision_latency_ms);
         }
         Err(err) => {
             eprintln!("classify() failed: {err}");

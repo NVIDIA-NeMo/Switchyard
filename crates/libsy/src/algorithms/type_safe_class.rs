@@ -37,8 +37,7 @@ const ALGORITHM_NAME: &str = "type_safe_task_classifier";
 
 /// Instruction sent as the provider's question when the deployment leaves
 /// [`TypeSafeClassifierConfig::question`] empty.
-const DEFAULT_QUESTION: &str =
-    "Which of the following best describes what this conversation needs next?";
+const DEFAULT_QUESTION: &str = "Which configured model is the best fit for this conversation?";
 
 /// Settings for a [`TypeSafeTaskClassifier`] route.
 #[derive(Clone, Debug)]
@@ -211,7 +210,12 @@ impl TypeSafeClassifier {
             return Self::fall_open(
                 driver,
                 "invalid_confidence",
-                serde_json::json!({"label": verdict.label, "confidence": verdict.confidence}),
+                serde_json::json!({
+                    "label": verdict.label,
+                    "confidence": verdict.confidence,
+                    "probabilities": verdict.probabilities,
+                    "decision_latency_ms": verdict.decision_latency_ms,
+                }),
             );
         }
 
@@ -229,7 +233,11 @@ impl TypeSafeClassifier {
             return Self::fall_open(
                 driver,
                 "unresolved_label",
-                serde_json::json!({"label": verdict.label}),
+                serde_json::json!({
+                    "label": verdict.label,
+                    "probabilities": verdict.probabilities,
+                    "decision_latency_ms": verdict.decision_latency_ms,
+                }),
             );
         };
 
@@ -237,7 +245,12 @@ impl TypeSafeClassifier {
             return Self::fall_open(
                 driver,
                 "low_confidence",
-                serde_json::json!({"label": verdict.label, "confidence": verdict.confidence}),
+                serde_json::json!({
+                    "label": verdict.label,
+                    "confidence": verdict.confidence,
+                    "probabilities": verdict.probabilities,
+                    "decision_latency_ms": verdict.decision_latency_ms,
+                }),
             );
         }
 
@@ -245,6 +258,8 @@ impl TypeSafeClassifier {
             "source": "type_safe_classifier",
             "label": verdict.label,
             "confidence": verdict.confidence,
+            "probabilities": verdict.probabilities,
+            "decision_latency_ms": verdict.decision_latency_ms,
         }));
         Classification::Scores(vec![Score {
             target,
@@ -430,12 +445,18 @@ mod tests {
         ]
     }
 
+    fn verdict(label: &str, confidence: f64) -> TypeSafeVerdict {
+        TypeSafeVerdict {
+            label: label.to_string(),
+            confidence,
+            probabilities: [(label.to_string(), 1.0)].into(),
+            decision_latency_ms: 12,
+        }
+    }
+
     #[tokio::test]
     async fn a_confident_verdict_routes_to_its_category() -> Result<()> {
-        let provider = Arc::new(StubProvider::once(Ok(TypeSafeVerdict {
-            label: "capable".to_string(),
-            confidence: 0.9,
-        })));
+        let provider = Arc::new(StubProvider::once(Ok(verdict("capable", 0.9))));
         let classifier = TypeSafeTaskClassifier::new(provider, config(options(), 0.5))?;
         let driver = driver_with(&[(Category::Capable, "strong"), (Category::Efficient, "weak")]);
         let mut state = State::default();
@@ -473,10 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_low_confidence_verdict_falls_through_to_the_default() -> Result<()> {
-        let provider = Arc::new(StubProvider::once(Ok(TypeSafeVerdict {
-            label: "capable".to_string(),
-            confidence: 0.2,
-        })));
+        let provider = Arc::new(StubProvider::once(Ok(verdict("capable", 0.2))));
         let classifier = TypeSafeTaskClassifier::new(provider, config(options(), 0.5))?;
         let driver = driver_with(&[
             (Category::Any, "strong"),
@@ -494,10 +512,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_unresolved_label_falls_through_to_the_default() -> Result<()> {
-        let provider = Arc::new(StubProvider::once(Ok(TypeSafeVerdict {
-            label: "not_a_configured_category".to_string(),
-            confidence: 0.99,
-        })));
+        let provider = Arc::new(StubProvider::once(Ok(verdict(
+            "not_a_configured_category",
+            0.99,
+        ))));
         let classifier = TypeSafeTaskClassifier::new(provider, config(options(), 0.5))?;
         let driver = driver_with(&[
             (Category::Any, "strong"),
@@ -535,10 +553,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_nan_confidence_falls_through_to_the_default() -> Result<()> {
-        let provider = Arc::new(StubProvider::once(Ok(TypeSafeVerdict {
-            label: "capable".to_string(),
-            confidence: f64::NAN,
-        })));
+        let provider = Arc::new(StubProvider::once(Ok(verdict("capable", f64::NAN))));
         let classifier = TypeSafeTaskClassifier::new(provider, config(options(), 0.5))?;
         let driver = driver_with(&[
             (Category::Any, "strong"),
@@ -558,10 +573,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_out_of_range_confidence_falls_through_to_the_default() -> Result<()> {
-        let provider = Arc::new(StubProvider::once(Ok(TypeSafeVerdict {
-            label: "capable".to_string(),
-            confidence: 1.5,
-        })));
+        let provider = Arc::new(StubProvider::once(Ok(verdict("capable", 1.5))));
         let classifier = TypeSafeTaskClassifier::new(provider, config(options(), 0.5))?;
         let driver = driver_with(&[
             (Category::Any, "strong"),
@@ -579,10 +591,7 @@ mod tests {
 
     #[test]
     fn empty_options_are_rejected() {
-        let provider = Arc::new(StubProvider::once(Ok(TypeSafeVerdict {
-            label: "capable".to_string(),
-            confidence: 1.0,
-        })));
+        let provider = Arc::new(StubProvider::once(Ok(verdict("capable", 1.0))));
         let result = TypeSafeTaskClassifier::new(provider, config(Vec::new(), 0.5));
         assert!(matches!(
             result,
@@ -593,10 +602,7 @@ mod tests {
 
     #[test]
     fn out_of_range_threshold_is_rejected() {
-        let provider = Arc::new(StubProvider::once(Ok(TypeSafeVerdict {
-            label: "capable".to_string(),
-            confidence: 1.0,
-        })));
+        let provider = Arc::new(StubProvider::once(Ok(verdict("capable", 1.0))));
         let result = TypeSafeTaskClassifier::new(provider, config(options(), 1.5));
         assert!(matches!(
             result,

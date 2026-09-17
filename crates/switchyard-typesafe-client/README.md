@@ -41,6 +41,7 @@ let verdict = client
     .await?;
 
 println!("{} ({:.2})", verdict.label, verdict.confidence);
+println!("{:?}", verdict.probabilities);
 # Ok(())
 # }
 ```
@@ -58,10 +59,15 @@ implementation redacts it.
   "state": "<flattened conversation text>",
   "model": "jev-latest",
   "questions": {
-    "route": {
+    "route_0": {
       "type": "choice",
       "instructions": "<the classifier's question>",
       "criteria": { "capable": "...", "efficient": "..." }
+    },
+    "route_1": {
+      "type": "choice",
+      "instructions": "<the classifier's question>",
+      "criteria": { "efficient": "...", "capable": "..." }
     }
   }
 }
@@ -71,7 +77,21 @@ implementation redacts it.
 {
   "usage": { "input_tokens": 42 },
   "answers": {
-    "route": { "choice": "efficient", "confidence": 0.87 }
+    "route_0": {
+      "choice": "efficient",
+      "confidence": 0.8,
+      "probabilities": { "capable": 0.1, "efficient": 0.9 }
+    },
+    "route_1": {
+      "choice": "efficient",
+      "confidence": 0.6,
+      "probabilities": { "capable": 0.2, "efficient": 0.8 }
+    }
   }
 }
 ```
+
+The client sends up to three deterministic option orders in one request. It
+averages and normalizes their probability distributions, selects the largest
+average probability, and recomputes TypeSafe's Choice confidence. The verdict
+also contains the full averaged distribution and wall-clock decision latency.

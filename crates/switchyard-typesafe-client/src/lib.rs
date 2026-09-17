@@ -8,9 +8,10 @@ mod error;
 pub use error::TypeSafeClientError;
 
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use switchyard_libsy::{
     TypeSafeClassifierInput, TypeSafeOption, TypeSafeProvider, TypeSafeProviderError,
@@ -23,9 +24,7 @@ const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
 /// Model served by default. Override with [`TypeSafeHttpClient::with_model`].
 const DEFAULT_MODEL: &str = "jev-latest";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Name of the single `questions` entry sent on every request, and read back from
-/// `answers` in the response.
-const QUESTION_NAME: &str = "route";
+const QUESTION_PREFIX: &str = "route_";
 
 /// HTTP client for TypeSafe's `/v1/systemone` endpoint (the "System One Model" /
 /// Jev), implementing [`TypeSafeProvider`].
@@ -123,7 +122,7 @@ impl TypeSafeHttpClient {
 struct SystemOneRequest<'a> {
     state: &'a str,
     model: &'a str,
-    questions: BTreeMap<&'static str, ChoiceQuestion<'a>>,
+    questions: BTreeMap<String, ChoiceQuestion<'a>>,
 }
 
 #[derive(Serialize)]
@@ -131,7 +130,22 @@ struct ChoiceQuestion<'a> {
     #[serde(rename = "type")]
     kind: &'static str,
     instructions: &'a str,
-    criteria: BTreeMap<&'a str, &'a str>,
+    criteria: OrderedCriteria<'a>,
+}
+
+struct OrderedCriteria<'a>(Vec<(&'a str, &'a str)>);
+
+impl Serialize for OrderedCriteria<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (label, description) in &self.0 {
+            map.serialize_entry(label, description)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -146,6 +160,7 @@ struct Usage {
 struct ChoiceAnswer {
     choice: String,
     confidence: f64,
+    probabilities: BTreeMap<String, f64>,
 }
 
 #[derive(Deserialize)]
@@ -163,25 +178,35 @@ impl TypeSafeProvider for TypeSafeHttpClient {
         input: TypeSafeClassifierInput,
         options: &[TypeSafeOption],
     ) -> Result<TypeSafeVerdict, TypeSafeProviderError> {
-        let criteria = options
-            .iter()
-            .map(|option| (option.label.as_str(), option.description.as_str()))
-            .collect::<BTreeMap<_, _>>();
+        if options.is_empty() {
+            return Err(TypeSafeProviderError(
+                "typesafe classification needs at least one candidate".to_string(),
+            ));
+        }
+        let orders = option_orders(options);
         let mut questions = BTreeMap::new();
-        questions.insert(
-            QUESTION_NAME,
-            ChoiceQuestion {
-                kind: "choice",
-                instructions: &input.question,
-                criteria,
-            },
-        );
+        for (index, order) in orders.iter().enumerate() {
+            questions.insert(
+                format!("{QUESTION_PREFIX}{index}"),
+                ChoiceQuestion {
+                    kind: "choice",
+                    instructions: &input.question,
+                    criteria: OrderedCriteria(
+                        order
+                            .iter()
+                            .map(|option| (option.label.as_str(), option.description.as_str()))
+                            .collect(),
+                    ),
+                },
+            );
+        }
         let body = SystemOneRequest {
             state: &input.context,
             model: &self.model,
             questions,
         };
 
+        let started = Instant::now();
         let response = self
             .http
             .post(self.endpoint())
@@ -207,17 +232,106 @@ impl TypeSafeProvider for TypeSafeHttpClient {
             TypeSafeProviderError(format!("typesafe response was not valid JSON: {error}"))
         })?;
 
-        let answer = parsed.answers.get(QUESTION_NAME).ok_or_else(|| {
-            TypeSafeProviderError(format!(
-                "typesafe response is missing the {QUESTION_NAME:?} answer"
-            ))
-        })?;
+        let mut probabilities = options
+            .iter()
+            .map(|option| (option.label.clone(), 0.0))
+            .collect::<BTreeMap<_, _>>();
+        for index in 0..orders.len() {
+            let question = format!("{QUESTION_PREFIX}{index}");
+            let answer = parsed.answers.get(&question).ok_or_else(|| {
+                TypeSafeProviderError(format!(
+                    "typesafe response is missing the {question:?} answer"
+                ))
+            })?;
+            if !probabilities.contains_key(&answer.choice) {
+                return Err(TypeSafeProviderError(format!(
+                    "typesafe returned unknown candidate {:?}",
+                    answer.choice
+                )));
+            }
+            if !(0.0..=1.0).contains(&answer.confidence) {
+                return Err(TypeSafeProviderError(
+                    "typesafe returned an invalid confidence".to_string(),
+                ));
+            }
+            let mut answer_sum = 0.0;
+            for (label, total) in &mut probabilities {
+                let value = answer.probabilities.get(label).ok_or_else(|| {
+                    TypeSafeProviderError(format!(
+                        "typesafe response is missing probability for {label:?}"
+                    ))
+                })?;
+                if !(0.0..=1.0).contains(value) {
+                    return Err(TypeSafeProviderError(format!(
+                        "typesafe returned an invalid probability for {label:?}"
+                    )));
+                }
+                answer_sum += value;
+                *total += value;
+            }
+            if !answer_sum.is_finite() || (answer_sum - 1.0).abs() > 0.02 {
+                return Err(TypeSafeProviderError(format!(
+                    "typesafe probabilities for {question:?} do not sum to one"
+                )));
+            }
+        }
+        for probability in probabilities.values_mut() {
+            *probability /= orders.len() as f64;
+        }
+        let probability_sum = probabilities.values().sum::<f64>();
+        if !probability_sum.is_finite() || (probability_sum - 1.0).abs() > 0.02 {
+            return Err(TypeSafeProviderError(
+                "typesafe probabilities do not sum to one".to_string(),
+            ));
+        }
+        for probability in probabilities.values_mut() {
+            *probability /= probability_sum;
+        }
+        let selected = options
+            .iter()
+            .reduce(|best, candidate| {
+                if probabilities[&candidate.label] > probabilities[&best.label] {
+                    candidate
+                } else {
+                    best
+                }
+            })
+            .expect("options is non-empty");
+        let maximum = probabilities[&selected.label];
+        let uniform = 1.0 / options.len() as f64;
+        let confidence = if options.len() == 1 {
+            1.0
+        } else {
+            ((maximum - uniform) / (1.0 - uniform)).clamp(0.0, 1.0)
+        };
 
         Ok(TypeSafeVerdict {
-            label: answer.choice.clone(),
-            confidence: answer.confidence,
+            label: selected.label.clone(),
+            confidence,
+            probabilities,
+            decision_latency_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
         })
     }
+}
+
+fn option_orders(options: &[TypeSafeOption]) -> Vec<Vec<&TypeSafeOption>> {
+    let mut orders = vec![options.iter().collect::<Vec<_>>()];
+    if options.len() > 1 {
+        let mut rotated = options.iter().collect::<Vec<_>>();
+        rotated.rotate_left(1);
+        orders.push(rotated);
+        let mut reversed = options.iter().collect::<Vec<_>>();
+        reversed.reverse();
+        if !orders.iter().any(|order| {
+            order
+                .iter()
+                .map(|option| &option.label)
+                .eq(reversed.iter().map(|option| &option.label))
+        }) {
+            orders.push(reversed);
+        }
+    }
+    orders
 }
 
 #[cfg(test)]
@@ -277,19 +391,38 @@ mod tests {
                 "state": "[user] list files in a directory",
                 "model": "jev-latest",
                 "questions": {
-                    "route": {
+                    "route_0": {
                         "type": "choice",
                         "instructions": "Which tier does this need?",
                         "criteria": {
                             "capable": "complex, multi-step work",
                             "efficient": "short, simple requests"
                         }
+                    },
+                    "route_1": {
+                        "type": "choice",
+                        "instructions": "Which tier does this need?",
+                        "criteria": {
+                            "efficient": "short, simple requests",
+                            "capable": "complex, multi-step work"
+                        }
                     }
                 }
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "usage": {"input_tokens": 42},
-                "answers": {"route": {"choice": "efficient", "confidence": 0.87}}
+                "answers": {
+                    "route_0": {
+                        "choice": "efficient",
+                        "confidence": 0.6,
+                        "probabilities": {"capable": 0.2, "efficient": 0.8}
+                    },
+                    "route_1": {
+                        "choice": "capable",
+                        "confidence": 0.2,
+                        "probabilities": {"capable": 0.6, "efficient": 0.4}
+                    }
+                }
             })))
             .mount(&server)
             .await;
@@ -304,7 +437,10 @@ mod tests {
             .expect("classify should succeed");
 
         assert_eq!(verdict.label, "efficient");
-        assert!((verdict.confidence - 0.87).abs() < f64::EPSILON);
+        assert!((verdict.confidence - 0.2).abs() < 1e-12);
+        assert!((verdict.probabilities["capable"] - 0.4).abs() < 1e-12);
+        assert!((verdict.probabilities["efficient"] - 0.6).abs() < 1e-12);
+        assert!(verdict.decision_latency_ms < 10_000);
     }
 
     #[tokio::test]
@@ -351,6 +487,66 @@ mod tests {
             .await
             .expect_err("classify should fail when the answer is absent");
         assert!(error.to_string().contains("route"));
+    }
+
+    #[tokio::test]
+    async fn classify_rejects_a_probability_distribution_that_does_not_sum_to_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "usage": {"input_tokens": 1},
+                "answers": {
+                    "route_0": {
+                        "choice": "capable",
+                        "confidence": 0.5,
+                        "probabilities": {"capable": 0.8, "efficient": 0.8}
+                    },
+                    "route_1": {
+                        "choice": "efficient",
+                        "confidence": 0.5,
+                        "probabilities": {"capable": 0.2, "efficient": 0.8}
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TypeSafeHttpClient::new("sk-test")
+            .with_base_url(server.uri())
+            .expect("mock server URI is valid");
+        let error = client
+            .classify(input(), &options())
+            .await
+            .expect_err("classify should reject a malformed distribution");
+
+        assert!(error.to_string().contains("do not sum to one"));
+    }
+
+    #[test]
+    fn option_orders_cover_stable_permutations_without_duplicates() {
+        let options = vec![
+            TypeSafeOption::new("one", "first"),
+            TypeSafeOption::new("two", "second"),
+            TypeSafeOption::new("three", "third"),
+        ];
+        let orders = option_orders(&options)
+            .into_iter()
+            .map(|order| {
+                order
+                    .into_iter()
+                    .map(|option| option.label.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            orders,
+            [
+                vec!["one", "two", "three"],
+                vec!["two", "three", "one"],
+                vec!["three", "two", "one"],
+            ]
+        );
     }
 
     #[test]

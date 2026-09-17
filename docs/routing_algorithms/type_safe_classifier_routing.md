@@ -5,8 +5,8 @@ TypeSafe classifier routing decides a route's target with
 instead of a chat-completion judge. Jev is non-generative: it returns a typed,
 probabilistic `Choice` directly from a sampling layer rather than generating
 and parsing text, so this classifier never calls one of the deployment's own
-`[llm_clients]` targets for its judgment step. It supports two or more targets,
-the same way `llm_classifier` custom mode does.
+`[llm_clients]` targets for its judgment step. It compares two or more target
+models configured by the user.
 
 Use it when you want a classifier call that is not itself a chat completion —
 for example to avoid a judge model's own latency and reasoning-token cost. Use
@@ -46,61 +46,67 @@ api_key_env = "OPENROUTER_API_KEY"
 [targets.strong]
 id = "openai/gpt-4o"
 llm_client = "openrouter"
+routing_description = "Best for complex, multi-step work and high-stakes correctness."
 
 [targets.weak]
 id = "openai/gpt-4o-mini"
 llm_client = "openrouter"
+routing_description = "Best for short, simple, well-specified requests."
 
 [routes.smart]
 id = "smart"
 type = "type_safe_classifier"
-default_target = "efficient"
+default_target = "weak"
 base_threshold = 0.6
-question = "Which model tier does this conversation need?"
-
-[routes.smart.options]
-capable = "Needs multi-step reasoning, ambiguous instructions, or high-stakes correctness."
-efficient = "A short, well-specified request."
-
-[routes.smart.models]
-capable = ["strong"]
-efficient = ["weak"]
-any = ["strong", "weak"]
+candidates = ["strong", "weak"]
+question = "Which configured model is the best fit for this conversation?"
 ```
 
-`options` is the set of labels Jev is asked to choose between, each paired
-with the natural-language criteria for when it applies. Every `options` key
-must also be a key of `models`, and every group in `models` (`any` included)
-must contain at least one target. Unlike `llm_classifier`, there is no
-`models.judge` group — the judgment step is TypeSafe itself, not one of your
-runtime models — and `judge` may not be used as an `options` label or as
-`default_target`.
+`candidates` names the configured targets that Jev compares. Each candidate
+must be unique, and `default_target` must name one of them. The optional
+`routing_description` on a target tells Jev when that model is a good fit. If
+it is omitted, Switchyard uses the target name and model ID. A route can
+override a target's description with `candidate_descriptions`:
+
+```toml
+[routes.smart.candidate_descriptions]
+strong = "Prefer for difficult coding and long-context analysis."
+```
+
+The names `any` and `judge` are reserved and cannot be candidates.
 
 ## How the decision works
 
 Each request's opening task (and latest user follow-up, when it differs) is
-flattened into plain text and sent to TypeSafe as `state`, alongside `options`
-as the `Choice` criteria. TypeSafe returns a label and a confidence in
-`[0, 1]`.
+flattened into plain text and sent to TypeSafe as `state`, alongside the
+candidate descriptions as `Choice` criteria. Switchyard sends up to three
+fixed candidate orders in one request, averages their probability
+distributions, and chooses the candidate with the highest average probability.
+It computes confidence from that averaged distribution using TypeSafe's Choice
+confidence formula. The full probabilities and decision latency are recorded
+in routing evidence.
 
-- A confidence at or above `base_threshold` routes to the first model in the
-  matching `options` label's `models` group.
-- A confidence below `base_threshold`, an unresolved or unconfigured label, an
-  out-of-range or non-numeric confidence, or a failed TypeSafe request all
-  fall back to `default_target` instead. This classifier never errors the
-  request: every provider failure mode fails open.
+- A confidence at or above `base_threshold` routes to the selected target.
+- A confidence below `base_threshold`, an invalid response, or a failed
+  TypeSafe request falls back to `default_target`. This classifier never
+  errors the request: every provider failure mode fails open.
 
 ## Tuning options
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `options` | Yes | — | Labeled criteria offered to TypeSafe, keyed by name. Each key must also be a key of `models`. |
-| `default_target` | Yes | — | Group used when TypeSafe fails, returns an unconfigured label, or answers below `base_threshold`. Any group except `judge`. |
+| `candidates` | Yes | — | Two or more unique target names offered to TypeSafe. `any` and `judge` are reserved. |
+| `candidate_descriptions` | No | target description or generated text | Route-specific descriptions keyed by candidate target name. |
+| `default_target` | Yes | — | Candidate used when TypeSafe fails or answers below `base_threshold`. |
 | `base_threshold` | Yes | — | Lowest confidence that is trusted, in `[0, 1]`. |
-| `question` | No | generic tier-selection prompt | Instruction sent as TypeSafe's `instructions` field. |
+| `question` | No | generic model-selection prompt | Instruction sent as TypeSafe's `instructions` field. |
 | `classify_trigger` | No | `every_request` | When the classifier re-decides. Same semantics as `llm_classifier`: `every_request`, `user_turn`, or `new_session`. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message when session metadata is absent. Requires `classify_trigger = "new_session"`. |
 | `recent_turn_window` | No | unset | When unset, TypeSafe sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+
+`targets.<name>.routing_description` is optional. It supplies reusable facts
+about a target for every TypeSafe route that includes it. A route-level
+`candidate_descriptions` entry takes precedence.
 
 ## Run the route
 

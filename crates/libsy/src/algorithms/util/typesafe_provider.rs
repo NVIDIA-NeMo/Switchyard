@@ -18,6 +18,7 @@
 //! whatever calls it.
 
 use async_trait::async_trait;
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// One label a [`TypeSafeProvider`] may return, together with the natural-language
@@ -70,6 +71,10 @@ pub struct TypeSafeVerdict {
     /// Not validated at this layer, so a caller comparing it against a threshold
     /// should still treat an out-of-range value defensively.
     pub confidence: f64,
+    /// Averaged probability for every configured candidate label.
+    pub probabilities: BTreeMap<String, f64>,
+    /// Wall-clock time spent waiting for the TypeSafe decision.
+    pub decision_latency_ms: u64,
 }
 
 /// Opaque failure from a [`TypeSafeProvider`] call.

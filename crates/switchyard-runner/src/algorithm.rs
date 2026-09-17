@@ -154,18 +154,6 @@ impl CategoryModelConfig {
         self.validate_for(route_name, "llm_classifier", default_target, true)
     }
 
-    /// Validates `models` for a classifier with no judge-model concept of its own
-    /// (`type_safe_classifier`, whose judgment step is an external provider, not a
-    /// runtime model). `models.judge` is neither required nor given any special
-    /// membership exemption here.
-    fn validate_without_judge(
-        &self,
-        route_name: &str,
-        default_target: &Category,
-    ) -> AlgorithmResult<()> {
-        self.validate_for(route_name, "type_safe_classifier", default_target, false)
-    }
-
     fn validate_for(
         &self,
         route_name: &str,
@@ -467,18 +455,17 @@ pub enum AlgorithmSpec {
     /// table and injects into every route configured this way. A route using
     /// this type fails to build when the deployment has no `[type_safe_client]`.
     TypeSafeClassifier {
-        /// Runtime model groups, keyed by category name. `any` is required; the
-        /// rest follow `llm_classifier` custom mode's shape, minus `judge` — this
-        /// classifier's judgment step is an external provider, not a runtime model.
-        models: CategoryModelConfig,
-        /// Category served when the provider fails, returns an unrecognised
-        /// label, or answers below `base_threshold`.
+        /// Configured target names offered to TypeSafe as candidate models.
+        candidates: Vec<String>,
+        /// Optional routing descriptions keyed by candidate target name. When
+        /// omitted, Switchyard identifies the candidate by target name and model id.
+        #[serde(default)]
+        candidate_descriptions: BTreeMap<String, String>,
+        /// Candidate target served when the provider fails, returns an
+        /// unrecognised label, or answers below `base_threshold`.
         default_target: String,
-        /// Natural-language criteria offered to the provider, keyed by category
-        /// name. Every key must also be a key of `models` other than `any`.
-        options: BTreeMap<String, String>,
         /// Instruction sent as the provider's question. Uses a generic
-        /// tier-selection default when unset.
+        /// model-selection default when unset.
         question: Option<String>,
         /// Lowest confidence that is trusted, from 0 to 1.
         base_threshold: f64,
@@ -651,7 +638,9 @@ impl AlgorithmSpec {
                 executor_target, ..
             } => vec![executor_target],
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
-            Self::TypeSafeClassifier { models, .. } => models.routing_names(),
+            Self::TypeSafeClassifier { candidates, .. } => {
+                candidates.iter().map(String::as_str).collect()
+            }
         }
     }
 
@@ -771,7 +760,15 @@ impl AlgorithmSpec {
                 (Category::Any, vec![executor_target.clone()]),
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),
-            Self::TypeSafeClassifier { models, .. } => custom_runtime_model_names(models),
+            Self::TypeSafeClassifier { candidates, .. } => {
+                let mut models = category_models([(Category::Any, candidates.clone())]);
+                for candidate in candidates {
+                    if let Ok(category) = candidate.parse::<Category>() {
+                        models.insert(category, vec![candidate.clone()]);
+                    }
+                }
+                models
+            }
         };
 
         let subagents = match self {
@@ -824,7 +821,23 @@ impl AlgorithmSpec {
         targets: &BTreeMap<String, ModelId>,
         type_safe_provider: Option<&Arc<dyn TypeSafeProvider>>,
     ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-        build_algorithm(context, self, targets, type_safe_provider)
+        self.build_with_target_descriptions(context, targets, &BTreeMap::new(), type_safe_provider)
+    }
+
+    pub(crate) fn build_with_target_descriptions(
+        &self,
+        context: &str,
+        targets: &BTreeMap<String, ModelId>,
+        target_routing_descriptions: &BTreeMap<String, String>,
+        type_safe_provider: Option<&Arc<dyn TypeSafeProvider>>,
+    ) -> AlgorithmResult<Arc<dyn Algorithm>> {
+        build_algorithm(
+            context,
+            self,
+            targets,
+            target_routing_descriptions,
+            type_safe_provider,
+        )
     }
 }
 
@@ -1198,6 +1211,7 @@ fn build_algorithm(
     route_name: &str,
     config: &AlgorithmSpec,
     targets: &BTreeMap<String, ModelId>,
+    target_routing_descriptions: &BTreeMap<String, String>,
     type_safe_provider: Option<&Arc<dyn TypeSafeProvider>>,
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
@@ -1471,48 +1485,62 @@ fn build_algorithm(
             }
         }
         AlgorithmSpec::TypeSafeClassifier {
-            models,
+            candidates,
+            candidate_descriptions,
             default_target,
-            options,
             question,
             base_threshold,
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
         } => {
-            let default_target: Category = default_target.parse().map_err(|error| {
+            if candidates.len() < 2 {
+                return Err(AlgorithmConfigError::new(format!(
+                    "type_safe_classifier route {route_name} requires at least two candidates"
+                )));
+            }
+            let mut unique = BTreeSet::new();
+            if let Some(duplicate) = candidates.iter().find(|name| !unique.insert(*name)) {
+                return Err(AlgorithmConfigError::new(format!(
+                    "type_safe_classifier route {route_name} repeats candidate {duplicate}"
+                )));
+            }
+            let default_category: Category = default_target.parse().map_err(|error| {
                 AlgorithmConfigError::new(format!(
                     "type_safe_classifier route {route_name} has invalid default_target: {error}"
                 ))
             })?;
-            if default_target == Category::Judge {
+            if matches!(default_category, Category::Any | Category::Judge) {
                 return Err(AlgorithmConfigError::new(format!(
-                    "type_safe_classifier route {route_name} default_target cannot be judge"
+                    "type_safe_classifier route {route_name} default_target cannot be any or judge"
                 )));
             }
-            models.validate_without_judge(route_name, &default_target)?;
-
-            if options.is_empty() {
+            if !candidates.contains(default_target) {
                 return Err(AlgorithmConfigError::new(format!(
-                    "type_safe_classifier route {route_name} requires at least one entry in options"
+                    "type_safe_classifier route {route_name} default_target {default_target} is not in candidates"
                 )));
             }
-            for label in options.keys() {
-                let category: Category = label.parse().map_err(|error| {
+            for candidate in candidates {
+                let category: Category = candidate.parse().map_err(|error| {
                     AlgorithmConfigError::new(format!(
-                        "type_safe_classifier route {route_name} has invalid options key {label:?}: {error}"
+                        "type_safe_classifier route {route_name} has invalid candidate {candidate:?}: {error}"
                     ))
                 })?;
-                if category == Category::Judge {
+                if matches!(category, Category::Any | Category::Judge) {
                     return Err(AlgorithmConfigError::new(format!(
-                        "type_safe_classifier route {route_name} options.{label} cannot be judge \
-                         (judge is reserved for llm_classifier's chat-completion judge model, not \
-                         an external provider's routing target)"
+                        "type_safe_classifier route {route_name} candidate {candidate} cannot be any or judge"
                     )));
                 }
-                if models.get(&category).is_empty() {
+            }
+            for (name, description) in candidate_descriptions {
+                if !candidates.contains(name) {
                     return Err(AlgorithmConfigError::new(format!(
-                        "type_safe_classifier route {route_name} options.{label} has no matching models.{label}"
+                        "type_safe_classifier route {route_name} has a description for non-candidate {name}"
+                    )));
+                }
+                if description.trim().is_empty() || description.trim() != description {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "type_safe_classifier route {route_name} description for {name} must be non-empty and have no surrounding whitespace"
                     )));
                 }
             }
@@ -1524,15 +1552,23 @@ fn build_algorithm(
             })?;
 
             let classifier_config = TypeSafeClassifierConfig {
-                options: options
+                options: candidates
                     .iter()
-                    .map(|(label, description)| {
-                        TypeSafeOption::new(label.clone(), description.clone())
+                    .map(|name| {
+                        let model = targets.get(name).expect("candidate target was validated");
+                        let description = candidate_descriptions
+                            .get(name)
+                            .or_else(|| target_routing_descriptions.get(name))
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                format!("Configured target {name} uses model {model}.")
+                            });
+                        TypeSafeOption::new(name.clone(), description)
                     })
                     .collect(),
                 question: question.clone().unwrap_or_default(),
                 base_threshold: *base_threshold,
-                default_target,
+                default_target: default_category,
                 classify_trigger: *classify_trigger,
                 message_hash_fallback: *message_hash_fallback,
                 recent_turn_window: *recent_turn_window,
