@@ -225,8 +225,10 @@ The deterministic policy applies `base_threshold` and `threshold_step` after
 generation.
 
 Without affinity, the runtime judges every request. By default, it sends the
-opening task and the latest user follow-up when they differ. Set
-`recent_turn_window` when intervening conversation context affects the forecast.
+opening task and the latest user follow-up when they differ, excluding tool calls,
+tool results, and reasoning. It keeps ordinary user content from messages that
+also contain tool results. Set `recent_turn_window` when intervening conversation
+context affects the forecast.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.

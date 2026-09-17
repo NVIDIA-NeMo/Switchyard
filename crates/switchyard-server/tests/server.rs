@@ -140,6 +140,27 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    if model == "model/classifier" {
+        let mut pending = HashSet::new();
+        for message in body["messages"].as_array().into_iter().flatten() {
+            for call in message["tool_calls"].as_array().into_iter().flatten() {
+                if let Some(id) = call["id"].as_str() {
+                    pending.insert(id);
+                }
+            }
+            if message["role"] == "tool"
+                && !pending.remove(message["tool_call_id"].as_str().unwrap_or_default())
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": {
+                        "message": "tool result has no preceding assistant tool call"
+                    }})),
+                )
+                    .into_response();
+            }
+        }
+    }
     if prompt == "retry-once"
         && calls
             .lock()
@@ -2583,6 +2604,113 @@ prompt = "CUSTOM STAGE"
             );
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn classifier_task_input_excludes_tool_results_across_request_formats() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+[targets.judge]
+id = "model/classifier"
+llm_client = "upstream"
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+[routes.task]
+id = "task"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+classify_trigger = "every_request"
+[routes.window]
+id = "window"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+base_threshold = 0.5
+classify_trigger = "every_request"
+recent_turn_window = 1
+"#,
+        base_url = upstream.base_url
+    ))?);
+    let chat = json!({"messages": [
+        {"role": "user", "content": "Read the file."},
+        {"role": "assistant", "content": null, "tool_calls": [{
+            "id": "call_read", "type": "function", "function": {"name": "read_file", "arguments": "{}"}
+        }]},
+        {"role": "tool", "tool_call_id": "call_read", "content": "File contents."}
+    ]});
+    for (route, endpoint, mut body) in [
+        ("task", "/v1/chat/completions", chat.clone()),
+        (
+            "task",
+            "/v1/messages",
+            json!({"messages": [
+                {"role": "user", "content": "Read the file."},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "call_read", "name": "read_file", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_read", "content": "File contents."}]}
+            ]}),
+        ),
+        (
+            "task",
+            "/v1/responses",
+            json!({"input": [
+                {"role": "user", "content": "Read the file."},
+                {"type": "function_call", "call_id": "call_read", "name": "read_file", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_read", "output": "File contents."}
+            ]}),
+        ),
+        ("window", "/v1/chat/completions", chat),
+    ] {
+        upstream.calls.lock().await.clear();
+        body["model"] = json!(route);
+        let response = send(&app, "POST", endpoint, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers["x-model-router-selected-model"], "model/weak",
+            "{endpoint}"
+        );
+        let calls = upstream.calls.lock().await;
+        assert_eq!(calls.len(), 2);
+        let judge_roles: Vec<_> = calls[0]["messages"]
+            .as_array()
+            .ok_or("missing judge messages")?
+            .iter()
+            .map(|message| message["role"].clone())
+            .collect();
+        assert_eq!(
+            judge_roles,
+            if route == "task" {
+                json!(["system", "user"])
+            } else {
+                json!(["system", "user", "assistant", "tool", "user"])
+            }
+            .as_array()
+            .ok_or("missing expected roles")?
+            .clone()
+        );
+        assert_eq!(calls[1]["messages"][1]["tool_calls"][0]["id"], "call_read");
+        assert_eq!(calls[1]["messages"][2]["tool_call_id"], "call_read");
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 4);
+    assert_eq!(
+        stats["classifier"]["models"]["model/classifier"]["errors"],
+        0
+    );
     Ok(())
 }
 
