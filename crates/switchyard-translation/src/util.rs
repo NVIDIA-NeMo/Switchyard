@@ -250,11 +250,27 @@ fn messages_have_tools(messages: &[Message]) -> bool {
 }
 
 // Scans message content for a caller-provided block predicate.
-fn messages_have_block(messages: &[Message], predicate: impl FnMut(&ContentBlock) -> bool) -> bool {
+fn messages_have_block(
+    messages: &[Message],
+    mut predicate: impl FnMut(&ContentBlock) -> bool,
+) -> bool {
     messages
         .iter()
-        .flat_map(|message| message.content.iter())
-        .any(predicate)
+        .any(|message| content_has_block(&message.content, &mut predicate))
+}
+
+// Scans content recursively because tool results can contain media blocks.
+fn content_has_block(
+    content: &[ContentBlock],
+    predicate: &mut impl FnMut(&ContentBlock) -> bool,
+) -> bool {
+    content.iter().any(|block| {
+        predicate(block)
+            || match block {
+                ContentBlock::ToolResult(result) => content_has_block(&result.content, predicate),
+                _ => false,
+            }
+    })
 }
 
 /// Captures an exact source request body according to preservation policy.

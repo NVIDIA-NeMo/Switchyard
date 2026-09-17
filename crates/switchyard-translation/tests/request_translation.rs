@@ -901,7 +901,7 @@ fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> Tes
             }
         ])
     );
-    let policy = TranslationPolicy {
+    let mut policy = TranslationPolicy {
         lossy_conversion_policy: LossyConversionPolicy::Reject,
         ..TranslationPolicy::default()
     };
@@ -916,6 +916,29 @@ fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> Tes
         Err(error) => error,
     };
 
+    assert_eq!(error.kind(), "LossyConversion");
+
+    // Capability checks must reach media nested inside tool results.
+    policy.lossy_conversion_policy = LossyConversionPolicy::AllowWithDiagnostics;
+    policy.target_capabilities.supports_images = Some(false);
+    policy.target_capabilities.supports_files = Some(false);
+    let output = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &policy,
+    )?;
+    assert_eq!(output.diagnostics.len(), 2);
+
+    policy.lossy_conversion_policy = LossyConversionPolicy::Reject;
+    let error = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )
+        .expect_err("nested media should be rejected by the target capability profile");
     assert_eq!(error.kind(), "LossyConversion");
     Ok(())
 }
