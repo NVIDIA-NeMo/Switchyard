@@ -166,14 +166,23 @@ Only requests whose `model` is a string matching a Switchyard route ID are
 routed. Other call types, missing or non-string model values, and unconfigured
 model names are left unchanged by Switchyard and passed to Relay's next handler.
 
-The caller and selected target may use different supported API formats.
-Switchyard normalizes the request, routes it, and returns the response in the
-caller's original format. If Switchyard forwards the caller's credential, both
-formats must use the same credential family: OpenAI-compatible or Anthropic.
+The caller and selected target may use different supported API formats:
+`openai_chat`, `openai_responses`, or `anthropic_messages`. Switchyard translates
+the request into the selected target's configured format and returns buffered
+or streaming responses in the caller's original format. With server-owned
+credentials, one route targeting an `openai_chat` client can serve all three
+caller formats. Separate targets and routes are not required solely for format
+translation.
+
+Where `forward_auth` is supported, the caller and target must use the same
+credential family: OpenAI-compatible (Chat Completions and Responses) or
+Anthropic (Messages). Credential forwarding through Relay is also subject to
+the limitation tracked in [NVBug 6777302](https://nvbugs/6777302) (NVIDIA internal).
 
 Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated
-route.
+route. The [native-plugin README](../../crates/switchyard-nemo-relay-plugin/README.md#request-handling)
+describes the same format and credential rules.
 
 ### Header Forwarding
 

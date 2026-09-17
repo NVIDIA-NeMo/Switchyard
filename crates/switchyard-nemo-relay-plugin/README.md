@@ -170,11 +170,23 @@ deployment's route IDs.
 - Streaming responses are returned as unpolled translated streams; Relay owns
   cancellation and the outer serving-call lifecycle.
 
-Each route's target client must use the caller's wire format: `openai_chat`,
-`openai_responses`, or `anthropic_messages`. The runner selects the upstream
-backend from that format rather than translating a route to a different
-provider API. When one upstream model must serve multiple caller formats,
-declare a target and route for each corresponding client format.
+The caller and selected target may use different supported API formats:
+`openai_chat`, `openai_responses`, or `anthropic_messages`. Switchyard translates
+the request into the selected target's configured format and returns buffered
+or streaming responses in the caller's original format. With server-owned
+credentials, one route targeting an `openai_chat` client can serve all three
+caller formats. Separate targets and routes are not required solely for format
+translation.
+
+Where `forward_auth` is supported, the caller and target must use the same
+credential family: OpenAI-compatible (Chat Completions and Responses) or
+Anthropic (Messages). Credential forwarding through Relay is also subject to
+the limitation tracked in [NVBug 6777302](https://nvbugs/6777302) (NVIDIA internal).
+
+Support for provider-specific fields depends on the source and target formats.
+Test any fields that your application relies on before deploying a translated
+route. See the [integration guide](../../docs/integrations/nemo_relay.md#request-handling)
+for request handling, header forwarding, and streaming details.
 
 The plugin emits routing request, model-call, measured-overhead, and decision
 marks. Call marks distinguish routing from answer calls; decisions distinguish
