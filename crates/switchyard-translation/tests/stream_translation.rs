@@ -882,7 +882,7 @@ fn openai_chat_stream_cache_usage_translates_to_responses_usage_details() -> Tes
     assert_eq!(completed["response"]["usage"]["input_tokens"], 100);
     assert_eq!(
         completed["response"]["usage"]["input_tokens_details"],
-        json!({"cached_tokens": 80})
+        json!({"cached_tokens": 80, "cache_write_tokens": 0})
     );
     Ok(())
 }
@@ -1581,7 +1581,7 @@ fn openai_chat_stream_usage_without_breakdowns_still_emits_responses_usage_detai
     };
     assert_eq!(
         completed["response"]["usage"]["input_tokens_details"],
-        json!({"cached_tokens": 0})
+        json!({"cached_tokens": 0, "cache_write_tokens": 0})
     );
     assert_eq!(
         completed["response"]["usage"]["output_tokens_details"],

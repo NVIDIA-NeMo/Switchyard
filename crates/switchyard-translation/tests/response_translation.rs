@@ -190,6 +190,7 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
             "input_tokens": 10,
             "output_tokens": 5,
             "total_tokens": 15,
+            "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 2},
             "output_tokens_details": {"reasoning_tokens": 3}
         }
     });
@@ -209,6 +210,55 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
         output["usage"]["completion_tokens_details"],
         json!({"reasoning_tokens": 3})
     );
+    assert_eq!(
+        output["usage"]["prompt_tokens_details"]["cache_creation_tokens"],
+        2
+    );
+    let decoded = engine
+        .decode_response(WireFormat::OpenAiResponses, &body, &normalized_policy())?
+        .response;
+    assert_eq!(decoded.usage.input_tokens, Some(4));
+    assert_eq!(decoded.usage.cached_input_tokens(), Some(4));
+    assert_eq!(decoded.usage.cache_creation_input_tokens(), Some(2));
+    assert_eq!(decoded.usage.total_tokens, Some(15));
+    let encoded = engine
+        .encode_response(WireFormat::OpenAiResponses, &decoded, &normalized_policy())?
+        .body;
+    assert_eq!(encoded["usage"], body["usage"]);
+
+    let mut state = switchyard_translation::StreamTranslationState::new(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+    );
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &json!({"type": "response.completed", "response": body}),
+    )?;
+    assert_eq!(state.usage, decoded.usage);
+    let chat = events
+        .iter()
+        .find(|event| event.get("usage").is_some())
+        .ok_or("missing usage")?;
+    assert_eq!(chat["usage"], output["usage"]);
+    let mut state = switchyard_translation::StreamTranslationState::new(
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+    );
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &json!({"id": "chat_usage", "model": "model", "usage": output["usage"],
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("missing completion")?;
+    assert_eq!(completed["response"]["usage"], body["usage"]);
     Ok(())
 }
 
@@ -298,7 +348,7 @@ fn openai_chat_cache_usage_translates_to_responses_usage_details() -> TestResult
     assert_eq!(output["usage"]["input_tokens"], 100);
     assert_eq!(
         output["usage"]["input_tokens_details"],
-        json!({"cached_tokens": 80})
+        json!({"cached_tokens": 80, "cache_write_tokens": 0})
     );
     Ok(())
 }
@@ -543,7 +593,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             "input_tokens": 4,
             "output_tokens": 3,
             "total_tokens": 7,
-            "input_tokens_details": {"cached_tokens": 0},
+            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
             "output_tokens_details": {"reasoning_tokens": 0}
         })
     );
@@ -621,7 +671,7 @@ fn openai_chat_usage_without_breakdowns_still_emits_responses_usage_details() ->
             "input_tokens": 41,
             "output_tokens": 3,
             "total_tokens": 44,
-            "input_tokens_details": {"cached_tokens": 0},
+            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
             "output_tokens_details": {"reasoning_tokens": 0}
         })
     );
@@ -660,7 +710,7 @@ fn openai_chat_cache_only_usage_still_emits_reasoning_details() -> TestResult {
 
     assert_eq!(
         output["usage"]["input_tokens_details"],
-        json!({"cached_tokens": 32})
+        json!({"cached_tokens": 32, "cache_write_tokens": 0})
     );
     assert_eq!(
         output["usage"]["output_tokens_details"],

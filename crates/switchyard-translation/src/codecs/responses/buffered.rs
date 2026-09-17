@@ -1933,15 +1933,22 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
         .or_else(|| value.get("prompt_tokens_details"))
         .and_then(|details| details.get("cached_tokens"))
         .and_then(Value::as_u64);
-    let input_tokens = aggregate_input_tokens
-        .map(|tokens| tokens.saturating_sub(cached_input_tokens.unwrap_or(0)));
+    let cache_creation_input_tokens = value
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cache_write_tokens"))
+        .and_then(Value::as_u64);
+    let input_tokens = aggregate_input_tokens.map(|tokens| {
+        tokens
+            .saturating_sub(cached_input_tokens.unwrap_or(0))
+            .saturating_sub(cache_creation_input_tokens.unwrap_or(0))
+    });
     let output_tokens = value
         .get("output_tokens")
         .or_else(|| value.get("completion_tokens"))
         .and_then(Value::as_u64);
     Usage {
         input_tokens,
-        cache: Usage::cache_details(cached_input_tokens, None),
+        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
         output_tokens,
         total_tokens: value
             .get("total_tokens")
@@ -1979,7 +1986,10 @@ fn encode_responses_usage(usage: &Usage) -> Value {
             .total_tokens
             .or_else(|| Some(input_tokens + usage.output_tokens.unwrap_or(0)))
             .unwrap_or(0),
-        "input_tokens_details": {"cached_tokens": usage.cached_input_tokens().unwrap_or(0)},
+        "input_tokens_details": {
+            "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
+            "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
+        },
         "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
     })
 }
