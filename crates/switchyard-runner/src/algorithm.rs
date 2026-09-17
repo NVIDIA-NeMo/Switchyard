@@ -1076,6 +1076,7 @@ fn build_subagent_router_config(
                         error,
                     )
                 })?;
+            warn_single_target_classifier(route_name, &config.models);
             let mut classifier_config = CustomClassifierConfig::new(
                 config.prompt,
                 response_schema,
@@ -1206,6 +1207,7 @@ fn build_algorithm(
                             )
                         },
                     )?;
+                    warn_single_target_classifier(route_name, &config.models);
                     let mut classifier_config = CustomClassifierConfig::new(
                         config.prompt,
                         response_schema,
@@ -1425,6 +1427,15 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     TaskClassifierConfig::default().max_output_tokens
+}
+
+fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig) {
+    if models.routing_names().len() < 2 {
+        tracing::warn!(
+            route = route_name,
+            "custom classifier has only one routing target; judge calls add cost without a routing choice. Use passthrough or add another completion target in routes.<name>, or in routes.<name>.subagents for a subagent classifier."
+        );
+    }
 }
 
 fn resolve_target_model_id(
