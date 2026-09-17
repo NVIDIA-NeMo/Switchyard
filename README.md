@@ -163,7 +163,8 @@ The complete runnable version — streaming and a working client — is
 
 You finish with a server on `localhost:4000` that any OpenAI or Anthropic client
 can call. Needs [Rust with Cargo](https://rust-lang.org/tools/install/).
-macOS and native Windows are not release-validated for v0.3.0.
+For v0.3.0, the standalone server is release-validated on Ubuntu 24.04,
+Linux x86_64. Other platforms are outside the release-validation scope.
 
 **1. Install the server.**
 
