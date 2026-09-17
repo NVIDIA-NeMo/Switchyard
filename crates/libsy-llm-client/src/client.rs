@@ -5,6 +5,7 @@
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::future::ready;
 use std::time::{Duration, SystemTime};
 
@@ -114,6 +115,54 @@ impl AuxiliaryOperation {
     }
 }
 
+/// A PEM-encoded client certificate chain and private key for mutual TLS.
+///
+/// Upstreams that authenticate callers by client certificate rather than by API
+/// key need both halves. The chain may hold more than one certificate. The key is
+/// passed through to reqwest, which accepts PKCS#8 and SEC1 PEM keys.
+#[derive(Clone)]
+pub struct ClientCertificate {
+    chain_pem: Vec<u8>,
+    key_pem: Vec<u8>,
+}
+
+// The private key must never reach a log or an error message.
+impl fmt::Debug for ClientCertificate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientCertificate")
+            .field("chain_pem", &"<redacted>")
+            .field("key_pem", &"<redacted>")
+            .finish()
+    }
+}
+
+impl ClientCertificate {
+    /// Holds the PEM bytes of a certificate chain and its private key.
+    ///
+    /// The bytes are parsed when an HTTP client is built, not here, so an invalid
+    /// pair surfaces from [`TranslatingLlmClient::with_client_certificate`].
+    pub fn from_pem(chain_pem: Vec<u8>, key_pem: Vec<u8>) -> Self {
+        Self { chain_pem, key_pem }
+    }
+
+    // reqwest takes a single PEM buffer holding both the chain and the key, so the
+    // two files are joined here. A fresh identity is built per HTTP client, so this
+    // type does not depend on `reqwest::Identity` being cloneable.
+    fn identity(&self) -> Result<reqwest::Identity> {
+        let mut pem = Vec::with_capacity(self.chain_pem.len() + self.key_pem.len() + 1);
+        pem.extend_from_slice(&self.chain_pem);
+        // Without a separator a chain that lacks a trailing newline would run its
+        // END line into the key's BEGIN line, and neither would parse.
+        if !self.chain_pem.ends_with(b"\n") {
+            pem.push(b'\n');
+        }
+        pem.extend_from_slice(&self.key_pem);
+        reqwest::Identity::from_pem(&pem).map_err(|error| LlmClientError::Configuration {
+            message: format!("invalid client certificate: {error}"),
+        })
+    }
+}
+
 /// A client that dispatches neutral-IR requests to per-model HTTP backends.
 ///
 /// Construct it with a list of [`ModelConfig`]s — one per model, each naming a
@@ -132,6 +181,18 @@ impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
+        Self::with_client_certificate(model_configs, None)
+    }
+
+    /// Builds a client that presents `certificate` to upstreams that request one.
+    ///
+    /// Passing `None` behaves exactly like [`TranslatingLlmClient::new`]. Returns
+    /// [`LlmClientError::Configuration`] when the certificate and key do not parse
+    /// as PEM.
+    pub fn with_client_certificate(
+        model_configs: &[ModelConfig],
+        certificate: Option<&ClientCertificate>,
+    ) -> Result<Self> {
         for config in model_configs {
             config
                 .default_backend
@@ -140,7 +201,11 @@ impl TranslatingLlmClient {
                 backend.validate_extra_headers(&config.model_name)?;
             }
         }
-        let build_client = |builder: reqwest::ClientBuilder| {
+        let build_client = |builder: reqwest::ClientBuilder| -> Result<reqwest::Client> {
+            let builder = match certificate {
+                Some(certificate) => builder.identity(certificate.identity()?),
+                None => builder,
+            };
             builder.build().map_err(|error| LlmClientError::Transport {
                 source: Box::new(error),
             })
