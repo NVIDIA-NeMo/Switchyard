@@ -9,7 +9,7 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_protocol::{Category, ContentBlock, Message, Role};
+use switchyard_protocol::{Category, ContentBlock, InstructionBlock, Message, Role};
 
 use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::llm_judge::{
@@ -111,8 +111,12 @@ pub(crate) struct EscalationInput {
 
 impl ClassifierInput for EscalationInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
-        let messages = &request.llm_request.messages;
-        let summary = summarize_for_judge(messages, conversation_turn(request), &self.config);
+        let summary = summarize_for_judge(
+            &request.llm_request.instructions,
+            &request.llm_request.messages,
+            conversation_turn(request),
+            &self.config,
+        );
         vec![Message::text(Role::User, summary)]
     }
 }
@@ -270,6 +274,7 @@ fn truncate_middle(text: &str, limit: usize) -> String {
 /// When the assembled text still exceeds `max_request_chars`, the oldest window lines go
 /// first: for a trajectory judge the newest evidence is strictly the most valuable.
 fn summarize_for_judge(
+    instructions: &[InstructionBlock],
     messages: &[Message],
     turn: usize,
     config: &EscalationJudgeConfig,
@@ -277,6 +282,16 @@ fn summarize_for_judge(
     let mut anchors: Vec<String> = Vec::new();
     let mut window: Vec<String> = Vec::new();
     let mut assistant_seen = false;
+
+    for instruction in instructions {
+        let mut parts = Vec::new();
+        collect_text(&instruction.content, &mut parts);
+        anchors.push(format!(
+            "[{}] {}",
+            role_label(instruction.role),
+            truncate_middle(&parts.join(" "), SYSTEM_CHARS)
+        ));
+    }
 
     for message in messages {
         let text = message_text(message);
@@ -402,6 +417,16 @@ mod tests {
 
         // As the classifier calls it: the turn's reply is already on the transcript.
         let mut judged = request_at_turn(None, 4);
+        judged.llm_request.instructions = [
+            (Role::System, "system constraint"),
+            (Role::Developer, "developer constraint"),
+        ]
+        .into_iter()
+        .map(|(role, text)| InstructionBlock {
+            role,
+            content: Message::text(role, text).content,
+        })
+        .collect();
         judged
             .llm_request
             .messages
@@ -413,11 +438,14 @@ mod tests {
         assert_eq!(built.llm_request.instructions[0].role, Role::System);
         assert_eq!(built.llm_request.messages.len(), 1);
         assert_eq!(built.llm_request.messages[0].role, Role::User);
-        assert!(
-            built.llm_request.messages[0]
-                .text_content("")
-                .is_some_and(|text| text.contains("Conversation turn 4"))
-        );
+        let summary = built.llm_request.messages[0]
+            .text_content("")
+            .expect("summary");
+        assert!(summary.contains("Conversation turn 4"));
+        assert!(summary.contains(
+            "[system] system constraint\n[developer] developer constraint\n[user (task)] What is 2+2?"
+        ));
+        assert!(summary.contains("[assistant] this turn's reply"));
         // Bounded output, so a reasoning judge cannot run away mid-verdict.
         assert_eq!(
             built.llm_request.output.max_output_tokens,
@@ -510,7 +538,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 11, &config);
+        let summary = summarize_for_judge(&[], &messages, 11, &config);
 
         assert!(
             summary.contains("[system] you are a coding agent"),
@@ -551,7 +579,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 40, &config);
+        let summary = summarize_for_judge(&[], &messages, 40, &config);
 
         assert!(
             summary.contains("[user (task)] <environment_context>"),
@@ -590,7 +618,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 21, &config);
+        let summary = summarize_for_judge(&[], &messages, 21, &config);
 
         assert!(
             summary.chars().count() <= MAX_REQUEST_CHARS,
