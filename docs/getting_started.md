@@ -28,9 +28,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
-On macOS or native Windows, follow the
+macOS and native Windows are not release-validated for v0.3.0. If you try a
+source build on either platform, follow the
 [official Rust installation instructions](https://rust-lang.org/tools/install/).
-The Rust installer includes `rustc`, Cargo, and `rustup`.
+A successful local build does not mean the platform is release-validated.
 
 Install `uv` for the repository's Python-based tooling and CI checks. It is not
 required to build or run the Rust server:
