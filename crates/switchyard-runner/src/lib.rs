@@ -6,6 +6,7 @@
 mod algorithm;
 mod config;
 mod failure;
+mod provider_key_redactor;
 mod route;
 mod runner;
 
@@ -16,6 +17,7 @@ pub use algorithm::{
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.
 pub use libsy::RuntimeModels;
+pub use provider_key_redactor::ProviderKeyRedactor;
 pub use route::{
     AuxiliaryTarget, CallerAuthKind, ModelCapabilities, Route, RunOutput, RunnerError,
 };

@@ -66,14 +66,14 @@ impl Runner {
         }
     }
 
-    /// Registers deployment-owned API keys for server response redaction.
+    /// Registers deployment-owned API keys for serving-surface output redaction.
     /// TOML loading registers these automatically; programmatic hosts must supply them.
     pub fn with_provider_api_keys(mut self, keys: Vec<String>) -> Self {
         self.provider_api_keys = keys;
         self
     }
 
-    /// Returns deployment-owned secrets for the server's response redactor.
+    /// Returns deployment-owned secrets for serving-surface output redactors.
     pub fn provider_api_keys(&self) -> &[String] {
         &self.provider_api_keys
     }

@@ -77,7 +77,7 @@ fn register_buffered(
                 }
                 let decoded = runtime.decode_request(inbound, request, false)?;
                 let execution = runtime.execute_buffered(inbound, decoded).await;
-                emit_events(&plugin_runtime, execution.events);
+                emit_events(&plugin_runtime, runtime.redactor(), execution.events);
                 execution.result
             }
         },
@@ -105,14 +105,17 @@ fn register_stream(
                 }
                 let decoded = runtime.decode_request(inbound, request, true)?;
                 let stream_plugin_runtime = plugin_runtime.clone();
+                let stream_runtime = Arc::clone(&runtime);
                 let execution = runtime
                     .execute_stream(
                         inbound,
                         decoded,
-                        Arc::new(move |event| emit_event(&stream_plugin_runtime, event)),
+                        Arc::new(move |event| {
+                            emit_event(&stream_plugin_runtime, stream_runtime.redactor(), event)
+                        }),
                     )
                     .await;
-                emit_events(&plugin_runtime, execution.events);
+                emit_events(&plugin_runtime, runtime.redactor(), execution.events);
                 execution.result
             }
         },

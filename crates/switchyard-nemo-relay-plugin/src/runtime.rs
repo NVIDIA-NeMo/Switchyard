@@ -16,11 +16,17 @@ use switchyard_protocol::{
     LlmClientError, LlmResponse, LlmResponseChunk, LlmStreamError, Metadata, ProviderExtensions,
     Request, Response, Usage, WireFormat,
 };
-use switchyard_runner::{Route, RouteErrorSummary, Runner, stream_error_summary};
+use switchyard_runner::{
+    ProviderKeyRedactor, Route, RouteErrorSummary, Runner, stream_error_summary,
+};
 use switchyard_translation::{TranslationEngine, encode_stream_with_extensions};
 
 use crate::config::SwitchyardConfig;
 use crate::translation;
+
+#[cfg(test)]
+#[path = "redaction_tests.rs"]
+mod redaction_tests;
 
 const ROUTING_MARK_SCHEMA_VERSION: &str = "1";
 const MAX_EVIDENCE_STRING_BYTES: usize = 64;
@@ -79,14 +85,22 @@ struct RoutedResponse {
 pub(crate) struct SwitchyardRuntime {
     runner: Runner,
     translation: TranslationEngine,
+    redactor: Arc<ProviderKeyRedactor>,
 }
 
 impl SwitchyardRuntime {
     pub(crate) fn new(config: SwitchyardConfig) -> Result<Self, String> {
+        let runner = config.load_runner()?;
+        let redactor = Arc::new(ProviderKeyRedactor::new(runner.provider_api_keys()));
         Ok(Self {
-            runner: config.load_runner()?,
+            runner,
             translation: TranslationEngine::default(),
+            redactor,
         })
+    }
+
+    pub(crate) fn redactor(&self) -> &ProviderKeyRedactor {
+        &self.redactor
     }
 
     pub(crate) fn manages_model(&self, model: &str) -> bool {
@@ -99,7 +113,8 @@ impl SwitchyardRuntime {
         request: RelayRequest,
         streaming: bool,
     ) -> Result<Request, String> {
-        let mut llm_request = translation::decode_request(&self.translation, inbound, &request)?;
+        let mut llm_request = translation::decode_request(&self.translation, inbound, &request)
+            .map_err(|error| self.redactor.text(error))?;
         llm_request.stream = streaming;
         let headers = string_headers(&request.headers);
         let mut metadata = Metadata::from_headers(&headers);
@@ -143,7 +158,10 @@ impl SwitchyardRuntime {
         if finalization_failed {
             self.error_mark(&mut events, "response_finalization", None);
         }
-        Execution { result, events }
+        self.sanitize_execution(Execution {
+            result: result.map(|value| self.redactor.value(value)),
+            events,
+        })
     }
 
     pub(crate) async fn execute_stream(
@@ -152,6 +170,10 @@ impl SwitchyardRuntime {
         request: Request,
         emit_event: RoutingEventEmitter,
     ) -> Execution<ReturnedEventStream> {
+        let redactor = Arc::clone(&self.redactor);
+        let emit_event: RoutingEventEmitter = Arc::new(move |event| {
+            emit_event(sanitize_event(&redactor, event));
+        });
         let request_extensions = request.llm_request.extensions.clone();
         let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
@@ -179,7 +201,27 @@ impl SwitchyardRuntime {
         if finalization_failed {
             self.error_mark(&mut events, "response_finalization", None);
         }
-        Execution { result, events }
+        let redactor = Arc::clone(&self.redactor);
+        self.sanitize_execution(Execution {
+            result: result.map(|stream| {
+                Box::pin(stream.map(move |item| {
+                    item.map(|value| redactor.value(value))
+                        .map_err(|error| redactor.text(error))
+                })) as ReturnedEventStream
+            }),
+            events,
+        })
+    }
+
+    fn sanitize_execution<T>(&self, execution: Execution<T>) -> Execution<T> {
+        Execution {
+            result: execution.result.map_err(|error| self.redactor.text(error)),
+            events: execution
+                .events
+                .into_iter()
+                .map(|event| sanitize_event(&self.redactor, event))
+                .collect(),
+        }
     }
 
     async fn execute(&self, inbound: WireFormat, request: Request) -> Execution<RoutedResponse> {
@@ -406,13 +448,21 @@ fn evidence_for_mark(evidence: Option<Json>) -> Option<Json> {
     (!evidence.is_empty()).then_some(Json::Object(evidence))
 }
 
-pub(crate) fn emit_events(runtime: &PluginRuntime, events: Vec<RoutingEvent>) {
+pub(crate) fn emit_events(
+    runtime: &PluginRuntime,
+    redactor: &ProviderKeyRedactor,
+    events: Vec<RoutingEvent>,
+) {
     for event in events {
-        emit_event(runtime, event);
+        emit_event(runtime, redactor, event);
     }
 }
 
-pub(crate) fn emit_event(runtime: &PluginRuntime, event: RoutingEvent) {
+pub(crate) fn emit_event(
+    runtime: &PluginRuntime,
+    redactor: &ProviderKeyRedactor,
+    event: RoutingEvent,
+) {
     let result = match event {
         RoutingEvent::Mark(mark) => {
             let data_schema = mark.data_schema();
@@ -431,8 +481,31 @@ pub(crate) fn emit_event(runtime: &PluginRuntime, event: RoutingEvent) {
             .map_err(|error| ("routing metric", metric.name, error)),
     };
     if let Err((kind, name, error)) = result {
-        eprintln!("Switchyard could not emit {kind} {name:?}: {error}");
+        let message = redactor.text(format!(
+            "Switchyard could not emit {kind} {name:?}: {error}"
+        ));
+        eprintln!("{message}");
     }
+}
+
+// Sanitize both synchronous marks and metrics emitted while a stream is polled.
+fn sanitize_event(redactor: &ProviderKeyRedactor, mut event: RoutingEvent) -> RoutingEvent {
+    match &mut event {
+        RoutingEvent::Mark(mark) => {
+            mark.data = redactor.value(std::mem::take(&mut mark.data));
+            mark.metadata = redactor.value(std::mem::take(&mut mark.metadata));
+        }
+        RoutingEvent::Metric(metric) => {
+            metric.metadata = redactor.value(std::mem::take(&mut metric.metadata));
+            for measurement in &mut metric.measurements {
+                measurement.attributes = measurement
+                    .attributes
+                    .take()
+                    .map(|value| redactor.value(value));
+            }
+        }
+    }
+    event
 }
 
 fn take_observations(observations: &Mutex<Vec<RunObservation>>) -> Vec<RunObservation> {
@@ -833,6 +906,7 @@ mod tests {
         SwitchyardRuntime {
             runner: Runner::new(vec![(ModelId::from(model), route)]),
             translation: TranslationEngine::default(),
+            redactor: Arc::default(),
         }
     }
 

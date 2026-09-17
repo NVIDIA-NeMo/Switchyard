@@ -11,45 +11,7 @@ use axum::response::Response;
 
 use crate::{DEFAULT_MAX_REQUEST_BODY_BYTES, ServerState};
 
-#[derive(Default)]
-pub(crate) struct Redactor {
-    raw: Vec<String>,
-    json: Vec<String>,
-}
-
-impl Redactor {
-    pub(crate) fn new(keys: &[String]) -> Self {
-        let mut raw: Vec<String> = keys.iter().filter(|key| !key.is_empty()).cloned().collect();
-        raw.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
-        raw.dedup();
-        let mut json = Vec::with_capacity(raw.len());
-        for key in &raw {
-            let Ok(encoded) = serde_json::to_string(key) else {
-                unreachable!("serde_json::to_string on a String cannot fail");
-            };
-            json.push(encoded[1..encoded.len() - 1].to_string());
-        }
-        json.sort_by_key(|key| std::cmp::Reverse(key.len()));
-        Self { raw, json }
-    }
-
-    pub(crate) fn json(&self, value: String) -> String {
-        replace(value, &self.json)
-    }
-
-    pub(crate) fn text(&self, value: String) -> String {
-        replace(value, &self.raw)
-    }
-}
-
-fn replace(mut value: String, secrets: &[String]) -> String {
-    for secret in secrets {
-        if value.contains(secret) {
-            value = value.replace(secret, "[REDACTED]");
-        }
-    }
-    value
-}
+pub(crate) use switchyard_runner::ProviderKeyRedactor as Redactor;
 
 pub(crate) async fn redact_response(
     State(state): State<ServerState>,
@@ -58,7 +20,7 @@ pub(crate) async fn redact_response(
 ) -> Response {
     let mut response = next.run(request).await;
     let redactor = &state.redactor;
-    if redactor.raw.is_empty() {
+    if redactor.is_empty() {
         return response;
     }
     let is_json = response.headers().get(CONTENT_TYPE).is_some_and(|value| {
