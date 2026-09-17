@@ -15,7 +15,8 @@ use libsy::{
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
     StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics,
+    ToolSemantics, TypeSafeClassifierConfig, TypeSafeOption, TypeSafeProvider,
+    TypeSafeTaskClassifier,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -147,18 +148,46 @@ struct CustomClassifierRouteConfig {
 pub struct CategoryModelConfig(BTreeMap<String, Vec<String>>);
 
 impl CategoryModelConfig {
+    /// Validates `models` for a judge-backed classifier (`llm_classifier` custom
+    /// mode), which always calls its judge through `models.judge`.
     fn validate(&self, route_name: &str, default_target: &Category) -> AlgorithmResult<()> {
-        for category in [Category::Any, Category::Judge] {
+        self.validate_for(route_name, "llm_classifier", default_target, true)
+    }
+
+    /// Validates `models` for a classifier with no judge-model concept of its own
+    /// (`type_safe_classifier`, whose judgment step is an external provider, not a
+    /// runtime model). `models.judge` is neither required nor given any special
+    /// membership exemption here.
+    fn validate_without_judge(
+        &self,
+        route_name: &str,
+        default_target: &Category,
+    ) -> AlgorithmResult<()> {
+        self.validate_for(route_name, "type_safe_classifier", default_target, false)
+    }
+
+    fn validate_for(
+        &self,
+        route_name: &str,
+        label: &str,
+        default_target: &Category,
+        require_judge: bool,
+    ) -> AlgorithmResult<()> {
+        let mut required = vec![Category::Any];
+        if require_judge {
+            required.push(Category::Judge);
+        }
+        for category in required {
             if self.get(&category).is_empty() {
                 return Err(AlgorithmConfigError::new(format!(
-                    "llm_classifier route {route_name} models.{} must contain at least one target",
+                    "{label} route {route_name} models.{} must contain at least one target",
                     category.as_str()
                 )));
             }
         }
         if self.get(default_target).is_empty() {
             return Err(AlgorithmConfigError::new(format!(
-                "llm_classifier route {route_name} models.{} must contain at least one target because it is the default_target",
+                "{label} route {route_name} models.{} must contain at least one target because it is the default_target",
                 default_target.as_str()
             )));
         }
@@ -167,12 +196,13 @@ impl CategoryModelConfig {
         // the selected target against, so a group outside it can never be served.
         let any = self.get(&Category::Any);
         for (name, models) in &self.0 {
-            if name == Category::Judge.as_str() || name == Category::Any.as_str() {
+            if name == Category::Any.as_str() || (require_judge && name == Category::Judge.as_str())
+            {
                 continue;
             }
             if let Some(missing) = models.iter().find(|model| !any.contains(model)) {
                 return Err(AlgorithmConfigError::new(format!(
-                    "llm_classifier route {route_name} models.{name} lists target {missing}, which must also appear in models.any"
+                    "{label} route {route_name} models.{name} lists target {missing}, which must also appear in models.any"
                 )));
             }
         }
@@ -428,6 +458,41 @@ pub enum AlgorithmSpec {
         /// Maximum prompts per encoder forward pass.
         batch_size: Option<usize>,
     },
+    /// Routes using a runner-owned TypeSafe (Jev "System One Model") classifier.
+    ///
+    /// Unlike `llm_classifier`, the judgment step here never calls one of the
+    /// deployment's own chat-completion targets: it calls out to an external,
+    /// non-generative provider through `switchyard-typesafe-client`, which the
+    /// runner constructs once per deployment from the `[type_safe_client]`
+    /// table and injects into every route configured this way. A route using
+    /// this type fails to build when the deployment has no `[type_safe_client]`.
+    TypeSafeClassifier {
+        /// Runtime model groups, keyed by category name. `any` is required; the
+        /// rest follow `llm_classifier` custom mode's shape, minus `judge` — this
+        /// classifier's judgment step is an external provider, not a runtime model.
+        models: CategoryModelConfig,
+        /// Category served when the provider fails, returns an unrecognised
+        /// label, or answers below `base_threshold`.
+        default_target: String,
+        /// Natural-language criteria offered to the provider, keyed by category
+        /// name. Every key must also be a key of `models` other than `any`.
+        options: BTreeMap<String, String>,
+        /// Instruction sent as the provider's question. Uses a generic
+        /// tier-selection default when unset.
+        question: Option<String>,
+        /// Lowest confidence that is trusted, from 0 to 1.
+        base_threshold: f64,
+        /// How often the classifier re-decides this session's target.
+        #[serde(default)]
+        classify_trigger: ClassifyTrigger,
+        /// Uses the first user message as the SessionKey for sticky routing when
+        /// session metadata is unavailable. Requires `classify_trigger = "new_session"`.
+        #[serde(default)]
+        message_hash_fallback: bool,
+        /// Trailing conversation turns the provider sees on top of the opening
+        /// task. Unset sends the opening task and latest user follow-up only.
+        recent_turn_window: Option<usize>,
+    },
 }
 
 /// What fires an advisor route's review.
@@ -586,6 +651,7 @@ impl AlgorithmSpec {
                 executor_target, ..
             } => vec![executor_target],
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::TypeSafeClassifier { models, .. } => models.routing_names(),
         }
     }
 
@@ -705,6 +771,7 @@ impl AlgorithmSpec {
                 (Category::Any, vec![executor_target.clone()]),
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),
+            Self::TypeSafeClassifier { models, .. } => custom_runtime_model_names(models),
         };
 
         let subagents = match self {
@@ -745,7 +812,8 @@ impl AlgorithmSpec {
             | Self::StageRouter { .. }
             | Self::Auto { .. }
             | Self::Composite { .. }
-            | Self::PrefillRouter { .. } => None,
+            | Self::PrefillRouter { .. }
+            | Self::TypeSafeClassifier { .. } => None,
         }
     }
 
@@ -754,8 +822,9 @@ impl AlgorithmSpec {
         &self,
         context: &str,
         targets: &BTreeMap<String, ModelId>,
+        type_safe_provider: Option<&Arc<dyn TypeSafeProvider>>,
     ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-        build_algorithm(context, self, targets)
+        build_algorithm(context, self, targets, type_safe_provider)
     }
 }
 
@@ -1128,6 +1197,7 @@ fn build_algorithm(
     route_name: &str,
     config: &AlgorithmSpec,
     targets: &BTreeMap<String, ModelId>,
+    type_safe_provider: Option<&Arc<dyn TypeSafeProvider>>,
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
@@ -1397,6 +1467,82 @@ fn build_algorithm(
                     "prefill_router route {route_name} requires the `prefill-router` Cargo feature"
                 )))
             }
+        }
+        AlgorithmSpec::TypeSafeClassifier {
+            models,
+            default_target,
+            options,
+            question,
+            base_threshold,
+            classify_trigger,
+            message_hash_fallback,
+            recent_turn_window,
+        } => {
+            let default_target: Category = default_target.parse().map_err(|error| {
+                AlgorithmConfigError::new(format!(
+                    "type_safe_classifier route {route_name} has invalid default_target: {error}"
+                ))
+            })?;
+            if default_target == Category::Judge {
+                return Err(AlgorithmConfigError::new(format!(
+                    "type_safe_classifier route {route_name} default_target cannot be judge"
+                )));
+            }
+            models.validate_without_judge(route_name, &default_target)?;
+
+            if options.is_empty() {
+                return Err(AlgorithmConfigError::new(format!(
+                    "type_safe_classifier route {route_name} requires at least one entry in options"
+                )));
+            }
+            for label in options.keys() {
+                let category: Category = label.parse().map_err(|error| {
+                    AlgorithmConfigError::new(format!(
+                        "type_safe_classifier route {route_name} has invalid options key {label:?}: {error}"
+                    ))
+                })?;
+                if category == Category::Judge {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "type_safe_classifier route {route_name} options.{label} cannot be judge \
+                         (judge is reserved for llm_classifier's chat-completion judge model, not \
+                         an external provider's routing target)"
+                    )));
+                }
+                if models.get(&category).is_empty() {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "type_safe_classifier route {route_name} options.{label} has no matching models.{label}"
+                    )));
+                }
+            }
+
+            let provider = type_safe_provider.ok_or_else(|| {
+                AlgorithmConfigError::new(format!(
+                    "type_safe_classifier route {route_name} requires a [type_safe_client] table in the deployment"
+                ))
+            })?;
+
+            let classifier_config = TypeSafeClassifierConfig {
+                options: options
+                    .iter()
+                    .map(|(label, description)| {
+                        TypeSafeOption::new(label.clone(), description.clone())
+                    })
+                    .collect(),
+                question: question.clone().unwrap_or_default(),
+                base_threshold: *base_threshold,
+                default_target,
+                classify_trigger: *classify_trigger,
+                message_hash_fallback: *message_hash_fallback,
+                recent_turn_window: *recent_turn_window,
+            };
+            let algorithm = TypeSafeTaskClassifier::new(Arc::clone(provider), classifier_config)
+                .map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("type_safe_classifier route {route_name}: {error}"),
+                        error,
+                    )
+                })?;
+            Ok(Arc::new(algorithm))
         }
     }
 }

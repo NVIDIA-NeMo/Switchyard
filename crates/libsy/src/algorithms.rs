@@ -16,6 +16,7 @@ pub mod passthrough;
 pub mod rand;
 pub mod stage;
 pub mod subagent;
+pub mod type_safe_class;
 
 pub mod util;
 

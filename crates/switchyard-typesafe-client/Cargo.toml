@@ -2,35 +2,28 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "switchyard-runner"
+name = "switchyard-typesafe-client"
 version.workspace = true
-description = "Configured routing execution for Switchyard serving surfaces"
+description = "HTTP client for TypeSafe's System One Model, implementing switchyard-libsy's TypeSafeProvider port"
 authors.workspace = true
 edition.workspace = true
 homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
 license.workspace = true
+readme = "README.md"
 repository.workspace = true
 rust-version.workspace = true
+documentation = "https://docs.rs/switchyard-typesafe-client"
+keywords = ["typesafe", "client", "classifier", "routing"]
 publish = ["crates-io"]
 
-[features]
-prefill-router = ["dep:prefill-router"]
-
 [dependencies]
-libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.3.0" }
-prefill-router = { workspace = true, optional = true }
+switchyard-libsy.workspace = true
+async-trait.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-switchyard-llm-client.workspace = true
-switchyard-protocol.workspace = true
-switchyard-typesafe-client.workspace = true
-strum_macros.workspace = true
-thiserror.workspace = true
-toml = "1.1"
 tracing.workspace = true
 
 [dev-dependencies]
-async-trait.workspace = true
-futures-util.workspace = true
 tokio.workspace = true
+wiremock = "0.6"

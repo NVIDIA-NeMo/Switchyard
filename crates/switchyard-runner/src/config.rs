@@ -59,8 +59,28 @@ pub(crate) struct DeploymentConfig {
     fallback_client: Option<String>,
     #[serde(default)]
     llm_clients: BTreeMap<String, LlmClientConfig>,
+    /// Shared TypeSafe (Jev "System One Model") client settings. Required when any
+    /// route uses `type = "type_safe_classifier"`; unused otherwise.
+    #[serde(default)]
+    type_safe_client: Option<TypeSafeClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
+}
+
+/// Settings for the single, deployment-wide TypeSafe client. Unlike `llm_clients`,
+/// there is at most one of these — every `type_safe_classifier` route shares it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypeSafeClientConfig {
+    /// Environment variable the API key is read from at load time. Never read
+    /// from TOML, and never logged.
+    api_key_env: String,
+    /// Overrides the API root. Defaults to TypeSafe's production endpoint.
+    #[serde(default)]
+    base_url: Option<String>,
+    /// Overrides the model name sent as `model`. Defaults to `"jev-latest"`.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug)]
@@ -212,6 +232,7 @@ impl DeploymentConfig {
         let clients = self.build_clients(&mut provider_api_keys)?;
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
+        let type_safe_provider = self.build_type_safe_provider()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             for target_name in config.callable_target_names() {
@@ -229,7 +250,7 @@ impl DeploymentConfig {
             }
             let algorithm = config
                 .algorithm
-                .build(route_name, &targets)
+                .build(route_name, &targets, type_safe_provider.as_ref())
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
@@ -457,6 +478,30 @@ impl DeploymentConfig {
             ))
         })?;
         Ok(Some(config.base_url.as_str().to_string()))
+    }
+
+    /// Builds the deployment-wide TypeSafe provider from `[type_safe_client]`, if
+    /// configured. The API key always comes from the environment, never from
+    /// this TOML document.
+    fn build_type_safe_provider(&self) -> RunnerResult<Option<Arc<dyn libsy::TypeSafeProvider>>> {
+        let Some(config) = &self.type_safe_client else {
+            return Ok(None);
+        };
+        let mut client = switchyard_typesafe_client::TypeSafeHttpClient::from_env(
+            &config.api_key_env,
+        )
+        .map_err(|error| {
+            RunnerError::configuration_source(format!("type_safe_client: {error}"), error)
+        })?;
+        if let Some(base_url) = &config.base_url {
+            client = client.with_base_url(base_url.clone()).map_err(|error| {
+                RunnerError::configuration_source(format!("type_safe_client: {error}"), error)
+            })?;
+        }
+        if let Some(model) = &config.model {
+            client = client.with_model(model.clone());
+        }
+        Ok(Some(Arc::new(client)))
     }
 
     fn build_anthropic_auxiliary_target(
@@ -837,6 +882,142 @@ target = "weak"
         );
         assert!(runner.route("switchyard/passthrough").is_some());
         Ok(())
+    }
+
+    /// Builds a `type_safe_classifier` deployment reusing `VALID_CONFIG`'s `strong`/`weak`
+    /// targets, with `[type_safe_client]` reading its key from `api_key_env`.
+    fn type_safe_config(api_key_env: &str) -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[type_safe_client]
+api_key_env = "{api_key_env}"
+
+[routes.type_safe]
+id = "switchyard/type_safe"
+type = "type_safe_classifier"
+default_target = "efficient"
+base_threshold = 0.5
+options = {{ capable = "complex, multi-step work", efficient = "short, simple requests" }}
+models = {{ any = ["strong", "weak"], capable = ["strong"], efficient = ["weak"] }}
+"#
+        )
+    }
+
+    #[test]
+    fn type_safe_classifier_route_builds_and_resolves_its_categories() -> RunnerResult<()> {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let result = runner_from_toml(&type_safe_config(KEY_ENV));
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        let runner = result?;
+
+        let route = runner
+            .route("switchyard/type_safe")
+            .expect("type_safe route should exist");
+        let models = route.models();
+        assert_eq!(
+            models.models_for(&Category::Capable),
+            [ModelId::from("strong/model")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Efficient),
+            [ModelId::from("weak/model")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn type_safe_classifier_without_a_client_table_is_rejected() {
+        // `type_safe_config` always emits `[type_safe_client]`; drop the whole table to
+        // exercise a route configured without one.
+        let config =
+            type_safe_config("UNUSED").replace("[type_safe_client]\napi_key_env = \"UNUSED\"", "");
+        let error = error_message(&config);
+        assert!(
+            error.contains("requires a [type_safe_client] table"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_an_option_with_no_matching_model_group() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_UNMATCHED_OPTION";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV).replace(
+            r#"options = { capable = "complex, multi-step work", efficient = "short, simple requests" }"#,
+            r#"options = { capable = "complex, multi-step work", efficient = "short, simple requests", reasoning = "deep analysis" }"#,
+        );
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("options.reasoning has no matching models.reasoning"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_judge_as_the_default_target() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_JUDGE_DEFAULT";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV).replace(
+            "default_target = \"efficient\"",
+            "default_target = \"judge\"",
+        );
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(error.contains("default_target cannot be judge"), "{error}");
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_judge_as_an_option() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_JUDGE_OPTION";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        // Also give `judge` a models group, so the failure below is specifically
+        // the judge-as-target rejection and not "no matching models.judge".
+        let config = type_safe_config(KEY_ENV)
+            .replace(
+                r#"options = { capable = "complex, multi-step work", efficient = "short, simple requests" }"#,
+                r#"options = { capable = "complex, multi-step work", efficient = "short, simple requests", judge = "n/a" }"#,
+            )
+            .replace(
+                r#"models = { any = ["strong", "weak"], capable = ["strong"], efficient = ["weak"] }"#,
+                r#"models = { any = ["strong", "weak"], capable = ["strong"], efficient = ["weak"], judge = ["strong"] }"#,
+            );
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(error.contains("options.judge cannot be judge"), "{error}");
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_an_out_of_range_threshold() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_BAD_THRESHOLD";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config =
+            type_safe_config(KEY_ENV).replace("base_threshold = 0.5", "base_threshold = 1.5");
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(error.contains("base_threshold"), "{error}");
     }
 
     #[test]

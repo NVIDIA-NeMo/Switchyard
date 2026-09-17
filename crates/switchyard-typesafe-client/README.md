@@ -1,0 +1,77 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# switchyard-typesafe-client
+
+An HTTP client for [TypeSafe](https://typesafe.ai)'s "System One Model" (Jev),
+implementing `switchyard-libsy`'s [`TypeSafeProvider`] port.
+
+`switchyard-libsy` stays I/O-free: it depends only on the `TypeSafeProvider`
+trait, never on an HTTP client. This crate is the concrete implementation that
+actually performs the network call — the "runner-owned classification
+provider" described by
+[Switchyard issue #723](https://github.com/NVIDIA-NeMo/Switchyard/issues/723).
+`switchyard-runner` constructs one [`TypeSafeHttpClient`] per deployment (from
+the optional `[type_safe_client]` table in the deployment TOML) and injects it
+into every route configured with `type = "type_safe_classifier"`.
+
+## Usage
+
+```rust,no_run
+use std::sync::Arc;
+use switchyard_libsy::{TypeSafeClassifierInput, TypeSafeOption, TypeSafeProvider};
+use switchyard_typesafe_client::TypeSafeHttpClient;
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = TypeSafeHttpClient::from_env("TYPESAFE_API_KEY")?;
+
+let verdict = client
+    .classify(
+        TypeSafeClassifierInput {
+            question: "Which tier does this need?".to_string(),
+            context: "[user] how do I list files in a directory?".to_string(),
+        },
+        &[
+            TypeSafeOption::new("capable", "complex, multi-step work"),
+            TypeSafeOption::new("efficient", "short, simple requests"),
+        ],
+    )
+    .await?;
+
+println!("{} ({:.2})", verdict.label, verdict.confidence);
+# Ok(())
+# }
+```
+
+The API key is always read from an environment variable — [`TypeSafeHttpClient::from_env`]
+never accepts one from configuration files, and [`TypeSafeHttpClient`]'s `Debug`
+implementation redacts it.
+
+## Wire format
+
+`POST {base_url}/v1/systemone`, `Authorization: Bearer <api_key>`:
+
+```json
+{
+  "state": "<flattened conversation text>",
+  "model": "jev-latest",
+  "questions": {
+    "route": {
+      "type": "choice",
+      "instructions": "<the classifier's question>",
+      "criteria": { "capable": "...", "efficient": "..." }
+    }
+  }
+}
+```
+
+```json
+{
+  "usage": { "input_tokens": 42 },
+  "answers": {
+    "route": { "choice": "efficient", "confidence": 0.87 }
+  }
+}
+```
