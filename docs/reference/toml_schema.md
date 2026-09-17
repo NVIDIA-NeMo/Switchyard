@@ -97,12 +97,30 @@ targets. The server rejects an Anthropic forwarding route called through an
 OpenAI endpoint, or an OpenAI forwarding route called through an Anthropic
 endpoint, before it calls an upstream.
 
+## `[type_safe_client]`
+
+Optional, deployment-wide settings for [TypeSafe](https://docs.typesafe.ai/introduction)'s
+Jev "System One Model". Required when any route uses
+`type = "type_safe_classifier"`; unused otherwise. Unlike `[llm_clients.<name>]`,
+there is at most one of these per deployment — every `type_safe_classifier`
+route shares it. See [TypeSafe Classifier Routing](../routing_algorithms/type_safe_classifier_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `api_key_env` | Yes | — | Name of the environment variable holding the TypeSafe API key. |
+| `base_url` | No | `https://api.typesafe.ai` | Overrides the API root. |
+| `model` | No | `jev-latest` | Overrides the model name sent as `model`. |
+
+As with every other credential in this file, the key itself is never read from
+TOML and never logged.
+
 ## `[targets.<name>]`
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `id` | Yes | — | Exact model ID sent upstream. |
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
+| `routing_description` | No | generated from target name and model ID | Facts TypeSafe uses when comparing this target with other candidates. A route-level `candidate_descriptions` entry overrides it. |
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
 | `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate `llm_clients` entries (same endpoint, different name). |
@@ -279,6 +297,27 @@ rather than a group, or a group you did not configure, falls back to
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`
 mode, or in the prompt in `json_object` mode.
+
+### `type_safe_classifier`
+
+Routes using a runner-owned TypeSafe (Jev "System One Model") classifier.
+Requires a [`[type_safe_client]`](#type_safe_client) table in the deployment.
+See [TypeSafe Classifier Routing](../routing_algorithms/type_safe_classifier_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `candidates` | Yes | — | Two or more unique target names offered to TypeSafe. `any` and `judge` are reserved. |
+| `candidate_descriptions` | No | target description or generated text | Route-specific descriptions keyed by candidate target name. |
+| `default_target` | Yes | — | Candidate used when TypeSafe fails or answers below `base_threshold`. |
+| `base_threshold` | Yes | — | Lowest confidence that is trusted, in `[0, 1]`. |
+| `question` | No | generic model-selection prompt | Instruction sent as TypeSafe's `instructions` field. |
+| `classify_trigger` | No | `every_request` | When the classifier runs. Same semantics as `llm_classifier`. |
+| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
+| `recent_turn_window` | No | unset | When unset, TypeSafe sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+
+The classifier sends up to three fixed candidate orders in one TypeSafe
+request and averages their probability distributions. The full averaged
+probabilities and decision latency are recorded in routing evidence.
 
 ### `stage_router`
 

@@ -15,6 +15,7 @@ members = [
     "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
     "crates/switchyard-translation",
+    "crates/switchyard-typesafe-client",
 ]
 
 [workspace.package]
@@ -49,6 +50,7 @@ switchyard-protocol = { path = "crates/protocol", version = "0.3.0" }
 switchyard-runner = { path = "crates/switchyard-runner", version = "0.3.0" }
 switchyard-server = { path = "crates/switchyard-server", version = "0.3.0" }
 switchyard-translation = { path = "crates/switchyard-translation", version = "0.3.0" }
+switchyard-typesafe-client = { path = "crates/switchyard-typesafe-client", version = "0.3.0" }
 strum_macros = "0.28"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

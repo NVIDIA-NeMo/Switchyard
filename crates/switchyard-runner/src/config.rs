@@ -59,8 +59,28 @@ pub(crate) struct DeploymentConfig {
     fallback_client: Option<String>,
     #[serde(default)]
     llm_clients: BTreeMap<String, LlmClientConfig>,
+    /// Shared TypeSafe (Jev "System One Model") client settings. Required when any
+    /// route uses `type = "type_safe_classifier"`; unused otherwise.
+    #[serde(default)]
+    type_safe_client: Option<TypeSafeClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
+}
+
+/// Settings for the single, deployment-wide TypeSafe client. Unlike `llm_clients`,
+/// there is at most one of these — every `type_safe_classifier` route shares it.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TypeSafeClientConfig {
+    /// Environment variable the API key is read from at load time. Never read
+    /// from TOML, and never logged.
+    api_key_env: String,
+    /// Overrides the API root. Defaults to TypeSafe's production endpoint.
+    #[serde(default)]
+    base_url: Option<String>,
+    /// Overrides the model name sent as `model`. Defaults to `"jev-latest"`.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug)]
@@ -185,6 +205,12 @@ impl DeploymentConfig {
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
+            if let Some(description) = &target.routing_description {
+                validate_value(
+                    &format!("target {target_name} routing_description"),
+                    description,
+                )?;
+            }
             match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
                 std::collections::hash_map::Entry::Vacant(slot) => {
                     slot.insert((target_name, target));
@@ -211,7 +237,31 @@ impl DeploymentConfig {
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
         let targets = self.build_targets();
+        let target_routing_descriptions = self
+            .targets
+            .iter()
+            .filter_map(|(name, target)| {
+                target
+                    .routing_description
+                    .as_ref()
+                    .map(|description| (name.clone(), description.clone()))
+            })
+            .collect();
         let fallback_base_url = self.fallback_base_url()?;
+        // Only construct the TypeSafe provider when a route actually uses it: the
+        // `[type_safe_client]` table is documented as unused otherwise, and building it
+        // unconditionally would fail a deployment that configures the table (for later
+        // use, say) without setting its `api_key_env` variable, even though nothing
+        // calls it yet.
+        let uses_type_safe_classifier = self
+            .routes
+            .values()
+            .any(|route| matches!(route.algorithm, AlgorithmSpec::TypeSafeClassifier { .. }));
+        let type_safe_provider = if uses_type_safe_classifier {
+            self.build_type_safe_provider()?
+        } else {
+            None
+        };
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
             for target_name in config.callable_target_names() {
@@ -229,7 +279,12 @@ impl DeploymentConfig {
             }
             let algorithm = config
                 .algorithm
-                .build(route_name, &targets)
+                .build_with_target_descriptions(
+                    route_name,
+                    &targets,
+                    &target_routing_descriptions,
+                    type_safe_provider.as_ref(),
+                )
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
@@ -468,6 +523,43 @@ impl DeploymentConfig {
         Ok(Some(config.base_url.as_str().to_string()))
     }
 
+    /// Builds the deployment-wide TypeSafe provider from `[type_safe_client]`, if
+    /// configured. The API key always comes from the environment, never from
+    /// this TOML document.
+    fn build_type_safe_provider(&self) -> RunnerResult<Option<Arc<dyn libsy::TypeSafeProvider>>> {
+        let Some(config) = &self.type_safe_client else {
+            return Ok(None);
+        };
+        let mut client = switchyard_typesafe_client::TypeSafeHttpClient::from_env(
+            &config.api_key_env,
+        )
+        .map_err(|error| {
+            RunnerError::configuration_source(format!("type_safe_client: {error}"), error)
+        })?;
+        if let Some(base_url) = &config.base_url {
+            // The API key travels as a bearer token on every request to this URL, so an
+            // http:// override must be rejected before it reaches the client (which stays
+            // permissive about scheme, since its own tests point it at a plain-http mock
+            // server).
+            if let Ok(parsed) = reqwest::Url::parse(base_url)
+                && parsed.scheme() != "https"
+            {
+                return Err(RunnerError::configuration(format!(
+                    "type_safe_client.base_url must be an absolute https:// URL (got scheme {:?}); \
+                     the API key must not travel over plaintext HTTP",
+                    parsed.scheme()
+                )));
+            }
+            client = client.with_base_url(base_url.clone()).map_err(|error| {
+                RunnerError::configuration_source(format!("type_safe_client: {error}"), error)
+            })?;
+        }
+        if let Some(model) = &config.model {
+            client = client.with_model(model.clone());
+        }
+        Ok(Some(Arc::new(client)))
+    }
+
     fn build_anthropic_auxiliary_target(
         &self,
         route: &RouteConfig,
@@ -577,6 +669,8 @@ struct LlmClientConfig {
 struct TargetConfig {
     id: ModelId,
     llm_client: String,
+    /// Optional facts TypeSafe should use when comparing this target with other candidates.
+    routing_description: Option<String>,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
     system_prompt: Option<String>,
@@ -846,6 +940,274 @@ target = "weak"
         );
         assert!(runner.route("switchyard/passthrough").is_some());
         Ok(())
+    }
+
+    /// Builds a `type_safe_classifier` deployment reusing `VALID_CONFIG`'s `strong`/`weak`
+    /// targets, with `[type_safe_client]` reading its key from `api_key_env`.
+    fn type_safe_config(api_key_env: &str) -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[type_safe_client]
+api_key_env = "{api_key_env}"
+
+[routes.type_safe]
+id = "switchyard/type_safe"
+type = "type_safe_classifier"
+default_target = "weak"
+base_threshold = 0.5
+candidates = ["strong", "weak"]
+candidate_descriptions = {{ strong = "complex, multi-step work", weak = "short, simple requests" }}
+"#
+        )
+    }
+
+    #[test]
+    fn type_safe_classifier_route_builds_and_resolves_its_candidates() -> RunnerResult<()> {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let result = runner_from_toml(&type_safe_config(KEY_ENV));
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        let runner = result?;
+
+        let route = runner
+            .route("switchyard/type_safe")
+            .expect("type_safe route should exist");
+        let models = route.models();
+        assert_eq!(
+            models.models_for(&"strong".parse().expect("valid category")),
+            [ModelId::from("strong/model")]
+        );
+        assert_eq!(
+            models.models_for(&"weak".parse().expect("valid category")),
+            [ModelId::from("weak/model")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn type_safe_classifier_without_a_client_table_is_rejected() {
+        // `type_safe_config` always emits `[type_safe_client]`; drop the whole table to
+        // exercise a route configured without one.
+        let config =
+            type_safe_config("UNUSED").replace("[type_safe_client]\napi_key_env = \"UNUSED\"", "");
+        let error = error_message(&config);
+        assert!(
+            error.contains("requires a [type_safe_client] table"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_a_description_for_a_non_candidate() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_UNMATCHED_OPTION";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV).replace(
+            r#"candidate_descriptions = { strong = "complex, multi-step work", weak = "short, simple requests" }"#,
+            r#"candidate_descriptions = { strong = "complex, multi-step work", weak = "short, simple requests", reasoning = "deep analysis" }"#,
+        );
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("description for non-candidate reasoning"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_an_empty_candidate_description() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_EMPTY_DESCRIPTION";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV)
+            .replace(r#"strong = "complex, multi-step work""#, r#"strong = """#);
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("description for strong must be non-empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_accepts_a_target_routing_description() -> RunnerResult<()> {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_TARGET_DESCRIPTION";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV)
+            .replace(
+                "id = \"strong/model\"",
+                "id = \"strong/model\"\nrouting_description = \"deep analysis and difficult coding\"",
+            )
+            .replace(
+                "candidate_descriptions = { strong = \"complex, multi-step work\", weak = \"short, simple requests\" }",
+                "",
+            );
+        let result = runner_from_toml(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        result?;
+        Ok(())
+    }
+
+    #[test]
+    fn type_safe_classifier_requires_two_unique_candidates() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_CANDIDATE_COUNT";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let base = type_safe_config(KEY_ENV);
+        let one = base
+            .replace(
+                r#"candidates = ["strong", "weak"]"#,
+                r#"candidates = ["weak"]"#,
+            )
+            .replace(
+                r#"candidate_descriptions = { strong = "complex, multi-step work", weak = "short, simple requests" }"#,
+                r#"candidate_descriptions = { weak = "short, simple requests" }"#,
+            );
+        let duplicate = base.replace(
+            r#"candidates = ["strong", "weak"]"#,
+            r#"candidates = ["strong", "weak", "strong"]"#,
+        );
+        let one_error = error_message(&one);
+        let duplicate_error = error_message(&duplicate);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            one_error.contains("requires at least two candidates"),
+            "{one_error}"
+        );
+        assert!(
+            duplicate_error.contains("repeats candidate strong"),
+            "{duplicate_error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_requires_the_default_to_be_a_candidate() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_DEFAULT_CANDIDATE";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV)
+            .replace("default_target = \"weak\"", "default_target = \"other\"");
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("default_target other is not in candidates"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_judge_as_the_default_target() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_JUDGE_DEFAULT";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV)
+            .replace("default_target = \"weak\"", "default_target = \"judge\"");
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("default_target cannot be any or judge"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_judge_as_a_candidate() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_JUDGE_OPTION";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = format!(
+            "{}\n[targets.judge]\nid = \"judge/model\"\nllm_client = \"responses\"\n",
+            type_safe_config(KEY_ENV).replace(
+                r#"candidates = ["strong", "weak"]"#,
+                r#"candidates = ["strong", "weak", "judge"]"#,
+            )
+        );
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("candidate judge cannot be any or judge"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn type_safe_classifier_rejects_an_out_of_range_threshold() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_BAD_THRESHOLD";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config =
+            type_safe_config(KEY_ENV).replace("base_threshold = 0.5", "base_threshold = 1.5");
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(error.contains("base_threshold"), "{error}");
+    }
+
+    #[test]
+    fn type_safe_client_table_is_unused_without_a_type_safe_classifier_route() -> RunnerResult<()> {
+        // No route in `VALID_CONFIG` uses `type_safe_classifier`, and `api_key_env` here
+        // names a variable deliberately left unset. Building must still succeed: the
+        // `[type_safe_client]` table is documented as unused unless a route references it,
+        // so the provider must not be constructed (and therefore must not read the
+        // environment) when nothing calls it.
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[type_safe_client]
+api_key_env = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_DELIBERATELY_UNSET"
+"#
+        );
+        runner_from_toml(&config)?;
+        Ok(())
+    }
+
+    #[test]
+    fn type_safe_client_base_url_rejects_plain_http() {
+        const KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_TYPESAFE_KEY_HTTP_BASE_URL";
+        unsafe {
+            std::env::set_var(KEY_ENV, "sk-test");
+        }
+        let config = type_safe_config(KEY_ENV).replace(
+            &format!("api_key_env = \"{KEY_ENV}\""),
+            &format!("api_key_env = \"{KEY_ENV}\"\nbase_url = \"http://example.test\""),
+        );
+        let error = error_message(&config);
+        unsafe {
+            std::env::remove_var(KEY_ENV);
+        }
+        assert!(
+            error.contains("type_safe_client.base_url must be an absolute https:// URL"),
+            "{error}"
+        );
     }
 
     #[test]
