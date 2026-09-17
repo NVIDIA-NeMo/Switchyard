@@ -175,7 +175,7 @@ Install [oha](https://github.com/hatoo/oha) and
 
 ```bash
 cargo install oha
-uv tool install --python 3.12 'aiperf==0.11.0'
+uv tool install --python 3.12 'aiperf==0.12.0'
 ```
 
 The benchmark checks the AIPerf version before it creates an output directory. It runs each
