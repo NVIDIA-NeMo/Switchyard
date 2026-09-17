@@ -10,6 +10,8 @@ import pytest
 import scripts.aiperf_runner as aiperf_runner
 from scripts.aiperf_runner import aggregate_exports, run_profile, validate_aiperf_version
 
+_ALL_FAILED = "All 2 inference request(s) failed; no successful responses were collected."
+
 
 def _write_stubborn_worker(worker) -> None:
     worker.write_text(
@@ -97,6 +99,47 @@ while not Path(sys.argv[3]).exists():
 
     assert child_pid.read_text().isdigit()
     _assert_heartbeat_stopped(heartbeat)
+
+
+@pytest.mark.parametrize(
+    ("error_type", "log_message", "recovers"),
+    [
+        ("TimeoutError", _ALL_FAILED, True),
+        ("ClientConnectorError", _ALL_FAILED, False),
+        ("TimeoutError", "worker crashed", False),
+    ],
+)
+def test_run_profile_recovers_only_expected_timeouts(
+    tmp_path, error_type, log_message, recovers
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir(parents=True)
+    record = json.dumps({"error": {"type": error_type}})
+    (artifact_dir / "profile_export.jsonl").write_text(f"{record}\n{record}\n")
+    command = [sys.executable, "-c", f"print({log_message!r}); raise SystemExit(1)"]
+
+    if recovers:
+        export = run_profile(
+            command,
+            tmp_path / "aiperf.log",
+            artifact_dir,
+            timeout_seconds=10,
+            expected_timeout_count=2,
+        )
+        summary = json.loads(export.read_text())
+        assert summary["error_request_count"]["avg"] == 2
+        assert summary["request_count"]["avg"] == 0
+        assert summary["request_throughput"]["avg"] == 0.0
+        return
+
+    with pytest.raises(RuntimeError, match="AIPerf failed with status 1"):
+        run_profile(
+            command,
+            tmp_path / "aiperf.log",
+            artifact_dir,
+            timeout_seconds=10,
+            expected_timeout_count=2,
+        )
 
 
 def test_process_group_probe_ignores_an_unowned_reused_group(monkeypatch) -> None:

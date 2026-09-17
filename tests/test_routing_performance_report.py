@@ -359,7 +359,7 @@ def test_aiperf_cells_use_disjoint_artifacts(tmp_path, monkeypatch) -> None:
     observed: list[tuple[Path, Path]] = []
 
     def fake_run_profile(
-        _command, log_path: Path, artifact_dir: Path, _timeout_seconds: int
+        _command, log_path: Path, artifact_dir: Path, _timeout_seconds: int, **_kwargs
     ) -> Path:
         observed.append((log_path, artifact_dir))
         artifact_dir.mkdir(parents=True)
