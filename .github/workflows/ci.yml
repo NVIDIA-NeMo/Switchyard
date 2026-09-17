@@ -166,7 +166,7 @@ jobs:
         run: uv run pytest tests/ -v -m "not integration"
 
   litellm:
-    name: LiteLLM unit tests
+    name: LiteLLM tests (no live providers)
     needs: changes
     if: needs.changes.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
@@ -188,7 +188,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: uv sync --locked
       - name: pytest
-        run: uv run --no-sync pytest tests/unit -v
+        run: uv run --no-sync pytest tests -m "not e2e" -v
 
   # Regression guard: the default install of nemo-switchyard (without extras)
   # must NOT drag in torch / transformers / routellm / litellm /
