@@ -139,12 +139,11 @@ pub fn qualified_tool_origins(
     origins
 }
 
-/// Rewrite `function_call` names back to the Codex tool name plus namespace.
+/// Restore the Codex tool name and namespace on function calls and argument completions.
 ///
-/// Walks the whole value, covering a buffered body and each streaming event,
-/// where the item is nested under `item` (`response.output_item.added` /
-/// `.done`) or `response.output` (`response.completed`). An existing
-/// `namespace` is never overwritten.
+/// Walks the whole value, covering `function_call` items in buffered responses
+/// and streaming events, plus the top-level name in
+/// `response.function_call_arguments.done`. Preserves an existing `namespace`.
 pub fn restore_qualified_tool_names(body: &mut Value, origins: &HashMap<String, (String, String)>) {
     if origins.is_empty() {
         return;
@@ -156,8 +155,10 @@ pub fn restore_qualified_tool_names(body: &mut Value, origins: &HashMap<String, 
             }
         }
         Value::Object(object) => {
-            if object.get("type").and_then(Value::as_str) == Some("function_call")
-                && let Some(name) = object.get("name").and_then(Value::as_str)
+            if matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("function_call" | "response.function_call_arguments.done")
+            ) && let Some(name) = object.get("name").and_then(Value::as_str)
                 && let Some((tool, namespace)) = origins.get(name)
             {
                 object.insert("name".to_string(), Value::String(tool.clone()));

@@ -1825,6 +1825,150 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn translated_responses_text_and_tool_events_keep_item_identity_until_done() -> TestResult {
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            vec![
+                json!({"id":"chat_1","model":"model/local","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"}}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"lookup","arguments":"{"}}]}}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"weather","arguments":"{"}}]}}]}),
+                json!({"choices":[{"index":0,"delta":{"content":"lo"}}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"city\":\"Paris\"}"}}]}}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"id\":1}"}}]}}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+            ],
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            vec![
+                json!({"type":"message_start","message":{"id":"msg_1","model":"model/local","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}),
+                json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}),
+                json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}),
+                json!({"type":"content_block_stop","index":0}),
+                json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_a","name":"lookup","input":{}}}),
+                json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"call_b","name":"weather","input":{}}}),
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{"}}),
+                json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{"}}),
+                json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"city\":\"Paris\"}"}}),
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"id\":1}"}}),
+                json!({"type":"content_block_stop","index":1}),
+                json!({"type":"content_block_stop","index":2}),
+                json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}),
+                json!({"type":"message_stop"}),
+            ],
+        ),
+    ];
+    for (source, upstream) in cases {
+        let engine = TranslationEngine::default();
+        let target = WireFormat::OpenAiResponses;
+        let mut state = StreamTranslationState::new(source, target);
+        let mut events = Vec::new();
+        for event in upstream {
+            events.extend(engine.translate_event(&mut state, source, target, &event)?);
+        }
+        events.extend(engine.finish_stream(&mut state, target)?);
+        assert!(engine.finish_stream(&mut state, target)?.is_empty());
+        let items = events
+            .iter()
+            .filter(|event| event["type"] == "response.output_item.added")
+            .map(|event| {
+                (
+                    event["output_index"].as_u64().unwrap_or_default(),
+                    &event["item"],
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(items.len(), 3);
+        for (sequence, event) in events.iter().enumerate() {
+            assert_eq!(event["sequence_number"], sequence);
+            let kind = event["type"].as_str().unwrap_or_default();
+            if kind.starts_with("response.output_text.")
+                || kind.starts_with("response.content_part.")
+                || kind.starts_with("response.function_call_arguments.")
+            {
+                let index = event["output_index"]
+                    .as_u64()
+                    .ok_or("missing output index")?;
+                assert_eq!(event["item_id"], items[&index]["id"], "{source:?}: {kind}");
+            }
+            if kind.starts_with("response.output_text.") {
+                assert_eq!(event["content_index"], 0);
+                assert_eq!(event["logprobs"], json!([]));
+            }
+            if kind.starts_with("response.content_part.") {
+                assert_eq!(event["part"]["annotations"], json!([]));
+                assert_eq!(event["part"]["logprobs"], json!([]));
+            }
+        }
+        let text_events = events
+            .iter()
+            .filter(|event| event["output_index"] == 0)
+            .map(|event| event["type"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text_events,
+            [
+                "response.output_item.added",
+                "response.content_part.added",
+                "response.output_text.delta",
+                "response.output_text.delta",
+                "response.output_text.done",
+                "response.content_part.done",
+                "response.output_item.done"
+            ]
+        );
+        let text_done = events
+            .iter()
+            .find(|event| event["type"] == "response.output_text.done")
+            .ok_or("missing text completion")?;
+        assert_eq!(text_done["text"], "Hello");
+        for (index, name, call_id, arguments) in [
+            (1, "lookup", "call_a", r#"{"id":1}"#),
+            (2, "weather", "call_b", r#"{"city":"Paris"}"#),
+        ] {
+            let tool_events = events
+                .iter()
+                .filter(|event| event["output_index"] == index)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                tool_events
+                    .iter()
+                    .map(|event| event["type"].as_str().unwrap_or_default())
+                    .collect::<Vec<_>>(),
+                [
+                    "response.output_item.added",
+                    "response.function_call_arguments.delta",
+                    "response.function_call_arguments.delta",
+                    "response.function_call_arguments.done",
+                    "response.output_item.done"
+                ]
+            );
+            let done = tool_events[3];
+            assert_eq!(done["name"], name);
+            assert_eq!(done["arguments"], arguments);
+            assert_eq!(tool_events[4]["item"]["id"], items[&index]["id"]);
+            assert_eq!(tool_events[4]["item"]["call_id"], call_id);
+        }
+        let completed = events.last().ok_or("missing response completion")?;
+        assert_eq!(completed["type"], "response.completed");
+        let output = completed["response"]["output"]
+            .as_array()
+            .ok_or("missing final output")?;
+        assert_eq!(output.len(), 3);
+        assert_eq!(
+            output[0]["content"][0],
+            json!({"type":"output_text","text":"Hello","annotations":[],"logprobs":[]})
+        );
+        for (index, item) in output.iter().enumerate() {
+            assert_eq!(item["id"], items[&(index as u64)]["id"]);
+        }
+    }
+    Ok(())
+}
+
 // A completion event must not repeat function-call arguments from delta events.
 #[test]
 fn responses_decode_emits_tool_arguments_once() -> TestResult {

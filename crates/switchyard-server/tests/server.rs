@@ -4222,6 +4222,7 @@ async fn responses_stream_error_does_not_emit_success_terminal_events() -> TestR
     let body = response.text()?;
     assert_in_order(body, &["before", "upstream stream failed"]);
     for event_type in [
+        "response.output_text.done",
         "response.content_part.done",
         "response.output_item.done",
         "response.completed",
@@ -4750,13 +4751,10 @@ fn sse_events(body: &str) -> Vec<Value> {
         .collect()
 }
 
-// The end-to-end contract for Codex tool namespaces, in one request.
-//
-// Two MCP servers expose the same tool name, so the flat upstream can only tell
-// them apart by the namespace folded into each name. Everything naming a tool —
-// the definitions, the recorded call in history, and the forced tool choice —
-// has to use that same spelling, and the response has to split it back into the
-// name and namespace Codex dispatches on.
+// Two MCP servers expose `search`, so the upstream needs a qualified name for
+// each tool. Tool definitions, history, and the forced tool choice must use the
+// same qualified names. Response items and argument completions must contain
+// the tool name and namespace that Codex uses to select the tool.
 #[tokio::test]
 async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
     const MODEL: &str = "model/mcp-namespaces";
@@ -4830,6 +4828,17 @@ async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
         assert_eq!(item["name"], "search", "{event_type}");
         assert_eq!(item["namespace"], "mcp__b", "{event_type}");
     }
+    let arguments_done = events
+        .iter()
+        .find(|event| event["type"] == "response.function_call_arguments.done");
+    assert_eq!(
+        arguments_done.map(|event| &event["name"]),
+        Some(&json!("search"))
+    );
+    assert_eq!(
+        arguments_done.map(|event| &event["namespace"]),
+        Some(&json!("mcp__b"))
+    );
     let completed = events
         .iter()
         .find(|event| event["type"] == "response.completed")

@@ -405,21 +405,31 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index
     {
+        let item_id = responses_item_id(state, "msg", output_index);
         out.push(json!({
-            "type": "response.content_part.done",
+            "type": "response.output_text.done",
+            "item_id": item_id,
             "output_index": output_index,
             "content_index": 0,
-            "part": {"type": "output_text", "text": state.response_text},
+            "text": state.response_text,
+            "logprobs": [],
+        }));
+        out.push(json!({
+            "type": "response.content_part.done",
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": 0,
+            "part": {"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []},
         }));
         out.push(json!({
             "type": "response.output_item.done",
             "output_index": output_index,
             "item": {
                 "type": "message",
-                "id": responses_item_id(state, "msg", output_index),
+                "id": item_id,
                 "role": "assistant",
                 "status": status,
-                "content": [{"type": "output_text", "text": state.response_text}],
+                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
             },
         }));
     }
@@ -484,7 +494,7 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
                 "id": responses_item_id(state, "msg", output_index),
                 "role": "assistant",
                 "status": status,
-                "content": [{"type": "output_text", "text": state.response_text}],
+                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
             }),
         ));
     }
@@ -494,14 +504,20 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             continue;
         }
         let output_index = tool.response_output_index.unwrap_or(0);
+        let item_id = tool
+            .response_item_id
+            .clone()
+            .unwrap_or_else(|| responses_item_id(state, "fc", output_index));
         out.push(json!({
             "type": "response.function_call_arguments.done",
+            "item_id": item_id,
             "output_index": output_index,
+            "name": tool.name.clone().unwrap_or_default(),
             "arguments": tool.arguments,
         }));
         let item = json!({
             "type": "function_call",
-            "id": tool.response_item_id.clone().unwrap_or_else(|| responses_item_id(state, "fc", output_index)),
+            "id": item_id,
             "call_id": tool.id.clone().unwrap_or_else(|| format!("call_{output_index}")),
             "name": tool.name.clone().unwrap_or_default(),
             "arguments": tool.arguments,
@@ -788,17 +804,20 @@ fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String)
         }));
         out.push(json!({
             "type": "response.content_part.added",
+            "item_id": responses_item_id(state, "msg", output_index),
             "output_index": output_index,
             "content_index": 0,
-            "part": {"type": "output_text", "text": ""},
+            "part": {"type": "output_text", "text": "", "annotations": [], "logprobs": []},
         }));
     }
     state.response_text.push_str(&text);
     out.push(json!({
         "type": "response.output_text.delta",
+        "item_id": responses_item_id(state, "msg", state.response_text_output_index.unwrap_or(0)),
         "output_index": state.response_text_output_index.unwrap_or(0),
         "content_index": 0,
         "delta": text,
+        "logprobs": [],
     }));
     out
 }
@@ -942,6 +961,7 @@ fn encode_responses_tool_delta(
         if !tool.pending_arguments.is_empty() {
             out.push(json!({
                 "type": "response.function_call_arguments.delta",
+                "item_id": tool.response_item_id,
                 "output_index": output_index,
                 "delta": tool.pending_arguments,
             }));
@@ -955,6 +975,7 @@ fn encode_responses_tool_delta(
     {
         out.push(json!({
             "type": "response.function_call_arguments.delta",
+            "item_id": tool.response_item_id,
             "output_index": output_index,
             "delta": tool.pending_arguments,
         }));
