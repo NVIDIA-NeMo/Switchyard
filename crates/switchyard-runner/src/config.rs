@@ -348,12 +348,25 @@ impl DeploymentConfig {
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> RunnerResult<(ClientRouter, Option<CallerAuthKind>)> {
+        let TargetPromptPolicy {
+            prompts,
+            routing_answer_target,
+        } = self.build_route_target_prompts(route_name, route)?;
         let mut by_model = HashMap::new();
+        let mut targets_by_model: HashMap<&str, (&str, &TargetConfig)> = HashMap::new();
         let mut caller_auth = None;
         for name in route.callable_target_names() {
             let target = self.targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
             })?;
+            if let Some((first_name, first)) = targets_by_model.insert(&target.id, (name, target))
+                && first.llm_client != target.llm_client
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} targets {first_name} and {name} use model {} on different llm clients; execution is keyed by model id, so use distinct model ids within this route or put these targets in separate routes",
+                    target.id
+                )));
+            }
             let client = clients.get(&target.llm_client).ok_or_else(|| {
                 RunnerError::configuration(format!("target {name} has no constructed llm client"))
             })?;
@@ -375,10 +388,6 @@ impl DeploymentConfig {
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
         }
-        let TargetPromptPolicy {
-            prompts,
-            routing_answer_target,
-        } = self.build_route_target_prompts(route_name, route)?;
         let completion_targets = route
             .routing_target_names()
             .into_iter()
@@ -1505,9 +1514,7 @@ target = "smart"
 
     #[test]
     fn accepts_same_model_id_on_different_llm_clients() -> RunnerResult<()> {
-        // The same model id served by two llm clients never collides (each client keys its own
-        // models), so cross-provider A/B builds with no warning; only a repeat within one client
-        // warns.
+        // Separate routes may serve the same model through different clients.
         const CROSS_PROVIDER: &str = r#"
 schema_version = 1
 
@@ -1538,6 +1545,27 @@ type = "passthrough"
 target = "azure"
 "#;
         runner_from_toml(CROSS_PROVIDER)?;
+        let shared_route = format!(
+            r#"{CROSS_PROVIDER}
+
+[routes.shared]
+id = "switchyard/shared"
+type = "stage_router"
+capable_target = "openai"
+efficient_target = "azure"
+picker = "efficient_first"
+confidence_threshold = 0.5
+"#
+        );
+        let message = error_message(&shared_route);
+        assert!(
+            message.contains("route shared")
+                && message.contains("openai")
+                && message.contains("azure")
+                && message.contains("gpt-4o")
+                && message.contains("different llm clients"),
+            "{message}"
+        );
         Ok(())
     }
 
