@@ -1825,6 +1825,9 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     Ok(())
 }
 
+// Interleave text and two tool calls to check that deltas keep the right item IDs.
+// Completion events must include the full text and tool arguments, and the final
+// response must preserve each item's ID.
 #[test]
 fn translated_responses_text_and_tool_events_keep_item_identity_until_done() -> TestResult {
     let cases = [
