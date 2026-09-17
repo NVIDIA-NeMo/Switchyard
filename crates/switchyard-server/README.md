@@ -79,8 +79,8 @@ upstream, and a route's `id` is the model clients send to select that algorithm.
 Each target references an entry under `llm_clients`. All configured clients use
 `TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
-`llm_classifier`, and `stage_router`. The optional `prefill-router` feature also enables
-the experimental `prefill_router`. See its
+`llm_classifier`, `stage_router`, and `system_prompt_judge`. The optional `prefill-router`
+feature also enables the experimental `prefill_router`. See its
 [artifact requirements](../../docs/reference/toml_schema.md#prefill_router).
 An `api_key_env` value names an environment variable. The TOML never contains the
 secret itself. If omitted, the client sends no authentication.
@@ -143,6 +143,13 @@ can extend its built-in coding vocabulary through `tool_semantics.observe`,
 are required. All configured semantic names use exact ASCII case-insensitive matching. Optional
 handoff notes, per-tier system prompts, and a capability-judge fallback are documented in
 [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
+
+A `system_prompt_judge` route calls `judge_target` first, asking it to choose
+one action from a plain-text DB configured by `db_path`. When the judge returns
+a known action id, Switchyard prepends that action's text as a system prompt
+before calling `target`. Invalid judge replies and judge failures fail open to
+plain passthrough. See
+[System-Prompt-Judge Routing](../../docs/routing_algorithms/system_prompt_judge_routing.md).
 
 ## Codex model discovery
 

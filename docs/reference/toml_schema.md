@@ -370,6 +370,21 @@ advisor's plan. See
 | `reviewer_system_prompt` | No | packaged prompt | Replaces the APPROVE/REDO reviewer prompt. |
 | `redo_feedback_prefix` | No | packaged prompt | Replaces the text put in front of a REDO plan fed back to the executor. |
 
+### `system_prompt_judge`
+
+Calls a judge target first, asking it to choose one hidden system prompt from a
+plain-text action DB. If the judge chooses a known action id, Switchyard prepends
+that prompt as a system instruction before calling `target`. Judge failures,
+invalid JSON, `none`, and unknown action ids fail open to passthrough. See
+[System-Prompt-Judge Routing](../routing_algorithms/system_prompt_judge_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `target` | Yes | — | Target that serves the caller-visible request. |
+| `judge_target` | Yes | — | Target used to choose one action id or `none`. Not a routing destination. |
+| `db_path` | Yes | — | Text DB containing `[action_id]` prompt sections. Relative paths resolve next to the TOML file when loaded from disk. |
+| `max_output_tokens` | No | `64` | Maximum completion tokens for the judge verdict. |
+
 ## Validation Errors
 
 `--dry-run` prefixes configuration failures with

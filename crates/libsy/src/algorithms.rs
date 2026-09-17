@@ -16,6 +16,7 @@ pub mod passthrough;
 pub mod rand;
 pub mod stage;
 pub mod subagent;
+pub mod system_prompt_judge;
 
 pub mod util;
 

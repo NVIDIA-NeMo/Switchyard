@@ -78,6 +78,7 @@ route types:
 | `random` | Selects among targets using optional relative weights. |
 | `llm_classifier` | Uses a classifier target to choose between weak and strong targets. |
 | `stage_router` | Uses tool-result and progress signals to choose an efficient or capable target. |
+| `system_prompt_judge` | Uses a judge target to choose one hidden system prompt before serving a target. |
 
 Strong, weak, capable, and efficient are roles within an algorithm, not fixed
 properties of a model. The same upstream model can serve different roles in

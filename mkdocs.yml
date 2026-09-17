@@ -34,6 +34,7 @@ nav:
       - Composite Routing: routing_algorithms/composite_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
+      - System-Prompt-Judge Routing: routing_algorithms/system_prompt_judge_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md
       - Soak Testing: operations/soak_test.md

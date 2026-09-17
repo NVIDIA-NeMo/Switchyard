@@ -6,15 +6,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
+    PromptInjectionAction, Random, StageRouter, StageRouterConfig, SubagentRouter,
+    SubagentRouterConfig, SystemPromptJudge, SystemPromptJudgeConfig, TaskClassifierConfig,
     ToolSemantics,
 };
 use serde::Deserialize;
@@ -412,6 +414,18 @@ pub enum AlgorithmSpec {
         #[serde(default = "default_fail_open")]
         fail_open: bool,
     },
+    /// A judge chooses a hidden system prompt from a text DB before a passthrough call.
+    SystemPromptJudge {
+        /// Target that serves the caller-visible request.
+        target: String,
+        /// Judge target that chooses one action id or `none`.
+        judge_target: String,
+        /// Text database of `[action_id]` sections containing prompts to inject.
+        db_path: PathBuf,
+        /// Most output tokens one judge verdict may use.
+        #[serde(default = "default_system_prompt_judge_max_tokens")]
+        max_output_tokens: u64,
+    },
     /// Routes using a checkpoint-backed prefill classifier.
     PrefillRouter {
         /// Target names in checkpoint output order.
@@ -585,6 +599,7 @@ impl AlgorithmSpec {
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
+            Self::SystemPromptJudge { target, .. } => vec![target],
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
         }
     }
@@ -621,6 +636,7 @@ impl AlgorithmSpec {
                 names.push(&classifier.target);
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
+            Self::SystemPromptJudge { judge_target, .. } => names.push(judge_target),
             _ => {}
         }
         // A sub-agent classifier calls its own judge, which is never a completion target.
@@ -705,6 +721,14 @@ impl AlgorithmSpec {
                 (Category::Any, vec![executor_target.clone()]),
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),
+            Self::SystemPromptJudge {
+                target,
+                judge_target,
+                ..
+            } => category_models([
+                (Category::Any, vec![target.clone()]),
+                (Category::Judge, vec![judge_target.clone()]),
+            ]),
         };
 
         let subagents = match self {
@@ -746,6 +770,7 @@ impl AlgorithmSpec {
             | Self::Auto { .. }
             | Self::Composite { .. }
             | Self::PrefillRouter { .. } => None,
+            Self::SystemPromptJudge { .. } => None,
         }
     }
 
@@ -755,7 +780,16 @@ impl AlgorithmSpec {
         context: &str,
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-        build_algorithm(context, self, targets)
+        self.build_with_base_dir(context, targets, None)
+    }
+
+    pub(crate) fn build_with_base_dir(
+        &self,
+        context: &str,
+        targets: &BTreeMap<String, ModelId>,
+        base_dir: Option<&Path>,
+    ) -> AlgorithmResult<Arc<dyn Algorithm>> {
+        build_algorithm(context, self, targets, base_dir)
     }
 }
 
@@ -1129,6 +1163,7 @@ fn build_algorithm(
     route_name: &str,
     config: &AlgorithmSpec,
     targets: &BTreeMap<String, ModelId>,
+    base_dir: Option<&Path>,
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
@@ -1358,6 +1393,38 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
+        AlgorithmSpec::SystemPromptJudge {
+            target,
+            judge_target,
+            db_path,
+            max_output_tokens,
+            ..
+        } => {
+            let target = resolve_target_model_id(route_name, target, targets)?;
+            let judge_target = resolve_target_model_id(route_name, judge_target, targets)?;
+            let source = read_action_db(route_name, db_path, base_dir)?;
+            let actions = PromptInjectionAction::parse_database(&source).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("system_prompt_judge route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            let algorithm = SystemPromptJudge::new(
+                target,
+                judge_target,
+                actions,
+                SystemPromptJudgeConfig {
+                    max_output_tokens: *max_output_tokens,
+                },
+            )
+            .map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("system_prompt_judge route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::PrefillRouter {
             targets: names,
             checkpoint,
@@ -1419,6 +1486,10 @@ const fn default_fail_open() -> bool {
     true
 }
 
+const fn default_system_prompt_judge_max_tokens() -> u64 {
+    64
+}
+
 fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
     prompt.map_or_else(ClassifierContractConfig::default, |prompt| {
         ClassifierContractConfig::default().with_prompt(prompt)
@@ -1447,5 +1518,28 @@ fn resolve_target_model_id(
         AlgorithmConfigError::new(format!(
             "route {route_name} references unknown target {name}"
         ))
+    })
+}
+
+fn read_action_db(
+    route_name: &str,
+    db_path: &Path,
+    base_dir: Option<&Path>,
+) -> AlgorithmResult<String> {
+    let path = if db_path.is_absolute() {
+        db_path.to_path_buf()
+    } else {
+        base_dir
+            .map(|base| base.join(db_path))
+            .unwrap_or_else(|| db_path.to_path_buf())
+    };
+    fs::read_to_string(&path).map_err(|error| {
+        AlgorithmConfigError::with_source(
+            format!(
+                "system_prompt_judge route {route_name}: failed to read db_path {}: {error}",
+                path.display()
+            ),
+            error,
+        )
     })
 }

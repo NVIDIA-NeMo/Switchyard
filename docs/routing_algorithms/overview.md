@@ -20,6 +20,7 @@ configuration and tuning. For the vocabulary these pages use, see
 | [Composite Routing](composite_routing.md) | Routing algorithms are composed, one setting the configuration of another before handing off. Today an LLM classifier sets a stage router's default tier. | `composite` |
 | [Escalation-Router Routing](escalation_router_routing.md) | Start every task on the weak tier and escalate to strong when an LLM judge detects trouble. | `llm_classifier` with `escalation` |
 | [Advisor-Gate Routing](advisor_gate_routing.md) | One model should serve every turn, with a stronger reviewer approving its "done" claims or sending back a redo plan. | `advisor` |
+| [System-Prompt-Judge Routing](system_prompt_judge_routing.md) | A judge should choose one hidden system prompt from a text DB before a passthrough call. | `system_prompt_judge` |
 
 ## Common route shape
 

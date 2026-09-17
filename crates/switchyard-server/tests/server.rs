@@ -398,7 +398,9 @@ async fn upstream_chat(
                 .map(|(_, group)| group.trim().to_string())
         })
     });
-    let content = if model == "model/classifier" && custom_target_schema {
+    let content = if model == "model/prompt-judge" {
+        r#"{"action":"compile_failure"}"#.to_string()
+    } else if model == "model/classifier" && custom_target_schema {
         if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#.to_string()
         } else {
@@ -1340,6 +1342,79 @@ fn load_test_config(toml: &str) -> TestResult<ServerState> {
     config.write_all(toml.as_bytes())?;
     config.flush()?;
     Ok(load_server_state(config.path())?)
+}
+
+#[tokio::test]
+async fn system_prompt_judge_route_injects_selected_action_prompt() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let temp_dir = tempfile::tempdir()?;
+    std::fs::write(
+        temp_dir.path().join("actions.txt"),
+        "[compile_failure]\nFocus on compiler diagnostics before editing.\n",
+    )?;
+    let config_path = temp_dir.path().join("routes.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.primary]
+id = "model/primary"
+llm_client = "upstream"
+
+[targets.judge]
+id = "model/prompt-judge"
+llm_client = "upstream"
+
+[routes.agent]
+id = "switchyard/agent"
+type = "system_prompt_judge"
+target = "primary"
+judge_target = "judge"
+db_path = "actions.txt"
+"#,
+            base_url = upstream.base_url
+        ),
+    )?;
+    let app = build_switchyard_router(load_server_state(&config_path)?);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/agent",
+            "messages": [{"role": "user", "content": "nvcc failed"}]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let calls = upstream.calls.lock().await.clone();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|call| call["model"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        ["model/prompt-judge", "model/primary"]
+    );
+    assert_eq!(
+        calls[1]["messages"][0],
+        json!({
+            "role": "system",
+            "content": "Focus on compiler diagnostics before editing."
+        })
+    );
+    assert_eq!(
+        calls[1]["messages"][1],
+        json!({"role": "user", "content": "nvcc failed"})
+    );
+    Ok(())
 }
 
 fn weighted_random_state(base_url: &str, weights: [u32; 2]) -> TestResult<ServerState> {

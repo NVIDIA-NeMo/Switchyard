@@ -37,7 +37,8 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
             error,
         )
     })?;
-    runner_from_toml(&source).map_err(|error| {
+    let base_dir = path.parent().map(Path::to_path_buf);
+    runner_from_toml_with_base(&source, base_dir.as_deref()).map_err(|error| {
         RunnerError::configuration_source(
             format!("invalid server config {}: {error}", path.display()),
             error,
@@ -46,10 +47,14 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
 }
 
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
+    runner_from_toml_with_base(source, None)
+}
+
+fn runner_from_toml_with_base(source: &str, base_dir: Option<&Path>) -> RunnerResult<Runner> {
     let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
-    config.build()
+    config.build(base_dir)
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,7 +159,7 @@ impl DeploymentConfig {
         })
     }
 
-    fn build(self) -> RunnerResult<Runner> {
+    fn build(self, base_dir: Option<&Path>) -> RunnerResult<Runner> {
         if self.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(RunnerError::configuration(format!(
                 "unsupported schema_version {}; expected {SUPPORTED_SCHEMA_VERSION}",
@@ -229,7 +234,7 @@ impl DeploymentConfig {
             }
             let algorithm = config
                 .algorithm
-                .build(route_name, &targets)
+                .build_with_base_dir(route_name, &targets, base_dir)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
@@ -1004,6 +1009,66 @@ new = ["send_message"]
                 "switchyard/random",
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn system_prompt_judge_route_reads_relative_action_db() -> RunnerResult<()> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!(
+            "switchyard-system-prompt-judge-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)
+            .unwrap_or_else(|error| panic!("create temp config dir: {error}"));
+        std::fs::write(
+            dir.join("actions.txt"),
+            "[compile_failure]\nFocus on compiler diagnostics before editing.\n",
+        )
+        .unwrap_or_else(|error| panic!("write action db: {error}"));
+        let config_path = dir.join("routes.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.primary]
+id = "model/primary"
+llm_client = "primary"
+
+[targets.judge]
+id = "model/judge"
+llm_client = "primary"
+
+[routes.agent]
+id = "switchyard/agent"
+type = "system_prompt_judge"
+target = "primary"
+judge_target = "judge"
+db_path = "actions.txt"
+"#,
+        )
+        .unwrap_or_else(|error| panic!("write route config: {error}"));
+
+        let runner = Runner::load(&config_path)?;
+
+        assert_eq!(
+            runner
+                .models()
+                .map(|model| (model.id.as_str(), model.algorithm))
+                .collect::<Vec<_>>(),
+            [("switchyard/agent", "system_prompt_judge")]
+        );
+        std::fs::remove_file(config_path).ok();
+        std::fs::remove_file(dir.join("actions.txt")).ok();
+        std::fs::remove_dir(dir).ok();
         Ok(())
     }
 

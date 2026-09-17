@@ -28,6 +28,9 @@ pub use algorithms::passthrough::Passthrough;
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};
+pub use algorithms::system_prompt_judge::{
+    PromptInjectionAction, SystemPromptJudge, SystemPromptJudgeConfig,
+};
 pub use algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};
 pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,
