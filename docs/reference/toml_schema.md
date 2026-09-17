@@ -172,6 +172,14 @@ Splits traffic across targets. See
 
 ### `prefill_router`
 
+!!! warning "Experimental in v0.3.0"
+
+    Switchyard v0.3.0 does not provide or support a router checkpoint, an
+    exporter, or compatible encoder assets. You must obtain or train a compatible
+    checkpoint and obtain its encoder and tokenizer yourself. There is no
+    supported end-to-end checkpoint export and compatibility contract.
+    The example below shows configuration syntax, not a ready-to-run deployment.
+
 Routes the latest non-empty user message with a checkpoint-backed prefill classifier. Build
 `switchyard-server` with `--features prefill-router` and make the prefill router's Python
 dependencies available in the active virtual environment.

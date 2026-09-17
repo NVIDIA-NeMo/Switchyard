@@ -144,32 +144,34 @@ Stratify the pure-capable results across four quadrant candidates before running
 | Category | Criterion | Count | Value |
 |---|---|---|---|
 | Easy + clean | Capable passes, small diff, clear spec | ~5 | Establishes SAFE floor |
-| Easy + tricky | Capable passes, subtle logic | ~5 | Catches LOSS false-positives |
+| Easy + tricky | Capable passes, subtle logic | ~5 | Finds RESCUE candidates |
 | Hard + structural | Capable fails, large multi-file diff | ~5 | HARD noise baseline |
-| Hard + localized | Capable fails, small targeted fix | ~5 | Best RESCUE signal |
+| Hard + localized | Capable fails, small targeted fix | ~5 | Finds LOSS candidates |
 
 Sample across repos and diff sizes. Don't over-represent one project.
 
 **Building RESCUE / LOSS quadrants**
 
-From the overlap tasks (those with both capable and efficient results):
+For efficient-to-capable escalation, group the overlap tasks (those with both
+capable and efficient results):
 
-- `RESCUE` = capable-fail ∩ efficient-pass → escalation is beneficial here
-- `LOSS`   = capable-pass ∩ efficient-fail → do NOT escalate here
+- `RESCUE` = efficient-fail ∩ capable-pass, a candidate for beneficial escalation
+- `LOSS`   = efficient-pass ∩ capable-fail, a candidate for harmful escalation
 - `SAFE`   = both pass
 - `HARD`   = both fail
 
-Sweep a few candidate thresholds in representative benchmark runs. Choose the
-lowest threshold that rescues the RESCUE quadrant without over-escalating the
-LOSS quadrant. Because the scorer is corroborative, a `0.5` threshold takes
+Sweep a few candidate thresholds in routed benchmark runs. For
+`efficient_first`, choose the lowest threshold that improves outcomes on RESCUE
+tasks without turning passing LOSS tasks into failures. Because the scorer is
+corroborative, a `0.5` threshold takes
 roughly 1.5 signals of agreement.
 
-**Caveat on efficient outcomes in stage-router vs. pure-efficient**
+**Caveat on fixed-model outcomes vs. routed outcomes**
 
-In stage-router, the efficient model may inherit partial context from the capable arm
-(conversation history up to the escalation point). Pure-efficient runs start
-fresh, so RESCUE is a conservative lower bound. Efficient performs at least as
-well in stage-router as it does alone.
+After a switch, the selected model inherits conversation history from the other
+model. Fixed-model runs do not measure this effect. Inherited context may help
+or hurt, so these quadrants identify candidates, not guaranteed outcomes.
+Validate the threshold with routed runs on the same tasks.
 
 ## Route configuration
 
