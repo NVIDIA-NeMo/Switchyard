@@ -47,6 +47,16 @@ escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars 
 `classifier_target` is the judge. The route's `id`, `agent`, is the model name
 clients send; the judge is not exposed as a client-selectable model.
 
+The route `id` also reaches the client's own model handling. Agent harnesses
+such as Codex pick their tool surface, base instructions, and context limits
+from the model name they are configured with before the request leaves the
+client, and Switchyard sees the request only afterwards. A route id that
+matches a client's known model slug runs that client on the model-specific
+surface; an id that matches none runs it on the client's generic surface.
+Choose the route id deliberately for the surface you want the efficient tier
+to work on, and keep it stable across runs you intend to compare, because
+Switchyard cannot change the client's choice from the server side.
+
 The route-level `prompt` key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
 Switchyard supplies that schema according to the route's `response_format_type`:
