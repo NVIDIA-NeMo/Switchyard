@@ -437,7 +437,7 @@ mod tests {
         assert!(backend.is_context_overflow(
             r#"{"error":{"message":"Input length 877338 exceeds the maximum allowed input length of 639968 tokens","code":"400"}}"#
         ));
-        // Native SGLang: top-level envelope (no `error` key), caught by the raw-body phrase match.
+        // Native SGLang: top-level error envelope (no `error` key).
         // KV-pool rejection (managers/utils.py) and declared-context rejection
         // (tokenizer_manager.py); both stable across v0.5.15-v0.5.17.
         assert!(backend.is_context_overflow(

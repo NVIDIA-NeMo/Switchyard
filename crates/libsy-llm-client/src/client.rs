@@ -2526,6 +2526,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn content_policy_400_preserves_upstream_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let body = json!({
+            "error": {
+                "code": "content_policy_violation",
+                "message": "request blocked by content policy",
+                "type": "invalid_request_error"
+            },
+            "metadata": {"documentation_section": "context window"}
+        });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let Err(error) = client
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected a policy denial");
+        };
+        let LlmClientError::UpstreamHttp {
+            status,
+            body: actual,
+        } = error
+        else {
+            panic!("expected the upstream HTTP error, got {error:?}");
+        };
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&actual)?, body);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn forwards_only_allowlisted_metadata_headers()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;

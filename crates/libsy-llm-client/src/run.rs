@@ -368,6 +368,16 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
     match source {
         LlmClientError::ContextWindowExceeded { .. } => Some(RoutingFallbackReason::ContextWindow),
         LlmClientError::Transport { .. } => Some(RoutingFallbackReason::Unavailable),
+        // A policy denial can be specific to one provider. Preserve its HTTP
+        // error, but allow another candidate to serve the request.
+        LlmClientError::UpstreamHttp { status, body }
+            if *status == StatusCode::BAD_REQUEST
+                && serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| {
+                    value["error"]["code"].as_str() == Some("content_policy_violation")
+                }) =>
+        {
+            Some(RoutingFallbackReason::Unavailable)
+        }
         LlmClientError::UpstreamHttp { status, .. }
             if matches!(
                 *status,
@@ -763,6 +773,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum FirstOutcome {
         ContextWindow,
+        ContentPolicy,
         Unauthorized,
         StreamSuccess,
         MidStreamError,
@@ -785,6 +796,10 @@ mod tests {
                     FirstOutcome::ContextWindow => Err(LlmClientError::ContextWindowExceeded {
                         model,
                         message: "too long".to_string(),
+                    }),
+                    FirstOutcome::ContentPolicy => Err(LlmClientError::UpstreamHttp {
+                        status: StatusCode::BAD_REQUEST,
+                        body: r#"{"error":{"code":"content_policy_violation","message":"request blocked by content policy","type":"invalid_request_error"},"metadata":{"documentation_section":"context window"}}"#.to_string(),
                     }),
                     FirstOutcome::Unauthorized => Err(LlmClientError::UpstreamHttp {
                         status: StatusCode::UNAUTHORIZED,
@@ -1252,7 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_only_accepts_context_and_unavailable_failures() {
+    fn fallback_only_accepts_context_policy_and_unavailable_failures() {
         let error = |source| LibsyError::client_call("target", source);
         assert_eq!(
             fallback_reason(&error(LlmClientError::ContextWindowExceeded {
@@ -1274,6 +1289,27 @@ mod tests {
                     body: "failed".to_string(),
                 })),
                 Some(RoutingFallbackReason::Unavailable)
+            );
+        }
+        for (body, expected) in [
+            (
+                r#"{"error":{"code":"content_policy_violation"}}"#,
+                Some(RoutingFallbackReason::Unavailable),
+            ),
+            (
+                r#"{"error":{"code":"invalid_request_error"},"metadata":"content_policy_violation"}"#,
+                None,
+            ),
+            (r#"{"error":{"message":"content_policy_violation"}}"#, None),
+            ("content_policy_violation", None),
+        ] {
+            assert_eq!(
+                fallback_reason(&error(LlmClientError::UpstreamHttp {
+                    status: StatusCode::BAD_REQUEST,
+                    body: body.to_string(),
+                })),
+                expected,
+                "{body}"
             );
         }
         for status in [
@@ -1309,6 +1345,15 @@ mod tests {
                 .as_agg()
                 .map(|response| response.model.as_deref()),
             Some(Some("strong"))
+        );
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
+
+        // A provider-specific policy denial also permits another candidate.
+        let (client, result) = run_candidates(FirstOutcome::ContentPolicy).await;
+        let (_, response) = result?;
+        assert_eq!(
+            &*client.calls.lock(),
+            &[ModelId::from("weak"), "strong".into()]
         );
         assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
 
