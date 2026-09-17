@@ -193,12 +193,13 @@ impl TypeSafeProvider for TypeSafeHttpClient {
 
         let status = response.status();
         if !status.is_success() {
-            // The body may include diagnostic detail from TypeSafe but never the caller's
-            // own credentials (those only ever appear in the request's Authorization header,
-            // which is never echoed back here).
-            let detail = response.text().await.unwrap_or_default();
+            // Deliberately drop the response body: it is provider-controlled and this error
+            // is surfaced through logs and telemetry. `state` in the request can carry the
+            // caller's own prompt content, so an error body that happened to echo any of it
+            // back must not flow into our own logs. The status code alone is enough to
+            // diagnose a provider-side failure.
             return Err(TypeSafeProviderError(format!(
-                "typesafe returned HTTP {status}: {detail}"
+                "typesafe returned HTTP {status}"
             )));
         }
 
