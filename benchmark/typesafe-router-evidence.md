@@ -10,7 +10,7 @@ generative LLM classifier.
 ## Setup
 
 - TypeSafe model: `jev-latest`
-- TypeSafe endpoint: `POST https://api.typesafe.ai/v1/systemone`
+- TypeSafe interface: System One HTTP API
 - Generative classifier: `azure/openai/gpt-5.6-sol`
 - Generative endpoint: NVIDIA Inference API, OpenAI Responses format
 - Samples: 10 total; 5 labeled `efficient`, 5 labeled `capable`
@@ -35,7 +35,7 @@ excluded from both measurements.
 
 | Router | Correct | Mean | Median (p50) | Observed p95 |
 |---|---:|---:|---:|---:|
-| TypeSafe `jev-latest` | 10/10 | 281 ms | 278 ms | 375 ms |
+| TypeSafe `jev-latest` | 10/10 | 281 ms | 278.5 ms | 375 ms |
 | Generative `gpt-5.6-sol` | 10/10 | 1,653 ms | 1,575 ms | 2,576 ms |
 
 On this run, TypeSafe was 5.9x faster by arithmetic mean, 5.7x faster at the
@@ -87,8 +87,11 @@ Before enabling the router for real traffic:
    acceptable-answer rate, over-routing, under-routing, latency, and end-to-end cost.
 4. Tune the TypeSafe criteria and confidence threshold on a development split, then
    report final results once on a held-out split.
-5. Preserve the current fail-open behavior: low-confidence decisions and TypeSafe
-   service failures should route to the capable tier.
+5. Use a proposed fail-open policy for a future TypeSafe integration: low-confidence
+   decisions and service failures should route to the capable tier. Switchyard's existing
+   [`StageClassifier`](../crates/libsy/src/algorithms/util/stage.rs) falls back to the tier
+   selected by its configured `PickerMode`; TypeSafe-specific failure handling is not
+   implemented here.
 
 Relevant TypeSafe guidance:
 
