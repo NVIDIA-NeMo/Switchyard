@@ -1,0 +1,70 @@
+schema_version = 1
+
+[llm_clients.gliner]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8081/v1"
+
+[llm_clients.models]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8090/v1"
+
+[targets.gliner]
+id = "gliner-router"
+llm_client = "gliner"
+
+[targets.deterministic_tool]
+id = "deterministic-tool"
+llm_client = "models"
+
+[targets.small_model]
+id = "small-model"
+llm_client = "models"
+
+[targets.reasoning_model]
+id = "reasoning-model"
+llm_client = "models"
+
+[targets.human_review]
+id = "human-review"
+llm_client = "models"
+
+[routes.gliner]
+id = "switchyard/gliner"
+type = "llm_classifier"
+mode = "custom"
+classify_trigger = "user_turn"
+default_target = "human_review"
+prompt = "Classify the user request for routing. Return the required structured verdict."
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": ["deterministic_tool", "small_model", "reasoning_model", "human_review"]
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["target", "confidence"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["decision"],
+  "additionalProperties": false
+}
+'''
+
+[routes.gliner.models]
+judge = ["gliner"]
+deterministic_tool = ["deterministic_tool"]
+small_model = ["small_model"]
+reasoning_model = ["reasoning_model"]
+human_review = ["human_review"]
+any = ["deterministic_tool", "small_model", "reasoning_model", "human_review"]
+
+[routes.gliner.policy]
+type = "target_selector"
+selector = "/decision/target"
