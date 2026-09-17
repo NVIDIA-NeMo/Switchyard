@@ -62,11 +62,24 @@ switchyard-server --help
 
 Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
 
+#### Build from source
+
+Install the server from `main` to use unreleased features:
+
+```bash
+cargo install --locked \
+  --git https://github.com/NVIDIA-NeMo/Switchyard.git \
+  --branch main \
+  switchyard-server
+```
+
 ### Configure
 
 The Rust server reads an explicit TOML file.
 
 Create `routes.toml` with an auto route:
+
+> Requires unreleased features. [Build from source](#build-from-source) to run this example.
 
 ```toml
 schema_version = 1

@@ -175,6 +175,8 @@ Validate the threshold with routed runs on the same tasks.
 
 ## Route configuration
 
+> Requires unreleased features. [Build from source](../getting_started.md#build-from-source) to run this example.
+
 ```toml
 schema_version = 1
 

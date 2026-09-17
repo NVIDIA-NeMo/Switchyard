@@ -9,6 +9,8 @@ This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
 decision for later requests in the same conversation.
 
+> Requires unreleased features. [Build from source](../getting_started.md#build-from-source) to run this example.
+
 ```toml
 schema_version = 1
 
