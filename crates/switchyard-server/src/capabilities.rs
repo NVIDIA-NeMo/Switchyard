@@ -133,13 +133,45 @@ fn unsupported_content(
 mod tests {
     use super::*;
     use serde_json::json;
+    use switchyard_translation::WireFormat::{AnthropicMessages, OpenAiChat, OpenAiResponses};
     use switchyard_translation::{WireFormat, decode_request, encode_request};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    // Decode each fixture so disabled, enabled, and unset cases use the same request.
+    fn assert_requires_capability(
+        format: WireFormat,
+        body: &Value,
+        disabled: ModelCapabilities,
+        capability: &str,
+    ) -> TestResult<LlmRequest> {
+        let request = decode_request(format, body)?;
+        for (capabilities, expected) in [
+            (disabled, Some(capability)),
+            (ModelCapabilities::default(), None),
+            (
+                ModelCapabilities {
+                    tool_calling: Some(true),
+                    reasoning: Some(true),
+                    vision: Some(true),
+                    ..Default::default()
+                },
+                None,
+            ),
+        ] {
+            assert_eq!(
+                unsupported_capability(capabilities, &request, body),
+                expected,
+                "{body}"
+            );
+        }
+        Ok(request)
+    }
 
     // Tool controls and history, including MCP approvals, can survive forwarding
     // without appearing in decoded tools.
     #[test]
-    fn rejects_tool_controls_and_history_preserved_outside_normalized_tools()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_tool_controls_and_history_preserved_outside_normalized_tools() -> TestResult {
         let capabilities = ModelCapabilities {
             tool_calling: Some(false),
             ..Default::default()
@@ -158,106 +190,63 @@ mod tests {
             json!({"input": [{"type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": true}]}),
             json!({"input": [{"type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": false}]}),
         ] {
-            let request = decode_request(WireFormat::OpenAiResponses, &body)?;
-            assert_eq!(
-                unsupported_capability(capabilities, &request, &body),
-                Some("tool_calling"),
-                "{body}"
-            );
-            for tool_calling in [None, Some(true)] {
-                assert_eq!(
-                    unsupported_capability(
-                        ModelCapabilities {
-                            tool_calling,
-                            ..Default::default()
-                        },
-                        &request,
-                        &body,
-                    ),
-                    None,
-                    "{body}"
-                );
-            }
+            assert_requires_capability(OpenAiResponses, &body, capabilities, "tool_calling")?;
         }
         let body = json!({"messages": [{"role": "user", "content": "hello"}], "tools": [], "functions": []});
-        let request = decode_request(WireFormat::OpenAiChat, &body)?;
+        let request = decode_request(OpenAiChat, &body)?;
         assert_eq!(unsupported_capability(capabilities, &request, &body), None);
         Ok(())
     }
 
     // Preserved reasoning controls still reach the provider when decoding omits them.
     #[test]
-    fn rejects_preserved_reasoning_controls() -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_preserved_reasoning_controls() -> TestResult {
+        let capabilities = ModelCapabilities {
+            reasoning: Some(false),
+            ..Default::default()
+        };
         for (format, body, pointer) in [
             (
-                WireFormat::OpenAiChat,
+                OpenAiChat,
                 json!({"messages": [{"role": "user", "content": "hello"}], "reasoning": {"enabled": true}}),
                 "/reasoning",
             ),
             (
-                WireFormat::OpenAiChat,
+                OpenAiChat,
                 json!({"messages": [{"role": "user", "content": "hello"}], "reasoning_effort": 123}),
                 "/reasoning_effort",
             ),
             (
-                WireFormat::AnthropicMessages,
+                AnthropicMessages,
                 json!({"messages": [{"role": "user", "content": "hello"}], "output_config": {"effort": 123}}),
                 "/output_config/effort",
             ),
         ] {
-            let request = decode_request(format, &body)?;
+            let request = assert_requires_capability(format, &body, capabilities, "reasoning")?;
             assert_eq!(
                 encode_request(&request, format)?.pointer(pointer),
                 body.pointer(pointer)
-            );
-            assert_eq!(
-                unsupported_capability(
-                    ModelCapabilities {
-                        reasoning: Some(false),
-                        ..Default::default()
-                    },
-                    &request,
-                    &body
-                ),
-                Some("reasoning"),
-                "{body}"
-            );
-            assert_eq!(
-                unsupported_capability(ModelCapabilities::default(), &request, &body),
-                None
             );
         }
         Ok(())
     }
 
-    // Image file IDs and screenshots require inspection of the preserved request JSON.
+    // Decoded file-ID images and preserved computer screenshots both require vision.
     #[test]
-    fn rejects_images_preserved_outside_normalized_content()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_file_id_images_and_computer_screenshots() -> TestResult {
+        let capabilities = ModelCapabilities {
+            vision: Some(false),
+            ..Default::default()
+        };
         for body in [
             json!({"input": [{"role": "user", "content": [{"type": "input_image", "file_id": "file_1"}]}]}),
             json!({"input": [{"type": "computer_call_output", "call_id": "call_1", "output": {"type": "computer_screenshot", "image_url": "https://example.test/image.png"}}]}),
         ] {
-            let request = decode_request(WireFormat::OpenAiResponses, &body)?;
+            let request =
+                assert_requires_capability(OpenAiResponses, &body, capabilities, "vision")?;
             assert_eq!(
-                encode_request(&request, WireFormat::OpenAiResponses)?["input"],
+                encode_request(&request, OpenAiResponses)?["input"],
                 body["input"]
-            );
-            assert_eq!(
-                unsupported_capability(
-                    ModelCapabilities {
-                        vision: Some(false),
-                        ..Default::default()
-                    },
-                    &request,
-                    &body
-                ),
-                Some("vision"),
-                "{body}"
-            );
-            assert_eq!(
-                unsupported_capability(ModelCapabilities::default(), &request, &body),
-                None
             );
         }
         Ok(())
@@ -265,26 +254,22 @@ mod tests {
 
     // Allowing tool results must not hide unsupported images nested in their content.
     #[test]
-    fn rejects_images_inside_tool_results_when_tools_are_allowed()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_images_inside_tool_results_when_tools_are_allowed() -> TestResult {
         let body = json!({"messages": [{"role": "user", "content": [{
             "type": "tool_result", "tool_use_id": "call_1", "content": [{
                 "type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}
             }]
         }]}]});
-        let request = decode_request(WireFormat::AnthropicMessages, &body)?;
-        assert_eq!(
-            unsupported_capability(
-                ModelCapabilities {
-                    tool_calling: Some(true),
-                    vision: Some(false),
-                    ..Default::default()
-                },
-                &request,
-                &body
-            ),
-            Some("vision")
-        );
+        assert_requires_capability(
+            AnthropicMessages,
+            &body,
+            ModelCapabilities {
+                tool_calling: Some(true),
+                vision: Some(false),
+                ..Default::default()
+            },
+            "vision",
+        )?;
         Ok(())
     }
 }

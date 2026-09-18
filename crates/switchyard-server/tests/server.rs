@@ -3452,42 +3452,31 @@ target = "shared"
     Ok(())
 }
 
+// Build routes through the TOML loader to test disabled, enabled, and unset capabilities.
+fn capability_app(base_url: &str, format: &str) -> TestResult<Router> {
+    Ok(build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "{format}"
+base_url = "{base_url}"
+[targets]
+shared = {{ id = "model/efficient", llm_client = "upstream" }}
+[routes]
+restricted = {{ id = "restricted", type = "passthrough", target = "shared", vision = false, reasoning = false, tool_calling = false }}
+enabled = {{ id = "enabled", type = "passthrough", target = "shared", vision = true, reasoning = true, tool_calling = true }}
+undeclared = {{ id = "undeclared", type = "passthrough", target = "shared" }}
+"#,
+    ))?))
+}
+
 // Chat Completions, Responses, and Messages reject disabled inputs before dispatch.
 // Allowed Responses input retains instructions and options after translation
 // to Chat Completions.
 #[tokio::test]
 async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(load_test_config(&format!(
-        r#"
-schema_version = 1
-[llm_clients.upstream]
-format = "openai_chat"
-base_url = "{base_url}"
-[targets.shared]
-id = "model/weak"
-llm_client = "upstream"
-[routes.restricted]
-id = "switchyard/text-only"
-type = "passthrough"
-target = "shared"
-vision = false
-reasoning = false
-tool_calling = false
-[routes.enabled]
-id = "enabled"
-type = "passthrough"
-target = "shared"
-vision = true
-reasoning = true
-tool_calling = true
-[routes.undeclared]
-id = "undeclared"
-type = "passthrough"
-target = "shared"
-"#,
-        base_url = upstream.base_url,
-    ))?);
+    let app = capability_app(&upstream.base_url, "openai_chat")?;
     let cases = [
         (
             "/v1/chat/completions",
@@ -3536,7 +3525,7 @@ target = "shared"
         ),
     ];
     for (endpoint, capability, mut body) in cases {
-        body["model"] = json!("switchyard/text-only");
+        body["model"] = json!("restricted");
         let response = send(&app, "POST", endpoint, Some(body)).await?;
         assert_eq!(
             response.status,
@@ -3559,18 +3548,11 @@ target = "shared"
     }
     assert!(upstream.calls.lock().await.is_empty());
 
-    for model in ["switchyard/text-only", "enabled", "undeclared"] {
-        let response = send(
-            &app,
-            "POST",
-            "/v1/responses",
-            Some(json!({
-                "model": model, "instructions": "Keep the caller's instructions.", "input": "hello"
-            })),
-        )
-        .await?;
-        assert_eq!(response.status, StatusCode::OK);
-    }
+    let body = json!({
+        "model": "restricted", "instructions": "Keep the caller's instructions.", "input": "hello"
+    });
+    let response = send(&app, "POST", "/v1/responses", Some(body)).await?;
+    assert_eq!(response.status, StatusCode::OK);
     for model in ["enabled", "undeclared"] {
         let response = send(&app, "POST", "/v1/responses", Some(json!({
             "model": model,
@@ -3582,13 +3564,13 @@ target = "shared"
         assert_eq!(response.status, StatusCode::OK);
     }
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 5);
+    assert_eq!(calls.len(), 3);
     assert!(
         calls
             .iter()
             .all(|call| has_system_prompt(call, "Keep the caller's instructions."))
     );
-    for call in &calls[3..] {
+    for call in &calls[1..] {
         assert_eq!(call["reasoning_effort"], "high");
         assert_eq!(call["tools"][0]["function"]["name"], "exec_command");
         assert!(call["messages"].as_array().is_some_and(|messages| {
@@ -3604,43 +3586,14 @@ target = "shared"
 #[tokio::test]
 async fn tool_approval_replies_follow_route_capabilities() -> TestResult {
     let upstream = MockUpstream::start().await?;
-    let app = build_switchyard_router(load_test_config(&format!(
-        r#"
-schema_version = 1
-[llm_clients.upstream]
-format = "openai_responses"
-base_url = "{base_url}/buffered"
-[targets.shared]
-id = "model/efficient"
-llm_client = "upstream"
-[routes.restricted]
-id = "restricted"
-type = "passthrough"
-target = "shared"
-tool_calling = false
-[routes.enabled]
-id = "enabled"
-type = "passthrough"
-target = "shared"
-tool_calling = true
-[routes.undeclared]
-id = "undeclared"
-type = "passthrough"
-target = "shared"
-"#,
-        base_url = upstream.base_url.trim_end_matches("/v1"),
-    ))?);
+    let base_url = format!("{}/buffered", upstream.base_url.trim_end_matches("/v1"));
+    let app = capability_app(&base_url, "openai_responses")?;
     let input = json!([
         {"type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": true}
     ]);
     for model in ["restricted", "enabled", "undeclared"] {
-        let response = send(
-            &app,
-            "POST",
-            "/v1/responses",
-            Some(json!({"model": model, "input": input})),
-        )
-        .await?;
+        let body = json!({"model": model, "input": input});
+        let response = send(&app, "POST", "/v1/responses", Some(body)).await?;
         if model == "restricted" {
             assert_eq!(response.status, StatusCode::BAD_REQUEST);
             let error = response.json()?;

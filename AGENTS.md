@@ -25,9 +25,6 @@ Write for a high-school level in short, simple sentences. Avoid jargon, analogie
 - Avoid abstractions, configurability, and defensive code for hypothetical needs.
 - If the implementation grows unexpectedly large, reconsider and simplify it.
 - For bugs, reproduce the failure before fixing it; for refactors, establish a behavioral baseline first.
-- For protocol restrictions, check supported input variants and preserved provider JSON as well as decoded content. Tool history includes approval requests and replies; suffix matching alone does not cover every variant.
-- Test a rejected input without another forbidden field that could hide a missing check. Assert API-specific error fields and zero upstream calls. Preserve explicit `true` and unset behavior when they differ.
-- Review changed helpers and tests for missing intent comments. Explain non-obvious behavior and which regression a fixture catches; do not repeat the code.
 - Make reasonable, reversible assumptions when consequences are small. Ask only when ambiguity would materially change the result, expand scope, or risk an irreversible acti
 
 ## Git guidance
@@ -55,5 +52,5 @@ One step, one reviewed, one-line commit.
   (`type(scope): summary`). No body, no `Co-Authored-By` trailer.
 - Pull request titles use the same Conventional Commits form.
 - Use `git commit -s` so every commit carries the required DCO sign-off.
-- Commit reviewed changes within the requested scope without asking for separate approval.
+- Never commit unprompted. Show the diff, get approval, then commit.
 
