@@ -53,6 +53,10 @@ pub struct StreamTranslationState {
     pub(crate) emitted_content_block: bool,
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
     #[serde(default)]
+    pub(crate) pending_chat_tool_names: BTreeMap<usize, String>,
+    #[serde(default)]
+    pub(crate) active_anthropic_tool: Option<usize>,
+    #[serde(default)]
     pub(crate) deferred_anthropic_tools: Vec<usize>,
     /// Reasoning text observed while DECODING, per output index, so a completed item
     /// that repeats already-streamed text is not decoded twice.

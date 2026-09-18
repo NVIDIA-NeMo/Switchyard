@@ -18,6 +18,49 @@ use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {
+    let engine = TranslationEngine::default();
+    for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
+        for arguments in ["{}", ""] {
+            let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
+            let mut events = Vec::new();
+            for event in [
+                json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                    "id": "call_weather", "function": {"name": "wea", "arguments": ""}}]}}]}),
+                json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                    "function": {"name": "ther", "arguments": arguments}}]}}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            ] {
+                events.extend(engine.translate_event(
+                    &mut state,
+                    WireFormat::OpenAiChat,
+                    target,
+                    &event,
+                )?);
+            }
+            events.extend(engine.finish_stream(&mut state, target)?);
+            let names: Vec<_> = events
+                .iter()
+                .filter_map(|event| {
+                    event
+                        .get("content_block")
+                        .or_else(|| event.get("item"))?
+                        .get("name")?
+                        .as_str()
+                })
+                .collect();
+            let expected = if target == WireFormat::AnthropicMessages {
+                vec!["weather"]
+            } else {
+                vec!["weather", "weather"]
+            };
+            assert_eq!(names, expected, "{target:?}, arguments={arguments:?}");
+        }
+    }
+    Ok(())
+}
+
 // Reduces Anthropic stream events to ordered labels (`<block>_start`, `<delta>`,
 // `<block>_stop`) so ordering assertions stay readable without restating each payload.
 fn event_labels(events: &[Value]) -> Vec<String> {

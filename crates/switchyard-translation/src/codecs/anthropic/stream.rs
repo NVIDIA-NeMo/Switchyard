@@ -279,6 +279,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         }
     }
 
+    state.active_anthropic_tool = None;
     for index in std::mem::take(&mut state.deferred_anthropic_tools) {
         out.extend(encode_anthropic_tool_delta(state, index, None, None, None));
         if let Some(tool) = state.tool_states.get_mut(&index) {
@@ -287,6 +288,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             }
             tool.started = false;
         }
+        state.active_anthropic_tool = None;
     }
 
     if !state.emitted_content_block {
@@ -514,10 +516,8 @@ fn encode_anthropic_tool_delta(
         state.text_block_started = false;
     }
 
-    let other_tool_started = state
-        .tool_states
-        .iter()
-        .any(|(&tool_index, tool)| tool_index != index && tool.started);
+    // Reserve the first call even while its name is still being assembled.
+    let other_tool_started = *state.active_anthropic_tool.get_or_insert(index) != index;
     let tool = state.tool_states.entry(index).or_default();
     if let Some(id) = id.filter(|id| !id.is_empty()) {
         tool.id = Some(sanitize_anthropic_tool_use_id(&id));

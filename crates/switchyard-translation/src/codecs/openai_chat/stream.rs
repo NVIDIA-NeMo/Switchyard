@@ -141,27 +141,54 @@ fn decode_openai_chat_stream(
                 for tool_call in tool_calls {
                     if let Some(tool_call) = tool_call.as_object() {
                         let function = tool_call.get("function").and_then(Value::as_object);
+                        let index =
+                            tool_call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        if let Some(name) = function
+                            .and_then(|function| function.get("name"))
+                            .and_then(Value::as_str)
+                            .filter(|name| !name.is_empty())
+                        {
+                            state
+                                .pending_chat_tool_names
+                                .entry(index)
+                                .or_default()
+                                .push_str(name);
+                        }
+                        let arguments_delta = function
+                            .and_then(|function| function.get("arguments"))
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned);
+                        // Keep name fragments together until argument text begins.
+                        let name = if arguments_delta
+                            .as_deref()
+                            .is_some_and(|args| !args.is_empty())
+                        {
+                            state.pending_chat_tool_names.remove(&index)
+                        } else {
+                            None
+                        };
                         out.push(LlmResponseChunk::ToolCallDelta {
-                            index: tool_call.get("index").and_then(Value::as_u64).unwrap_or(0)
-                                as usize,
+                            index,
                             id: tool_call
                                 .get("id")
                                 .and_then(Value::as_str)
                                 .map(ToOwned::to_owned),
-                            name: function
-                                .and_then(|function| function.get("name"))
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
-                            arguments_delta: function
-                                .and_then(|function| function.get("arguments"))
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
+                            name,
+                            arguments_delta,
                         });
                     }
                 }
             }
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            for (index, name) in std::mem::take(&mut state.pending_chat_tool_names) {
+                out.push(LlmResponseChunk::ToolCallDelta {
+                    index,
+                    id: None,
+                    name: Some(name),
+                    arguments_delta: None,
+                });
+            }
             out.push(LlmResponseChunk::MessageStop {
                 reason: Some(reason.to_string()),
             });
