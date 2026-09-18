@@ -4299,6 +4299,8 @@ async fn streaming_error_records_error_without_usage_or_latency() -> TestResult 
     let after = send(&app, "GET", "/metrics", None).await?;
     let after = after.text()?;
     for name in [
+        "switchyard_requests_total",
+        "switchyard_model_call_latency_ms_count",
         "switchyard_prompt_tokens_total",
         "switchyard_completion_tokens_total",
         "switchyard_cached_tokens_total",
@@ -4321,6 +4323,7 @@ async fn streaming_error_records_error_without_usage_or_latency() -> TestResult 
         ),
         Some(1.0)
     );
+    assert!(metric_delta(before, after, "switchyard_total_errors", &[]).unwrap_or_default() >= 1.0);
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["total_requests"], 1);
     assert_eq!(stats["total_errors"], 1);

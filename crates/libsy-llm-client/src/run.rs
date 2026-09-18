@@ -108,17 +108,16 @@ pub async fn run(
         )
         .await;
         let answer_duration = answer_started.elapsed();
-        metrics::record_answer_call(
-            &algorithm_name,
-            &selected_model_id,
-            answer_duration,
-            &result,
-        );
         (result, Some(answer_duration))
     };
     let result =
         result.and_then(|response| clients.remember_state_owner(&outcome.request, response));
-    metrics::record_routed_request(&selected_model_id, answer_duration, &result);
+    let result = metrics::observe_routed_request(
+        &algorithm_name,
+        &selected_model_id,
+        answer_duration,
+        result,
+    );
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
     }
