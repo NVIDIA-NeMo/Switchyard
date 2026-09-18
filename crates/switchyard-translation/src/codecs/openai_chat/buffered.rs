@@ -287,13 +287,17 @@ impl FormatCodec for OpenAiChatCodec {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            let mut content = decode_openai_content(
-                message.get("content").unwrap_or(&Value::Null),
-                WireFormat::OpenAiChat,
-                &mut Vec::new(),
-                &TranslationPolicy::default(),
-                "$.choices[0].message.content",
-            )?;
+            let mut content = match message.get("content") {
+                // decode_openai_content would turn absent response text into an empty text block.
+                None | Some(Value::Null) => Vec::new(),
+                Some(content) => decode_openai_content(
+                    content,
+                    WireFormat::OpenAiChat,
+                    &mut Vec::new(),
+                    &TranslationPolicy::default(),
+                    "$.choices[0].message.content",
+                )?,
+            };
             prepend_openai_reasoning_blocks(&mut content, &message);
             if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for (index, tool_call) in tool_calls.iter().enumerate() {

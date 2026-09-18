@@ -560,6 +560,47 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
 }
 
 #[test]
+fn openai_reasoning_response_preserves_visible_content_presence() -> TestResult {
+    let engine = TranslationEngine::default();
+    for content in [json!(null), json!(""), json!("Answer")] {
+        let mut body = json!({
+            "id": "chatcmpl-test",
+            "model": "gpt-reasoning",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "private reasoning"
+                },
+                "finish_reason": "length"
+            }]
+        });
+        let mut expected = vec![json!({
+            "type": "thinking",
+            "thinking": "private reasoning",
+            "signature": ""
+        })];
+        if let Some(text) = content.as_str() {
+            expected.push(json!({"type": "text", "text": text}));
+        }
+        body["choices"][0]["message"]["content"] = content;
+
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &normalized_policy(),
+            )?
+            .body;
+
+        assert_eq!(output["content"], json!(expected), "input: {body}");
+        assert_eq!(output["stop_reason"], "max_tokens");
+    }
+    Ok(())
+}
+
+#[test]
 fn openai_chat_response_round_trips_reasoning_details() -> TestResult {
     let engine = TranslationEngine::default();
     // Exercise the normalized IR path instead of replaying the original JSON.
