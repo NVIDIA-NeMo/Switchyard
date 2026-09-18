@@ -136,7 +136,14 @@ fn raw_file_payload(raw: &Value) -> Option<Map<String, Value>> {
             ),
             filename,
         )),
-        "base64" => Some(file_data_payload(source.get("data")?.as_str()?, filename)),
+        "base64" => Some(file_data_payload(
+            &format!(
+                "data:{};base64,{}",
+                source.get("media_type")?.as_str()?,
+                source.get("data")?.as_str()?
+            ),
+            filename,
+        )),
         _ => None,
     }
 }

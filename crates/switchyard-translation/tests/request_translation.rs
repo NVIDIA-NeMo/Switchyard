@@ -1092,7 +1092,7 @@ fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> Tes
                     },
                     {
                         "type": "file",
-                        "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                        "file": {"file_data": "data:application/pdf;base64,ZG9jdW1lbnQ=", "filename": "report.pdf"}
                     }
                 ]
             }
@@ -3556,9 +3556,9 @@ fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> Test
     Ok(())
 }
 
-// Verifies Anthropic base64 media becomes valid Responses image and file parts.
+// Verifies Anthropic base64 media becomes valid OpenAI image and file parts.
 #[test]
-fn anthropic_base64_media_translates_to_responses() -> TestResult {
+fn anthropic_base64_media_translates_to_openai_formats() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "claude-sonnet-4-20250514",
@@ -3588,27 +3588,57 @@ fn anthropic_base64_media_translates_to_responses() -> TestResult {
         }]
     });
 
-    let output = engine
-        .translate_request(
-            WireFormat::AnthropicMessages,
-            WireFormat::OpenAiResponses,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-
-    assert_eq!(
-        output["input"][0]["content"],
-        json!([
-            {"type": "input_text", "text": "What is this?"},
-            {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
-            {
-                "type": "input_file",
-                "file_data": "ZG9jdW1lbnQ=",
-                "filename": "report.pdf"
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        let mut files = Vec::new();
+        for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+            let output = engine
+                .translate_request(WireFormat::AnthropicMessages, target, &body, &policy)?
+                .body;
+            let content = if target == WireFormat::OpenAiChat {
+                &output["messages"][0]["content"]
+            } else {
+                &output["input"][0]["content"]
+            };
+            if target == WireFormat::OpenAiChat {
+                assert_eq!(content[0], json!({"type": "text", "text": "What is this?"}));
+                assert_eq!(
+                    content[1]["image_url"]["url"],
+                    "data:image/png;base64,aW1hZ2U="
+                );
+                assert_eq!(content[2]["type"], "file");
+                files.push(content[2]["file"].clone());
+            } else {
+                assert_eq!(
+                    content[0],
+                    json!({"type": "input_text", "text": "What is this?"})
+                );
+                assert_eq!(content[1]["image_url"], "data:image/png;base64,aW1hZ2U=");
+                assert_eq!(content[2]["type"], "input_file");
+                let mut file = content[2].clone();
+                file.as_object_mut()
+                    .ok_or("file must be an object")?
+                    .remove("type");
+                files.push(file);
             }
-        ])
-    );
+            let restored = engine
+                .translate_request(
+                    target,
+                    WireFormat::AnthropicMessages,
+                    &output,
+                    &normalized_policy(),
+                )?
+                .body;
+            assert_eq!(
+                restored["messages"][0]["content"],
+                body["messages"][0]["content"]
+            );
+        }
+        let expected_file = json!({
+            "file_data": "data:application/pdf;base64,ZG9jdW1lbnQ=",
+            "filename": "report.pdf"
+        });
+        assert_eq!(files, vec![expected_file.clone(), expected_file]);
+    }
     Ok(())
 }
 
@@ -3662,7 +3692,7 @@ fn tool_result_media_survives_anthropic_and_responses_translation() -> TestResul
         json!([
             {"type": "input_text", "text": "media attached"},
             {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
-            {"type": "input_file", "file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+            {"type": "input_file", "file_data": "data:application/pdf;base64,ZG9jdW1lbnQ=", "filename": "report.pdf"}
         ])
     );
     assert_eq!(
