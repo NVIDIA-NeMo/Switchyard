@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -200,6 +201,17 @@ static BASH_TOOL_NAMES: &[&str] = &[
     "terminal",
     "exec_command", // codex
 ];
+
+// Codex unified-exec wraps its ordinary tools in a JavaScript program carried
+// by one custom `exec` call. Its inner tool calls retain their normal semantics.
+static CODE_MODE_TOOL_NAMES: &[&str] = &["exec"];
+
+static CODE_MODE_EXEC_COMMAND: LazyLock<Option<regex::Regex>> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"tools\.exec_command\s*\(\s*\{\s*(?:"cmd"|cmd)\s*:\s*(?:"(?P<double>(?:\\.|[^"\\])*)"|'(?P<single>(?:\\.|[^'\\])*)'|`(?P<template>(?:\\.|[^`\\])*)`)"#,
+    )
+    .ok()
+});
 
 // Prefer false negatives: tests_passed clears a capable hold, so a false positive
 // could hand an unfinished task back too early.
@@ -480,29 +492,30 @@ fn classify_tool_call_with_semantics(
     if PLAN_TOOL_NAMES.contains(&lower.as_str()) {
         return ToolSemantic::Plan;
     }
-    if BASH_TOOL_NAMES.contains(&lower.as_str())
-        && let Some(cmd) = command
+    if CODE_MODE_TOOL_NAMES.contains(&lower.as_str())
+        && let Some(input) = command
     {
-        // Write/edit redirection trumps read-like operands.
-        if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_write(cmd) {
-            return ToolSemantic::Mutate(MutationKind::Write);
-        }
-        if cmd.contains("python") && PYTHON_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
-            return ToolSemantic::Mutate(MutationKind::Write);
-        }
-        if shell_invokes_program(cmd, "node")
-            && JAVASCRIPT_WRITE_PATTERNS
-                .iter()
-                .any(|pattern| cmd.contains(pattern))
-        {
-            return ToolSemantic::Mutate(MutationKind::Write);
-        }
-        if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_edit(cmd) {
+        if javascript_calls_tool(input, "tools.apply_patch") {
             return ToolSemantic::Mutate(MutationKind::Edit);
         }
-        if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_read(cmd) {
+
+        let mut observed = false;
+        for shell_command in javascript_exec_commands(input) {
+            match classify_shell_command(&shell_command) {
+                Some(mutation @ ToolSemantic::Mutate(_)) => return mutation,
+                Some(ToolSemantic::Observe) => observed = true,
+                _ => {}
+            }
+        }
+        if observed {
             return ToolSemantic::Observe;
         }
+    }
+    if BASH_TOOL_NAMES.contains(&lower.as_str())
+        && let Some(cmd) = command
+        && let Some(semantic) = classify_shell_command(cmd)
+    {
+        return semantic;
     }
     semantics.classify(name).unwrap_or(ToolSemantic::Unknown)
 }
@@ -513,6 +526,78 @@ fn is_builtin_tool_name(lower: &str) -> bool {
         || READ_TOOL_NAMES.contains(&lower)
         || PLAN_TOOL_NAMES.contains(&lower)
         || BASH_TOOL_NAMES.contains(&lower)
+}
+
+fn classify_shell_command(command: &str) -> Option<ToolSemantic> {
+    // Write/edit redirection trumps read-like operands.
+    if BASH_WRITE_PATTERNS.iter().any(|p| command.contains(p)) || shell_command_is_write(command) {
+        return Some(ToolSemantic::Mutate(MutationKind::Write));
+    }
+    if command.contains("python") && PYTHON_WRITE_PATTERNS.iter().any(|p| command.contains(p)) {
+        return Some(ToolSemantic::Mutate(MutationKind::Write));
+    }
+    if shell_invokes_program(command, "node")
+        && JAVASCRIPT_WRITE_PATTERNS
+            .iter()
+            .any(|pattern| command.contains(pattern))
+    {
+        return Some(ToolSemantic::Mutate(MutationKind::Write));
+    }
+    if BASH_EDIT_PATTERNS.iter().any(|p| command.contains(p)) || shell_command_is_edit(command) {
+        return Some(ToolSemantic::Mutate(MutationKind::Edit));
+    }
+    if BASH_READ_PATTERNS.iter().any(|p| command.contains(p)) || shell_command_is_read(command) {
+        return Some(ToolSemantic::Observe);
+    }
+    None
+}
+
+/// Returns whether JavaScript invokes `tool`, ignoring occurrences inside strings.
+fn javascript_calls_tool(source: &str, tool: &str) -> bool {
+    let bytes = source.as_bytes();
+    let tool = tool.as_bytes();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+        } else if quote.is_some() && byte == b'\\' {
+            escaped = true;
+        } else if quote == Some(byte) {
+            quote = None;
+        } else if quote.is_none() && matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+        } else if quote.is_none() && bytes[index..].starts_with(tool) {
+            let mut next = index + tool.len();
+            while bytes.get(next).is_some_and(u8::is_ascii_whitespace) {
+                next += 1;
+            }
+            if bytes.get(next) == Some(&b'(') {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+/// Extracts literal `cmd` values from Codex's `tools.exec_command({...})` calls.
+fn javascript_exec_commands(source: &str) -> Vec<String> {
+    let Some(pattern) = CODE_MODE_EXEC_COMMAND.as_ref() else {
+        return Vec::new();
+    };
+    pattern
+        .captures_iter(source)
+        .filter_map(|captures| {
+            ["double", "single", "template"]
+                .into_iter()
+                .find_map(|name| captures.name(name))
+                .map(|value| value.as_str().to_lowercase())
+        })
+        .collect()
 }
 
 /// Split a shell line at unquoted command separators. This intentionally avoids
@@ -1587,6 +1672,17 @@ mod tests {
         }
     }
 
+    fn unified_exec(input: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: String::new(),
+                name: "exec".to_string(),
+                arguments: json!({"input": input}),
+            })],
+        }
+    }
+
     #[test]
     fn codex_exec_command_is_classified() {
         // arguments arrive as a JSON string, with the command under `cmd`
@@ -1596,6 +1692,49 @@ mod tests {
             ToolSignals::from_request(&request, None).recent_edit_count,
             1
         );
+    }
+
+    #[test]
+    fn codex_unified_exec_apply_patch_counts_as_an_edit() {
+        let request = with_messages(vec![
+            unified_exec(
+                "const patch = `*** Begin Patch`;
+                 text(await tools.apply_patch(patch));",
+            ),
+            tr("Done!"),
+        ]);
+        let signal = ToolSignals::from_request(&request, None);
+        assert_eq!(signal.edit_count, 1);
+        assert_eq!(signal.recent_edit_count, 1);
+    }
+
+    #[test]
+    fn codex_unified_exec_inline_shell_mutation_is_classified() {
+        let request = with_messages(vec![
+            unified_exec(
+                r#"const r = await tools.exec_command({cmd:"gofmt -w src/main.go",workdir:"/app"});
+                   text(r.output);"#,
+            ),
+            tr("ok"),
+        ]);
+        assert_eq!(
+            ToolSignals::from_request(&request, None).recent_edit_count,
+            1
+        );
+    }
+
+    #[test]
+    fn codex_unified_exec_search_for_apply_patch_is_observation() {
+        let request = with_messages(vec![
+            unified_exec(
+                r#"const r = await tools.exec_command({cmd:"rg -n 'tools.apply_patch(' src"});
+                   text(r.output);"#,
+            ),
+            tr("match"),
+        ]);
+        let signal = ToolSignals::from_request(&request, None);
+        assert_eq!(signal.edit_count, 0);
+        assert_eq!(signal.read_count, 1);
     }
 
     #[test]
