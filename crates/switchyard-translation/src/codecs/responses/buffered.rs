@@ -1282,6 +1282,7 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
+            let mut visible_content = Vec::new();
             for block in &content {
                 if let Some(item) = encode_responses_special_input(
                     block,
@@ -1292,8 +1293,28 @@ fn encode_responses_input(
                     diagnostics,
                     policy,
                 )? {
+                    if !visible_content.is_empty() {
+                        let content =
+                            encode_responses_content(&visible_content, diagnostics, policy)?;
+                        encoded.push(json!({
+                            "type": "message",
+                            "role": role_to_responses(message.role),
+                            "content": content,
+                        }));
+                        visible_content.clear();
+                    }
                     encoded.push(item);
+                } else if !matches!(block, ContentBlock::Reasoning { .. }) {
+                    visible_content.push(block.clone());
                 }
+            }
+            if !visible_content.is_empty() {
+                let content = encode_responses_content(&visible_content, diagnostics, policy)?;
+                encoded.push(json!({
+                    "type": "message",
+                    "role": role_to_responses(message.role),
+                    "content": content,
+                }));
             }
             continue;
         }
@@ -1360,6 +1381,7 @@ fn pair_tool_calls_with_outputs(items: &mut Vec<Value>) {
         let output = items
             .iter()
             .skip(index + 1)
+            .take_while(|item| item.get("type").and_then(Value::as_str) != Some("message"))
             .position(|item| call_id(item, output_kind).as_deref() == Some(&id))
             .map(|offset| index + 1 + offset);
         if let Some(output) = output

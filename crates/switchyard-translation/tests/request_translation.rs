@@ -759,6 +759,148 @@ fn anthropic_thinking_blocks_do_not_leak_into_openai_chat_messages() -> TestResu
     Ok(())
 }
 
+#[test]
+fn anthropic_visible_text_survives_tool_history_to_responses() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-opus-4-20250514",
+        "messages": [
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "visible preface"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_status",
+                        "name": "lookup",
+                        "input": {"key": "status"}
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_status",
+                    "content": "ready"
+                }]
+            }
+        ],
+        "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+        "max_tokens": 64
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["input"],
+        json!([
+            {"type": "message", "role": "user", "content": "inspect"},
+            {"type": "message", "role": "assistant", "content": "visible preface"},
+            {
+                "type": "function_call",
+                "call_id": "toolu_status",
+                "name": "lookup",
+                "arguments": "{\"key\":\"status\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "toolu_status",
+                "name": "lookup",
+                "output": "ready"
+            }
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn anthropic_visible_text_around_tool_call_survives_when_thinking_is_filtered() -> TestResult {
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({
+                "model": "claude-opus-4-20250514",
+                "messages": [
+                    {"role": "user", "content": "inspect"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "private", "signature": "sig"},
+                            {"type": "text", "text": "before"},
+                            {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}},
+                            {"type": "text", "text": "after"}
+                        ]
+                    }
+                ],
+                "max_tokens": 64
+            }),
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input is not an array")?;
+    assert!(input.iter().any(|item| item["content"] == "before"));
+    assert!(input.iter().any(|item| item["content"] == "after"));
+    assert!(input.iter().any(|item| item["type"] == "function_call"));
+    assert!(!input.iter().any(|item| item["type"] == "reasoning"));
+    Ok(())
+}
+
+#[test]
+fn responses_pairing_does_not_move_tool_output_across_user_text() -> TestResult {
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({
+                "model": "claude-opus-4-20250514",
+                "messages": [
+                    {"role": "user", "content": "inspect"},
+                    {"role": "assistant", "content": [{
+                        "type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}
+                    }]},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "context before result"},
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ready"}
+                    ]}
+                ],
+                "max_tokens": 64
+            }),
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input is not an array")?;
+    let call = input
+        .iter()
+        .position(|item| item["type"] == "function_call")
+        .ok_or("missing function call")?;
+    let text = input
+        .iter()
+        .position(|item| item["content"] == "context before result")
+        .ok_or("missing user text")?;
+    let result = input
+        .iter()
+        .position(|item| item["type"] == "function_call_output")
+        .ok_or("missing function output")?;
+    assert!(call < text && text < result);
+    Ok(())
+}
+
 // Verifies unsigned OpenAI-compatible reasoning is not forged as Anthropic thinking.
 #[test]
 fn openai_reasoning_content_does_not_forge_anthropic_thinking_block() -> TestResult {
