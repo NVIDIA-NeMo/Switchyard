@@ -50,7 +50,7 @@ The routing decision for one turn:
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
 flowchart LR
-    t["turn"] --> g{"confidence >= threshold?"}
+    t["turn"] --> g{"confidence > threshold?"}
     g -->|yes| s["signals pick capable/efficient"]
     g -->|no| c{"classifier set?"}
     c -->|yes| k["classifier picks capable/efficient"]
@@ -93,7 +93,7 @@ before the router will switch off the picker's default tier. Clear it and the
 router routes to the tier the signals indicate; fall short and the turn stays on
 the default.
 
-With the default `capable_first` picker, every turn starts on the capable tier
+With the `capable_first` picker, every turn starts on the capable tier
 and only drops to the efficient tier when the signals say "efficient" and clear
 the threshold. So the threshold sets how much evidence it takes to switch to the
 cheaper tier:
@@ -103,19 +103,32 @@ cheaper tier:
 - Lower it and weaker signals are enough to drop to efficient, so more turns go
   cheap (more savings, more risk).
 
-`efficient_first` is the mirror: turns start on efficient and need a signal that
+With `capable_first`, the scorer can only drop to efficient when
+`confidence_threshold` is **below** `tanh(0.5) ≈ 0.462117`. Production is the
+only negative signal, so even a turn consisting entirely of writes and edits
+cannot exceed that confidence. At or above the ceiling, including `0.5`, the
+scorer cannot select efficient. Stage-router logs a warning during construction
+with this combination. Hard de-escalation (tests passed, a recent write or edit,
+and no error in the window) and an optional LLM classifier can still select efficient.
+
+For scorer-driven offloading with `capable_first`, `0.45` is below the ceiling;
+it is not a calibrated recommendation. Measure quality and cost for your model
+pair before choosing a threshold.
+
+With `efficient_first`, turns start on efficient and need a signal that
 clears the threshold to escalate to capable.
 
 (If you add the optional classifier, sub-threshold turns go to it instead of
 staying on the default tier.)
 
 **Set `0.5` explicitly.** `confidence_threshold` is required by the TOML schema;
-`0.5` is the recommended starting point and what the example below uses.
+`0.5` is the recommended starting point for `efficient_first` and what the
+example below uses.
 
 | `confidence_threshold` | Include `classifier:` block? | Typical use |
 |---|---|---|
 | `0.0` | no | Cost/latency-sensitive. Every signal-based verdict is accepted; no per-turn LLM call. Critical-error signals still escalate to capable. |
-| `0.5` | no | Recommended starting point. The scorer is corroborative — one full wrong signal scores ~`0.46`, just under `0.5` — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration. |
+| `0.5` | no | Recommended starting point for `efficient_first`. The scorer is corroborative — one full wrong signal scores ~`0.46`, just under `0.5` — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration. |
 | `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. |
 | `1.0` | yes (required) | Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier. |
 
@@ -125,8 +138,8 @@ target, while response headers and structured decision logs explain individual s
 
 ### Calibrating the threshold from run data
 
-The recommended `0.5` starting point was derived from SWE-Bench Pro Python-75
-calibration. To tune for a different task set or model pair, follow this
+The recommended `0.5` starting point for `efficient_first` was derived from
+SWE-Bench Pro Python-75 calibration. To tune for a different task set or model pair, follow this
 minimum-data path.
 
 **What you need**
