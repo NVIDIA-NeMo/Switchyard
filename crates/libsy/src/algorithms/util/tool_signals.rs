@@ -17,7 +17,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, Request, Role};
+use switchyard_protocol::{ContentBlock, Request, Role, WireFormat};
 
 use crate::{LibsyError, Result};
 
@@ -704,9 +704,7 @@ fn extract_tool_signals_with_window_and_semantics(
     recent_window: usize,
     semantics: &ToolSemantics,
 ) -> ToolSignals {
-    // Read the decoded conversation, not the raw body: every inbound format lands
-    // in the same shape here, so the signals do not depend on knowing which one it
-    // arrived as.
+    // Read the decoded conversation, including preserved built-in tool outputs.
     let messages = &request.llm_request.messages;
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
@@ -737,6 +735,64 @@ fn extract_tool_signals_with_window_and_semantics(
                         .join("\n");
                     let is_error = result.is_error == Some(true);
                     // An explicit failure remains a signal even without text.
+                    if !text.is_empty() || is_error {
+                        tool_texts.push((text, is_error));
+                    }
+                }
+                // Built-in tool history stays opaque so it can be replayed unchanged.
+                ContentBlock::Unknown { provider, raw }
+                    if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                        && raw.get("type").and_then(Value::as_str)
+                            == Some("apply_patch_call_output") =>
+                {
+                    tool_result_count += 1;
+                    let text = raw
+                        .get("output")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let is_error = raw.get("status").and_then(Value::as_str) == Some("failed");
+                    if !text.is_empty() || is_error {
+                        tool_texts.push((text.to_owned(), is_error));
+                    }
+                }
+                ContentBlock::Unknown { provider, raw }
+                    if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                        && raw.get("type").and_then(Value::as_str) == Some("shell_call_output") =>
+                {
+                    tool_result_count += 1;
+                    let mut texts = Vec::new();
+                    let mut is_error = false;
+                    if let Some(outputs) = raw.get("output").and_then(Value::as_array) {
+                        for output in outputs {
+                            for field in ["stdout", "stderr"] {
+                                if let Some(text) = output.get(field).and_then(Value::as_str)
+                                    && !text.is_empty()
+                                {
+                                    texts.push(text);
+                                }
+                            }
+                            if let Some(outcome) = output.get("outcome") {
+                                is_error |= match outcome.get("type").and_then(Value::as_str) {
+                                    Some("timeout") => true,
+                                    Some("exit")
+                                        if outcome
+                                            .get("exit_code")
+                                            .and_then(Value::as_i64)
+                                            .is_some_and(|code| code != 0) =>
+                                    {
+                                        // Keep plain nonzero exits SOFT, including empty output.
+                                        texts.push("returned non-zero");
+                                        output
+                                            .get("stderr")
+                                            .and_then(Value::as_str)
+                                            .is_some_and(|text| !text.trim().is_empty())
+                                    }
+                                    _ => false,
+                                };
+                            }
+                        }
+                    }
+                    let text = texts.join("\n");
                     if !text.is_empty() || is_error {
                         tool_texts.push((text, is_error));
                     }
@@ -1509,6 +1565,102 @@ mod tests {
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.write_count, 1);
+    }
+
+    #[test]
+    fn responses_builtin_tool_failures_escalate() {
+        use crate::algorithms::util::stage::{PickOutcome, PickerMode, Tier, pick_tier};
+
+        let mut cases = Vec::new();
+        for (status, output) in [
+            (
+                "failed",
+                "Synthetic dependency unavailable; retry with the recovery path.",
+            ),
+            (
+                "completed",
+                "Synthetic dependency unavailable; retry with the recovery path.",
+            ),
+            ("failed", ""),
+        ] {
+            cases.push((
+                json!({
+                    "type": "apply_patch_call_output",
+                    "status": status,
+                    "output": output,
+                }),
+                if status == "failed" { HARD } else { 0.0 },
+            ));
+        }
+        for (outcome, stdout, stderr, severity) in [
+            (json!({"type": "exit", "exit_code": 1}), "", "", SOFT),
+            (json!({"type": "exit", "exit_code": 1}), "", " \n", SOFT),
+            (
+                json!({"type": "exit", "exit_code": 1}),
+                "",
+                "command failed",
+                HARD,
+            ),
+            (json!({"type": "timeout"}), "", "", HARD),
+            (json!({"type": "exit", "exit_code": 0}), "done", "", 0.0),
+            (
+                json!({"type": "exit", "exit_code": 0}),
+                "Traceback (most recent call last):",
+                "",
+                HARD,
+            ),
+            (
+                json!({"type": "exit", "exit_code": 0}),
+                "",
+                "Traceback (most recent call last):",
+                HARD,
+            ),
+        ] {
+            cases.push((
+                json!({
+                    "type": "shell_call_output",
+                    "output": [
+                        {"stdout": stdout, "stderr": stderr, "outcome": outcome},
+                        {"stdout": "", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}
+                    ],
+                }),
+                severity,
+            ));
+        }
+        for (raw, severity) in cases {
+            let is_error = severity >= HARD;
+            let request = with_messages(
+                ["call_1", "call_2"]
+                    .into_iter()
+                    .map(|call_id| {
+                        let mut raw = raw.clone();
+                        raw["call_id"] = json!(call_id);
+                        Message {
+                            role: Role::User,
+                            content: vec![ContentBlock::Unknown {
+                                provider: WireFormat::OpenAiResponses.into(),
+                                raw,
+                            }],
+                        }
+                    })
+                    .collect(),
+            );
+            let signal = ToolSignals::from_request(&request, Some(3));
+            assert_eq!(signal.severity, severity, "{raw}");
+            assert_eq!(signal.repeated_failure, is_error, "{raw}");
+            assert_eq!(signal.tool_result_count, 2);
+            assert_eq!(
+                matches!(
+                    pick_tier(&signal, PickerMode::EfficientFirst, 0.5),
+                    PickOutcome::Resolved {
+                        tier: Tier::Capable,
+                        ..
+                    }
+                ),
+                is_error,
+                "{raw}"
+            );
+        }
     }
 
     #[test]
