@@ -1660,6 +1660,84 @@ fn responses_deferred_message_stays_after_matching_tool_result_for_openai_chat()
     Ok(())
 }
 
+#[test]
+fn parallel_tool_policy_survives_anthropic_translations() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    for format in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        for choice in [Some("any"), Some("auto"), Some("tool"), None] {
+            for disabled in [Some(true), Some(false), None] {
+                let mut body = json!({
+                    "model": "test-model",
+                    "max_tokens": 256,
+                    "messages": [{"role": "user", "content": "Use the marker tool."}],
+                    "tools": [{
+                        "name": "marker",
+                        "input_schema": {"type": "object", "properties": {}}
+                    }]
+                });
+                if let Some(choice) = choice {
+                    body["tool_choice"] = json!({"type": choice});
+                    if choice == "tool" {
+                        body["tool_choice"]["name"] = json!("marker");
+                    }
+                    if let Some(disabled) = disabled {
+                        body["tool_choice"]["disable_parallel_tool_use"] = json!(disabled);
+                    }
+                }
+                let mut openai = engine
+                    .translate_request(WireFormat::AnthropicMessages, format, &body, &policy)?
+                    .body;
+                if choice.is_some() {
+                    assert_eq!(
+                        openai.get("parallel_tool_calls"),
+                        disabled.map(|value| json!(!value)).as_ref(),
+                        "{format:?}, {choice:?}, {disabled:?}"
+                    );
+                } else if let Some(disabled) = disabled {
+                    // OpenAI allows this policy without an explicit tool choice.
+                    openai["parallel_tool_calls"] = json!(!disabled);
+                }
+                let anthropic = engine
+                    .translate_request(format, WireFormat::AnthropicMessages, &openai, &policy)?
+                    .body;
+                assert_eq!(
+                    anthropic["tool_choice"].get("disable_parallel_tool_use"),
+                    disabled.map(|value| json!(value)).as_ref(),
+                    "{format:?}, {choice:?}, {disabled:?}"
+                );
+                if choice.is_some() || disabled.is_some() {
+                    assert_eq!(anthropic["tool_choice"]["type"], choice.unwrap_or("auto"));
+                    if choice == Some("tool") {
+                        assert_eq!(anthropic["tool_choice"]["name"], "marker");
+                    }
+                } else {
+                    assert!(anthropic.get("tool_choice").is_none());
+                }
+                if choice.is_none() {
+                    for tools in [None, Some(json!([]))] {
+                        openai.as_object_mut().unwrap().remove("tools");
+                        if let Some(tools) = tools {
+                            openai["tools"] = tools;
+                        }
+                        let anthropic = engine
+                            .translate_request(
+                                format,
+                                WireFormat::AnthropicMessages,
+                                &openai,
+                                &policy,
+                            )?
+                            .body;
+                        assert!(anthropic.get("tools").is_none());
+                        assert!(anthropic.get("tool_choice").is_none());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // Verifies Responses-compatible extension fields survive a Chat-to-Responses
 // hop, and that Chat-only fields are excluded rather than passed through.
 #[test]

@@ -163,6 +163,16 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "safety_identifier",
             ],
         );
+        if let Some(is_disabled) = body
+            .get("tool_choice")
+            .and_then(|choice| choice.get("disable_parallel_tool_use"))
+            .and_then(Value::as_bool)
+        {
+            request
+                .extensions
+                .fields
+                .insert("parallel_tool_calls".to_string(), Value::Bool(!is_disabled));
+        }
         // OpenAI codecs share this extension for abuse attribution.
         if let Some(user_id) = body
             .get("metadata")
@@ -230,11 +240,27 @@ impl FormatCodec for AnthropicMessagesCodec {
         if !request.tools.is_empty() {
             body.insert("tools".to_string(), encode_anthropic_tools(&request.tools));
         }
-        if let Some(choice) = &request.tool_choice {
-            body.insert(
-                "tool_choice".to_string(),
-                encode_anthropic_tool_choice(choice),
+        let parallel_tool_calls = request
+            .extensions
+            .fields
+            .get("parallel_tool_calls")
+            .and_then(Value::as_bool);
+        if request.tool_choice.is_some()
+            || (parallel_tool_calls.is_some() && !request.tools.is_empty())
+        {
+            let mut choice = encode_anthropic_tool_choice(
+                request.tool_choice.as_ref().unwrap_or(&ToolChoice::Auto),
             );
+            if let Some(is_enabled) = parallel_tool_calls
+                && let Some(object) = choice.as_object_mut()
+                && object.get("type").and_then(Value::as_str) != Some("none")
+            {
+                object.insert(
+                    "disable_parallel_tool_use".to_string(),
+                    Value::Bool(!is_enabled),
+                );
+            }
+            body.insert("tool_choice".to_string(), choice);
         }
         if request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true)) {
             for field in [
