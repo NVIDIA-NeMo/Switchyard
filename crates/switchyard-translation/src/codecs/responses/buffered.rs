@@ -844,6 +844,17 @@ fn flush_responses_tool_block(
 
 // Decodes a Responses reasoning item into private reasoning IR content.
 fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
+    if let Some((text, signature)) = item
+        .get("encrypted_content")
+        .and_then(Value::as_str)
+        .and_then(super::decode_anthropic_thinking)
+    {
+        return vec![ContentBlock::Reasoning {
+            text,
+            signature: Some(signature),
+            details: Vec::new(),
+        }];
+    }
     let mut parts = Vec::new();
     collect_responses_reasoning_text(item.get("content"), &mut parts);
     collect_responses_reasoning_text(item.get("summary"), &mut parts);
@@ -1831,7 +1842,37 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
                     _ => None,
                 });
-                if !reasoning.is_empty() || encrypted_reasoning.is_some() {
+                let has_signed_reasoning = output.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::Reasoning {
+                            signature: Some(_),
+                            ..
+                        }
+                    )
+                });
+                if has_signed_reasoning {
+                    for (index, block) in output.content.iter().enumerate() {
+                        if let ContentBlock::Reasoning {
+                            text,
+                            signature,
+                            details,
+                        } = block
+                        {
+                            let encrypted = signature
+                                .as_deref()
+                                .map(|signature| super::encode_anthropic_thinking(text, signature))
+                                .or_else(|| encrypted_reasoning_data(details));
+                            let id = encrypted_reasoning_item_id(details)
+                                .unwrap_or_else(|| format!("rs_switchyard_{index}"));
+                            items.push(encode_responses_reasoning_output(
+                                text,
+                                encrypted.as_deref(),
+                                Some(&id),
+                            ));
+                        }
+                    }
+                } else if !reasoning.is_empty() || encrypted_reasoning.is_some() {
                     items.push(encode_responses_reasoning_output(
                         &reasoning,
                         encrypted_reasoning.as_deref(),

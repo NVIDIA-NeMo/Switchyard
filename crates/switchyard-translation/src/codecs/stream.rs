@@ -97,6 +97,8 @@ pub(crate) struct ResponseReasoningState {
     /// Opaque `encrypted_content` carried by a Responses reasoning item. Kept verbatim so
     /// the emitted item stays replayable by the client even when no plaintext streamed.
     pub(crate) encrypted: Option<String>,
+    #[serde(default)]
+    pub(crate) anthropic_signature: Option<String>,
 }
 
 // Tracks an in-progress streamed tool call across provider-specific deltas.

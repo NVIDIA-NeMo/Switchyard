@@ -326,17 +326,27 @@ fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmR
                 }]
             })
             .unwrap_or_default(),
-        Some("thinking") => block
-            .and_then(|block| block.get("thinking"))
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-            .map(|text| {
-                vec![LlmResponseChunk::ReasoningDelta {
+        Some("thinking") => {
+            let mut out = Vec::new();
+            if let Some(text) = block
+                .and_then(|block| block.get("thinking"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                out.push(LlmResponseChunk::ReasoningDelta {
                     index,
                     text: text.to_string(),
-                }]
-            })
-            .unwrap_or_default(),
+                });
+            }
+            if let Some(signature) = block
+                .and_then(|block| block.get("signature"))
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+            {
+                out.push(anthropic_signature_delta(index, signature));
+            }
+            out
+        }
         Some("tool_use") => {
             let Some(block) = block else {
                 return Vec::new();
@@ -385,7 +395,11 @@ fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmR
                 }]
             })
             .unwrap_or_default(),
-        Some("signature_delta") => Vec::new(),
+        Some("signature_delta") => delta
+            .get("signature")
+            .and_then(Value::as_str)
+            .map(|signature| vec![anthropic_signature_delta(index, signature)])
+            .unwrap_or_default(),
         Some("input_json_delta") => delta
             .get("partial_json")
             .and_then(Value::as_str)
@@ -399,6 +413,14 @@ fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmR
             })
             .unwrap_or_default(),
         _ => Vec::new(),
+    }
+}
+
+fn anthropic_signature_delta(index: usize, signature: &str) -> LlmResponseChunk {
+    LlmResponseChunk::ReasoningDetailsDelta {
+        index,
+        details: vec![json!({"type": "anthropic.signature_delta", "signature": signature})],
+        text: String::new(),
     }
 }
 

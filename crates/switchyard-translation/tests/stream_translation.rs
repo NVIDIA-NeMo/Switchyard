@@ -1381,6 +1381,94 @@ fn responses_function_call_stream() -> Vec<Value> {
     ]
 }
 
+#[test]
+fn anthropic_thinking_survives_responses_tool_continuation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = common::normalized_policy();
+    let thinking = json!({
+        "type": "thinking", "thinking": "Check the weather.\n", "signature": "opaque-signature"
+    });
+    let empty_thinking =
+        json!({"type": "thinking", "thinking": "", "signature": "second-signature"});
+    let tool = json!({"type": "tool_use", "id": "toolu_weather", "name": "weather", "input": {}});
+    let buffered = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({"id": "msg_test", "type": "message", "role": "assistant", "model": "claude",
+            "content": [thinking, empty_thinking, tool], "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1}}),
+            &policy,
+        )?
+        .body;
+    let events = vec![
+        json!({"type": "message_start", "message": {"id": "msg_test", "model": "claude"}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {
+            "type": "thinking", "thinking": "Check ", "signature": "opaque-"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {
+            "type": "thinking_delta", "thinking": "the weather.\n"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {
+            "type": "signature_delta", "signature": "sig"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {
+            "type": "signature_delta", "signature": "nature"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": empty_thinking}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "content_block_start", "index": 2, "content_block": tool}),
+        json!({"type": "content_block_delta", "index": 2, "delta": {
+            "type": "input_json_delta", "partial_json": "{}"}}),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+        json!({"type": "message_stop"}),
+    ];
+    let streamed = translate_stream(
+        &engine,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &events,
+    )?;
+    let done_items: Vec<Value> = streamed
+        .iter()
+        .filter(|event| event["type"] == "response.output_item.done")
+        .map(|event| event["item"].clone())
+        .collect();
+    let completed = streamed
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .unwrap();
+    for output in [
+        &buffered["output"],
+        &json!(done_items),
+        &completed["response"]["output"],
+    ] {
+        let mut input = output.as_array().unwrap().clone();
+        for item in &mut input {
+            if item["type"] == "reasoning" {
+                assert!(item["encrypted_content"].is_string());
+                // Replay must use the signed original, not a client's edited summary.
+                item["summary"] = json!([]);
+            }
+        }
+        input.push(
+            json!({"type": "function_call_output", "call_id": "toolu_weather", "output": "sunny"}),
+        );
+        let replay = engine
+            .translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &json!({"model": "claude", "input": input}),
+                &policy,
+            )?
+            .body;
+        assert_eq!(
+            replay["messages"][0]["content"],
+            json!([thinking, empty_thinking, tool])
+        );
+        assert_eq!(replay["messages"][1]["content"][0]["type"], "tool_result");
+    }
+    Ok(())
+}
+
 // Translates a whole source stream into `target` events, including the encoder's finish.
 fn translate_stream(
     engine: &TranslationEngine,

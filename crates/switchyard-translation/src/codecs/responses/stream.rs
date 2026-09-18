@@ -338,6 +338,15 @@ fn encode_responses_stream(
             // so the client can replay it on the next turn.
             let data = encrypted_reasoning_data(&details);
             let item = state.response_reasoning.entry(index).or_default();
+            for detail in &details {
+                if detail.get("type").and_then(Value::as_str) == Some("anthropic.signature_delta")
+                    && let Some(signature) = detail.get("signature").and_then(Value::as_str)
+                {
+                    item.anthropic_signature
+                        .get_or_insert_default()
+                        .push_str(signature);
+                }
+            }
             match encrypted_reasoning_item_id(&details) {
                 Some(id) if item.started && item.item_id.as_deref() != Some(id.as_str()) => {
                     // The item already opened under another id; the payload would fail
@@ -474,7 +483,10 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "status": "completed",
             "summary": summary,
         });
-        if let Some(encrypted) = &reasoning.encrypted {
+        if let Some(signature) = &reasoning.anthropic_signature {
+            item["encrypted_content"] =
+                Value::String(super::encode_anthropic_thinking(&reasoning.text, signature));
+        } else if let Some(encrypted) = &reasoning.encrypted {
             item["encrypted_content"] = Value::String(encrypted.clone());
         }
         out.push(json!({

@@ -217,13 +217,14 @@ fn encode_openai_chat_stream(
             )]
         }
         LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
-            // A Responses decoder announces a reasoning item's provider id ahead of its
-            // payload; that announcement carries nothing a chat client can use.
+            // Chat cannot replay Anthropic signature fragments or an encrypted item's
+            // id announcement without its payload.
             let details: Vec<Value> = details
                 .into_iter()
-                .filter(|detail| {
-                    detail.get("type").and_then(Value::as_str) != Some("reasoning.encrypted")
-                        || detail.get("data").is_some()
+                .filter(|detail| match detail.get("type").and_then(Value::as_str) {
+                    Some("anthropic.signature_delta") => false,
+                    Some("reasoning.encrypted") => detail.get("data").is_some(),
+                    _ => true,
                 })
                 .collect();
             if details.is_empty() && text.is_empty() {
