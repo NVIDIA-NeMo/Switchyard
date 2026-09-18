@@ -90,34 +90,31 @@ pub async fn run(
     {
         observer(RunObservation::Outcome(metadata));
     }
-    let (result, answer_duration) = if let Some(response) = outcome.response {
-        (Ok(response), None)
+    let result = if let Some(response) = outcome.response {
+        let result = clients.remember_state_owner(&outcome.request, response);
+        let served_model = result
+            .as_ref()
+            .ok()
+            .and_then(Response::served_model)
+            .unwrap_or(&selected_model_id);
+        let served_model = served_model.clone();
+        metrics::observe_routed_request(&algorithm_name, &served_model, None, result)
     } else {
-        let answer_started = Instant::now();
         let observe = |observation| {
             if let Some(observer) = &observer {
                 observer(RunObservation::AnswerCall(observation));
             }
         };
-        let result = call_first_available(
+        call_first_available(
             &clients,
             &algorithm_name,
             &outcome.request,
             &outcome.selected_model_ids,
             &observe,
         )
-        .await;
-        let answer_duration = answer_started.elapsed();
-        (result, Some(answer_duration))
+        .await
+        .and_then(|response| clients.remember_state_owner(&outcome.request, response))
     };
-    let result =
-        result.and_then(|response| clients.remember_state_owner(&outcome.request, response));
-    let result = metrics::observe_routed_request(
-        &algorithm_name,
-        &selected_model_id,
-        answer_duration,
-        result,
-    );
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
     }
@@ -321,6 +318,11 @@ async fn call_one(
         response
     });
     let result = observability::observe_client_call(result);
+    let result = if !buffer {
+        metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
+    } else {
+        result
+    };
     observe(LlmCallObservation {
         selected_model: model_id.clone(),
         is_success: result.is_ok(),

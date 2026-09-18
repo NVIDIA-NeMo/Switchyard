@@ -764,6 +764,8 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
 async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
 -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    let before = flushed_metrics(exporter, provider);
     let client = Arc::new(AffinityFallbackClient {
         calls: Mutex::new(Vec::new()),
         efficient_available: AtomicBool::new(false),
@@ -794,6 +796,49 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
         first_response.served_model().map(ModelId::as_str),
         Some("affinity-fallback-strong")
     );
+
+    let after = flushed_metrics(exporter, provider);
+    for (metric, model, expected) in [
+        ("switchyard.errors", "affinity-fallback-weak", 1),
+        ("switchyard.requests", "affinity-fallback-weak", 0),
+        ("switchyard.requests", "affinity-fallback-strong", 1),
+    ] {
+        let attrs = [("model", model)];
+        assert_eq!(
+            u64_counter_value(&after, metric, &attrs).unwrap_or_default()
+                - u64_counter_value(&before, metric, &attrs).unwrap_or_default(),
+            expected,
+            "{metric} for {model}"
+        );
+    }
+    for (metric, expected) in [
+        ("switchyard.total_requests", 2),
+        ("switchyard.total_errors", 1),
+    ] {
+        assert_eq!(
+            u64_gauge_value(&after, metric).unwrap_or_default()
+                - u64_gauge_value(&before, metric).unwrap_or_default(),
+            expected,
+            "{metric}"
+        );
+    }
+    for (model, outcome) in [
+        ("affinity-fallback-weak", "error"),
+        ("affinity-fallback-strong", "ok"),
+    ] {
+        assert_eq!(
+            u64_counter_value(
+                &after,
+                "switchyard.llm_calls",
+                &[
+                    ("algorithm", "llm_task_classifier"),
+                    ("selected_model", model),
+                    ("outcome", outcome)
+                ]
+            ),
+            Some(1)
+        );
+    }
 
     client.efficient_available.store(true, Ordering::Relaxed);
     let (selected, second_response) = switchyard_llm_client::run(
