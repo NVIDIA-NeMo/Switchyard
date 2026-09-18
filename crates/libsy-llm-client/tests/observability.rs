@@ -1068,7 +1068,7 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
     assert!(matches!(
         otel_attribute(&otel_span, "gen_ai.response.finish_reasons"),
         Some(OtelValue::Array(OtelArray::String(reasons)))
-            if reasons.len() == 1 && reasons[0].as_str() == "stop"
+            if reasons.len() == 1 && reasons[0].as_str() == "end_turn"
     ));
     assert_eq!(
         otel_attribute(&otel_span, "gen_ai.request.max_tokens"),
