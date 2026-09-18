@@ -262,11 +262,16 @@ fn encode_openai_chat_stream(
             name,
             arguments_delta,
         } => {
+            let tool = state.tool_states.entry(index).or_default();
+            // Repeated full names would be concatenated by Chat clients as new fragments.
+            let name = name.filter(|name| tool.name.as_ref() != Some(name));
+            if name.is_some() {
+                tool.name = name.clone();
+            }
             // The source index counts every content block (Anthropic) or output item
             // (Responses), so text ahead of the first tool call shifts it. Chat clients use
             // the index as a subscript into `tool_calls`, so number calls in that array
             // instead, in order of first appearance.
-            let tool = state.tool_states.entry(index).or_default();
             let chat_index = match tool.chat_tool_index {
                 Some(chat_index) => chat_index,
                 None => {
