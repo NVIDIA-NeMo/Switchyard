@@ -797,6 +797,7 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
         Some("affinity-fallback-strong")
     );
 
+    // One client request makes two routed calls: a weak failure and a strong success.
     let after = flushed_metrics(exporter, provider);
     for (metric, model, expected) in [
         ("switchyard.errors", "affinity-fallback-weak", 1),
