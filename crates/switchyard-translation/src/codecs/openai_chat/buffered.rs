@@ -353,6 +353,7 @@ impl FormatCodec for OpenAiChatCodec {
         response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
+        super::super::responses::validate_response_output(response, WireFormat::OpenAiChat)?;
         if let Some(body) =
             exact_preserved_response(&response.preservation, WireFormat::OpenAiChat, _policy)
         {

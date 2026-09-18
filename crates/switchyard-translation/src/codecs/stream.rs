@@ -316,6 +316,14 @@ pub(crate) fn encode_response_stream_event(
     let (preservation, normalized) = event.into_parts();
     if let Some(preservation) = preservation {
         let (source, raw) = preservation.into_parts();
+        if let Err(error) = super::responses::validate_stream_output(&source, target, &raw) {
+            return target_codec.encode_event(
+                state,
+                LlmResponseChunk::DecodeError {
+                    message: error.to_string(),
+                },
+            );
+        }
         // Invalid protocol data must become an error frame, not be replayed as ordinary data.
         let has_decode_error = normalized
             .iter()

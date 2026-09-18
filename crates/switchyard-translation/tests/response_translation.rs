@@ -18,6 +18,123 @@ use common::{
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn responses_native_output_is_preserved_or_rejected() -> TestResult {
+    use switchyard_translation::{StreamTranslationState, TranslationError};
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let items = [
+        json!({"type": "apply_patch_call", "id": "ap_1", "call_id": "call_1", "status": "completed",
+            "operation": {"type": "create_file", "path": "probe.txt", "diff": "+probe\n"}}),
+        json!({"type": "shell_call", "id": "sh_1", "call_id": "call_1", "status": "completed",
+            "action": {"commands": ["pwd"], "timeout_ms": 1000, "max_output_length": 1024}}),
+        json!({"type": "computer_call", "id": "cu_1", "call_id": "call_1", "status": "completed",
+            "action": {"type": "click", "x": 10, "y": 20, "button": "left"}, "pending_safety_checks": []}),
+        json!({"type": "image_generation_call", "id": "ig_1", "status": "completed", "result": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l2QAAAAASUVORK5CYII="}),
+    ];
+    let text = json!({"type": "message", "role": "assistant", "content": [
+        {"type": "output_text", "text": "Working."}
+    ]});
+    let mut failures = Vec::new();
+    for item in items {
+        let kind = item["type"].as_str().ok_or("missing item type")?;
+        let body = json!({"id": "resp_native", "model": "provider", "status": "completed", "output": [item]});
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            let decoded = engine.decode_response(source, &body, &policy)?.response;
+            let replay = engine.encode_response(source, &decoded, &policy)?.body;
+            if replay["output"] != body["output"] {
+                failures.push(format!("{kind}: same-format buffered output lost"));
+            }
+            for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+                for output in [json!([item]), json!([text, item])] {
+                    let mut body = body.clone();
+                    body["output"] = output;
+                    let result = engine.translate_response(source, target, &body, &policy);
+                    if !matches!(result, Err(TranslationError::UnsupportedTranslation { .. })) {
+                        failures.push(format!("{kind}: {target:?} buffered did not reject"));
+                    }
+                }
+                if !matches!(
+                    engine.encode_response(target, &decoded, &policy),
+                    Err(TranslationError::UnsupportedTranslation { .. })
+                ) {
+                    failures.push(format!(
+                        "{kind}: {target:?} separate buffered encode did not reject"
+                    ));
+                }
+            }
+        }
+        let mut initial = item.clone();
+        initial["status"] = json!("in_progress");
+        let added =
+            json!({"type": "response.output_item.added", "output_index": 0, "item": initial});
+        let done = json!({"type": "response.output_item.done", "output_index": 0, "item": item});
+        let completed = json!({"type": "response.completed", "response": body});
+        let incomplete = json!({"type": "response.incomplete", "response": {
+            "id": "resp_native", "status": "incomplete", "output": [item],
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }});
+        for frames in [
+            vec![added, done.clone(), completed.clone()],
+            vec![done, completed.clone()],
+            vec![completed.clone()],
+            vec![
+                json!({"type": "response.output_text.delta", "output_index": 1, "delta": "Working."}),
+                completed,
+            ],
+            vec![incomplete],
+        ] {
+            let mut decoder = StreamTranslationState::default();
+            let mut replay_state = StreamTranslationState::default();
+            let mut replay = Vec::new();
+            for frame in &frames {
+                let event = engine.decode_stream_event(&mut decoder, source, frame.clone())?;
+                replay.extend(engine.encode_stream_event(&mut replay_state, source, event)?);
+            }
+            replay.extend(engine.finish_stream(&mut replay_state, source)?);
+            assert_eq!(replay, frames, "{kind}: same-format stream");
+            for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+                for is_preserved in [false, true] {
+                    let mut decoder = StreamTranslationState::default();
+                    let mut encoder = StreamTranslationState::default();
+                    let mut events = Vec::new();
+                    for frame in &frames {
+                        let encoded = if is_preserved {
+                            let event =
+                                engine.decode_stream_event(&mut decoder, source, frame.clone())?;
+                            engine.encode_stream_event(&mut encoder, target, event)?
+                        } else {
+                            engine.translate_event(&mut encoder, source, target, frame)?
+                        };
+                        events.extend(encoded);
+                    }
+                    events.extend(engine.finish_stream(&mut encoder, target)?);
+                    let errors = events
+                        .iter()
+                        .filter(|event| event["error"].is_object())
+                        .count();
+                    let last = events.last().ok_or("missing terminal error")?;
+                    if !encoder.errored
+                        || errors != 1
+                        || !last["error"]["message"]
+                            .as_str()
+                            .is_some_and(|message| message.contains("not supported"))
+                        || events.iter().any(|event| {
+                            event["type"] == "message_stop"
+                                || event["choices"][0]["finish_reason"].is_string()
+                        })
+                    {
+                        failures.push(format!("{kind}: {target:?} stream did not terminate with one unsupported-translation error"));
+                    }
+                    assert!(engine.finish_stream(&mut encoder, target)?.is_empty());
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+
+#[test]
 fn url_citations_survive_chat_responses_translation() -> TestResult {
     let engine = TranslationEngine::default();
     let citation = json!({

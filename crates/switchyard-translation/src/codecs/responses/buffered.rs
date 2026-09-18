@@ -1805,6 +1805,15 @@ fn decode_responses_output_item(
             content: decode_responses_reasoning_item(item),
             stop_reason: None,
         })),
+        Some(kind) if super::is_native_output(kind) => Ok(Some(ResponseOutput {
+            url_citations: Vec::new(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::Unknown {
+                provider: WireFormat::OpenAiResponses.into(),
+                raw: Value::Object(item.clone()),
+            }],
+            stop_reason: None,
+        })),
         _ => Ok(None),
     }
 }
@@ -1848,10 +1857,12 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
         outputs
             .iter()
             .flat_map(|output| {
-                let has_tool_calls = output
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolCall(_)));
+                let has_output_items = output.content.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolCall(_))
+                        || matches!(block, ContentBlock::Unknown { provider, raw }
+                            if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                                && raw["type"].as_str().is_some_and(super::is_native_output))
+                });
                 let text = text_from_blocks(&output.content, "");
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
                 let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
@@ -1907,7 +1918,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ));
                 }
 
-                if !text.is_empty() || (!has_tool_calls && reasoning.is_empty()) {
+                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
@@ -1934,6 +1945,12 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                         "name": call.name,
                         "arguments": json_string_python_style(&call.arguments),
                     })),
+                    ContentBlock::Unknown { provider, raw }
+                        if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                            && raw["type"].as_str().is_some_and(super::is_native_output) =>
+                    {
+                        Some(raw.clone())
+                    }
                     _ => None,
                 }));
 

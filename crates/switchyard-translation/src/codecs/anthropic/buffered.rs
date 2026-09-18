@@ -406,6 +406,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
+        super::super::responses::validate_response_output(response, WireFormat::AnthropicMessages)?;
         if let Some(body) = exact_preserved_response(
             &response.preservation,
             WireFormat::AnthropicMessages,
