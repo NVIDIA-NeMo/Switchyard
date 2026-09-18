@@ -371,9 +371,13 @@ fn anthropic_thinking_response_translates_to_openai_reasoning_content() -> TestR
     let message = &output["choices"][0]["message"];
     assert_eq!(message["content"], "Visible answer");
     assert_eq!(message["reasoning_content"], "private reasoning");
-    for thinking_tokens in [0, 5] {
+    for (details, thinking_tokens) in [
+        (json!({"thinking_tokens": 0}), 0),
+        (json!({"thinking_tokens": 5}), 5),
+        (json!({"thinking_tokens": null, "reasoning_tokens": 5}), 5),
+    ] {
         let mut body = body.clone();
-        body["usage"]["output_tokens_details"] = json!({"thinking_tokens": thinking_tokens});
+        body["usage"]["output_tokens_details"] = details;
         let decoded = engine
             .decode_response(WireFormat::AnthropicMessages, &body, &normalized_policy())?
             .response;

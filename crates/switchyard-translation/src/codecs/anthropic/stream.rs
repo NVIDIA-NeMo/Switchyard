@@ -574,15 +574,12 @@ fn capture_anthropic_usage(state: &mut StreamTranslationState, usage: &Value) {
     if let Some(value) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
         state.usage.set_cached_input_tokens(value);
     }
-    if let Some(value) = usage
-        .get("output_tokens_details")
-        .and_then(|details| {
-            details
-                .get("thinking_tokens")
-                .or_else(|| details.get("reasoning_tokens"))
-        })
-        .and_then(Value::as_u64)
-    {
+    if let Some(value) = usage.get("output_tokens_details").and_then(|details| {
+        details
+            .get("thinking_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| details.get("reasoning_tokens").and_then(Value::as_u64))
+    }) {
         state.usage.reasoning_tokens = Some(value);
     }
 }

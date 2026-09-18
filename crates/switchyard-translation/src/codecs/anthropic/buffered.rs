@@ -1195,14 +1195,12 @@ fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
                 + cache_creation_input_tokens.unwrap_or(0)
                 + output
         }),
-        reasoning_tokens: value
-            .get("output_tokens_details")
-            .and_then(|details| {
-                details
-                    .get("thinking_tokens")
-                    .or_else(|| details.get("reasoning_tokens"))
-            })
-            .and_then(Value::as_u64),
+        reasoning_tokens: value.get("output_tokens_details").and_then(|details| {
+            details
+                .get("thinking_tokens")
+                .and_then(Value::as_u64)
+                .or_else(|| details.get("reasoning_tokens").and_then(Value::as_u64))
+        }),
     }
 }
 
