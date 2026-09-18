@@ -17,7 +17,7 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
-fn responses_allowed_tools_is_preserved_or_rejected() -> TestResult {
+fn responses_allowed_tools_is_translated_or_rejected() -> TestResult {
     let engine = TranslationEngine::default();
     for mode in ["auto", "required"] {
         let body = json!({
@@ -34,14 +34,51 @@ fn responses_allowed_tools_is_preserved_or_rejected() -> TestResult {
         });
         for policy in [TranslationPolicy::default(), normalized_policy()] {
             for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
-                let error = engine
-                    .translate_request(WireFormat::OpenAiResponses, target, &body, &policy)
-                    .expect_err("allowed_tools must not be silently discarded");
-                assert!(matches!(
-                    error,
-                    switchyard_translation::TranslationError::LossyConversion(ref message)
-                        if message.contains("allowed_tools")
-                ));
+                let output = engine.translate_request(
+                    WireFormat::OpenAiResponses,
+                    target,
+                    &body,
+                    &policy,
+                )?;
+                let expected_tool = match target {
+                    WireFormat::OpenAiChat => json!({
+                        "type": "function", "function": {
+                            "name": "safe_lookup", "description": "Read a record",
+                            "parameters": {"type": "object"}
+                        }
+                    }),
+                    _ => json!({
+                        "name": "safe_lookup", "description": "Read a record",
+                        "input_schema": {"type": "object"}
+                    }),
+                };
+                assert_eq!(output.body["tools"], json!([expected_tool]));
+                let expected_choice = match target {
+                    WireFormat::OpenAiChat => json!(mode),
+                    _ => json!({"type": if mode == "required" { "any" } else { "auto" }}),
+                };
+                assert_eq!(output.body["tool_choice"], expected_choice);
+
+                for allowed in [
+                    json!([]),
+                    json!([{"type": "web_search"}]),
+                    json!([{"type": "function", "name": "unknown"}]),
+                ] {
+                    let mut unsupported = body.clone();
+                    unsupported["tool_choice"]["tools"] = allowed;
+                    let error = engine
+                        .translate_request(
+                            WireFormat::OpenAiResponses,
+                            target,
+                            &unsupported,
+                            &policy,
+                        )
+                        .expect_err("unrepresentable restrictions must be rejected");
+                    assert!(matches!(
+                        error,
+                        switchyard_translation::TranslationError::LossyConversion(_)
+                    ));
+                }
             }
             let output = engine.translate_request(
                 WireFormat::OpenAiResponses,
@@ -55,7 +92,10 @@ fn responses_allowed_tools_is_preserved_or_rejected() -> TestResult {
             let chat = json!({
                 "model": "route",
                 "messages": [{"role": "user", "content": "Inspect tool policy."}],
-                "tools": [{"type": "function", "function": {"name": "safe_lookup", "parameters": {"type": "object"}}}],
+                "tools": [
+                    {"type": "function", "function": {"name": "safe_lookup", "parameters": {"type": "object"}}},
+                    {"type": "function", "function": {"name": "delete_all_records", "parameters": {"type": "object"}}}
+                ],
                 "tool_choice": {
                     "type": "allowed_tools",
                     "allowed_tools": {
@@ -71,6 +111,18 @@ fn responses_allowed_tools_is_preserved_or_rejected() -> TestResult {
                 &policy,
             )?;
             assert_eq!(output.body["tool_choice"], chat["tool_choice"]);
+            let output = engine.translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &chat,
+                &policy,
+            )?;
+            assert_eq!(output.body["tools"].as_array().map(Vec::len), Some(1));
+            assert_eq!(output.body["tools"][0]["name"], "safe_lookup");
+            assert_eq!(
+                output.body["tool_choice"],
+                json!({"type": if mode == "required" { "any" } else { "auto" }})
+            );
         }
     }
     Ok(())

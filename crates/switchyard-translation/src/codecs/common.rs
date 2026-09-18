@@ -5,10 +5,74 @@
 
 use serde_json::{Map, Value};
 
-use crate::llm::ContentBlock;
+use crate::error::{Result, TranslationError};
+use crate::llm::{ContentBlock, LlmRequest, ToolChoice, ToolDefinition};
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
+
+/// Converts an OpenAI allowed-tools policy to a restricted function list and mode.
+pub(crate) fn allowed_function_tools(
+    request: &LlmRequest,
+) -> Result<Option<(Vec<ToolDefinition>, ToolChoice)>> {
+    let Some(ToolChoice::Raw(choice)) = &request.tool_choice else {
+        return Ok(None);
+    };
+    if choice.get("type").and_then(Value::as_str) != Some("allowed_tools") {
+        return Ok(None);
+    }
+    let error = || {
+        TranslationError::LossyConversion(
+            "allowed_tools translation requires auto or required mode \
+             and a nonempty subset of known function tools"
+                .to_string(),
+        )
+    };
+    let policy = choice.get("allowed_tools").unwrap_or(choice);
+    let mode = match policy.get("mode").and_then(Value::as_str) {
+        Some("auto") => ToolChoice::Auto,
+        Some("required") => ToolChoice::Required,
+        _ => return Err(error()),
+    };
+    let allowed = policy
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(error)?;
+    if allowed.is_empty() {
+        return Err(error());
+    }
+    let mut names = Vec::with_capacity(allowed.len());
+    for tool in allowed {
+        if tool.get("type").and_then(Value::as_str) != Some("function") {
+            return Err(error());
+        }
+        let function = tool.get("function").unwrap_or(tool);
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(error)?;
+        let name = match function.get("namespace").and_then(Value::as_str) {
+            Some(namespace) if !namespace.is_empty() => {
+                crate::codex_namespaces::qualified_tool_name(namespace, name)
+            }
+            _ => name.to_string(),
+        };
+        if !request.tools.iter().any(|tool| tool.name == name) {
+            return Err(error());
+        }
+        names.push(name);
+    }
+    // Filter the catalog, rather than rebuilding it from selectors, to retain definitions
+    // and avoid duplicating tools when the allowed list repeats a name.
+    let tools = request
+        .tools
+        .iter()
+        .filter(|tool| names.contains(&tool.name))
+        .cloned()
+        .collect();
+    Ok(Some((tools, mode)))
+}
 
 /// Returns whether a role name is recognized by a supported provider API.
 pub(crate) fn is_known_role_name(name: &str) -> bool {
