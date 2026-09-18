@@ -85,6 +85,11 @@ Metrics use the `switchyard` meter scope. The tables use OTel instrument names.
 | `switchyard.decisions` | Counter | `algorithm`, `selected_model` | Published routing decisions. |
 | `switchyard.llm_calls` | Counter | `algorithm`, `selected_model`, `outcome` | Logical offloaded and terminal model calls. |
 | `switchyard.llm_call_duration_ms` | Histogram | `algorithm`, `selected_model`, `outcome` | Logical call duration in milliseconds; see streaming limits below. |
+| `switchyard.total_requests` | ObservableGauge | none | Process-wide total of successful and failed answer candidates after routing, including reused routing responses. |
+| `switchyard.total_errors` | ObservableGauge | none | Process-wide total of failures after routing, including failed answer candidates and reused routing responses. |
+| `switchyard.requests` | Counter | `model` | Successful answer candidates or reused routing responses, by model ID. |
+| `switchyard.errors` | Counter | `model` | Failed answer candidates or reused routing responses, by model ID. |
+| `switchyard.model_call_latency_ms` | Histogram | `model` | Successful answer-candidate duration in milliseconds, including that candidate's retries and stream consumption. Excludes routing time and reused routing responses. |
 | `switchyard.routing_overhead_ms` | Histogram | `algorithm` | LLM client driver's time to obtain a successful routing outcome, including judge calls but excluding any subsequent answer call. |
 | `switchyard.classifier_fail_open` | Counter | `judge_model`, `reason` | Judge failures that caused classification to proceed without a verdict. |
 | `switchyard.upstream_attempts` | Counter | `outcome`, `code` | HTTP attempts, including retries, made by the translating client. |
@@ -99,6 +104,22 @@ or `none`. Classifier `reason` is `timeout`, `transport`, `upstream_5xx`,
 Logical calls, candidate calls, and HTTP attempts are different counts. Candidate
 fallbacks and HTTP retries remain within one logical call. A response produced
 during routing is not counted again as a new terminal model call.
+
+The five request/error/latency instruments above record each answer candidate after
+routing, not each HTTP attempt. A failed candidate followed by a successful fallback
+adds two to `total_requests`, one to `total_errors`, one to `errors` for the failed
+model, and one to `requests` for the successful model. Routing-time calls and failures
+before a routing outcome do not contribute. A response reused from routing contributes
+one to `total_requests` and one to either `requests` or `errors` (also `total_errors`
+on failure), but no `model_call_latency_ms` sample. The `model` label is the
+candidate's configured model ID (the serving model for a reused response), not the
+`selected_model` label used by logical-call metrics. The two total gauges are cumulative
+process-wide compatibility values, not counts of requests currently in flight.
+
+For streams, these five instruments record when the response stream ends or is dropped.
+Stream errors count as failures. Dropping an unfinished stream also counts as a failure;
+a terminal message permits a successful drop. Failed calls have no
+`model_call_latency_ms` sample.
 
 ### Algorithm-specific metrics
 
