@@ -1470,7 +1470,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "AIPerf",
                     "AIPERF_BIN",
                     args.aiperf_bin,
-                    "Install AIPerf with: uv tool install --python 3.12 'aiperf==0.11.0'",
+                    "Install AIPerf with: uv tool install --python 3.12 'aiperf==0.12.0'",
                 ),
                 RequiredBinary(
                     "switchyard-soak",
