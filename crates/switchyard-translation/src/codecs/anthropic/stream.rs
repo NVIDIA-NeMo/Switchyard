@@ -239,6 +239,17 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished {
         return Vec::new();
     }
+    if state.tool_states.values().any(|tool| {
+        tool.id.as_deref().is_none_or(str::is_empty)
+            || tool.name.as_deref().is_none_or(str::is_empty)
+    }) {
+        return encode_anthropic_stream(
+            state,
+            LlmResponseChunk::StreamError {
+                message: "Tool call ended without a non-empty ID and name".to_string(),
+            },
+        );
+    }
     let mut out = Vec::new();
     if !state.emitted_message_start {
         out.extend(encode_anthropic_stream(
@@ -486,11 +497,11 @@ fn encode_anthropic_tool_delta(
         .iter()
         .any(|(&tool_index, tool)| tool_index != index && tool.started);
     let tool = state.tool_states.entry(index).or_default();
-    if id.is_some() {
-        tool.id = id.map(|id| sanitize_anthropic_tool_use_id(&id));
+    if let Some(id) = id.filter(|id| !id.is_empty()) {
+        tool.id = Some(sanitize_anthropic_tool_use_id(&id));
     }
-    if name.is_some() {
-        tool.name = name;
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        tool.name = Some(name);
     }
     if let Some(delta) = arguments_delta {
         tool.arguments.push_str(&delta);
@@ -506,7 +517,11 @@ fn encode_anthropic_tool_delta(
     }
 
     if !tool.started {
-        let Some(name) = tool.name.clone() else {
+        // A published tool-use ID cannot be replaced when a later snapshot supplies it.
+        let (Some(id), Some(name)) = (
+            tool.id.as_deref().filter(|id| !id.is_empty()),
+            tool.name.as_deref().filter(|name| !name.is_empty()),
+        ) else {
             return out;
         };
         let content_index = state.next_content_index;
@@ -519,7 +534,7 @@ fn encode_anthropic_tool_delta(
             "index": content_index,
             "content_block": {
                 "type": "tool_use",
-                "id": tool.id.clone().unwrap_or_else(|| format!("toolu_{index}")),
+                "id": id,
                 "name": name,
                 "input": {},
             },

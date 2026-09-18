@@ -2699,7 +2699,14 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
         call.arguments = json!({"city": "Paris"});
     }
     for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
-        for mode in ["terminal", "done", "partial", "full"] {
+        for mode in [
+            "terminal",
+            "done",
+            "partial",
+            "full",
+            "name_only",
+            "id_only",
+        ] {
             let mut events = vec![
                 json!({"type": "response.created", "response": {"id": "resp_1", "model": "fixture"}}),
             ];
@@ -2715,7 +2722,18 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
                     "delta": if mode == "full" { "{\"city\":\"Paris\"}" } else { "{\"city\":" }}),
                 );
             }
-            if mode != "terminal" {
+            if matches!(mode, "name_only" | "id_only") {
+                let mut item =
+                    json!({"type": "function_call", "arguments": "{\"city\":\"Paris\"}"});
+                if mode == "name_only" {
+                    item["name"] = json!("get_weather");
+                } else {
+                    item["call_id"] = json!("call_1");
+                }
+                for event_type in ["response.output_item.added", "response.output_item.done"] {
+                    events.push(json!({"type": event_type, "output_index": 1, "item": item}));
+                }
+            } else if mode != "terminal" {
                 for (index, item) in output.as_array().unwrap().iter().enumerate() {
                     events.push(json!({"type": "response.output_item.done", "output_index": index, "item": item}));
                 }
@@ -2726,8 +2744,13 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
             let mut reader = StreamTranslationState::new(target, target);
             let mut accumulator = ResponseAccumulator::new();
             for event in events {
+                let is_incomplete_identity = matches!(mode, "name_only" | "id_only")
+                    && event["type"] != "response.completed";
                 let decoded = engine.decode_stream_event(&mut decoder, source, event)?;
                 for encoded in engine.encode_stream_event(&mut encoder, target, decoded)? {
+                    if target == WireFormat::AnthropicMessages && is_incomplete_identity {
+                        assert_ne!(encoded["content_block"]["type"], "tool_use");
+                    }
                     for chunk in decode_stream_event(&mut reader, target, &encoded) {
                         accumulator.push(chunk);
                     }
@@ -2754,11 +2777,23 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
             let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
             let mut item = identity;
             item["type"] = json!("function_call");
-            engine.decode_stream_event(
+            let incomplete = engine.decode_stream_event(
                 &mut state,
                 source,
                 json!({"type": event_type, "output_index": 1, "item": item}),
             )?;
+            let target = WireFormat::AnthropicMessages;
+            let mut encoder = StreamTranslationState::new(source, target);
+            let early = engine.encode_stream_event(&mut encoder, target, incomplete)?;
+            assert!(
+                early
+                    .iter()
+                    .all(|event| event["content_block"]["type"] != "tool_use")
+            );
+            let terminal = engine.finish_stream(&mut encoder, target)?;
+            assert_eq!(terminal.len(), 1);
+            assert_eq!(terminal[0]["type"], "error");
+            assert!(engine.finish_stream(&mut encoder, target)?.is_empty());
             let decoded = engine.decode_stream_event(
                 &mut state,
                 source,
