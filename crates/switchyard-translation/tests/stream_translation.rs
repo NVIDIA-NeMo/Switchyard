@@ -22,22 +22,30 @@ type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Syn
 fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {
     let engine = TranslationEngine::default();
     for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
-        for arguments in ["{}", ""] {
+        for (early_arguments, arguments) in [("{", "}"), ("", "{}"), ("", "")] {
             let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
             let mut events = Vec::new();
             for event in [
                 json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
                     "id": "call_weather", "function": {"name": "wea", "arguments": ""}}]}}]}),
                 json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                    "function": {"arguments": early_arguments}}]}}]}),
+                json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
                     "function": {"name": "ther", "arguments": arguments}}]}}]}),
                 json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
             ] {
-                events.extend(engine.translate_event(
-                    &mut state,
-                    WireFormat::OpenAiChat,
-                    target,
-                    &event,
-                )?);
+                let translated =
+                    engine.translate_event(&mut state, WireFormat::OpenAiChat, target, &event)?;
+                if event["choices"][0]["finish_reason"].is_null() {
+                    assert!(
+                        translated.iter().all(|event| {
+                            event["type"] != "content_block_start"
+                                && event["type"] != "response.output_item.added"
+                        }),
+                        "tool name must not be announced before completion"
+                    );
+                }
+                events.extend(translated);
             }
             events.extend(engine.finish_stream(&mut state, target)?);
             let names: Vec<_> = events
@@ -56,6 +64,17 @@ fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResu
                 vec!["weather", "weather"]
             };
             assert_eq!(names, expected, "{target:?}, arguments={arguments:?}");
+            let emitted_arguments: String = events
+                .iter()
+                .filter_map(|event| {
+                    if event["type"] == "response.function_call_arguments.delta" {
+                        event["delta"].as_str()
+                    } else {
+                        event["delta"]["partial_json"].as_str()
+                    }
+                })
+                .collect();
+            assert_eq!(emitted_arguments, format!("{early_arguments}{arguments}"));
         }
     }
     Ok(())
@@ -2114,24 +2133,28 @@ fn translated_responses_text_and_tool_events_keep_item_identity_until_done() -> 
                 .iter()
                 .filter(|event| event["output_index"] == index)
                 .collect::<Vec<_>>();
+            let mut expected_types = vec![
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+            ];
+            if source == WireFormat::AnthropicMessages {
+                expected_types.insert(2, "response.function_call_arguments.delta");
+            }
             assert_eq!(
                 tool_events
                     .iter()
                     .map(|event| event["type"].as_str().unwrap_or_default())
                     .collect::<Vec<_>>(),
-                [
-                    "response.output_item.added",
-                    "response.function_call_arguments.delta",
-                    "response.function_call_arguments.delta",
-                    "response.function_call_arguments.done",
-                    "response.output_item.done"
-                ]
+                expected_types
             );
-            let done = tool_events[3];
+            let done = tool_events[tool_events.len() - 2];
             assert_eq!(done["name"], name);
             assert_eq!(done["arguments"], arguments);
-            assert_eq!(tool_events[4]["item"]["id"], items[&index]["id"]);
-            assert_eq!(tool_events[4]["item"]["call_id"], call_id);
+            let item_done = tool_events[tool_events.len() - 1];
+            assert_eq!(item_done["item"]["id"], items[&index]["id"]);
+            assert_eq!(item_done["item"]["call_id"], call_id);
         }
         let completed = events.last().ok_or("missing response completion")?;
         assert_eq!(completed["type"], "response.completed");

@@ -158,22 +158,14 @@ fn decode_openai_chat_stream(
                             .and_then(|function| function.get("arguments"))
                             .and_then(Value::as_str)
                             .map(ToOwned::to_owned);
-                        // Keep name fragments together until argument text begins.
-                        let name = if arguments_delta
-                            .as_deref()
-                            .is_some_and(|args| !args.is_empty())
-                        {
-                            state.pending_chat_tool_names.remove(&index)
-                        } else {
-                            None
-                        };
                         out.push(LlmResponseChunk::ToolCallDelta {
                             index,
                             id: tool_call
                                 .get("id")
                                 .and_then(Value::as_str)
                                 .map(ToOwned::to_owned),
-                            name,
+                            // Names may continue after arguments begin; emit them at finish_reason.
+                            name: None,
                             arguments_delta,
                         });
                     }
