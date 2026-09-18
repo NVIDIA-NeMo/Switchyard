@@ -62,6 +62,9 @@ pub struct StreamTranslationState {
     /// Set once a tool call was observed while DECODING, so a terminal event that names no
     /// stop reason can still report tool use.
     pub(crate) decoded_tool_call: bool,
+    /// Text decoded from Responses, keyed by output index and then content index.
+    #[serde(default)]
+    pub(crate) decoded_response_text: BTreeMap<usize, BTreeMap<usize, String>>,
 
     pub(crate) response_created: bool,
     pub(crate) response_text_started: bool,
@@ -113,6 +116,8 @@ pub(crate) struct StreamToolState {
     /// own state and encodes later, the field is empty and the duplicate is
     /// emitted.
     pub(crate) decoded_arguments: String,
+    #[serde(default)]
+    pub(crate) has_decoded_identity: bool,
     pub(crate) pending_arguments: String,
     pub(crate) started: bool,
     pub(crate) content_index: Option<usize>,

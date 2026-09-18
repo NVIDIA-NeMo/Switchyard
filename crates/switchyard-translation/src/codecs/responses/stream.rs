@@ -134,11 +134,23 @@ fn decode_responses_stream(
             .get("delta")
             .and_then(Value::as_str)
             .map(|text| {
+                let index = event
+                    .get("output_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                let content_index = event
+                    .get("content_index")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize;
+                state
+                    .decoded_response_text
+                    .entry(index)
+                    .or_default()
+                    .entry(content_index)
+                    .or_default()
+                    .push_str(text);
                 vec![LlmResponseChunk::TextDelta {
-                    index: event
-                        .get("output_index")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0) as usize,
+                    index,
                     text: text.to_string(),
                 }]
             })
@@ -247,18 +259,19 @@ fn decode_responses_stream(
         }
         Some("response.completed") => {
             let mut out = Vec::new();
-            // Some providers surface reasoning only in the final output array. Position is the
-            // output index; anything already decoded is skipped by the helper.
+            // Some providers send output only in the final snapshot. Reconcile it with
+            // decoded deltas before emitting the stop, without repeating streamed content.
             if let Some(items) = event
                 .get("response")
                 .and_then(|response| response.get("output"))
                 .and_then(Value::as_array)
             {
                 for (position, item) in items.iter().enumerate() {
-                    if let Some(item) = item.as_object()
-                        && item.get("type").and_then(Value::as_str) == Some("reasoning")
-                    {
-                        out.extend(decode_responses_reasoning_item(item, position, state));
+                    if let Some(item) = item.as_object() {
+                        out.extend(decode_responses_completed_item(item, position, state));
+                        if matches!(out.last(), Some(LlmResponseChunk::StreamError { .. })) {
+                            return out;
+                        }
                     }
                 }
             }
@@ -278,12 +291,7 @@ fn decode_responses_stream(
             // use for such output; the stream must too, or stop-reason-driven tool loops
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
-            let has_tool_call = event
-                .get("response")
-                .and_then(|response| response.get("output"))
-                .and_then(Value::as_array)
-                .is_some_and(|items| items.iter().any(is_responses_tool_call_item));
-            let reason = (has_tool_call || state.decoded_tool_call).then(|| "tool_use".to_string());
+            let reason = state.decoded_tool_call.then(|| "tool_use".to_string());
             out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
@@ -637,6 +645,11 @@ fn decode_responses_output_item_added(
         return Vec::new();
     }
     state.decoded_tool_call = true;
+    state
+        .tool_states
+        .entry(index)
+        .or_default()
+        .has_decoded_identity = true;
     // A freeform call's `input` becomes the single `input` argument; it is only complete on
     // the done event, so nothing is emitted for it here beyond id and name.
     let arguments_delta = if item_type == Some("custom_tool_call") {
@@ -670,15 +683,6 @@ fn decode_responses_output_item_added(
     }]
 }
 
-// Whether a Responses output item is a client tool call the consumer must run.
-fn is_responses_tool_call_item(item: &Value) -> bool {
-    matches!(
-        item.get("type").and_then(Value::as_str),
-        Some("function_call" | "custom_tool_call")
-    )
-}
-
-// Emits a final tool-call argument delta when Responses only supplies arguments at item end.
 fn decode_responses_output_item_done(
     event: &Value,
     state: &mut StreamTranslationState,
@@ -690,10 +694,42 @@ fn decode_responses_output_item_done(
         .get("output_index")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    decode_responses_completed_item(item, index, state)
+}
+
+fn decode_responses_completed_item(
+    item: &serde_json::Map<String, Value>,
+    index: usize,
+    state: &mut StreamTranslationState,
+) -> Vec<LlmResponseChunk> {
     if item.get("type").and_then(Value::as_str) == Some("reasoning") {
         return decode_responses_reasoning_item(item, index, state);
     }
     let item_type = item.get("type").and_then(Value::as_str);
+    if item_type == Some("message") {
+        let mut out = Vec::new();
+        if let Some(content) = item.get("content").and_then(Value::as_array) {
+            for (content_index, part) in content.iter().enumerate() {
+                if part.get("type").and_then(Value::as_str) != Some("output_text") {
+                    continue;
+                }
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    let decoded = state
+                        .decoded_response_text
+                        .entry(index)
+                        .or_default()
+                        .entry(content_index)
+                        .or_default();
+                    match snapshot_suffix(decoded, text) {
+                        Ok(Some(text)) => out.push(LlmResponseChunk::TextDelta { index, text }),
+                        Ok(None) => {}
+                        Err(error) => return vec![error],
+                    }
+                }
+            }
+        }
+        return out;
+    }
     if item_type != Some("function_call") && item_type != Some("custom_tool_call") {
         return Vec::new();
     }
@@ -708,23 +744,54 @@ fn decode_responses_output_item_done(
     let arguments = custom_arguments
         .as_deref()
         .or_else(|| item.get("arguments").and_then(Value::as_str));
-    if let Some(arguments) = arguments {
-        // Compared against what THIS decoder has seen. Reading the encoder's
-        // `arguments` instead only deduplicates when a single state performs
-        // both halves of the translation, and silently duplicates when a
-        // caller buffers the stream with its own state.
-        let tool = state.tool_states.entry(index).or_default();
-        if !arguments.is_empty() && arguments != tool.decoded_arguments {
-            tool.decoded_arguments.push_str(arguments);
-            return vec![LlmResponseChunk::ToolCallDelta {
-                index,
-                id: None,
-                name: None,
-                arguments_delta: Some(arguments.to_string()),
-            }];
-        }
+    let tool = state.tool_states.entry(index).or_default();
+    let arguments_delta =
+        match arguments.map(|arguments| snapshot_suffix(&mut tool.decoded_arguments, arguments)) {
+            Some(Ok(delta)) => delta,
+            Some(Err(error)) => return vec![error],
+            None => None,
+        };
+    let needs_identity = !tool.has_decoded_identity;
+    tool.has_decoded_identity = true;
+    if needs_identity || arguments_delta.is_some() {
+        return vec![LlmResponseChunk::ToolCallDelta {
+            index,
+            id: needs_identity
+                .then(|| {
+                    item.get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .flatten(),
+            name: needs_identity
+                .then(|| {
+                    item.get("name")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .flatten(),
+            arguments_delta,
+        }];
     }
     Vec::new()
+}
+
+// A snapshot may extend streamed content, but cannot retract content already sent.
+fn snapshot_suffix(
+    decoded: &mut String,
+    snapshot: &str,
+) -> Result<Option<String>, LlmResponseChunk> {
+    let Some(suffix) = snapshot.strip_prefix(decoded.as_str()) else {
+        return Err(LlmResponseChunk::StreamError {
+            message: "Responses snapshot conflicts with streamed content".to_string(),
+        });
+    };
+    if suffix.is_empty() {
+        return Ok(None);
+    }
+    decoded.push_str(suffix);
+    Ok(Some(suffix.to_owned()))
 }
 
 // Emits the initial Responses created event once per stream.
