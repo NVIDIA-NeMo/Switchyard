@@ -1936,7 +1936,15 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
     let cache_creation_input_tokens = value
         .get("input_tokens_details")
         .and_then(|details| details.get("cache_write_tokens"))
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            value.get("prompt_tokens_details").and_then(|details| {
+                details
+                    .get("cache_write_tokens")
+                    .and_then(Value::as_u64)
+                    .or_else(|| details.get("cache_creation_tokens").and_then(Value::as_u64))
+            })
+        });
     let input_tokens = aggregate_input_tokens.map(|tokens| {
         tokens
             .saturating_sub(cached_input_tokens.unwrap_or(0))

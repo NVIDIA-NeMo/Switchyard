@@ -221,6 +221,15 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
     assert_eq!(decoded.usage.cached_input_tokens(), Some(4));
     assert_eq!(decoded.usage.cache_creation_input_tokens(), Some(2));
     assert_eq!(decoded.usage.total_tokens, Some(15));
+    let mut aliased = body.clone();
+    aliased["usage"] = output["usage"].clone();
+    assert_eq!(
+        engine
+            .decode_response(WireFormat::OpenAiResponses, &aliased, &normalized_policy())?
+            .response
+            .usage,
+        decoded.usage
+    );
     let encoded = engine
         .encode_response(WireFormat::OpenAiResponses, &decoded, &normalized_policy())?
         .body;
