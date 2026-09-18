@@ -645,11 +645,17 @@ fn decode_responses_output_item_added(
         return Vec::new();
     }
     state.decoded_tool_call = true;
+    let id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(Value::as_str);
+    let name = item.get("name").and_then(Value::as_str);
     state
         .tool_states
         .entry(index)
         .or_default()
-        .has_decoded_identity = true;
+        .has_decoded_identity |=
+        id.is_some_and(|id| !id.is_empty()) && name.is_some_and(|name| !name.is_empty());
     // A freeform call's `input` becomes the single `input` argument; it is only complete on
     // the done event, so nothing is emitted for it here beyond id and name.
     let arguments_delta = if item_type == Some("custom_tool_call") {
@@ -670,15 +676,8 @@ fn decode_responses_output_item_added(
     }
     vec![LlmResponseChunk::ToolCallDelta {
         index,
-        id: item
-            .get("call_id")
-            .or_else(|| item.get("id"))
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        name: item
-            .get("name")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        id: id.map(ToOwned::to_owned),
+        name: name.map(ToOwned::to_owned),
         arguments_delta,
     }]
 }
@@ -751,26 +750,19 @@ fn decode_responses_completed_item(
             Some(Err(error)) => return vec![error],
             None => None,
         };
+    let id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(Value::as_str);
+    let name = item.get("name").and_then(Value::as_str);
     let needs_identity = !tool.has_decoded_identity;
-    tool.has_decoded_identity = true;
+    tool.has_decoded_identity |=
+        id.is_some_and(|id| !id.is_empty()) && name.is_some_and(|name| !name.is_empty());
     if needs_identity || arguments_delta.is_some() {
         return vec![LlmResponseChunk::ToolCallDelta {
             index,
-            id: needs_identity
-                .then(|| {
-                    item.get("call_id")
-                        .or_else(|| item.get("id"))
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
-                .flatten(),
-            name: needs_identity
-                .then(|| {
-                    item.get("name")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned)
-                })
-                .flatten(),
+            id: id.filter(|_| needs_identity).map(ToOwned::to_owned),
+            name: name.filter(|_| needs_identity).map(ToOwned::to_owned),
             arguments_delta,
         }];
     }

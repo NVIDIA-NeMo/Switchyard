@@ -2745,6 +2745,50 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
             );
         }
     }
+    for event_type in ["response.output_item.added", "response.output_item.done"] {
+        for identity in [
+            json!({}),
+            json!({"call_id": "", "name": "get_weather"}),
+            json!({"id": "fc_1", "name": ""}),
+        ] {
+            let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+            let mut item = identity;
+            item["type"] = json!("function_call");
+            engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": event_type, "output_index": 1, "item": item}),
+            )?;
+            let decoded = engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": "response.completed", "response": response}),
+            )?;
+            assert!(
+                decoded.normalized().iter().any(|chunk| matches!(chunk,
+                    LlmResponseChunk::ToolCallDelta { id: Some(id), name: Some(name), .. }
+                    if id == "call_1" && name == "get_weather"
+                )),
+                "{event_type}: {item}"
+            );
+            engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": event_type, "output_index": 1, "item": item}),
+            )?;
+            let repeated = engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": "response.completed", "response": response}),
+            )?;
+            assert!(
+                !repeated
+                    .normalized()
+                    .iter()
+                    .any(|chunk| matches!(chunk, LlmResponseChunk::ToolCallDelta { .. }))
+            );
+        }
+    }
     for delta in [
         json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Different"}),
         json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "["}),
