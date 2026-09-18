@@ -79,7 +79,10 @@ upstream, and a route's `id` is the model clients send to select that algorithm.
 Each target references an entry under `llm_clients`. All configured clients use
 `TranslatingLlmClient`; supported formats are `openai_chat`, `openai_responses`, and
 `anthropic_messages`. Supported algorithms are `noop`, `random`, `passthrough`,
-`llm_classifier`, and `stage_router`. The optional `prefill-router` feature also enables
+`llm_classifier`, `stage_router`, [`auto`](../../docs/reference/toml_schema.md#auto),
+[`composite`](../../docs/routing_algorithms/composite_routing.md), and
+[`advisor`](../../docs/routing_algorithms/advisor_gate_routing.md).
+The optional `prefill-router` feature also enables
 the experimental `prefill_router`. See its
 [artifact requirements](../../docs/reference/toml_schema.md#prefill_router).
 An `api_key_env` value names an environment variable. The TOML never contains the

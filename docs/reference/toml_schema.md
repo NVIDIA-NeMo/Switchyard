@@ -342,9 +342,10 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message
-instead. The stage table takes no `picker`: the classifier supplies that tier per turn. A turn the
-classifier cannot reach falls open to the efficient tier. Leaving out
-`classifier` is recommended: that judge runs ahead of the fall-open tier.
+instead. The outer `[routes.<name>.classifier]` table is required. The nested
+`[routes.<name>.stage]` table accepts neither `picker` nor a second `classifier`.
+The outer classifier supplies the default tier. A turn the classifier cannot
+reach falls open to the efficient tier.
 
 ### `advisor`
 

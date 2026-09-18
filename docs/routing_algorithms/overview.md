@@ -46,7 +46,7 @@ These options remain available when you need a different routing policy.
 | [Escalation](escalation_router_routing.md) | Start on the efficient model and escalate when an LLM judge detects trouble. | `llm_classifier` with `mode = "escalation"` |
 | [Custom](llm_classifier_routing.md#custom-multi-target-routing) | Route among two or more models using your own classification schema and rules. | `llm_classifier` with `mode = "custom"` |
 | [Advisor Gate](advisor_gate_routing.md) | Keep one executor model and have a stronger advisor review its plans and completion claims. | `advisor` |
-| [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough` or `stage_router` with `subagents` |
+| [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough`, `stage_router`, or `composite` with `subagents` |
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
 | [Fixed Model](#direct-model-routes) | Send every request to one target without a routing decision. | `passthrough` |
 

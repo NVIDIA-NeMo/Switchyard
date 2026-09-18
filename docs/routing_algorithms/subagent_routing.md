@@ -2,7 +2,8 @@
 
 Sub-agent-aware routing leaves parent-agent traffic with its configured routing
 algorithm while routing delegated sub-agent work separately. It is available on
-`passthrough` and `stage_router` routes through the optional `subagents` table.
+`passthrough`, `stage_router`, and `composite` routes through the optional
+`subagents` table.
 
 > Requires unreleased features. [Build from source](../getting_started.md#build-from-source) to run this example.
 

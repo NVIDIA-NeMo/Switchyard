@@ -41,12 +41,11 @@ plan = ["create_research_plan"]
 new = ["send_message"]
 ```
 
-`[routes.switchyard.classifier]` takes the `stage_router` classifier fields.
+`[routes.switchyard.classifier]` is required and takes the `stage_router` classifier fields.
 `classify_trigger` sets how often the judge runs: `user_turn` re-picks the tier
 whenever the user speaks, `new_session` picks once and holds it.
-`[routes.switchyard.stage]` takes the `stage_router` fields except `picker`, whose
-job the classifier does per turn. Leave `classifier` out as well: that judge runs
-ahead of the fall-open tier, so it answers most of the turns this one decided.
+`[routes.switchyard.stage]` takes the stage settings, but accepts neither `picker`
+nor a second `classifier`. The outer classifier supplies the default tier.
 Custom `tool_semantics` remain stage-local and have the same additive behavior as
 on a standalone stage route.
 
