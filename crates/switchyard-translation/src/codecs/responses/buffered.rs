@@ -239,8 +239,18 @@ impl FormatCodec for OpenAiResponsesCodec {
                 json!({"format": encode_responses_text_format(response_format)}),
             );
         }
+        let mut reasoning = request
+            .reasoning
+            .raw
+            .as_ref()
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         if let Some(effort) = &request.reasoning.effort {
-            body.insert("reasoning".to_string(), json!({"effort": effort}));
+            reasoning.insert("effort".to_string(), json!(effort));
+        }
+        if !reasoning.is_empty() {
+            body.insert("reasoning".to_string(), Value::Object(reasoning));
         }
         if let Some(value) = request.sampling.temperature {
             body.insert("temperature".to_string(), json!(value));
@@ -1803,6 +1813,7 @@ fn copy_responses_request_extensions(
     extensions: &Map<String, Value>,
 ) {
     for field in [
+        "include",
         "metadata",
         "parallel_tool_calls",
         "prompt_cache_key",

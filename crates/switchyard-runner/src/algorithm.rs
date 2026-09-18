@@ -250,6 +250,12 @@ pub enum AlgorithmSpec {
         /// Replaces the built-in planning system prompt.
         #[serde(default)]
         planning_prompt: Option<String>,
+        /// Appends an instruction once when execution begins.
+        #[serde(default)]
+        handoff_prompt: Option<String>,
+        /// Replays planner reasoning summaries as assistant text at handoff.
+        #[serde(default)]
+        planner_reasoning_as_text: bool,
     },
     /// Asks a judge model which target should serve the request.
     LlmClassifier {
@@ -930,6 +936,8 @@ fn build_algorithm(
             capable_target,
             efficient_target,
             planning_prompt,
+            handoff_prompt,
+            planner_reasoning_as_text,
         } => {
             let capable = resolve_target_model_id(route_name, capable_target, targets)?;
             let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
@@ -937,6 +945,8 @@ fn build_algorithm(
             if let Some(prompt) = planning_prompt {
                 config.planning_prompt = prompt.clone();
             }
+            config.handoff_prompt = handoff_prompt.clone();
+            config.planner_reasoning_as_text = *planner_reasoning_as_text;
             let algorithm = PlanExecute::new(capable, efficient, config).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("plan_execute route {route_name}: {error}"),

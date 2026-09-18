@@ -9,7 +9,7 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use switchyard_protocol::{ModelId, Request};
 
-use super::util::prompts::{SystemPromptProcessor, TargetPrompts};
+use super::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note, drop_exact_replay};
 use super::util::tool_signals::ToolSignals;
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::processor::{Event, Processor};
@@ -27,14 +27,27 @@ const MAX_EXECUTING_SESSIONS: usize = 4_096;
 pub struct PlanExecuteConfig {
     /// System instruction prepended until the first edit or write tool call.
     pub planning_prompt: String,
+    /// Optional instruction appended once when execution begins.
+    pub handoff_prompt: Option<String>,
+    /// Replays planner reasoning summaries as ordinary assistant text at handoff.
+    pub planner_reasoning_as_text: bool,
 }
 
 impl Default for PlanExecuteConfig {
     fn default() -> Self {
         Self {
             planning_prompt: DEFAULT_PLANNING_PROMPT.trim().to_string(),
+            handoff_prompt: None,
+            planner_reasoning_as_text: false,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Phase {
+    Plan,
+    Handoff,
+    Execute,
 }
 
 /// Routes planning turns to a capable model and all turns after the first edit
@@ -43,6 +56,8 @@ pub struct PlanExecute {
     capable: ModelId,
     efficient: ModelId,
     planning_prompt: SystemPromptProcessor,
+    handoff_prompt: Option<String>,
+    planner_reasoning_as_text: bool,
     executing_sessions: Mutex<HashSet<RoutingIdentity>>,
 }
 
@@ -56,6 +71,15 @@ impl PlanExecute {
                 message: "planning_prompt must not be empty".to_string(),
             });
         }
+        if config
+            .handoff_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.trim().is_empty())
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "handoff_prompt must not be empty".to_string(),
+            });
+        }
         let planning_prompt = SystemPromptProcessor::new(
             TargetPrompts::default().with(capable.clone(), config.planning_prompt),
         );
@@ -63,30 +87,38 @@ impl PlanExecute {
             capable,
             efficient,
             planning_prompt,
+            handoff_prompt: config.handoff_prompt,
+            planner_reasoning_as_text: config.planner_reasoning_as_text,
             executing_sessions: Mutex::new(HashSet::new()),
         })
     }
 
-    /// Whether this request is in execution, latching the transition for keyed sessions.
-    fn is_executing(&self, request: &Request) -> bool {
+    /// Selects the phase and latches the transition for keyed sessions.
+    fn phase(&self, request: &Request) -> Phase {
         let signals = ToolSignals::from_request(request, None);
         let mutation_seen = signals.edit_count > 0 || signals.write_count > 0;
         let Some(identity) = RoutingIdentity::from_request(request) else {
-            return mutation_seen;
+            return if mutation_seen {
+                Phase::Handoff
+            } else {
+                Phase::Plan
+            };
         };
 
         let mut sessions = self.executing_sessions.lock();
-        let executing = if mutation_seen {
+        let already_executing = sessions.contains(&identity);
+        let phase = if already_executing {
+            Phase::Execute
+        } else if mutation_seen {
             if sessions.len() >= MAX_EXECUTING_SESSIONS
-                && !sessions.contains(&identity)
                 && let Some(evicted) = sessions.iter().next().cloned()
             {
                 sessions.remove(&evicted);
             }
             sessions.insert(identity.clone());
-            true
+            Phase::Handoff
         } else {
-            sessions.contains(&identity)
+            Phase::Plan
         };
         if request
             .metadata
@@ -96,7 +128,33 @@ impl PlanExecute {
         {
             sessions.remove(&identity);
         }
-        executing
+        phase
+    }
+
+    /// Removes provider-private planner state while retaining visible summaries.
+    fn replay_planner_reasoning_as_text(request: &mut Request) -> usize {
+        let mut normalized = 0;
+        for message in &mut request.llm_request.messages {
+            message.content = std::mem::take(&mut message.content)
+                .into_iter()
+                .filter_map(|block| match block {
+                    switchyard_protocol::ContentBlock::Reasoning { text, .. } => {
+                        normalized += 1;
+                        (!text.is_empty())
+                            .then_some(switchyard_protocol::ContentBlock::Text { text })
+                    }
+                    other => Some(other),
+                })
+                .collect();
+        }
+        request
+            .llm_request
+            .messages
+            .retain(|message| !message.content.is_empty());
+        if normalized > 0 {
+            drop_exact_replay(request);
+        }
+        normalized
     }
 }
 
@@ -111,29 +169,57 @@ impl Algorithm for PlanExecute {
         _driver: Driver,
         mut request: Request,
     ) -> Result<RoutingOutcome> {
-        if self.is_executing(&request) {
-            tracing::info!(target = %self.efficient, phase = "execute", "plan-execute selected target");
-            Ok(RoutingOutcome::route_to(
-                self.efficient.clone(),
-                Vec::new(),
-                request,
-            ))
-        } else {
-            self.planning_prompt
-                .process(
-                    &mut (),
-                    Event::Decision {
-                        request: &mut request,
-                        selected_model_id: &self.capable,
-                    },
-                )
-                .await?;
-            tracing::info!(target = %self.capable, phase = "plan", "plan-execute selected target");
-            Ok(RoutingOutcome::route_to(
-                self.capable.clone(),
-                Vec::new(),
-                request,
-            ))
+        match self.phase(&request) {
+            Phase::Plan => {
+                self.planning_prompt
+                    .process(
+                        &mut (),
+                        Event::Decision {
+                            request: &mut request,
+                            selected_model_id: &self.capable,
+                        },
+                    )
+                    .await?;
+                tracing::info!(target = %self.capable, phase = "plan", "plan-execute selected target");
+                Ok(RoutingOutcome::route_to(
+                    self.capable.clone(),
+                    Vec::new(),
+                    request,
+                ))
+            }
+            Phase::Handoff => {
+                let planner_reasoning_converted = if self.planner_reasoning_as_text {
+                    Self::replay_planner_reasoning_as_text(&mut request)
+                } else {
+                    0
+                };
+                let prompt_applied = if let Some(prompt) = &self.handoff_prompt {
+                    append_note(&mut request, prompt);
+                    true
+                } else {
+                    false
+                };
+                tracing::info!(
+                    target = %self.efficient,
+                    phase = "handoff",
+                    handoff_prompt_applied = prompt_applied,
+                    planner_reasoning_converted,
+                    "plan-execute selected target"
+                );
+                Ok(RoutingOutcome::route_to(
+                    self.efficient.clone(),
+                    Vec::new(),
+                    request,
+                ))
+            }
+            Phase::Execute => {
+                tracing::info!(target = %self.efficient, phase = "execute", "plan-execute selected target");
+                Ok(RoutingOutcome::route_to(
+                    self.efficient.clone(),
+                    Vec::new(),
+                    request,
+                ))
+            }
         }
     }
 }
@@ -158,6 +244,21 @@ mod tests {
                 PlanExecuteConfig::default(),
             )
             .expect("default config should be valid"),
+        )
+    }
+
+    fn algorithm_with_handoff_prompt(prompt: &str) -> Arc<dyn Algorithm> {
+        Arc::new(
+            PlanExecute::new(
+                ModelId::from("model/capable"),
+                ModelId::from("model/efficient"),
+                PlanExecuteConfig {
+                    handoff_prompt: Some(prompt.to_string()),
+                    planner_reasoning_as_text: true,
+                    ..PlanExecuteConfig::default()
+                },
+            )
+            .expect("handoff prompt should be valid"),
         )
     }
 
@@ -267,6 +368,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_handoff_normalizes_reasoning_and_appends_prompt_once() {
+        const HANDOFF: &str = "Continue execution from the plan and repository evidence.";
+        let algorithm = algorithm_with_handoff_prompt(HANDOFF);
+        let edit = request(
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Reasoning {
+                        text: "The parser needs a boundary check.".to_string(),
+                        signature: Some("planner-signature".to_string()),
+                        details: vec![json!({"type": "reasoning.encrypted", "data": "opaque"})],
+                    },
+                    ContentBlock::ToolCall(ToolCall {
+                        id: "call-1".to_string(),
+                        name: "apply_patch".to_string(),
+                        arguments: json!({"patch": "*** Begin Patch"}),
+                    }),
+                ],
+            }],
+            Some("task-handoff"),
+        );
+
+        let (selected, routed) = route_and_capture(Arc::clone(&algorithm), edit).await;
+
+        assert_eq!(selected, "model/efficient");
+        assert_eq!(
+            routed.llm_request.messages[0].content[0],
+            ContentBlock::Text {
+                text: "The parser needs a boundary check.".to_string()
+            }
+        );
+        assert_eq!(
+            routed.llm_request.messages.last(),
+            Some(&Message::text(Role::User, HANDOFF))
+        );
+        assert!(routed.llm_request.preservation.requests.is_empty());
+
+        let continued = request(
+            vec![Message::text(Role::User, "Test the implementation")],
+            Some("task-handoff"),
+        );
+        let (selected, routed) = route_and_capture(algorithm, continued).await;
+
+        assert_eq!(selected, "model/efficient");
+        assert_eq!(
+            routed.llm_request.messages,
+            vec![Message::text(Role::User, "Test the implementation")]
+        );
+    }
+
+    #[tokio::test]
     async fn shell_file_write_switches_to_execution() {
         let messages = vec![tool_call(
             "exec_command",
@@ -346,6 +498,21 @@ mod tests {
             ModelId::from("model/efficient"),
             PlanExecuteConfig {
                 planning_prompt: "  ".to_string(),
+                ..PlanExecuteConfig::default()
+            },
+        );
+
+        assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
+    }
+
+    #[test]
+    fn empty_handoff_prompt_is_rejected() {
+        let result = PlanExecute::new(
+            ModelId::from("model/capable"),
+            ModelId::from("model/efficient"),
+            PlanExecuteConfig {
+                handoff_prompt: Some("  ".to_string()),
+                ..PlanExecuteConfig::default()
             },
         );
 

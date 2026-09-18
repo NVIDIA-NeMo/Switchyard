@@ -49,6 +49,41 @@ fn preparing_a_target_prompt_invalidates_exact_replay() -> TestResult {
     Ok(())
 }
 
+// Rebuilt Responses requests keep controls that lack normalized fields.
+#[test]
+fn responses_reasoning_controls_survive_prompt_injection() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": "Fix the parser.",
+        "reasoning": {"effort": "high", "summary": "auto"},
+        "include": ["reasoning.encrypted_content"],
+        "store": false
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    request.reasoning.effort = Some("max".to_string());
+
+    prepare_request_for_target(
+        &mut request,
+        &"openai/openai/gpt-5.6-sol".into(),
+        Some("Inspect before editing."),
+    );
+
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+    assert_eq!(
+        output["reasoning"],
+        json!({"effort": "max", "summary": "auto"})
+    );
+    assert_eq!(output["include"], json!(["reasoning.encrypted_content"]));
+    assert_eq!(output["store"], false);
+    Ok(())
+}
+
 // Model-only preparation retains provider fields while aligning exact replay with the target.
 #[test]
 fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {

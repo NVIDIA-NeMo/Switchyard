@@ -896,6 +896,8 @@ type = "plan_execute"
 capable_target = "strong"
 efficient_target = "weak"
 planning_prompt = "Inspect and plan before editing."
+handoff_prompt = "Continue execution from the plan and repository evidence."
+planner_reasoning_as_text = true
 "#
         );
         let runner = runner_from_toml(&config)?;
@@ -923,6 +925,23 @@ planning_prompt = "   "
         );
 
         assert!(error_message(&config).contains("planning_prompt must not be empty"));
+    }
+
+    #[test]
+    fn plan_execute_route_rejects_an_empty_handoff_prompt() {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "plan_execute"
+capable_target = "strong"
+efficient_target = "weak"
+handoff_prompt = "   "
+"#
+        );
+
+        assert!(error_message(&config).contains("handoff_prompt must not be empty"));
     }
 
     #[test]
