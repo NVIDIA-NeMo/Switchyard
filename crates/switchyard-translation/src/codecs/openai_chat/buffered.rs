@@ -196,6 +196,15 @@ impl FormatCodec for OpenAiChatCodec {
         }
         let mut diagnostics = Vec::new();
         validate_request_capabilities(request, &mut diagnostics, policy)?;
+        if let Some(ToolChoice::Raw(choice)) = &request.tool_choice
+            && choice.get("type").and_then(Value::as_str) == Some("allowed_tools")
+            && choice.get("allowed_tools").is_none()
+        {
+            // A tool restriction must never be weakened, even under a lossy policy.
+            return Err(TranslationError::LossyConversion(
+                "Responses allowed_tools cannot be translated to OpenAI Chat".to_string(),
+            ));
+        }
         let mut body = Map::new();
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));

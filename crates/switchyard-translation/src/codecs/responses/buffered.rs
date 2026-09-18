@@ -1151,6 +1151,11 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
                 }
             })
         }
+        Value::Object(object)
+            if object.get("type").and_then(Value::as_str) == Some("allowed_tools") =>
+        {
+            Some(ToolChoice::Raw(value.clone()))
+        }
         Value::Object(_) => None,
         _ => Some(ToolChoice::Raw(value.clone())),
     }
