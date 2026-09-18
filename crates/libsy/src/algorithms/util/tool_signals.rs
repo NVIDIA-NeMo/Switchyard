@@ -751,9 +751,7 @@ fn extract_tool_signals_with_window_and_semantics(
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     let is_error = raw.get("status").and_then(Value::as_str) == Some("failed");
-                    if !text.is_empty() || is_error {
-                        tool_texts.push((text.to_owned(), is_error));
-                    }
+                    tool_texts.push((text.to_owned(), is_error));
                 }
                 ContentBlock::Unknown { provider, raw }
                     if provider.as_str() == WireFormat::OpenAiResponses.as_str()
@@ -793,9 +791,7 @@ fn extract_tool_signals_with_window_and_semantics(
                         }
                     }
                     let text = texts.join("\n");
-                    if !text.is_empty() || is_error {
-                        tool_texts.push((text, is_error));
-                    }
+                    tool_texts.push((text, is_error));
                 }
                 // Compaction is detected anywhere in the conversation: the summary
                 // stays in the prefix on every later turn, so this self-latches
@@ -1629,7 +1625,7 @@ mod tests {
         }
         for (raw, severity) in cases {
             let is_error = severity >= HARD;
-            let request = with_messages(
+            let mut request = with_messages(
                 ["call_1", "call_2"]
                     .into_iter()
                     .map(|call_id| {
@@ -1660,6 +1656,32 @@ mod tests {
                 is_error,
                 "{raw}"
             );
+
+            let mut success = match raw["type"].as_str() {
+                Some("apply_patch_call_output") => json!({
+                    "type": "apply_patch_call_output", "status": "completed", "output": ""
+                }),
+                Some("shell_call_output") => json!({
+                    "type": "shell_call_output",
+                    "output": [{"stdout": "", "stderr": "", "outcome": {"type": "exit", "exit_code": 0}}]
+                }),
+                _ => unreachable!(),
+            };
+            for index in 0..3 {
+                success["call_id"] = json!(format!("success_{index}"));
+                request.llm_request.messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Unknown {
+                        provider: WireFormat::OpenAiResponses.into(),
+                        raw: success.clone(),
+                    }],
+                });
+            }
+            let recovered = ToolSignals::from_request(&request, Some(3));
+            assert_eq!(recovered.severity, 0.0, "{raw}");
+            assert!(!recovered.repeated_failure, "{raw}");
+            assert!(recovered.no_error_streak >= 3, "{raw}");
+            assert_eq!(recovered.tool_result_count, 5);
         }
     }
 
