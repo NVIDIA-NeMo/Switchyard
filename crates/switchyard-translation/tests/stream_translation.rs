@@ -1617,6 +1617,167 @@ fn chat_tool_call_index_counts_tool_calls_not_content_blocks() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn anthropic_empty_tool_input_survives_stream_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::AnthropicMessages;
+    for empty_fragments in [vec![""], vec![], vec!["{}"]] {
+        let mut upstream = vec![
+            json!({"type": "message_start", "message": {"id": "msg_tools", "model": "claude"}}),
+            json!({"type": "content_block_start", "index": 1, "content_block": {
+                "type": "tool_use", "id": "call_empty", "name": "clock", "input": {}}}),
+            json!({"type": "content_block_start", "index": 2, "content_block": {
+                "type": "tool_use", "id": "call_lookup", "name": "lookup", "input": {}}}),
+        ];
+        for fragment in empty_fragments {
+            upstream.push(json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": fragment}}));
+        }
+        upstream.extend([
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": ""}}),
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": "{\"q\":"}}),
+            json!({"type": "content_block_stop", "index": 1}),
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": "\"rust\"}"}}),
+            json!({"type": "content_block_stop", "index": 2}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+            json!({"type": "message_stop"}),
+        ]);
+        let mut observed = Vec::new();
+        for separate_states in [false, true] {
+            for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses, source] {
+                let mut decoder = StreamTranslationState::new(source, target);
+                let mut encoder = StreamTranslationState::new(source, target);
+                let mut events = Vec::new();
+                for event in &upstream {
+                    let decoded =
+                        engine.decode_stream_event(&mut decoder, source, event.clone())?;
+                    if event["delta"]["partial_json"] == "{\"q\":" {
+                        assert!(
+                            decoded.normalized().iter().any(|chunk| matches!(chunk,
+                            LlmResponseChunk::ToolCallDelta { arguments_delta: Some(delta), .. }
+                                if delta == "{\"q\":")),
+                            "nonempty input must stream immediately"
+                        );
+                    }
+                    let state = if separate_states {
+                        &mut encoder
+                    } else {
+                        &mut decoder
+                    };
+                    events.extend(engine.encode_stream_event(state, target, decoded)?);
+                }
+                let state = if separate_states {
+                    &mut encoder
+                } else {
+                    &mut decoder
+                };
+                events.extend(engine.finish_stream(state, target)?);
+                assert!(engine.finish_stream(state, target)?.is_empty());
+                if target == source {
+                    assert_eq!(events, upstream);
+                    continue;
+                }
+                let mut arguments = [String::new(), String::new()];
+                for event in &events {
+                    if target == WireFormat::OpenAiChat {
+                        if let Some(calls) = event["choices"][0]["delta"]["tool_calls"].as_array() {
+                            for call in calls {
+                                let index =
+                                    call["index"].as_u64().ok_or("missing tool index")? as usize;
+                                if let Some(delta) = call["function"]["arguments"].as_str() {
+                                    arguments[index].push_str(delta);
+                                }
+                            }
+                        }
+                    } else if event["type"] == "response.function_call_arguments.delta" {
+                        let index = event["output_index"]
+                            .as_u64()
+                            .ok_or("missing output index")?
+                            as usize;
+                        arguments[index]
+                            .push_str(event["delta"].as_str().ok_or("missing argument delta")?);
+                    }
+                }
+                if target == WireFormat::OpenAiResponses {
+                    let completed = events.last().ok_or("missing completion")?;
+                    assert_eq!(completed["type"], "response.completed");
+                    for (index, argument) in arguments.iter().enumerate() {
+                        assert_eq!(
+                            completed["response"]["output"][index]["arguments"],
+                            *argument
+                        );
+                        let done = events
+                            .iter()
+                            .find(|event| {
+                                event["type"] == "response.output_item.done"
+                                    && event["output_index"] == index
+                            })
+                            .ok_or("missing completed tool")?;
+                        assert_eq!(done["item"]["arguments"], *argument);
+                        let done = events
+                            .iter()
+                            .find(|event| {
+                                event["type"] == "response.function_call_arguments.done"
+                                    && event["output_index"] == index
+                            })
+                            .ok_or("missing completed arguments")?;
+                        assert_eq!(done["arguments"], *argument);
+                    }
+                }
+                observed.push(arguments);
+            }
+        }
+        assert_eq!(
+            observed,
+            vec![["{}".to_string(), r#"{"q":"rust"}"#.to_string()]; 4]
+        );
+        for arguments in observed {
+            assert_eq!(serde_json::from_str::<Value>(&arguments[0])?, json!({}));
+            assert_eq!(
+                serde_json::from_str::<Value>(&arguments[1])?,
+                json!({"q": "rust"})
+            );
+        }
+    }
+    // Initial values and partial inputs must not be replaced or completed with {}.
+    for (input, fragment, closes, expected) in [
+        (json!({"q": "rust"}), "", true, r#"{"q":"rust"}"#),
+        (json!({}), "{", true, "{"),
+        (json!({}), "", false, ""),
+    ] {
+        let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+        let mut events = vec![
+            json!({"type": "content_block_start", "index": 0, "content_block": {
+                "type": "tool_use", "id": "call_control", "name": "lookup", "input": input}}),
+            json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": fragment}}),
+        ];
+        if closes {
+            events.push(json!({"type": "content_block_stop", "index": 0}));
+        }
+        events.push(json!({"type": "message_delta", "delta": {"stop_reason": "max_tokens"}}));
+        events.push(json!({"type": "message_stop"}));
+        let mut arguments = String::new();
+        for event in events {
+            for chunk in decode_stream_event(&mut state, source, &event) {
+                if let LlmResponseChunk::ToolCallDelta {
+                    arguments_delta: Some(delta),
+                    ..
+                } = chunk
+                {
+                    arguments.push_str(&delta);
+                }
+            }
+        }
+        assert_eq!(arguments, expected);
+    }
+
+    Ok(())
+}
+
 // An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
 // instead of a bare message start that silently drops the upstream message.
 #[test]

@@ -100,8 +100,21 @@ fn decode_anthropic_stream(
                 model: state.model.clone(),
             }]
         }
-        Some("content_block_start") => decode_anthropic_content_block_start(object),
-        Some("content_block_delta") => decode_anthropic_content_block_delta(object),
+        Some("content_block_start") => decode_anthropic_content_block_start(state, object),
+        Some("content_block_delta") => decode_anthropic_content_block_delta(state, object),
+        Some("content_block_stop") => {
+            let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if state.empty_anthropic_tool_inputs.remove(&index) {
+                vec![LlmResponseChunk::ToolCallDelta {
+                    index,
+                    id: None,
+                    name: None,
+                    arguments_delta: Some("{}".to_string()),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
         Some("message_delta") => {
             let mut out = Vec::new();
             if let Some(usage) = object.get("usage") {
@@ -308,7 +321,10 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 }
 
 // Converts Anthropic content-block starts into text or tool-call deltas.
-fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmResponseChunk> {
+fn decode_anthropic_content_block_start(
+    state: &mut StreamTranslationState,
+    object: &Map<String, Value>,
+) -> Vec<LlmResponseChunk> {
     let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     let block = object.get("content_block").and_then(Value::as_object);
     match block
@@ -351,6 +367,13 @@ fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmR
             let Some(block) = block else {
                 return Vec::new();
             };
+            if block
+                .get("input")
+                .and_then(Value::as_object)
+                .is_some_and(|input| input.is_empty())
+            {
+                state.empty_anthropic_tool_inputs.insert(index);
+            }
             vec![LlmResponseChunk::ToolCallDelta {
                 index,
                 id: block
@@ -369,7 +392,10 @@ fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmR
 }
 
 // Converts Anthropic content-block deltas into neutral text or argument deltas.
-fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmResponseChunk> {
+fn decode_anthropic_content_block_delta(
+    state: &mut StreamTranslationState,
+    object: &Map<String, Value>,
+) -> Vec<LlmResponseChunk> {
     let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     let Some(delta) = object.get("delta").and_then(Value::as_object) else {
         return Vec::new();
@@ -404,6 +430,9 @@ fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmR
             .get("partial_json")
             .and_then(Value::as_str)
             .map(|partial_json| {
+                if !partial_json.is_empty() {
+                    state.empty_anthropic_tool_inputs.remove(&index);
+                }
                 vec![LlmResponseChunk::ToolCallDelta {
                     index,
                     id: None,

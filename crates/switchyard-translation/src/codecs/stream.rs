@@ -54,6 +54,9 @@ pub struct StreamTranslationState {
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
     #[serde(default)]
     pub(crate) deferred_anthropic_tools: Vec<usize>,
+    /// Empty initial inputs remain placeholders until their blocks close without arguments.
+    #[serde(default)]
+    pub(crate) empty_anthropic_tool_inputs: std::collections::BTreeSet<usize>,
     /// Reasoning text observed while DECODING, per output index, so a completed item
     /// that repeats already-streamed text is not decoded twice.
     pub(crate) decoded_reasoning: BTreeMap<usize, String>,
