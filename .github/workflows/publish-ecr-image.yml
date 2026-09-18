@@ -1,0 +1,91 @@
+# Builds the switchyard-server Docker image and pushes it to ECR (tools-prod).
+# The ai-data-platform switchyard chart pulls from this registry; see
+# ai-data-platform/values/switchyard/values.yaml for the consuming side.
+#
+# Registry : 803669523933.dkr.ecr.us-east-1.amazonaws.com/rp-switchyard
+# Auth      : OIDC -> arn:aws:iam::803669523933:role/gha (no stored secrets).
+#             The `gha` OIDC role must exist in the tools-prod account with a
+#             trust policy that accepts GitHub's token.actions.githubusercontent.com
+#             issuer for this repo, and a permissions policy allowing ecr push
+#             (ecr:* / ecr:GetAuthorizationToken). The make-account roles already
+#             have ECR *pull* access for the cluster; this role is for *push*.
+# Trigger   : push to main (moving `main` tag), push v*.*.* tags (immutable
+#             release tags), or workflow_dispatch (manual, optional `tag`).
+# Multi-arch: linux/amd64 + linux/arm64.
+#
+# After a successful push, set the chart's image tag in
+# ai-data-platform/values/switchyard/values.yaml to one of the tags produced
+# here (e.g. `main` for a moving tag, or a `vX.Y.Z` release tag).
+
+name: Publish switchyard image to ECR
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Extra image tag to apply (e.g. a release version)."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  id-token: write   # required for OIDC token exchange
+  contents: read
+
+env:
+  AWS_REGION:       us-east-1
+  AWS_ACCOUNT_ID:   "803669523933"
+  ECR_REPO:         rp-switchyard
+
+jobs:
+  build-and-push:
+    name: Build and push switchyard image to ECR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/gha
+          role-session-name: switchyard-ecr-publish
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ env.AWS_ACCOUNT_ID }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern=v{{version}}
+            type=sha,prefix=sha-,format=short
+            {{- if inputs.tag }}
+            custom:${{ inputs.tag }}
+            {{- end }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
