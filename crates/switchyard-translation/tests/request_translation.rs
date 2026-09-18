@@ -264,6 +264,40 @@ fn openai_target_prompt_preserves_native_request_fields() -> TestResult {
     Ok(())
 }
 
+// Rebuilt Responses requests keep reasoning controls when effort is overridden.
+#[test]
+fn responses_reasoning_survives_rebuild() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": "Fix the parser.",
+        "reasoning": {"effort": "high", "summary": "auto"},
+        "include": ["reasoning.encrypted_content"]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    request.reasoning.effort = Some("max".to_string());
+
+    prepare_request_for_target(
+        &mut request,
+        &"openai/openai/gpt-5.6-sol".into(),
+        Some("Inspect before editing."),
+    );
+    request.preservation.requests.clear();
+
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+    assert_eq!(
+        output["reasoning"],
+        json!({"effort": "max", "summary": "auto"})
+    );
+    assert_eq!(output["include"], json!(["reasoning.encrypted_content"]));
+    Ok(())
+}
+
 #[test]
 fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
     let engine = TranslationEngine::default();
