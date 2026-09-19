@@ -147,6 +147,10 @@ optional message-hash affinity key uses only text, so identical questions about
 different images must not share that key. Escalation mode uses a text summary
 and rejects `judge_max_images`.
 
+The [Cosmos vision judge example](../../examples/vision_judge/README.md) includes
+both modes, a pinned VANTAGE still image, Cosmos/Astra answer targets, and a live
+runner that verifies the images sent to each model.
+
 ### Override the classifier prompt
 
 Set `prompt` on the route when the packaged capability rubric does not describe
