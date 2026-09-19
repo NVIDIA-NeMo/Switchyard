@@ -1046,6 +1046,40 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_exit_code_overrules_every_error_inference() {
+        // The executor's own verdict wins. Hermes sends `"error": null` on
+        // success, and a deliberate negative check puts error-shaped text in
+        // the output of a command that succeeded; neither is a failure.
+        let request = with_messages(vec![
+            tr(r#"{"output": "on branch master", "exit_code": 0, "error": null}"#),
+            tr(r#"{"output": "cat: HEAD: No such file or directory", "exit_code": 0, "error": null}"#),
+        ]);
+        let sig = ToolSignals::from_request(&request, None);
+        assert_eq!(sig.error_count, 0);
+        assert!(sig.tool_tail_clean);
+
+        // A non-zero exit still counts, whichever term reports it.
+        let request = with_messages(vec![
+            tr(r#"{"output": "node: not found", "exit_code": 1, "error": null}"#),
+            tr(r#"{"output": "boom", "exit_code": 127, "error": "spawn failed"}"#),
+        ]);
+        let sig = ToolSignals::from_request(&request, None);
+        assert_eq!(sig.error_count, 2);
+        assert!(!sig.tool_tail_clean);
+
+        // Without an `exit_code` the gate is inert and every term behaves as
+        // before: a structured error body and error-shaped text both count.
+        let request = with_messages(vec![
+            tr(r#"{"error": "record not found"}"#),
+            tr("Traceback (most recent call last):\n  ValueError"),
+            tr("done"),
+        ]);
+        let sig = ToolSignals::from_request(&request, None);
+        assert_eq!(sig.error_count, 2);
+        assert!(sig.tool_tail_clean);
+    }
+
+    #[test]
     fn structured_tool_errors_contribute_to_the_execution_summary() {
         let request = with_messages(vec![
             tr(r#"{"error":"record not found"}"#),
