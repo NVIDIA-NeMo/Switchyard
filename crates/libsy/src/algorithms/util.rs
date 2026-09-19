@@ -35,6 +35,19 @@ pub(crate) const DEFAULT_JUDGE_MAX_OUTPUT_TOKENS: u64 = 4_096;
 /// much a judge call costs.
 pub(crate) const DEFAULT_JUDGE_CHAR_BUDGET: usize = 18_000;
 
+/// Smallest accepted judge payload budget. It must leave room for the framing every judge
+/// adds around the conversation, or that framing alone would exceed the budget.
+pub(crate) const MIN_JUDGE_CHAR_BUDGET: usize = 256;
+
+pub(crate) fn validate_judge_char_budget(budget: usize) -> crate::Result<()> {
+    if budget < MIN_JUDGE_CHAR_BUDGET {
+        return Err(crate::LibsyError::AlgorithmError {
+            message: format!("judge_char_budget must be at least {MIN_JUDGE_CHAR_BUDGET}"),
+        });
+    }
+    Ok(())
+}
+
 /// Separator marking where [`truncate_middle`] dropped a message's interior.
 pub(crate) const TRIM_MARKER: &str = " ...[trimmed] ";
 

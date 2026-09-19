@@ -114,6 +114,7 @@ impl PyEscalationClassifierConfig {
         confirmations=2,
         recent_turn_window=28,
         window_message_chars=500,
+        judge_char_budget=18_000,
         max_output_tokens=4096,
         prompt=None,
         response_format_type="json_schema"
@@ -123,6 +124,7 @@ impl PyEscalationClassifierConfig {
         confirmations: u32,
         recent_turn_window: usize,
         window_message_chars: usize,
+        judge_char_budget: usize,
         max_output_tokens: u64,
         prompt: Option<String>,
         response_format_type: &str,
@@ -133,6 +135,7 @@ impl PyEscalationClassifierConfig {
                 confirmations,
                 recent_turn_window,
                 window_message_chars,
+                judge_char_budget,
             },
             max_output_tokens,
         })

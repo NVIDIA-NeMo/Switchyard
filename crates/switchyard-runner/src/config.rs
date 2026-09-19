@@ -1125,6 +1125,34 @@ new = ["send_message"]
         Ok(())
     }
 
+    /// The route-level budget reaches every judge: a value the escalation judge rejects
+    /// fails the build, so it is not silently left at the default there.
+    #[test]
+    fn classifier_judge_char_budget_applies_in_every_mode() -> RunnerResult<()> {
+        let capability = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\njudge_char_budget = 1000",
+        );
+        runner_from_toml(&capability)?;
+
+        let escalation = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\njudge_char_budget = 1000\nescalation = { confirmations = 2 }",
+        );
+        runner_from_toml(&escalation)?;
+
+        let too_small = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\njudge_char_budget = 100\nescalation = { confirmations = 2 }",
+        );
+        assert!(
+            error_message(&too_small).contains("judge_char_budget must be at least 256"),
+            "{}",
+            error_message(&too_small)
+        );
+        Ok(())
+    }
+
     #[test]
     fn classifier_prompts_are_configurable_in_both_modes() -> RunnerResult<()> {
         let capability = VALID_CONFIG.replace(
@@ -1214,6 +1242,12 @@ efficient_target = "weak"
             "base_threshold = 0.5\nescalation = { max_output_tokens = 256 }",
         );
         assert!(error_message(&nested_completion_cap).contains("unknown field"));
+
+        let nested_char_budget = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { judge_char_budget = 1000 }",
+        );
+        assert!(error_message(&nested_char_budget).contains("unknown field"));
 
         let unknown_classifier_field = VALID_CONFIG.replace(
             "base_threshold = 0.5",

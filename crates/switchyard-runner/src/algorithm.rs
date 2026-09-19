@@ -247,9 +247,9 @@ pub struct LlmClassifierRouteConfig {
     /// How many trailing turns the judge sees. Unset shows it the opening task
     /// and the latest user follow-up only.
     pub recent_turn_window: Option<usize>,
-    /// Most characters a windowed judge payload may use. The window narrows from the
-    /// oldest turn until it fits, so one large tool result cannot decide the judge's
-    /// cost. Ignored without `recent_turn_window`.
+    /// Most characters the judge payload may use, in every mode. A window narrows from
+    /// the oldest turn until it fits, so one large tool result cannot decide the judge's
+    /// cost; without a window the task messages are clipped instead.
     #[serde(default = "default_judge_char_budget")]
     pub judge_char_budget: usize,
     /// Replaces the packaged judge prompt. Required in custom mode.
@@ -471,7 +471,7 @@ pub struct StageClassifierConfig {
     /// and the latest user follow-up only.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
-    /// Most characters a windowed judge payload may use. Ignored without a window.
+    /// Most characters the judge payload may use.
     #[serde(default = "default_judge_char_budget")]
     pub judge_char_budget: usize,
     /// Replaces the packaged judge prompt.
@@ -958,7 +958,10 @@ impl LlmClassifierRouteConfig {
                         prompt: prompt.clone(),
                         response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
-                        judge: required_classifier_field(route_name, "escalation", escalation)?,
+                        judge: EscalationJudgeConfig {
+                            judge_char_budget: *judge_char_budget,
+                            ..required_classifier_field(route_name, "escalation", escalation)?
+                        },
                     },
                 ))
             }
