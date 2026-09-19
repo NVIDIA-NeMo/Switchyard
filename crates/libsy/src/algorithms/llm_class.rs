@@ -188,6 +188,7 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
 /// Selects the task messages shown to capability and custom-schema classifiers.
 struct TaskInput {
     recent_turn_window: Option<usize>,
+    judge_max_images: Option<usize>,
 }
 
 impl TaskInput {
@@ -209,6 +210,11 @@ impl TaskInput {
                 .retain(|block| !matches!(block, ContentBlock::Reasoning { .. }));
         }
         messages.retain(|message| !message.content.is_empty());
+        if let Some(mut remaining) = self.judge_max_images {
+            for message in messages.iter_mut().rev() {
+                limit_judge_images(&mut message.content, &mut remaining);
+            }
+        }
         messages
     }
 }
@@ -226,6 +232,24 @@ impl ClassifierInput for TaskInput {
             ));
         }
         messages
+    }
+}
+
+/// Limits the judge's images newest-first without changing content order or tool pairings.
+fn limit_judge_images(content: &mut [ContentBlock], remaining: &mut usize) {
+    for block in content.iter_mut().rev() {
+        match block {
+            ContentBlock::Image { .. } if *remaining == 0 => {
+                *block = ContentBlock::Text {
+                    text: "[Image omitted from judge input.]".to_string(),
+                };
+            }
+            ContentBlock::Image { .. } => *remaining -= 1,
+            ContentBlock::ToolResult(result) => {
+                limit_judge_images(&mut result.content, remaining);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -323,6 +347,9 @@ pub struct TaskClassifierConfig {
     /// `None` judges the opening task and latest user follow-up. `Some(n)` also
     /// includes the surrounding conversation using the last `n` turns.
     pub recent_turn_window: Option<usize>,
+    /// Maximum images in the judge's selected messages, keeping the newest first.
+    /// `None` preserves all images; `Some(0)` omits images. The answer request is unchanged.
+    pub judge_max_images: Option<usize>,
 }
 
 /// Selects how a capability judge obtains and interprets its prediction.
@@ -381,6 +408,8 @@ struct TaskClassifierConfigWire {
     #[serde(default)]
     recent_turn_window: Option<usize>,
     #[serde(default)]
+    judge_max_images: Option<usize>,
+    #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
     response_format_type: ClassifierResponseFormat,
@@ -410,6 +439,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             classify_trigger: wire.classify_trigger,
             message_hash_fallback: wire.message_hash_fallback,
             recent_turn_window: wire.recent_turn_window,
+            judge_max_images: wire.judge_max_images,
         })
     }
 }
@@ -430,6 +460,7 @@ impl Default for TaskClassifierConfig {
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
+            judge_max_images: None,
         }
     }
 }
@@ -521,6 +552,9 @@ pub struct CustomClassifierConfig {
     pub message_hash_fallback: bool,
     /// Trailing conversation turns shown to the classifier judge.
     pub recent_turn_window: Option<usize>,
+    /// Maximum images in the judge's selected messages, keeping the newest first.
+    /// `None` preserves all images; `Some(0)` omits images. The answer request is unchanged.
+    pub judge_max_images: Option<usize>,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
 }
@@ -539,6 +573,7 @@ impl CustomClassifierConfig {
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
+            judge_max_images: None,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
     }
@@ -690,6 +725,7 @@ impl LlmTaskClassifier {
         let message_hash_fallback = config.message_hash_fallback;
         let input = TaskInput {
             recent_turn_window: config.recent_turn_window,
+            judge_max_images: config.judge_max_images,
         };
         let classifier: Arc<dyn Classifier<State>> = match config.judge {
             CapabilityJudgeConfig::Llm(judge) => Arc::new(
@@ -728,6 +764,7 @@ impl LlmTaskClassifier {
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
+            judge_max_images,
             max_output_tokens,
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
@@ -738,7 +775,10 @@ impl LlmTaskClassifier {
         };
         let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
             StructuredJudge::new(
-                TaskInput { recent_turn_window },
+                TaskInput {
+                    recent_turn_window,
+                    judge_max_images,
+                },
                 contract,
                 JsonSchemaDecoder::new(),
                 JudgeRuntimeConfig::new(max_output_tokens)?,
@@ -846,8 +886,8 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, ModelId, ToolCall,
-        ToolResult, completion_text, text_request, text_response,
+        ContentBlock, ImageSource, InstructionBlock, LlmClientError, LlmRequest, Metadata, ModelId,
+        ToolCall, ToolResult, completion_text, text_request, text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -863,6 +903,74 @@ mod tests {
             base_threshold,
             ..LlmCapabilityConfig::default()
         }
+    }
+
+    /// Image limits span messages and nested tool results without changing the answer input.
+    #[test]
+    fn judge_image_budget_keeps_the_newest_images_and_original_order() -> Result<()> {
+        let image = |name: &str| ContentBlock::Image {
+            source: ImageSource::Url {
+                url: format!("https://example.test/{name}.png"),
+                detail: None,
+            },
+        };
+        let mut request = classify_request();
+        request.llm_request.messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![image("old")],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "Compare the screenshots.".into(),
+                    },
+                    image("recent"),
+                    ContentBlock::ToolResult(ToolResult {
+                        tool_call_id: "screenshot".into(),
+                        content: vec![image("newest")],
+                        is_error: Some(false),
+                    }),
+                ],
+            },
+        ];
+        let original = request.llm_request.messages.clone();
+        for (limit, expected) in [
+            (None, 3),
+            (Some(0), 0),
+            (Some(1), 1),
+            (Some(2), 2),
+            (Some(9), 3),
+        ] {
+            let messages = TaskInput {
+                recent_turn_window: Some(10),
+                judge_max_images: limit,
+            }
+            .build_messages(&State::default(), &request);
+            let serialized =
+                serde_json::to_string(&messages).map_err(|e| LibsyError::AlgorithmError {
+                    message: e.to_string(),
+                })?;
+            assert_eq!(
+                serialized.matches("https://example.test/").count(),
+                expected
+            );
+            assert_eq!(serialized.contains("/old.png"), expected == 3);
+            assert_eq!(serialized.contains("/recent.png"), expected >= 2);
+            assert_eq!(serialized.contains("/newest.png"), expected >= 1);
+            assert!(serialized.contains("Compare the screenshots."));
+            assert_eq!(messages[0].role, Role::User);
+            assert!(!messages[0].content.is_empty());
+            if expected == 3 {
+                assert_eq!(&messages[..original.len()], &original);
+            }
+            if expected == 2 {
+                assert_eq!(messages[1], original[1]);
+            }
+            assert_eq!(request.llm_request.messages, original);
+        }
+        Ok(())
     }
 
     fn test_config(base_threshold: f64) -> TaskClassifierConfig {
@@ -1717,7 +1825,10 @@ mod tests {
     /// The no-window case is covered by `capability_judge_builds_a_structured_request`.
     fn capability_judge(recent_turn_window: Option<usize>) -> Result<CapabilityJudge> {
         Ok(StructuredJudge::new(
-            TaskInput { recent_turn_window },
+            TaskInput {
+                recent_turn_window,
+                judge_max_images: None,
+            },
             LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?,
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
@@ -1805,6 +1916,7 @@ mod tests {
         });
         let input = TaskInput {
             recent_turn_window: None,
+            judge_max_images: None,
         };
         let mut request = Request {
             llm_request: LlmRequest {
@@ -1981,6 +2093,7 @@ mod tests {
 
         let built = TaskInput {
             recent_turn_window: Some(10),
+            judge_max_images: None,
         }
         .build_messages(&State::default(), &request);
 
@@ -2135,6 +2248,7 @@ mod tests {
         let judge: CapabilityJudge = StructuredJudge::new(
             TaskInput {
                 recent_turn_window: None,
+                judge_max_images: None,
             },
             contract,
             SerdeDecoder::new(),
