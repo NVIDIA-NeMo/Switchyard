@@ -4048,3 +4048,86 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
     assert_eq!(output["input"], outputs);
     Ok(())
 }
+
+// Verifies Anthropic thinking controls are not republished under the Responses
+// `reasoning` field, and that dropping them is reported.
+#[test]
+fn anthropic_thinking_controls_are_not_emitted_as_responses_reasoning() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-opus-5",
+        "max_tokens": 32000,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled", "budget_tokens": 10000}
+    });
+
+    let output = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+
+    assert_eq!(output.body.get("reasoning"), None);
+    assert!(!output.body.to_string().contains("budget_tokens"));
+    assert_eq!(output.diagnostics.len(), 1);
+    assert_eq!(output.diagnostics[0].code, "lossy_conversion");
+    assert!(
+        output.diagnostics[0].message.contains("budget_tokens")
+            && output.diagnostics[0].message.contains("type")
+    );
+    Ok(())
+}
+
+// Verifies a caller asking to be told about information loss is told about
+// reasoning controls the target cannot express.
+#[test]
+fn rejecting_lossy_conversion_rejects_untranslatable_reasoning_controls() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..Default::default()
+    };
+    let body = json!({
+        "model": "claude-opus-5",
+        "max_tokens": 32000,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled", "budget_tokens": 10000}
+    });
+
+    let result = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &policy,
+    );
+
+    assert!(result.is_err());
+    Ok(())
+}
+
+// Verifies Responses reasoning controls that the format does define still carry
+// through a rebuild without a diagnostic.
+#[test]
+fn responses_reasoning_summary_still_carries_through_a_rebuild() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": "Fix the parser.",
+        "reasoning": {"effort": "high", "summary": "auto"}
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    request.preservation.requests.clear();
+
+    let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+
+    assert_eq!(
+        output.body["reasoning"],
+        json!({"effort": "high", "summary": "auto"})
+    );
+    assert!(output.diagnostics.is_empty());
+    Ok(())
+}
