@@ -382,3 +382,47 @@ fn rlcd_spec_rejects_an_invalid_configuration() {
         .expect("build should fail");
     assert!(error.to_string().contains("classifier_target"), "{error}");
 }
+
+#[test]
+fn rlcd_spec_rejects_aliases_that_collide_after_resolution() {
+    // Two target names resolving to one model would make every verdict
+    // invalid, so the route would permanently fall back.
+    let mut aliased = rlcd_targets();
+    aliased.insert("fast-alias".to_string(), ModelId::from("fast"));
+    let spec = AlgorithmSpec::Rlcd {
+        classifier_target: "decision".to_string(),
+        targets: vec!["fast".to_string(), "fast-alias".to_string()],
+        default_target: "fast".to_string(),
+        max_output_tokens: 128,
+    };
+    let error = spec
+        .build("test", &aliased)
+        .err()
+        .expect("build should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("resolve to duplicate model fast"),
+        "{error}"
+    );
+
+    // The classifier itself must not resolve to a candidate model.
+    let mut shared = rlcd_targets();
+    shared.insert("decision".to_string(), ModelId::from("strong"));
+    let spec = AlgorithmSpec::Rlcd {
+        classifier_target: "decision".to_string(),
+        targets: vec!["fast".to_string(), "strong".to_string()],
+        default_target: "fast".to_string(),
+        max_output_tokens: 128,
+    };
+    let error = spec
+        .build("test", &shared)
+        .err()
+        .expect("build should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("classifier_target resolves to candidate model strong"),
+        "{error}"
+    );
+}

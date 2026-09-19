@@ -4,13 +4,13 @@
 //! RLCD-backed decision routing: a calibrated decision model picks among the
 //! route's targets in one pass.
 //!
-//! RLCD ("Reinforcement Learning for Calibrated Decisions") models map a task
-//! and a list of options to one calibrated probability per option without
-//! writing an answer word by word. TypeSafe's Jev popularized the approach;
-//! the most-liked open Jev counterpart on Hugging Face is
-//! `AlexWortega/openjev`, a Qwen3.5 cross-encoder that scores a task against
-//! every candidate option and returns one probability each. RLCD checkpoints
-//! such as `harshatheg/Qwen-2.5-1B-RLCD` express the same contract.
+//! RLCD models map a task and a list of options to one calibrated probability
+//! per option without writing an answer word by word — the "System One" model
+//! class TypeSafe's Jev announcement
+//! ([docs.typesafe.ai/concepts/system-one](https://docs.typesafe.ai/concepts/system-one))
+//! introduced, trained with Reinforcement Learning for Calibrated Decisions.
+//! The RLCD name originates in Reinforcement Learning from Contrastive
+//! Distillation ([arXiv:2307.12950](https://arxiv.org/abs/2307.12950)).
 //!
 //! [`Rlcd`] builds a decision request that lists every runtime target as a
 //! candidate option, routes to the option with the highest probability, and
@@ -303,13 +303,19 @@ impl Classifier<()> for RlcdClassifier {
         }
         let verdict = self.decision(request, driver, judge_models).await;
         let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
-        if let Some(evidence) = decision_evidence(verdict.as_ref()) {
-            match &classification {
-                Classification::Scores(scores) if !scores.is_empty() => {
+        match &classification {
+            Classification::Scores(scores) if !scores.is_empty() => {
+                if let Some(evidence) = decision_evidence(verdict.as_ref()) {
                     driver.set_evidence(evidence);
                 }
-                _ => driver.set_evidence_if_empty(evidence),
             }
+            // A present but unusable verdict must not credit the rejected
+            // decision: the fallback target decides, and the evidence says why.
+            _ if verdict.is_some() => driver.set_evidence_if_empty(serde_json::json!({
+                "source": "fail_open",
+                "reason_code": "invalid_verdict",
+            })),
+            _ => {}
         }
         // The decision model is a side call, never the turn's answer.
         Ok((classification, None))
@@ -616,8 +622,9 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn the_decision_records_the_probability_distribution_as_evidence() -> Result<()> {
+    /// Drives one request, answering the decision model with `completion`, and
+    /// returns the outcome evidence.
+    async fn evidence_for_decision(completion: String) -> Result<Value> {
         use crate::core::algorithm::Step;
 
         let models = runtime_models();
@@ -634,7 +641,7 @@ mod tests {
                         .map(|model| model.to_string())
                         .unwrap_or_default();
                     let text = if model_name == "decision" {
-                        capable_verdict()
+                        completion.clone()
                     } else {
                         "answer".to_string()
                     };
@@ -655,9 +662,14 @@ mod tests {
             }
         }
 
-        let evidence = evidence.ok_or_else(|| LibsyError::AlgorithmError {
+        evidence.ok_or_else(|| LibsyError::AlgorithmError {
             message: "no evidence recorded".to_string(),
-        })?;
+        })
+    }
+
+    #[tokio::test]
+    async fn the_decision_records_the_probability_distribution_as_evidence() -> Result<()> {
+        let evidence = evidence_for_decision(capable_verdict()).await?;
         assert_eq!(
             evidence.pointer("/source").and_then(Value::as_str),
             Some("rlcd")
@@ -673,6 +685,24 @@ mod tests {
                 message: "no probabilities in evidence".to_string(),
             })?;
         assert_eq!(probabilities.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_invalid_verdict_records_fail_open_evidence() -> Result<()> {
+        // The probabilities do not sum to one, so the verdict is rejected and
+        // the evidence must not credit it.
+        let evidence =
+            evidence_for_decision(verdict("capable", &[("efficient", 0.3), ("capable", 0.3)]))
+                .await?;
+        assert_eq!(
+            evidence.pointer("/source").and_then(Value::as_str),
+            Some("fail_open")
+        );
+        assert_eq!(
+            evidence.pointer("/reason_code").and_then(Value::as_str),
+            Some("invalid_verdict")
+        );
         Ok(())
     }
 

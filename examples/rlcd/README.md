@@ -5,12 +5,9 @@ endpoint and let it choose the best target per request.
 
 ## What you need
 
-- An endpoint that serves a decision model. The most-liked open Jev
-  counterpart is
-  [`AlexWortega/openjev`](https://huggingface.co/AlexWortega/openjev), a
-  Qwen3.5 cross-encoder that scores a task against every candidate option and
-  returns one probability per option. Any OpenAI-compatible server that
-  answers the decision prompt with one JSON object works.
+- An endpoint that serves a decision model. Any OpenAI-compatible server that
+  answers the decision prompt with one JSON object — a calibrated probability
+  per candidate option — works.
 - Two or more completion targets (the candidates the decision model chooses
   between).
 
@@ -33,7 +30,7 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
 [targets.decision]
-id = "Qwen-2.5-1B-RLCD"
+id = "decision-model"
 llm_client = "rlcd"
 
 [targets.strong]

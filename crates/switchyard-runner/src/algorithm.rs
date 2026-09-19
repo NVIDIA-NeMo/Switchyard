@@ -429,8 +429,7 @@ pub enum AlgorithmSpec {
         batch_size: Option<usize>,
     },
     /// Asks an RLCD decision model for a calibrated probability per target and
-    /// routes to the argmax. JEV-style "System One" routing over open decision
-    /// models such as `harshatheg/Qwen-2.5-1B-RLCD`.
+    /// routes to the argmax — TypeSafe Jev-style "System One" routing.
     Rlcd {
         /// Target through which the decision model is called. Never a routing destination itself.
         classifier_target: String,
@@ -1410,17 +1409,28 @@ fn build_algorithm(
                     "rlcd route {route_name} default_target {default_target} must be one of targets"
                 )));
             }
-            if names
+            // Candidates are matched by their resolved model id, so validation
+            // runs on ids: two aliases of one model would make every verdict
+            // invalid, and a classifier alias could route to itself.
+            let classifier_id = resolve_target_model_id(route_name, classifier_target, targets)?;
+            let candidate_ids = names
                 .iter()
-                .any(|name| name.as_str() == classifier_target.as_str())
+                .map(|name| resolve_target_model_id(route_name, name, targets))
+                .collect::<AlgorithmResult<Vec<_>>>()?;
+            let mut resolved = BTreeSet::new();
+            if let Some(duplicate) = candidate_ids
+                .iter()
+                .map(|id| id.as_str())
+                .find(|id| !resolved.insert(*id))
             {
                 return Err(AlgorithmConfigError::new(format!(
-                    "rlcd route {route_name} classifier_target must not be a routing target"
+                    "rlcd route {route_name} targets resolve to duplicate model {duplicate}"
                 )));
             }
-            resolve_target_model_id(route_name, classifier_target, targets)?;
-            for name in names.iter() {
-                resolve_target_model_id(route_name, name, targets)?;
+            if candidate_ids.contains(&classifier_id) {
+                return Err(AlgorithmConfigError::new(format!(
+                    "rlcd route {route_name} classifier_target resolves to candidate model {classifier_id}"
+                )));
             }
             let config = RlcdConfig {
                 default_target: resolve_target_model_id(route_name, default_target, targets)?,

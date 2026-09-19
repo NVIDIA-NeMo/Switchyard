@@ -3,12 +3,8 @@
 RLCD ("Reinforcement Learning for Calibrated Decisions") routes by asking a
 decision model for one calibrated probability per candidate target and picking
 the target with the highest probability. This is the same "System One" approach
-pioneered by TypeSafe's Jev. The most-liked open implementation of it is
-[`AlexWortega/openjev`](https://huggingface.co/AlexWortega/openjev), a Qwen3.5
-cross-encoder that scores a task against every candidate option and returns one
-probability each. RLCD checkpoints such as
-[`harshatheg/Qwen-2.5-1B-RLCD`](https://huggingface.co/harshatheg/Qwen-2.5-1B-RLCD)
-express the same contract.
+TypeSafe's Jev announcement introduced. Serve any decision model that answers
+the decision prompt with one JSON object behind an OpenAI-compatible endpoint.
 
 A generative judge writes an answer token by token. A decision model instead
 takes the task plus a list of options and returns every option's probability in
@@ -38,7 +34,7 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
 [targets.decision]
-id = "Qwen-2.5-1B-RLCD"
+id = "decision-model"
 llm_client = "rlcd"
 
 [targets.strong]
@@ -72,21 +68,24 @@ For each request Switchyard:
 
 1. Enumerates every `targets` candidate as a numbered option.
 2. Sends the task and the option list to `classifier_target`.
-3. Parses one JSON verdict with a probability for every option:
-
-```json
-{
-  "target": "model/strong",
-  "probabilities": [
-    {"option": "model/weak", "probability": 0.2},
-    {"option": "model/strong", "probability": 0.8}
-  ]
-}
-```
-
+3. Parses one JSON verdict with a probability for every option.
 4. Routes to the option with the highest probability.
 5. Keeps the remaining candidates in `targets` order as fallbacks for
    eligible non-timeout failures.
+
+The verdict's options are the targets' resolved `id` values — the same
+identifiers the upstream provider sees, not the local target names. For the
+configuration above:
+
+```json
+{
+  "target": "openai/gpt-5",
+  "probabilities": [
+    {"option": "openai/gpt-4o-mini", "probability": 0.2},
+    {"option": "openai/gpt-5", "probability": 0.8}
+  ]
+}
+```
 
 A verdict is used only when it names every candidate exactly once with a
 finite probability in `[0, 1]`, the probabilities sum to about `1.00`, and
@@ -100,3 +99,12 @@ failed classifier judge.
 Decision requests use `response_format = {"type": "json_object"}` and the
 verdict schema is checked locally, because self-hosted decision-model
 endpoints broadly support JSON objects but not strict JSON Schema.
+
+## References
+
+- TypeSafe's Jev announcement — the "System One" model class trained with
+  Reinforcement Learning for Calibrated Decisions:
+  [docs.typesafe.ai/concepts/system-one](https://docs.typesafe.ai/concepts/system-one)
+- RLCD, Reinforcement Learning from Contrastive Distillation — the paper that
+  introduced the RLCD name:
+  [arXiv:2307.12950](https://arxiv.org/abs/2307.12950)
