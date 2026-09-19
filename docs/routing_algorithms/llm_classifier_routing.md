@@ -129,7 +129,8 @@ for the server merge behavior.
 
 ### Control images shown to the judge
 
-Capability and custom classifiers can judge text alone or text with images:
+Capability and custom classifiers already pass images from selected messages to
+the judge. `judge_max_images` controls how many of those images the judge receives:
 
 ```toml
 judge_max_images = 0  # Text-only judge; the answer model still receives all images.
