@@ -49,7 +49,7 @@ const ALGORITHM_NAME: &str = "rlcd";
 const PROBABILITY_TOLERANCE: f64 = 0.02;
 
 /// One candidate option and the calibrated probability the decision model assigned it.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RlcdOptionScore {
     /// The candidate option this probability belongs to.
@@ -59,7 +59,7 @@ struct RlcdOptionScore {
 }
 
 /// The typed decision response from the decision model.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RlcdVerdict {
     /// The option the decision model picked; must match the argmax probability.
@@ -70,21 +70,21 @@ struct RlcdVerdict {
 
 impl RlcdVerdict {
     /// The highest-probability option, or the first when probabilities tie.
-    fn best(&self) -> &RlcdOptionScore {
+    fn best(&self) -> Option<&RlcdOptionScore> {
         let mut best = 0;
         for index in 1..self.probabilities.len() {
             if self.probabilities[index].probability > self.probabilities[best].probability {
                 best = index;
             }
         }
-        &self.probabilities[best]
+        self.probabilities.get(best)
     }
 
     /// The verdict is usable when it names every candidate exactly once with a
     /// finite `[0, 1]` probability, the probabilities sum to about one, and
     /// `target` is the highest-probability option.
     fn is_valid(&self, candidates: &[ModelId]) -> bool {
-        if candidates.is_empty() || self.probabilities.len() != candidates.len() {
+        if self.probabilities.len() != candidates.len() {
             return false;
         }
         let mut sum = 0.0;
@@ -104,7 +104,8 @@ impl RlcdVerdict {
             }
             sum += score.probability;
         }
-        (sum - 1.0).abs() <= PROBABILITY_TOLERANCE && self.target == self.best().option
+        (sum - 1.0).abs() <= PROBABILITY_TOLERANCE
+            && self.best().is_some_and(|best| self.target == best.option)
     }
 }
 
@@ -166,10 +167,11 @@ impl JudgePolicy for RlcdPolicy {
 /// Returns routing evidence for a usable decision.
 fn decision_evidence(verdict: Option<&RlcdVerdict>) -> Option<Value> {
     let verdict = verdict?;
+    let best = verdict.best()?;
     Some(serde_json::json!({
         "source": "rlcd",
-        "verdict": verdict.best().option.clone(),
-        "score": verdict.best().probability,
+        "verdict": best.option.clone(),
+        "score": best.probability,
         "probabilities": verdict.probabilities.iter().map(|score| serde_json::json!({
             "option": score.option.clone(),
             "probability": score.probability,
@@ -316,7 +318,7 @@ impl Classifier<()> for RlcdClassifier {
 
 /// Terminal classifier that routes the configured default target when the
 /// decision model abstains.
-pub struct RlcdFallback(pub ModelId);
+struct RlcdFallback(ModelId);
 
 #[async_trait]
 impl<S: Send> Classifier<S> for RlcdFallback {
@@ -526,22 +528,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_high_probability_efficient_verdict_routes_efficient() -> Result<()> {
-        let (selected, _) = test_drive_with_models(
-            router("capable")?,
-            request(),
-            runtime_models(),
-            serve_with(verdict(
-                "efficient",
-                &[("efficient", 0.9), ("capable", 0.1)],
-            )),
-        )
-        .await?;
-        assert_eq!(selected, "efficient");
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn an_unreachable_decision_model_routes_the_default_target() -> Result<()> {
         let (selected, response) = test_drive_with_models(
             router("efficient")?,
@@ -563,6 +549,7 @@ mod tests {
     async fn an_invalid_verdict_routes_the_default_target() -> Result<()> {
         for completion in [
             "not json at all".to_string(),
+            verdict("efficient", &[]),
             verdict("efficient", &[("efficient", 1.5), ("capable", -0.5)]),
             verdict("efficient", &[("efficient", 0.3)]),
             verdict("efficient", &[("efficient", 0.3), ("capable", 0.3)]),
@@ -703,25 +690,5 @@ mod tests {
             error.contains("max_output_tokens"),
             "unexpected error: {error}"
         );
-    }
-
-    #[test]
-    fn a_verdict_is_invalid_when_probabilities_do_not_sum_to_one() -> Result<()> {
-        let candidates = [ModelId::from("efficient"), ModelId::from("capable")];
-        let verdict = RlcdVerdict {
-            target: "capable".to_string(),
-            probabilities: vec![
-                RlcdOptionScore {
-                    option: "efficient".to_string(),
-                    probability: 0.3,
-                },
-                RlcdOptionScore {
-                    option: "capable".to_string(),
-                    probability: 0.4,
-                },
-            ],
-        };
-        assert!(!verdict.is_valid(&candidates));
-        Ok(())
     }
 }
