@@ -802,6 +802,8 @@ async fn stateful_escalation_warns_once_without_a_session_id() -> switchyard_lib
 
 #[tokio::test]
 async fn deescalation_evidence_stays_pending_until_confirmed() -> switchyard_libsy::Result<()> {
+    // Shares the process-wide request gauge with the metrics tests, so take the same guard.
+    let _guard = serialize_test().lock().await;
     let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
         contract: ClassifierContractConfig::default(),
         config: EscalationJudgeConfig {
