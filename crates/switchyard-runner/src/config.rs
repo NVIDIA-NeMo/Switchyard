@@ -1205,8 +1205,8 @@ new = ["send_message"]
         Ok(())
     }
 
-    /// The route-level budget reaches every judge: a value the escalation judge rejects
-    /// fails the build, so it is not silently left at the default there.
+    /// The route-level budget reaches every judge: a value a judge rejects fails the
+    /// build, so it is not silently left at the default in any mode.
     #[test]
     fn classifier_judge_char_budget_applies_in_every_mode() -> RunnerResult<()> {
         let capability = VALID_CONFIG.replace(
@@ -1229,6 +1229,18 @@ new = ["send_message"]
             error_message(&too_small).contains("judge_char_budget must be at least 256"),
             "{}",
             error_message(&too_small)
+        );
+
+        let custom =
+            with_subagent_llm_classifier(VALID_CONFIG, "passthrough", "\njudge_char_budget = 1000");
+        runner_from_toml(&custom)?;
+
+        let custom_too_small =
+            with_subagent_llm_classifier(VALID_CONFIG, "passthrough", "\njudge_char_budget = 100");
+        assert!(
+            error_message(&custom_too_small).contains("judge_char_budget must be at least 256"),
+            "{}",
+            error_message(&custom_too_small)
         );
         Ok(())
     }
