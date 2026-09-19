@@ -110,6 +110,7 @@ struct CapabilityClassifierRouteConfig {
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
+    judge_max_images: Option<usize>,
 }
 
 impl CapabilityClassifierRouteConfig {
@@ -152,6 +153,7 @@ impl CapabilityClassifierRouteConfig {
             classify_trigger: config.classify_trigger,
             message_hash_fallback: config.message_hash_fallback,
             recent_turn_window: config.recent_turn_window,
+            judge_max_images: config.judge_max_images,
         })
     }
 }
@@ -184,6 +186,7 @@ struct CustomClassifierRouteConfig {
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
+    judge_max_images: Option<usize>,
     max_output_tokens: u64,
     judge_deadline_ms: Option<u64>,
 }
@@ -320,6 +323,9 @@ pub struct LlmClassifierRouteConfig {
     /// How many trailing turns the judge sees. Unset shows it the opening task
     /// and the latest user follow-up only.
     pub recent_turn_window: Option<usize>,
+    /// Maximum judge images; unset preserves all, zero omits images, otherwise keeps newest.
+    #[serde(default)]
+    pub judge_max_images: Option<usize>,
     /// Replaces the packaged judge prompt. Required in custom mode.
     pub prompt: Option<String>,
     /// How the judge is asked for structured output. Use `json_object` when the
@@ -656,6 +662,9 @@ pub struct StageClassifierConfig {
     /// and the latest user follow-up only.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
+    /// Maximum judge images; unset preserves all, zero omits images, otherwise keeps newest.
+    #[serde(default)]
+    pub judge_max_images: Option<usize>,
     /// Replaces the packaged judge prompt.
     #[serde(default)]
     pub prompt: Option<String>,
@@ -779,6 +788,7 @@ impl StageClassifierConfig {
             classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
+            judge_max_images: self.judge_max_images,
             prompt: self.prompt.clone(),
             response_format_type: self.response_format_type,
             max_output_tokens: self.max_output_tokens,
@@ -1293,6 +1303,7 @@ impl LlmClassifierRouteConfig {
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
+            judge_max_images,
             prompt,
             response_format_type,
             max_output_tokens,
@@ -1387,10 +1398,18 @@ impl LlmClassifierRouteConfig {
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
+                        judge_max_images: *judge_max_images,
                     },
                 ))
             }
             ClassifierMode::Escalation => {
+                if judge_max_images.is_some() {
+                    return Err(classifier_field_error(
+                        route_name,
+                        "judge_max_images",
+                        "escalation",
+                    ));
+                }
                 reject_custom_fields(
                     route_name,
                     "escalation",
@@ -1491,6 +1510,7 @@ impl LlmClassifierRouteConfig {
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
+                        judge_max_images: *judge_max_images,
                         max_output_tokens: *max_output_tokens,
                         judge_deadline_ms: *judge_deadline_ms,
                     },
@@ -1578,6 +1598,7 @@ fn build_subagent_router_config(
                 config.policy.into_libsy(),
             );
             classifier_config.recent_turn_window = config.recent_turn_window;
+            classifier_config.judge_max_images = config.judge_max_images;
             classifier_config.max_output_tokens = config.max_output_tokens;
             classifier_config.judge_deadline_ms = config.judge_deadline_ms;
             let classifier = Arc::new(
@@ -1755,6 +1776,7 @@ fn build_algorithm(
                     classifier_config.classify_trigger = config.classify_trigger;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
+                    classifier_config.judge_max_images = config.judge_max_images;
                     classifier_config.max_output_tokens = config.max_output_tokens;
                     classifier_config.judge_deadline_ms = config.judge_deadline_ms;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
