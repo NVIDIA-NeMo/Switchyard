@@ -539,9 +539,24 @@ fn extract_tool_signals_with_window_and_semantics(
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    let is_error = result.is_error == Some(true)
+                    // A structured body reporting `exit_code: 0` has already said
+                    // the command succeeded, and that is the one field here with real
+                    // authority: the executor's own verdict. Nothing else in the
+                    // result may overrule it.
+                    //
+                    // Hermes sends `"error": null` on every success, so key presence
+                    // flagged clean calls; error-shaped output text (`cat` proving a
+                    // path is absent, `grep` finding nothing) did the same. Neither
+                    // survives a self-declared exit 0.
+                    //
+                    // When no `exit_code` is present -- plain-text results, or a
+                    // harness that does not send one -- `exit_ok` is false and every
+                    // term behaves exactly as before.
+                    let exit_ok = exit_code_of(&text) == Some(0);
+                    let is_error = (result.is_error == Some(true)
                         || structured_error(&text)
-                        || classify_text(&text).0 > 0.0;
+                        || classify_text(&text).0 > 0.0)
+                        && !exit_ok;
                     tool_tail_clean = !is_error;
                     error_count = error_count.saturating_add(u32::from(is_error));
                     if !text.is_empty() {
@@ -771,6 +786,15 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
         }
     }
     (severity, patterns)
+}
+
+/// The `exit_code` a structured tool-result body reports, when it has one.
+fn exit_code_of(text: &str) -> Option<i64> {
+    serde_json::from_str::<Value>(text)
+        .ok()?
+        .as_object()?
+        .get("exit_code")?
+        .as_i64()
 }
 
 fn structured_error(text: &str) -> bool {
