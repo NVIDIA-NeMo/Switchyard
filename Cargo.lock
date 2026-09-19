@@ -2328,14 +2328,17 @@ dependencies = [
  "http",
  "jsonptr",
  "jsonschema",
+ "libc",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
  "rand 0.10.2",
  "regex",
+ "ring",
  "serde",
  "serde_json",
  "switchyard-protocol",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -2343,6 +2346,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

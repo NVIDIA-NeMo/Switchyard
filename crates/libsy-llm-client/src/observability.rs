@@ -188,6 +188,8 @@ fn client_call_error_type(error: &LibsyError) -> Cow<'static, str> {
         LibsyError::NoTargets => Cow::Borrowed("no_targets"),
         LibsyError::AlgorithmError { .. } => Cow::Borrowed("algorithm_error"),
         LibsyError::Driver(_) => Cow::Borrowed("driver_error"),
+        LibsyError::CircuitOpen { .. } => Cow::Borrowed("circuit_open"),
+        LibsyError::VgrTiersUnavailable { .. } => Cow::Borrowed("vgr_tiers_unavailable"),
         LibsyError::MissingFinalResponse => Cow::Borrowed("missing_final_response"),
         LibsyError::External { .. } => Cow::Borrowed("_OTHER"),
     }

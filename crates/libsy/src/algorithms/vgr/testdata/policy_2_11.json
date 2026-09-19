@@ -1,0 +1,147 @@
+{
+  "corpus": "switchyard-vgr-policy-2.11",
+  "policy": "POLICY 2.11",
+  "implementation_policy_version": "1.0.0",
+  "cases": [
+    {
+      "name": "unknown capability fails closed",
+      "capabilities": {},
+      "signals": {},
+      "readiness": {},
+      "expected": {
+        "branch": "unknown",
+        "predicted": "cloud",
+        "effective": "cloud",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "passing checker is gated until validated",
+      "capabilities": {"has_checks": true},
+      "signals": {"tests_pass": "yes"},
+      "readiness": {"checker_validated": false},
+      "expected": {
+        "branch": "checks",
+        "predicted": "local",
+        "effective": "cloud",
+        "readiness_gate": "secure_checker_missing"
+      }
+    },
+    {
+      "name": "validated checker commits",
+      "capabilities": {"has_checks": true},
+      "signals": {"tests_pass": "yes"},
+      "readiness": {"checker_validated": true},
+      "expected": {
+        "branch": "checks",
+        "predicted": "local",
+        "effective": "local",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "coding confidence commits with validated checker contract",
+      "capabilities": {"is_coding": true},
+      "signals": {"readout": 0.95},
+      "readiness": {"checker_validated": true},
+      "expected": {
+        "branch": "coding_no_checks",
+        "predicted": "local",
+        "effective": "local",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "host errors veto coding commit",
+      "capabilities": {
+        "is_coding": true,
+        "tool_error_count": 2,
+        "tool_error_source": "host"
+      },
+      "signals": {"readout": 1.0, "tool_errors": "count:2"},
+      "readiness": {"checker_validated": true},
+      "expected": {
+        "branch": "coding_no_checks",
+        "predicted": "cloud",
+        "effective": "cloud",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "verified answer commits",
+      "capabilities": {
+        "task_text": "answer",
+        "final_answer": "42"
+      },
+      "signals": {"answer_verifier": "yes"},
+      "readiness": {},
+      "expected": {
+        "branch": "answer",
+        "predicted": "local",
+        "effective": "local",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "chat dial commit",
+      "capabilities": {"is_chat": true},
+      "signals": {"readout": 0.35},
+      "readiness": {},
+      "expected": {
+        "branch": "chat",
+        "predicted": "local",
+        "effective": "local",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "host-attested agentic dial commit",
+      "capabilities": {
+        "is_agentic": true,
+        "transcript": "tool trajectory",
+        "tool_error_count": 0,
+        "tool_error_source": "host"
+      },
+      "signals": {"readout": 0.25},
+      "readiness": {},
+      "expected": {
+        "branch": "agentic_verified",
+        "predicted": "local",
+        "effective": "local",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "untrusted clean agentic count cannot authorize",
+      "capabilities": {
+        "is_agentic": true,
+        "transcript": "tool trajectory",
+        "tool_error_count": 0,
+        "tool_error_source": "untrusted"
+      },
+      "signals": {"readout": 1.0},
+      "readiness": {},
+      "expected": {
+        "branch": "agentic_verified",
+        "predicted": "cloud",
+        "effective": "cloud",
+        "readiness_gate": "none"
+      }
+    },
+    {
+      "name": "default verification commits at confidence",
+      "capabilities": {
+        "default_verified": true,
+        "transcript": "user and local attempt"
+      },
+      "signals": {"readout": 0.95},
+      "readiness": {},
+      "expected": {
+        "branch": "default_verified",
+        "predicted": "local",
+        "effective": "local",
+        "readiness_gate": "none"
+      }
+    }
+  ]
+}

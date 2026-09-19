@@ -5,6 +5,7 @@
 
 mod advisor_gate;
 mod stage_router;
+mod vgr;
 
 use std::collections::HashSet;
 
@@ -13,15 +14,18 @@ use serde::Serialize;
 
 use advisor_gate::{AdvisorGateCumulative, AdvisorGateStatsSnapshot};
 use stage_router::{StageRouterCumulative, StageRouterStatsSnapshot};
+use vgr::{VgrCumulative, VgrStatsSnapshot};
 
 const ADVISOR_GATE: &str = "advisor_gate";
 const STAGE_ROUTER: &str = "stage_router";
+const VGR: &str = "vgr";
 
 /// Owns algorithm metric baselines behind the generic server stats interface.
 pub(super) struct AlgorithmStats {
     registry: Registry,
     advisor_gate_baseline: Option<AdvisorGateCumulative>,
     stage_router_baseline: Option<StageRouterCumulative>,
+    vgr_baseline: Option<VgrCumulative>,
 }
 
 /// Curated algorithm-specific data included in the JSON stats response.
@@ -34,6 +38,8 @@ pub(crate) struct AlgorithmStatsSnapshot {
     pub advisor_gate: Option<AdvisorGateStatsSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage_router: Option<StageRouterStatsSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vgr: Option<VgrStatsSnapshot>,
 }
 
 impl AlgorithmStats {
@@ -50,6 +56,9 @@ impl AlgorithmStats {
             stage_router_baseline: algorithms
                 .contains(STAGE_ROUTER)
                 .then(|| StageRouterCumulative::collect(&families)),
+            vgr_baseline: algorithms
+                .contains(VGR)
+                .then(|| VgrCumulative::collect(&families)),
             registry,
         }
     }
@@ -65,6 +74,10 @@ impl AlgorithmStats {
                 .stage_router_baseline
                 .as_ref()
                 .map(|baseline| StageRouterCumulative::collect(&families).delta(baseline)),
+            vgr: self
+                .vgr_baseline
+                .as_ref()
+                .map(|baseline| VgrCumulative::collect(&families).delta(baseline)),
         }
     }
 
@@ -74,6 +87,9 @@ impl AlgorithmStats {
         }
         if let Some(baseline) = &mut self.stage_router_baseline {
             *baseline = StageRouterCumulative::collect(&self.registry.gather());
+        }
+        if let Some(baseline) = &mut self.vgr_baseline {
+            *baseline = VgrCumulative::collect(&self.registry.gather());
         }
     }
 }

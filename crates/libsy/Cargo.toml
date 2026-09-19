@@ -37,7 +37,25 @@ tokio.workspace = true
 tokio-stream = "0.1"
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
+# SHA-256 and private snapshot directories for the cross-platform checker.
+ring = "0.17"
+tempfile = "3"
 uuid.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Direct process-group signalling and no-follow file opens for the checker.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Job Objects, suspended process startup, and handle-based tamper evidence.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.

@@ -40,7 +40,8 @@ use serde_json::{Value, json};
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
 use switchyard_runner::{
-    CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
+    CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RouteErrorSummary, RunOutput, Runner,
+    RunnerError,
 };
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
@@ -63,6 +64,7 @@ pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
+const HEADER_ROUTE_TYPE: &str = "x-switchyard-route-type";
 const MAX_ROUTING_HEADER_VALUE_LEN: usize = 512;
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
@@ -165,7 +167,26 @@ impl SharedRoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) {
-        if let Err(error) = self.writer.lock().append(context, model, tier, usage) {
+        if let Err(error) = self.writer.lock().append(context, model, tier, usage, None) {
+            tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
+        }
+    }
+
+    fn append_failure(
+        &self,
+        context: routing_log::RoutingLogContext,
+        route: &str,
+        model: &str,
+        tier: Option<&str>,
+        failure: &RouteErrorSummary,
+    ) {
+        if let Err(error) = self.writer.lock().append(
+            context,
+            model,
+            tier,
+            &Usage::default(),
+            Some((route, failure)),
+        ) {
             tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
         }
     }
@@ -1019,12 +1040,10 @@ async fn handle_llm_request(
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    let routing_log_context = routing_log_context.map(|context| {
-        context.with_route(
-            request.llm_request.model.as_deref().unwrap_or_default(),
-            route.algorithm_name(),
-        )
-    });
+    let route_type = route.algorithm_name().to_string();
+    let route_model = request.llm_request.model.clone().unwrap_or_default();
+    let routing_log_context =
+        routing_log_context.map(|context| context.with_route(&route_model, &route_type));
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
     let observer = stats_observer(
@@ -1033,7 +1052,25 @@ async fn handle_llm_request(
     );
     let output = match route.execute(request, Some(observer)).await {
         Ok(output) => output,
-        Err(error) => return runner_error(error),
+        Err(error) => {
+            let failure = error.execution_error_summary();
+            if let Some((log, context)) = state.routing_log.clone().zip(routing_log_context.clone())
+            {
+                let model = failure
+                    .target
+                    .as_ref()
+                    .map(ModelId::as_str)
+                    .unwrap_or("unknown");
+                log.append_failure(
+                    context,
+                    &route_model,
+                    model,
+                    vgr_tier(route, model),
+                    &failure,
+                );
+            }
+            return runner_error(error);
+        }
     };
     let RunOutput {
         selected_model,
@@ -1066,9 +1103,20 @@ async fn handle_llm_request(
             Err(error) => return server_error(error.to_string()),
         };
     if let Some(served_model) = served_model.as_ref() {
-        attach_routing_headers(&mut response, served_model.as_str());
+        attach_routing_headers(&mut response, served_model.as_str(), &route_type);
     }
     response
+}
+
+fn vgr_tier(route: &Route, model: &str) -> Option<&'static str> {
+    if route.algorithm_name() != "vgr" {
+        return None;
+    }
+    route
+        .decision_targets()
+        .iter()
+        .position(|target| target.model.as_str() == model)
+        .map(|index| if index == 0 { "local" } else { "cloud" })
 }
 
 /// Holds the request log context until the request reaches a terminal state.
@@ -1185,8 +1233,9 @@ fn metadata_from_headers(headers: HeaderMap) -> Metadata {
     metadata
 }
 
-fn attach_routing_headers(response: &mut Response, served_model: &str) {
+fn attach_routing_headers(response: &mut Response, served_model: &str, route_type: &str) {
     insert_routing_header(response, HEADER_SELECTED_MODEL, served_model);
+    insert_routing_header(response, HEADER_ROUTE_TYPE, route_type);
 }
 
 fn insert_routing_header(response: &mut Response, name: &'static str, value: &str) {
@@ -1207,10 +1256,22 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
 }
 
 fn algorithm_error(error: LibsyError) -> Response {
-    let LibsyError::ClientCall { source, .. } = &error else {
-        return server_error(error.to_string());
-    };
-    client_error(source)
+    match &error {
+        LibsyError::ClientCall { source, .. } => client_error(source),
+        LibsyError::CircuitOpen { .. } => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the selected model endpoint is temporarily unavailable",
+            "upstream_error",
+            "upstream_unavailable",
+        ),
+        LibsyError::VgrTiersUnavailable { .. } => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "both VGR serving tiers are temporarily unavailable",
+            "upstream_error",
+            "upstream_unavailable",
+        ),
+        _ => server_error(error.to_string()),
+    }
 }
 
 fn runner_error(error: RunnerError) -> Response {
@@ -1276,14 +1337,27 @@ fn client_error(error: &LlmClientError) -> Response {
 // Provider errors are often JSON documents; expose their message without
 // embedding the entire document as an escaped string in our error envelope.
 fn upstream_error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|body| {
-            body.pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| body.to_string())
+    let mut message = body.to_string();
+    for _ in 0..2 {
+        let Some(extracted) = json_error_message_prefix(&message) else {
+            break;
+        };
+        if extracted == message {
+            break;
+        }
+        message = extracted;
+    }
+    message
+}
+
+fn json_error_message_prefix(body: &str) -> Option<String> {
+    let mut deserializer = serde_json::Deserializer::from_str(body);
+    Value::deserialize(&mut deserializer).ok().and_then(|body| {
+        body.pointer("/error/message")
+            .or_else(|| body.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 // Error metadata retained until the client-facing endpoint selects an envelope.
@@ -1383,12 +1457,40 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .runner
-            .models()
-            .map(|model| (model.id.as_str(), model.capabilities)),
-    ))
+    let models = state
+        .runner
+        .models()
+        .map(|model| {
+            (
+                model.id.clone(),
+                model.algorithm.to_string(),
+                model.capabilities,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut entries = Vec::with_capacity(models.len());
+    for (id, algorithm, mut capabilities) in models {
+        if algorithm == "vgr"
+            && let Some(discovered) = discover_context_window(&state.runner, &id).await
+        {
+            capabilities.context_window = Some(discovered);
+        }
+        entries.push((id, algorithm, capabilities));
+    }
+    Json(model_list_payload(entries.iter().map(
+        |(id, algorithm, capabilities)| (id.as_str(), algorithm.as_str(), *capabilities),
+    )))
+}
+
+async fn discover_context_window(runner: &Runner, model: &ModelId) -> Option<u32> {
+    let body = runner
+        .model_properties(model.as_str(), Duration::from_secs(2))
+        .await?;
+    let context = body
+        .get("default_generation_settings")?
+        .get("n_ctx")?
+        .as_u64()?;
+    u32::try_from(context).ok().filter(|context| *context > 0)
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
@@ -1469,20 +1571,28 @@ async fn not_found() -> Response {
 }
 
 fn model_list_payload<'a>(
-    entries: impl IntoIterator<Item = (&'a str, ModelCapabilities)>,
+    entries: impl IntoIterator<Item = (&'a str, &'a str, ModelCapabilities)>,
 ) -> Value {
     let mut entries = entries.into_iter().collect::<Vec<_>>();
-    entries.sort_unstable_by_key(|(model_id, _)| *model_id);
-    let model_ids = entries.iter().map(|(model, _)| *model).collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(model_id, _, _)| *model_id);
+    let model_ids = entries
+        .iter()
+        .map(|(model, _, _)| *model)
+        .collect::<Vec<_>>();
     let first_id = model_ids.first().copied();
     let last_id = model_ids.last().copied();
     json!({
         "object": "list",
-        "data": entries.iter().map(|(model, caps)| model_entry_json(model, *caps)).collect::<Vec<_>>(),
+        "data": entries
+            .iter()
+            .map(|(model, route_type, caps)| model_entry_json(model, route_type, *caps))
+            .collect::<Vec<_>>(),
         "models": entries
             .iter()
             .enumerate()
-            .map(|(priority, (model, caps))| codex_model_entry_json(model, *caps, priority))
+            .map(|(priority, (model, route_type, caps))| {
+                codex_model_entry_json(model, route_type, *caps, priority)
+            })
             .collect::<Vec<_>>(),
         "first_id": first_id,
         "last_id": last_id,
@@ -1492,11 +1602,12 @@ fn model_list_payload<'a>(
     })
 }
 
-fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
+fn model_entry_json(model: &str, route_type: &str, capabilities: ModelCapabilities) -> Value {
     json!({
         "id": model,
         "object": "model",
         "type": "model",
+        "route_type": route_type,
         "created": 0,
         "owned_by": "switchyard",
         "display_name": model,
@@ -1533,7 +1644,12 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
 // supported_parameters — and fall back to the route's declared value. Some backends
 // publish nothing (the NVIDIA gateway returns id-only models and blocks /model/info),
 // so keep failing closed to config.
-fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority: usize) -> Value {
+fn codex_model_entry_json(
+    model: &str,
+    route_type: &str,
+    capabilities: ModelCapabilities,
+    priority: usize,
+) -> Value {
     // Codex is non-functional without shell and apply_patch, so an undeclared tool
     // capability defaults to enabled here; the OpenAI `data` entry reports the raw
     // Option separately for clients that want the undeclared state.
@@ -1543,6 +1659,7 @@ fn codex_model_entry_json(model: &str, capabilities: ModelCapabilities, priority
         "slug": model,
         "display_name": model,
         "description": "Switchyard-routed model.",
+        "route_type": route_type,
         "default_reasoning_level": if reasoning { json!("xhigh") } else { Value::Null },
         "supported_reasoning_levels": if reasoning { reasoning_levels() } else { json!([]) },
         "shell_type": if tool_calling { "shell_command" } else { "disabled" },
@@ -1694,6 +1811,57 @@ mod tests {
     use tokio::sync::{Notify, oneshot};
 
     use super::*;
+
+    #[test]
+    fn vgr_availability_errors_map_to_service_unavailable() {
+        let combined = LibsyError::VgrTiersUnavailable {
+            local: Box::new(LibsyError::CircuitOpen {
+                target: ModelId::from("local"),
+            }),
+            cloud: Box::new(LibsyError::CircuitOpen {
+                target: ModelId::from("cloud"),
+            }),
+        };
+        assert_eq!(
+            algorithm_error(combined).status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            algorithm_error(LibsyError::CircuitOpen {
+                target: ModelId::from("cloud"),
+            })
+            .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn terminal_context_overflow_remains_a_client_error() {
+        let error = LibsyError::client_call(
+            "cloud",
+            LlmClientError::ContextWindowExceeded {
+                model: ModelId::from("cloud"),
+                message: "request is too large".to_string(),
+            },
+        );
+        assert_eq!(algorithm_error(error).status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn upstream_error_message_extracts_wrapped_json_before_gateway_metadata() {
+        let expected = "unexpected tool_use_id nonexistent_call_id_xyz";
+        let cases = [
+            concat!(
+                r#"{"message":"unexpected tool_use_id nonexistent_call_id_xyz"}"#,
+                ". Received Model Group=cloud"
+            ),
+            r#"{"error":{"message":"{\"message\":\"unexpected tool_use_id nonexistent_call_id_xyz\"}. Received Model Group=cloud"}}"#,
+        ];
+
+        for body in cases {
+            assert_eq!(upstream_error_message(body), expected);
+        }
+    }
 
     /// A successful judge call lands in the per-session routing snapshot under its
     /// model id with the classifier tier, while routed calls stay off the observer's

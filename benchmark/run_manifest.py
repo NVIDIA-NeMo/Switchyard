@@ -271,6 +271,12 @@ def finalize_manifest(
             routing_stats = stats_dest
         outcomes["routing_stats_json_status"] = _copy_if_present(routing_stats, stats_dest)
 
+    server = manifest.setdefault("server", {})
+    if isinstance(server, dict) and server.get("routing_log_file"):
+        routing_log = Path(server["routing_log_file"])
+        server["routing_log_status"] = "present" if routing_log.is_file() else "missing"
+        server["routing_log_digest"] = path_digest(routing_log)
+
     closed_book = manifest.setdefault("closed_book", {})
     if isinstance(closed_book, dict) and closed_book.get("proxy_strip_log"):
         strip_dest = Path(closed_book["proxy_strip_log"])
@@ -355,6 +361,7 @@ def _cli_main(argv: list[str] | None = None) -> int:
     write.add_argument("--server-metrics-status", default="not-requested")
     write.add_argument("--routing-stats-json", type=Path, required=True)
     write.add_argument("--routing-stats-status", default="predicted")
+    write.add_argument("--routing-log-file", type=Path, default=None)
     write.add_argument("--extra", action="append", default=[])
 
     finalize = sub.add_parser("finalize")
@@ -458,6 +465,13 @@ def _cli_main(argv: list[str] | None = None) -> int:
                 path_digest(server_config_snapshot) if server_config_snapshot else None
             ),
             "route_model": _opt(ns.route_model),
+            "routing_log_file": (
+                str(ns.routing_log_file.resolve()) if ns.routing_log_file else None
+            ),
+            "routing_log_status": "predicted" if ns.routing_log_file else "not-requested",
+            "routing_log_digest": (
+                path_digest(ns.routing_log_file) if ns.routing_log_file else None
+            ),
         },
         "harbor": harbor,
         "harbor_patch": _json_arg(ns.harbor_patch_json, {}),

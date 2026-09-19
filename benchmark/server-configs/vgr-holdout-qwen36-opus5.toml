@@ -1,0 +1,36 @@
+schema_version = 1
+
+[llm_clients.local_qwen]
+format = "openai_chat"
+base_url = "http://host.docker.internal:1235/v1"
+max_retries = 2
+
+[llm_clients.nvidia_anthropic]
+format = "anthropic_messages"
+base_url = "https://inference-api.nvidia.com"
+api_key_env = "NVIDIA_API_KEY"
+max_retries = 2
+
+[targets.local]
+id = "Qwen/Qwen3.6-35B-A3B"
+llm_client = "local_qwen"
+
+[targets.cloud]
+id = "aws/anthropic/bedrock-claude-opus-5"
+llm_client = "nvidia_anthropic"
+
+[targets.cloud.extra_body]
+thinking = { type = "adaptive" }
+output_config = { effort = "high" }
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+judge_target = "local"
+cloud_judge_target = "cloud"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+deadline_seconds = 900
+task_typing = true
