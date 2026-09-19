@@ -7,10 +7,9 @@
 //! RLCD models map a task and a list of options to one calibrated probability
 //! per option without writing an answer word by word — the "System One" model
 //! class TypeSafe's Jev announcement
-//! ([docs.typesafe.ai/concepts/system-one](https://docs.typesafe.ai/concepts/system-one))
-//! introduced, trained with Reinforcement Learning for Calibrated Decisions.
-//! The RLCD name originates in Reinforcement Learning from Contrastive
-//! Distillation ([arXiv:2307.12950](https://arxiv.org/abs/2307.12950)).
+//! ([typesafe.ai/blog/introducing-system-one-models-and-jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev))
+//! introduced, trained with its Reinforcement Learning for Calibrated
+//! Decisions (RLCD) method. TypeSafe has published no RLCD paper.
 //!
 //! [`Rlcd`] builds a decision request that lists every runtime target as a
 //! candidate option, routes to the option with the highest probability, and

@@ -103,8 +103,12 @@ endpoints broadly support JSON objects but not strict JSON Schema.
 ## References
 
 - TypeSafe's Jev announcement — the "System One" model class trained with
-  Reinforcement Learning for Calibrated Decisions:
+  Reinforcement Learning for Calibrated Decisions (RLCD):
+  [typesafe.ai/blog/introducing-system-one-models-and-jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev),
+  with the concept overview at
   [docs.typesafe.ai/concepts/system-one](https://docs.typesafe.ai/concepts/system-one)
-- RLCD, Reinforcement Learning from Contrastive Distillation — the paper that
-  introduced the RLCD name:
-  [arXiv:2307.12950](https://arxiv.org/abs/2307.12950)
+
+Throughout Switchyard, RLCD always means TypeSafe's method. It has no public
+paper, code, or weights; it shares its acronym with an unrelated 2023
+alignment method, Reinforcement Learning from Contrastive Distillation
+([arXiv:2307.12950](https://arxiv.org/abs/2307.12950)).
