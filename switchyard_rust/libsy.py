@@ -79,6 +79,7 @@ if TYPE_CHECKING:
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
+            judge_max_images: int | None = None,
             max_output_tokens: int = 4096,
         ) -> None: ...
 
@@ -232,6 +233,7 @@ if TYPE_CHECKING:
             session_affinity: bool = False,
             message_hash_fallback: bool = False,
             recent_turn_window: int | None = None,
+            judge_max_images: int | None = None,
             max_output_tokens: int = 4096,
             judge_deadline_ms: int | None = None,
             prompt: str | None = None,
