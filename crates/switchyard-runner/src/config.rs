@@ -877,6 +877,21 @@ target = "strong"
         }
     }
 
+    /// Reject an invalid image budget or a mode that never consumes it.
+    #[test]
+    fn rejects_invalid_judge_image_limits() {
+        let negative = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\njudge_max_images = -1",
+        );
+        assert!(Runner::from_toml(&negative).is_err());
+        let escalation = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "mode = \"escalation\"\nescalation = { confirmations = 1 }\njudge_max_images = 1",
+        );
+        assert!(error_message(&escalation).contains("mode escalation cannot use judge_max_images"));
+    }
+
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));

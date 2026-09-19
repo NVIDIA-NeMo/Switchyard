@@ -8,8 +8,9 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy,
-    WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, ImageSource, LlmRequest, LossyConversionPolicy, Message, Role,
+    TranslationEngine, TranslationPolicy, WireFormat, prepare_request_for_target,
+    sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -715,6 +716,62 @@ fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {
         "fallback/model"
     );
     assert!(!request.preservation.requests.contains_key(&custom_format));
+    Ok(())
+}
+
+// Fresh judge requests have no preserved wire body: every image must encode through the IR.
+#[test]
+fn normalized_images_encode_as_responses_image_urls() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (source, expected) in [
+        (
+            ImageSource::Url {
+                url: "https://example.test/image.jpg".into(),
+                detail: Some("low".into()),
+            },
+            json!({"type": "input_image", "image_url": "https://example.test/image.jpg", "detail": "low"}),
+        ),
+        (
+            ImageSource::Base64 {
+                media_type: Some("image/png".into()),
+                data: "aW1hZ2U=".into(),
+            },
+            json!({"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="}),
+        ),
+        (
+            ImageSource::Raw(json!({"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg", "data": "aW1hZ2U="
+            }})),
+            json!({"type": "input_image", "image_url": "data:image/jpeg;base64,aW1hZ2U="}),
+        ),
+        (
+            ImageSource::Url {
+                url: "data:image/png;base64,aW1hZ2U=".into(),
+                detail: Some("high".into()),
+            },
+            json!({"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U=", "detail": "high"}),
+        ),
+    ] {
+        let request = LlmRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Image { source }],
+            }],
+            ..LlmRequest::default()
+        };
+        let encoded =
+            engine.encode_request(WireFormat::OpenAiResponses, &request, &normalized_policy())?;
+        assert_eq!(encoded.body["input"][0]["content"][0], expected);
+        let decoded = engine.decode_request(
+            WireFormat::OpenAiResponses,
+            &encoded.body,
+            &normalized_policy(),
+        )?;
+        assert!(matches!(
+            decoded.request.messages[0].content[0],
+            ContentBlock::Image { .. }
+        ));
+    }
     Ok(())
 }
 

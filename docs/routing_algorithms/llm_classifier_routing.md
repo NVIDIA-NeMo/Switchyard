@@ -122,11 +122,37 @@ for the server merge behavior.
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
 | `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
+| `judge_max_images` | unset | Capability/custom modes: omit to preserve all images in the selected messages; `0` excludes images from the judge; `N` keeps the newest `N` images in their original order, including images in tool results. The answer request is unchanged. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+
+### Control images shown to the judge
+
+Capability and custom classifiers already pass images from selected messages to
+the judge. `judge_max_images` controls how many of those images the judge receives:
+
+```toml
+judge_max_images = 0  # Text-only judge; the answer model still receives all images.
+```
+
+Set `judge_max_images = 1` to show the judge the newest image, or omit the field
+to retain all images in the messages selected by `recent_turn_window`. The limit
+is shared across those messages and nested tool results. Omitted images become
+text markers, so image-only messages remain valid and their positions are visible.
+The remaining images keep their original order, URLs/data, and detail settings.
+Switchyard does not fetch or resize images for this limit.
+
+Use `classify_trigger = "every_request"` for independent image requests. The
+optional message-hash affinity key uses only text, so identical questions about
+different images must not share that key. Escalation mode uses a text summary
+and rejects `judge_max_images`.
+
+The [Cosmos vision judge example](../../examples/vision_judge/README.md) includes
+both modes, a pinned VANTAGE still image, Cosmos/Astra answer targets, and a live
+runner that verifies the images sent to each model.
 
 ### Override the classifier prompt
 
