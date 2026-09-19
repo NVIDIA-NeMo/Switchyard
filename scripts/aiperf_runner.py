@@ -31,6 +31,7 @@ _REQUIRED_STATISTICS = (
     ("request_count", "avg"),
     ("request_throughput", "avg"),
 )
+_ALL_REQUESTS_FAILED = "inference request(s) failed; no successful responses were collected."
 
 
 def validate_aiperf_version(binary: str) -> None:
@@ -98,11 +99,48 @@ def _stop_process_group(process: subprocess.Popen[bytes]) -> None:
         raise RuntimeError(f"could not reap AIPerf process {process.pid}") from error
 
 
+def _recover_all_timeout_export(
+    log_path: Path, artifact_dir: Path, expected_timeout_count: int
+) -> Path | None:
+    """Build the summary AIPerf omits when every expected request times out."""
+    try:
+        expected_log = f"All {expected_timeout_count} {_ALL_REQUESTS_FAILED}"
+        with log_path.open(encoding="utf-8", errors="replace") as log:
+            if not any(expected_log in line for line in log):
+                return None
+        timeout_count = 0
+        with (artifact_dir / "profile_export.jsonl").open(encoding="utf-8") as records:
+            for line in records:
+                record = json.loads(line)
+                error = record.get("error") if isinstance(record, dict) else None
+                if not isinstance(error, dict) or error.get("type") != "TimeoutError":
+                    return None
+                timeout_count += 1
+    except (OSError, json.JSONDecodeError):
+        return None
+    if timeout_count != expected_timeout_count:
+        return None
+    export_path = artifact_dir / "profile_export_aiperf.json"
+    summary = {
+        "aiperf_version": SUPPORTED_AIPERF_VERSION,
+        "error_request_count": {"unit": "requests", "avg": timeout_count},
+        "request_count": {"unit": "requests", "avg": 0},
+        "request_throughput": {"unit": "requests/sec", "avg": 0.0},
+    }
+    export_path.write_text(
+        f"{json.dumps(summary, indent=2)}\n",
+        encoding="utf-8",
+    )
+    return export_path
+
+
 def run_profile(
     command: Sequence[str],
     log_path: Path,
     artifact_dir: Path,
     timeout_seconds: int,
+    *,
+    expected_timeout_count: int | None = None,
 ) -> Path:
     """Run one bounded AIPerf process and return its verified export."""
     artifact_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +168,10 @@ def run_profile(
         finally:
             if not stopped and (process.poll() is None or _process_group_exists(process.pid)):
                 _stop_process_group(process)
+    if returncode == 1 and expected_timeout_count is not None:
+        recovered = _recover_all_timeout_export(log_path, artifact_dir, expected_timeout_count)
+        if recovered is not None:
+            return recovered
     if returncode != 0:
         raise RuntimeError(f"AIPerf failed with status {returncode}; see {log_path}")
     export_path = artifact_dir / "profile_export_aiperf.json"
