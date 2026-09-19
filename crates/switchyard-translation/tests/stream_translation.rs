@@ -1613,7 +1613,13 @@ fn responses_function_call_stream_ends_with_tool_use_on_every_wire() -> TestResu
     decode_stream_event(&mut state, WireFormat::OpenAiResponses, &text);
     assert_eq!(
         decode_stream_event(&mut state, WireFormat::OpenAiResponses, &bare_completed),
-        vec![LlmResponseChunk::MessageStop { reason: None }]
+        vec![
+            LlmResponseChunk::MessageStart {
+                id: None,
+                model: None,
+            },
+            LlmResponseChunk::MessageStop { reason: None },
+        ]
     );
     Ok(())
 }
@@ -2599,6 +2605,11 @@ fn responses_stream_decodes_reasoning_text_from_added_done_and_completed_once() 
         .normalized()
         .iter()
         .map(|c| match c {
+            LlmResponseChunk::MessageStart { id, model } => {
+                assert_eq!(id.as_deref(), Some("resp_1"));
+                assert_eq!(model.as_deref(), None);
+                "start"
+            }
             LlmResponseChunk::ReasoningDelta { text, .. } => {
                 assert_eq!(text, "from completed");
                 "reasoning"
@@ -2609,7 +2620,7 @@ fn responses_stream_decodes_reasoning_text_from_added_done_and_completed_once() 
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, vec!["id", "reasoning", "usage", "stop"]);
+    assert_eq!(kinds, vec!["start", "id", "reasoning", "usage", "stop"]);
 
     // (d) completed output repeating already-streamed reasoning adds nothing
     let mut state = StreamTranslationState::new(format, format);
@@ -2995,6 +3006,174 @@ fn responses_stream_empty_reasoning_delta_opens_no_summary_part() -> TestResult 
 }
 
 #[test]
+fn responses_lifecycle_and_terminal_snapshots_recover_final_state() -> TestResult {
+    let source = WireFormat::OpenAiResponses;
+    for (terminal_type, expected_chunk_reason, expected_stop) in [
+        ("response.completed", "tool_use", StopReason::ToolUse),
+        ("response.incomplete", "max_tokens", StopReason::MaxTokens),
+    ] {
+        let mut state = StreamTranslationState::new(source, source);
+        let mut accumulator = ResponseAccumulator::new();
+
+        let created = decode_stream_event(
+            &mut state,
+            source,
+            &json!({"type": "response.created", "response": {
+                "id": "resp_created", "model": "model/created"
+            }}),
+        );
+        assert_eq!(
+            created,
+            vec![LlmResponseChunk::MessageStart {
+                id: Some("resp_created".into()),
+                model: Some("model/created".into()),
+            }]
+        );
+        let in_progress = decode_stream_event(
+            &mut state,
+            source,
+            &json!({"type": "response.in_progress", "response": {
+                "id": "resp_provisional", "model": "model/provisional"
+            }}),
+        );
+        assert_eq!(
+            in_progress,
+            vec![LlmResponseChunk::MessageStart {
+                id: Some("resp_provisional".into()),
+                model: Some("model/provisional".into()),
+            }]
+        );
+        assert_eq!(state.message_id.as_deref(), Some("resp_provisional"));
+        assert_eq!(state.model.as_deref(), Some("model/provisional"));
+        for chunk in created.into_iter().chain(in_progress) {
+            accumulator.push(chunk);
+        }
+
+        let terminal = json!({
+            "type": terminal_type,
+            "response": {
+                "id": "resp_final",
+                "model": "model/final",
+                "status": if terminal_type == "response.completed" { "completed" } else { "incomplete" },
+                "incomplete_details": if terminal_type == "response.incomplete" {
+                    json!({"reason": "max_output_tokens"})
+                } else {
+                    Value::Null
+                },
+                "output": [
+                    {"type": "message", "role": "assistant", "content": [
+                        {"type": "output_text", "text": "partial answer"}
+                    ]},
+                    {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+                     "name": "lookup", "arguments": "{\"query\":\"rust\"}"}
+                ],
+                "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+            }
+        });
+        let terminal_chunks = decode_stream_event(&mut state, source, &terminal);
+        assert_eq!(terminal_chunks.len(), 5);
+        assert!(matches!(
+            &terminal_chunks[0],
+            LlmResponseChunk::MessageStart { id: Some(id), model: Some(model) }
+                if id == "resp_final" && model == "model/final"
+        ));
+        assert!(matches!(
+            &terminal_chunks[1],
+            LlmResponseChunk::TextDelta { index: 0, text } if text == "partial answer"
+        ));
+        assert!(matches!(
+            &terminal_chunks[2],
+            LlmResponseChunk::ToolCallDelta {
+                index: 1,
+                id: Some(id),
+                name: Some(name),
+                arguments_delta: Some(arguments),
+            } if id == "call_1"
+                && name == "lookup"
+                && arguments == "{\"query\":\"rust\"}"
+        ));
+        assert!(matches!(
+            &terminal_chunks[3],
+            LlmResponseChunk::Usage(usage)
+                if usage.input_tokens == Some(7)
+                    && usage.output_tokens == Some(3)
+                    && usage.total_tokens == Some(10)
+        ));
+        assert!(matches!(
+            &terminal_chunks[4],
+            LlmResponseChunk::MessageStop { reason: Some(reason) }
+                if reason == expected_chunk_reason
+        ));
+        for chunk in terminal_chunks {
+            accumulator.push(chunk);
+        }
+
+        let aggregate = accumulator.finish();
+        assert_eq!(aggregate.id.as_deref(), Some("resp_final"));
+        assert_eq!(aggregate.model.as_deref(), Some("model/final"));
+        assert_eq!(
+            switchyard_protocol::completion_text(&aggregate),
+            "partial answer"
+        );
+        assert!(matches!(
+            &aggregate.outputs[0].content[1],
+            switchyard_protocol::ContentBlock::ToolCall(call)
+                if call.id == "call_1"
+                    && call.name == "lookup"
+                    && call.arguments == json!({"query": "rust"})
+        ));
+        assert_eq!(aggregate.usage.input_tokens, Some(7));
+        assert_eq!(aggregate.usage.output_tokens, Some(3));
+        assert_eq!(aggregate.usage.total_tokens, Some(10));
+        assert_eq!(aggregate.outputs[0].stop_reason, Some(expected_stop));
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_identity_free_terminal_snapshots_start_before_output() {
+    let source = WireFormat::OpenAiResponses;
+    for (terminal_type, stop_reason) in [
+        ("response.completed", None),
+        ("response.incomplete", Some("max_tokens")),
+    ] {
+        let mut state = StreamTranslationState::new(source, source);
+        let decoded = decode_stream_event(
+            &mut state,
+            source,
+            &json!({
+                "type": terminal_type,
+                "response": {
+                    "output": [{
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "terminal text"}]
+                    }],
+                    "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3}
+                }
+            }),
+        );
+
+        assert!(matches!(
+            decoded[0],
+            LlmResponseChunk::MessageStart {
+                id: None,
+                model: None,
+            }
+        ));
+        assert!(matches!(
+            &decoded[1],
+            LlmResponseChunk::TextDelta { index: 0, text } if text == "terminal text"
+        ));
+        assert!(matches!(decoded[2], LlmResponseChunk::Usage(_)));
+        assert!(matches!(
+            &decoded[3],
+            LlmResponseChunk::MessageStop { reason } if reason.as_deref() == stop_reason
+        ));
+    }
+}
+
+#[test]
 fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
     let engine = TranslationEngine::default();
     let source = WireFormat::OpenAiResponses;
@@ -3139,27 +3318,29 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
             );
         }
     }
-    for delta in [
-        json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Different"}),
-        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "["}),
-    ] {
-        let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
-        engine.decode_stream_event(&mut state, source, delta)?;
-        let decoded = engine.decode_stream_event(
-            &mut state,
-            source,
-            json!({"type": "response.completed", "response": response}),
-        )?;
-        assert!(matches!(
-            decoded.normalized().last(),
-            Some(LlmResponseChunk::StreamError { .. })
-        ));
-        assert!(
-            !decoded
-                .normalized()
-                .iter()
-                .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }))
-        );
+    for terminal_type in ["response.completed", "response.incomplete"] {
+        for delta in [
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Different"}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "["}),
+        ] {
+            let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+            engine.decode_stream_event(&mut state, source, delta)?;
+            let decoded = engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": terminal_type, "response": response}),
+            )?;
+            assert!(matches!(
+                decoded.normalized().last(),
+                Some(LlmResponseChunk::StreamError { .. })
+            ));
+            assert!(
+                !decoded
+                    .normalized()
+                    .iter()
+                    .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }))
+            );
+        }
     }
     Ok(())
 }

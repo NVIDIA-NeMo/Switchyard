@@ -288,7 +288,8 @@ where
                         break;
                     }
                     sse::SseFrame::Data(value) => {
-                        saw_terminal |= sse::is_terminal_event(source, &value);
+                        let terminal = sse::terminal_behavior(source, &value);
+                        saw_terminal |= terminal.is_terminal();
                         let normalized = codec.decode_event(&mut state, &value);
                         saw_error |= normalized.iter().any(|chunk| matches!(
                             chunk,
@@ -300,6 +301,9 @@ where
                             value,
                             normalized,
                         );
+                        if terminal.is_stream_ending() {
+                            break;
+                        }
                     }
                 }
             } else {
@@ -319,7 +323,8 @@ where
                     saw_terminal |= source != WireFormat::AnthropicMessages;
                 }
                 sse::SseFrame::Data(value) => {
-                    saw_terminal |= sse::is_terminal_event(source, &value);
+                    let terminal = sse::terminal_behavior(source, &value);
+                    saw_terminal |= terminal.is_terminal();
                     let normalized = codec.decode_event(&mut state, &value);
                     saw_error |= normalized.iter().any(|chunk| matches!(
                         chunk,
@@ -842,6 +847,73 @@ mod tests {
             panic!("expected incomplete OpenAI stream to fail");
         };
         assert_eq!(message, "openai_chat stream ended before a terminal event");
+        Ok(())
+    }
+
+    #[test]
+    fn decode_stream_stops_polling_after_explicit_responses_terminals() -> Result<(), BoxError> {
+        let cases = [
+            (
+                "response.incomplete",
+                b"data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\"}}\n\n"
+                    .to_vec(),
+            ),
+            (
+                "error",
+                b"data: {\"type\":\"error\",\"message\":\"boom\"}\n\n".to_vec(),
+            ),
+        ];
+        for (event_type, terminal) in cases {
+            let bytes =
+                stream::iter([Ok::<Vec<u8>, LlmClientError>(terminal)]).chain(stream::poll_fn(
+                    move |_| panic!("decode_stream polled upstream after explicit {event_type}"),
+                ));
+
+            let events = decode_all(bytes, WireFormat::OpenAiResponses)?;
+
+            assert_eq!(events.len(), 1);
+            match event_type {
+                "response.incomplete" => assert!(matches!(
+                    events[0].normalized().last(),
+                    Some(LlmResponseChunk::MessageStop { reason: Some(reason) })
+                        if reason == "max_tokens"
+                )),
+                "error" => assert!(matches!(
+                    events[0].normalized().last(),
+                    Some(LlmResponseChunk::StreamError { message }) if message == "boom"
+                )),
+                _ => unreachable!(),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn decode_stream_keeps_chat_usage_after_finish_reason() -> Result<(), BoxError> {
+        let sse = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .as_bytes()
+        .to_vec();
+        let bytes =
+            stream::iter([Ok::<Vec<u8>, LlmClientError>(sse)]).chain(stream::poll_fn(|_| {
+                panic!("decode_stream polled upstream after [DONE]")
+            }));
+
+        let events = decode_all(bytes, WireFormat::OpenAiChat)?;
+        let usage = events
+            .iter()
+            .flat_map(LlmResponseStreamEvent::normalized)
+            .find_map(|chunk| match chunk {
+                LlmResponseChunk::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .ok_or("missing trailing Chat usage")?;
+        assert_eq!(usage.input_tokens, Some(2));
+        assert_eq!(usage.output_tokens, Some(3));
+        assert_eq!(usage.total_tokens, Some(5));
         Ok(())
     }
 

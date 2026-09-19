@@ -39,30 +39,63 @@ fn data_field_value(line: &str) -> Option<String> {
     Some(value.strip_prefix(' ').unwrap_or(value).to_string())
 }
 
-/// Returns whether a provider event explicitly completes its wire-format stream.
-pub(crate) fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminalBehavior {
+    NotTerminal,
+    TerminalMayHaveTrailingData,
+    TerminalEndsStream,
+}
+
+impl TerminalBehavior {
+    pub(crate) fn is_terminal(self) -> bool {
+        self != Self::NotTerminal
+    }
+
+    pub(crate) fn is_stream_ending(self) -> bool {
+        self == Self::TerminalEndsStream
+    }
+}
+
+pub(crate) fn terminal_behavior(format: WireFormat, event: &Value) -> TerminalBehavior {
     match format {
-        WireFormat::OpenAiChat => event
-            .get("choices")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|choice| {
-                choice
-                    .get("finish_reason")
-                    .and_then(Value::as_str)
-                    .is_some()
-            }),
-        WireFormat::AnthropicMessages => {
-            event.get("type").and_then(Value::as_str) == Some("message_stop")
+        WireFormat::OpenAiChat => {
+            if event
+                .get("choices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|choice| {
+                    choice
+                        .get("finish_reason")
+                        .and_then(Value::as_str)
+                        .is_some()
+                })
+            {
+                TerminalBehavior::TerminalMayHaveTrailingData
+            } else {
+                TerminalBehavior::NotTerminal
+            }
         }
-        WireFormat::OpenAiResponses => matches!(
-            event
-                .get("type")
-                .or_else(|| event.get("event"))
-                .and_then(Value::as_str),
-            Some("response.completed" | "response.incomplete" | "response.failed")
-        ),
+        WireFormat::AnthropicMessages => {
+            if event.get("type").and_then(Value::as_str) == Some("message_stop") {
+                TerminalBehavior::TerminalEndsStream
+            } else {
+                TerminalBehavior::NotTerminal
+            }
+        }
+        WireFormat::OpenAiResponses => {
+            if matches!(
+                event
+                    .get("type")
+                    .or_else(|| event.get("event"))
+                    .and_then(Value::as_str),
+                Some("response.completed" | "response.incomplete" | "response.failed" | "error")
+            ) {
+                TerminalBehavior::TerminalEndsStream
+            } else {
+                TerminalBehavior::NotTerminal
+            }
+        }
     }
 }
 
@@ -193,31 +226,38 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_provider_terminal_events() {
-        // Each source format requires its own protocol-specific terminal event.
-        assert!(is_terminal_event(
-            WireFormat::OpenAiChat,
-            &json!({"choices": [{"finish_reason": "stop"}]})
-        ));
-        assert!(is_terminal_event(
-            WireFormat::AnthropicMessages,
-            &json!({"type": "message_stop"})
-        ));
-        assert!(is_terminal_event(
-            WireFormat::OpenAiResponses,
-            &json!({"type": "response.completed"})
-        ));
-        assert!(is_terminal_event(
-            WireFormat::OpenAiResponses,
-            &json!({"type": "response.incomplete"})
-        ));
-        assert!(is_terminal_event(
-            WireFormat::OpenAiResponses,
-            &json!({"type": "response.failed"})
-        ));
-        assert!(!is_terminal_event(
-            WireFormat::OpenAiChat,
-            &json!({"choices": [{"finish_reason": null}]})
-        ));
+    fn classifies_provider_terminal_behavior() {
+        assert_eq!(
+            terminal_behavior(
+                WireFormat::OpenAiChat,
+                &json!({"choices": [{"finish_reason": "stop"}]})
+            ),
+            TerminalBehavior::TerminalMayHaveTrailingData
+        );
+        assert_eq!(
+            terminal_behavior(
+                WireFormat::AnthropicMessages,
+                &json!({"type": "message_stop"})
+            ),
+            TerminalBehavior::TerminalEndsStream
+        );
+        for event_type in [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+            "error",
+        ] {
+            assert_eq!(
+                terminal_behavior(WireFormat::OpenAiResponses, &json!({"type": event_type})),
+                TerminalBehavior::TerminalEndsStream
+            );
+        }
+        assert_eq!(
+            terminal_behavior(
+                WireFormat::OpenAiChat,
+                &json!({"choices": [{"finish_reason": null}]})
+            ),
+            TerminalBehavior::NotTerminal
+        );
     }
 }

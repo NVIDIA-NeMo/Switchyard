@@ -97,6 +97,44 @@ struct ResponsesStreamResponse {
     usage: Value,
 }
 
+fn decode_responses_identity(
+    state: &mut StreamTranslationState,
+    response: Option<&serde_json::Map<String, Value>>,
+) -> Vec<LlmResponseChunk> {
+    let id = response
+        .and_then(|response| response.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned);
+    let model = response
+        .and_then(|response| response.get("model"))
+        .and_then(Value::as_str)
+        .filter(|model| !model.is_empty())
+        .map(ToOwned::to_owned);
+    let identity_changed = id
+        .as_deref()
+        .is_some_and(|id| state.message_id.as_deref() != Some(id))
+        || model
+            .as_deref()
+            .is_some_and(|model| state.model.as_deref() != Some(model));
+
+    if id.is_some() {
+        state.message_id = id;
+    }
+    if model.is_some() {
+        state.model = model;
+    }
+    if !state.saw_message_start || identity_changed {
+        state.saw_message_start = true;
+        vec![LlmResponseChunk::MessageStart {
+            id: state.message_id.clone(),
+            model: state.model.clone(),
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
 // Decodes one OpenAI Responses event into neutral streaming events.
 fn decode_responses_stream(
     state: &mut StreamTranslationState,
@@ -110,25 +148,8 @@ fn decode_responses_stream(
         .or_else(|| event.get("event"))
         .and_then(Value::as_str);
     match event_type {
-        Some("response.created") => {
-            state.saw_message_start = true;
-            let response = event.get("response").and_then(Value::as_object);
-            if let Some(model) = response
-                .and_then(|response| response.get("model"))
-                .and_then(Value::as_str)
-            {
-                state.model = Some(model.to_string());
-            }
-            if let Some(id) = response
-                .and_then(|response| response.get("id"))
-                .and_then(Value::as_str)
-            {
-                state.message_id = Some(id.to_string());
-            }
-            vec![LlmResponseChunk::MessageStart {
-                id: state.message_id.clone(),
-                model: state.model.clone(),
-            }]
+        Some("response.created" | "response.in_progress") => {
+            decode_responses_identity(state, event.get("response").and_then(Value::as_object))
         }
         Some("response.output_text.delta") => event
             .get("delta")
@@ -257,48 +278,10 @@ fn decode_responses_stream(
                 })
                 .unwrap_or_default()
         }
-        Some("response.completed") => {
-            let mut out = Vec::new();
-            // Some providers send output only in the final snapshot. Reconcile it with
-            // decoded deltas before emitting the stop, without repeating streamed content.
-            if let Some(items) = event
-                .get("response")
-                .and_then(|response| response.get("output"))
-                .and_then(Value::as_array)
-            {
-                for (position, item) in items.iter().enumerate() {
-                    if let Some(item) = item.as_object() {
-                        out.extend(decode_responses_completed_item(item, position, state));
-                        if matches!(out.last(), Some(LlmResponseChunk::StreamError { .. })) {
-                            return out;
-                        }
-                    }
-                }
-            }
-            if let Some(usage) = event
-                .get("response")
-                .and_then(Value::as_object)
-                .and_then(|response| response.get("usage"))
-                .and_then(Value::as_object)
-            {
-                let usage = responses_usage(usage);
-                state.usage = usage.clone();
-                state.saw_backend_usage = true;
-                out.push(LlmResponseChunk::Usage(usage));
-            }
-            // A completed response that produced a tool call ended the turn to run that
-            // tool, not because the assistant was done. The buffered decoder reports tool
-            // use for such output; the stream must too, or stop-reason-driven tool loops
-            // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
-            // Carries the Anthropic spelling because every encoder already maps it.
-            let reason = state.decoded_tool_call.then(|| "tool_use".to_string());
-            out.push(LlmResponseChunk::MessageStop { reason });
-            out
+        Some("response.completed") => decode_responses_terminal_snapshot(state, event, None),
+        Some("response.incomplete") => {
+            decode_responses_terminal_snapshot(state, event, Some("max_tokens".to_string()))
         }
-        // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("response")
@@ -317,6 +300,44 @@ fn decode_responses_stream(
         }],
         _ => Vec::new(),
     }
+}
+
+fn decode_responses_terminal_snapshot(
+    state: &mut StreamTranslationState,
+    event: &Value,
+    explicit_stop_reason: Option<String>,
+) -> Vec<LlmResponseChunk> {
+    let response = event.get("response").and_then(Value::as_object);
+    let mut out = decode_responses_identity(state, response);
+
+    if let Some(items) = response
+        .and_then(|response| response.get("output"))
+        .and_then(Value::as_array)
+    {
+        for (position, item) in items.iter().enumerate() {
+            if let Some(item) = item.as_object() {
+                out.extend(decode_responses_completed_item(item, position, state));
+                if matches!(out.last(), Some(LlmResponseChunk::StreamError { .. })) {
+                    return out;
+                }
+            }
+        }
+    }
+
+    if let Some(usage) = response
+        .and_then(|response| response.get("usage"))
+        .and_then(Value::as_object)
+    {
+        let usage = responses_usage(usage);
+        state.usage = usage.clone();
+        state.saw_backend_usage = true;
+        out.push(LlmResponseChunk::Usage(usage));
+    }
+
+    let reason =
+        explicit_stop_reason.or_else(|| state.decoded_tool_call.then(|| "tool_use".to_string()));
+    out.push(LlmResponseChunk::MessageStop { reason });
+    out
 }
 
 // Encodes neutral streaming events into OpenAI Responses events.
