@@ -16,6 +16,7 @@ use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
+use super::{DEFAULT_JUDGE_CHAR_BUDGET, truncate_middle, validate_judge_char_budget};
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
@@ -25,10 +26,7 @@ use switchyard_protocol::Request;
 const PROMPT_TEMPLATE: &str = include_str!("../../prompts/escalation/prompt.md");
 const SCHEMA_TEMPLATE: &str = include_str!("../../prompts/escalation/schema.json");
 
-/// Separator marking where [`truncate_middle`] dropped a message's interior.
-const TRIM_MARKER: &str = " ...[trimmed] ";
-
-/// Suffix marking a transcript cut off by [`MAX_REQUEST_CHARS`].
+/// Suffix marking a transcript cut off by `judge_char_budget`.
 const TRUNCATION_SUFFIX: &str = "...<truncated>";
 
 /// Per-message cap for system and developer anchors, which carry no trajectory signal but
@@ -41,9 +39,6 @@ const SYSTEM_CHARS: usize = 1_000;
 /// boilerplate and let the task scroll out of the window. Feature specifications run to several
 /// thousand characters, so this gets the widest anchor budget.
 const TASK_CHARS: usize = 4_000;
-
-/// Backstop on the assembled transcript; the per-message caps normally bind first.
-const MAX_REQUEST_CHARS: usize = 18_000;
 
 /// The tuning surface for the trajectory judge.
 ///
@@ -61,6 +56,17 @@ pub struct EscalationJudgeConfig {
     pub recent_turn_window: usize,
     /// Per-message cap inside the trailing window.
     pub window_message_chars: usize,
+    /// Most characters the assembled transcript may use. The per-message caps normally
+    /// bind first; this backstop drops the oldest window lines when they do not.
+    ///
+    /// Not read from the `escalation` table: hosts set it from the route-level
+    /// `judge_char_budget`, which applies to every classifier mode.
+    #[serde(skip, default = "default_judge_char_budget")]
+    pub judge_char_budget: usize,
+}
+
+const fn default_judge_char_budget() -> usize {
+    DEFAULT_JUDGE_CHAR_BUDGET
 }
 
 impl EscalationJudgeConfig {
@@ -79,7 +85,7 @@ impl EscalationJudgeConfig {
                 self.window_message_chars
             ));
         }
-        Ok(())
+        validate_judge_char_budget(self.judge_char_budget)
     }
 }
 
@@ -89,6 +95,7 @@ impl Default for EscalationJudgeConfig {
             confirmations: 2,
             recent_turn_window: 28,
             window_message_chars: 500,
+            judge_char_budget: DEFAULT_JUDGE_CHAR_BUDGET,
         }
     }
 }
@@ -243,27 +250,6 @@ fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
     }
 }
 
-/// Keeps the head and tail of `text` within `limit` characters.
-///
-/// The head gets two thirds of the surviving budget: for a trajectory judge the command or
-/// error signature that opens a message carries more signal than its trailing output.
-fn truncate_middle(text: &str, limit: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= limit {
-        return text.to_string();
-    }
-    let keep = limit
-        .saturating_sub(TRIM_MARKER.chars().count())
-        .max(20)
-        .min(chars.len());
-    let head = keep * 2 / 3;
-    let tail = keep - head;
-    let mut out: String = chars[..head].iter().collect();
-    out.push_str(TRIM_MARKER);
-    out.extend(chars[chars.len() - tail..].iter());
-    out
-}
-
 /// Renders a compact role-labelled transcript for the judge.
 ///
 /// Task-framing user messages are capped individually. System/developer instructions share
@@ -271,7 +257,7 @@ fn truncate_middle(text: &str, limit: usize) -> String {
 /// The trailing window carries recent activity. A coverage header states how much history is
 /// not shown, so the judge can reason about pace rather than assuming it sees everything.
 ///
-/// When the assembled text still exceeds `max_request_chars`, the oldest window lines go
+/// When the assembled text still exceeds `judge_char_budget`, the oldest window lines go
 /// first: for a trajectory judge the newest evidence is strictly the most valuable.
 fn summarize_for_judge(
     instructions: &[InstructionBlock],
@@ -340,10 +326,11 @@ fn summarize_for_judge(
             .join("\n")
     };
 
+    let budget = config.judge_char_budget;
     let reserved = assemble(None, &window[window.len().saturating_sub(1)..])
         .chars()
         .count();
-    let instruction_budget = MAX_REQUEST_CHARS.saturating_sub(reserved + 1);
+    let instruction_budget = budget.saturating_sub(reserved + 1);
     // The remaining budget may be smaller than truncate_middle's minimum retained span.
     let instruction_text = truncate_middle(&instruction_anchors.join("\n"), instruction_budget)
         .chars()
@@ -351,12 +338,12 @@ fn summarize_for_judge(
         .collect::<String>();
     let instructions = (!instruction_text.is_empty()).then_some(instruction_text.as_str());
     let mut text = assemble(instructions, &window);
-    while text.chars().count() > MAX_REQUEST_CHARS && !window.is_empty() {
+    while text.chars().count() > budget && !window.is_empty() {
         window.remove(0);
         text = assemble(instructions, &window);
     }
-    if text.chars().count() > MAX_REQUEST_CHARS {
-        let keep = MAX_REQUEST_CHARS.saturating_sub(TRUNCATION_SUFFIX.chars().count() + 1);
+    if text.chars().count() > budget {
+        let keep = budget.saturating_sub(TRUNCATION_SUFFIX.chars().count() + 1);
         text = text.chars().take(keep).collect::<String>() + TRUNCATION_SUFFIX;
     }
     text
@@ -406,6 +393,7 @@ mod tests {
     use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
 
     use super::*;
+    use crate::algorithms::util::TRIM_MARKER;
     use crate::algorithms::util::llm_judge::Judge;
 
     fn escalation_judge(max_output_tokens: u64) -> Result<EscalationJudge> {
@@ -470,13 +458,13 @@ mod tests {
                 role: Role::Developer,
                 content: Message::text(Role::Developer, "x".repeat(SYSTEM_CHARS)).content,
             };
-            MAX_REQUEST_CHARS / SYSTEM_CHARS + 1
+            DEFAULT_JUDGE_CHAR_BUDGET / SYSTEM_CHARS + 1
         ]);
         let built = judge.build_request(&State::default(), &judged);
         let summary = built.llm_request.messages[0]
             .text_content("")
             .expect("summary");
-        assert!(summary.chars().count() <= MAX_REQUEST_CHARS);
+        assert!(summary.chars().count() <= DEFAULT_JUDGE_CHAR_BUDGET);
         assert!(summary.contains(TRIM_MARKER));
         assert!(summary.contains("[system] system constraint"));
         assert!(summary.contains("[developer] developer constraint"));
@@ -552,6 +540,21 @@ mod tests {
 
         // Under the limit the text is returned untouched.
         assert_eq!(truncate_middle("short", 50), "short");
+    }
+
+    /// Callers budget a payload on the promise that clipping never exceeds the limit. Below
+    /// the marker's own width there is no room to mark the cut, so the marker is dropped
+    /// rather than pushing the result over.
+    #[test]
+    fn truncate_middle_never_exceeds_a_limit_narrower_than_the_marker() {
+        let text = "a".repeat(100);
+        for limit in 0..=TRIM_MARKER.chars().count() + 2 {
+            let trimmed = truncate_middle(&text, limit);
+            assert!(
+                trimmed.chars().count() <= limit,
+                "limit {limit}: {trimmed:?}"
+            );
+        }
     }
 
     #[test]
@@ -630,8 +633,8 @@ mod tests {
 
     #[test]
     fn summary_drops_oldest_window_lines_under_the_char_cap() {
-        // MAX_REQUEST_CHARS is a backstop, not a dial: at default settings the window caps
-        // bind first (28 x 500 plus anchors sits under it), so reaching it takes an unusually
+        // The budget is a backstop, not a dial: at default settings the window caps bind
+        // first (28 x 500 plus anchors sits under it), so reaching it takes an unusually
         // wide per-message cap. That is the point — it only fires on pathological input.
         let mut messages = vec![
             Message::text(Role::System, "framing"),
@@ -651,7 +654,7 @@ mod tests {
         let summary = summarize_for_judge(&[], &messages, 21, &config);
 
         assert!(
-            summary.chars().count() <= MAX_REQUEST_CHARS,
+            summary.chars().count() <= config.judge_char_budget,
             "{}",
             summary.chars().count()
         );
@@ -660,5 +663,44 @@ mod tests {
         assert!(summary.contains("[user (task)] task"), "{summary}");
         assert!(summary.contains("19 xxx"), "{summary}");
         assert!(!summary.contains("0 xxx"), "{summary}");
+    }
+
+    /// The cap is the route's `judge_char_budget`, not a constant: a smaller budget drops
+    /// more of the window.
+    #[test]
+    fn the_configured_budget_caps_the_summary() {
+        let mut messages = vec![Message::text(Role::User, "task")];
+        for i in 0..20 {
+            messages.push(Message::text(
+                Role::Assistant,
+                format!("{i} {}", "x".repeat(400)),
+            ));
+        }
+        let config = EscalationJudgeConfig {
+            judge_char_budget: 2_000,
+            ..EscalationJudgeConfig::default()
+        };
+
+        let summary = summarize_for_judge(&[], &messages, 21, &config);
+
+        assert!(
+            summary.chars().count() <= 2_000,
+            "{}",
+            summary.chars().count()
+        );
+        assert!(summary.contains("19 xxx"), "{summary}");
+        assert!(!summary.contains("10 xxx"), "{summary}");
+    }
+
+    /// The budget is set by the host from the route-level key, so the `escalation` table
+    /// neither reads it nor loses the default.
+    #[test]
+    fn the_budget_is_not_read_from_the_escalation_table() {
+        let config: EscalationJudgeConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.judge_char_budget, DEFAULT_JUDGE_CHAR_BUDGET);
+        assert!(
+            serde_json::from_str::<EscalationJudgeConfig>(r#"{"judge_char_budget": 1000}"#)
+                .is_err()
+        );
     }
 }

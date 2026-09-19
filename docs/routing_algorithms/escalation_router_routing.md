@@ -110,6 +110,10 @@ configuration, so a bare `escalation = {}` is a valid, tuned route:
 | `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
 | `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
 
+The route-level `judge_char_budget` (default `18000`) caps the whole transcript
+sent to the judge. The per-message caps normally keep it well under that; when
+they do not, the oldest window lines are dropped first.
+
 `confirmations` is the main cost dial. `1` latches sooner and spends more on the
 strong tier. `2` or higher requires a session identity, because the streak is
 retained per session — without one, every turn starts from zero and the route
