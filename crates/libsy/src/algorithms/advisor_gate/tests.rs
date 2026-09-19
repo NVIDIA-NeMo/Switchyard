@@ -694,16 +694,21 @@ impl std::io::Write for LogCapture {
 
 #[tokio::test]
 async fn fail_open_logs_redact_the_upstream_error_body() {
-    let script = Script::new();
-    let gate = gate(AdvisorGateConfig::default());
+    // A target name unique to this test keys the captured warn line and audit
+    // record to this drive: the process-wide capture also sees parallel
+    // advisor-gate tests' events.
+    const ADVISOR_TARGET: &str = "advisor-redaction-probe";
     const MARKER: &str = "SECRET-UPSTREAM-QUOTE-the-user-prompt";
-    let calls = Arc::clone(&script.calls);
-    let serve = move |model: ModelId, request: Request| {
-        let calls = Arc::clone(&calls);
+    let gate = gate(AdvisorGateConfig::default());
+    let models: HashMap<Category, Vec<ModelId>> = [
+        (Category::Efficient, vec![target(EXECUTOR)]),
+        (Category::Judge, vec![target(ADVISOR_TARGET)]),
+    ]
+    .into();
+    let serve = move |model: ModelId, _request: Request| {
         Box::pin(async move {
             let model = model.to_string();
-            calls.lock().push((model.clone(), request));
-            if model == ADVISOR {
+            if model == ADVISOR_TARGET {
                 // UpstreamHttp's Display interpolates the raw body, which is
                 // exactly the content that must not reach a sink.
                 Err(LlmClientError::UpstreamHttp {
@@ -728,7 +733,7 @@ async fn fail_open_logs_redact_the_upstream_error_body() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("unused global subscriber");
 
-    let (_, response) = test_drive(gate, task_request(), serve)
+    let (_, response) = test_drive_with_models(gate, task_request(), models, serve)
         .await
         .expect("fail-open run");
     assert_eq!(completion_text(&agg_of(response).await), "done");
@@ -738,13 +743,16 @@ async fn fail_open_logs_redact_the_upstream_error_body() {
         !logs.contains(MARKER),
         "the upstream error body reached a log sink: {logs}"
     );
-    assert!(logs.contains("upstream HTTP 500"), "{logs}");
-    // The audit record still renders, with the redacted summary only.
-    assert!(logs.contains("advisor_review="), "{logs}");
-    assert!(
-        logs.contains("consult failed; passing the turn through"),
-        "{logs}"
-    );
+    // Only this drive's decision target names the redacted summary, so its
+    // presence proves this drive's warn rendered with the safe summary.
+    let summary = r#"client call to target "advisor-redaction-probe" failed: upstream HTTP 500"#;
+    assert!(logs.contains(summary), "{logs}");
+    // The audit record still renders, keyed to this drive's target, with the
+    // redacted summary rather than the body.
+    let audit = logs
+        .lines()
+        .find(|line| line.contains("advisor_review=") && line.contains(ADVISOR_TARGET));
+    assert!(audit.is_some(), "{logs}");
 }
 
 #[tokio::test]
