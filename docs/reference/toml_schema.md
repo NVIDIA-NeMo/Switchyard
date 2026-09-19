@@ -206,6 +206,28 @@ targets = ["fast", "strong"]
 checkpoint = "/models/router.pt"
 ```
 
+### `rlcd`
+
+Asks an RLCD (calibrated decision) model for one probability per target and
+routes to the argmax. See
+[RLCD Decision Routing](../routing_algorithms/rlcd_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `classifier_target` | Yes | — | Target the decision model is called through. Not a routing destination. |
+| `targets` | Yes | — | Candidate targets the decision model chooses among. Must have at least two entries with no duplicates. |
+| `default_target` | Yes | — | Target used when the decision model's reply cannot be used. Must name one of `targets`. |
+| `max_output_tokens` | No | `4096` | Maximum completion tokens for the decision verdict. Must be at least `1`. |
+
+```toml
+[routes.decide]
+id = "switchyard/rlcd"
+type = "rlcd"
+classifier_target = "decision"
+targets = ["weak", "strong"]
+default_target = "weak"
+```
+
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
