@@ -114,10 +114,8 @@ pub fn encode_stream(
     )
 }
 
-/// Encodes a response stream, honouring request extensions.
-///
-/// Identical to [`encode_stream`] except that Codex tool namespaces recorded on
-/// the request are restored on each encoded event.
+/// Encodes a response stream while applying response-shaping state retained
+/// from the request, including Chat usage opt-in and Codex tool identities.
 pub fn encode_stream_with_extensions(
     chunks: LlmResponseStream,
     target: WireFormat,
@@ -141,6 +139,7 @@ pub fn encode_stream_with_extensions(
     let mut state = StreamTranslationState {
         target: Some(target_format.clone()),
         target_model: served_model,
+        openai_chat_include_usage: openai_chat_stream_usage_requested(target, request_extensions),
         ..Default::default()
     };
     let mut chunks = chunks;
@@ -198,6 +197,20 @@ pub fn encode_stream_with_extensions(
     };
 
     Ok(Box::pin(events))
+}
+
+fn openai_chat_stream_usage_requested(
+    target: WireFormat,
+    request_extensions: &switchyard_protocol::ProviderExtensions,
+) -> bool {
+    target == WireFormat::OpenAiChat
+        && request_extensions
+            .fields
+            .get("stream_options")
+            .and_then(Value::as_object)
+            .and_then(|options| options.get("include_usage"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
 }
 
 // The raw-response helper promises that the caller sees the model that served the
@@ -363,17 +376,66 @@ mod tests {
     use futures::{Stream, StreamExt, stream};
     use serde_json::{Value, json};
     use switchyard_protocol::{
-        LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, completion_text,
+        LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, ProviderExtensions,
+        completion_text,
     };
 
     use super::{
         decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-        encode_request, encode_stream, stamp_streamed_response_model,
+        encode_request, encode_stream, encode_stream_with_extensions,
+        stamp_streamed_response_model,
     };
     use crate::{LlmResponseStream, LlmStreamError, WireFormat};
 
     // A boxed stream item error, matching the streamed IR contract.
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+    fn chat_request_extensions(
+        include_usage: Option<Value>,
+    ) -> Result<ProviderExtensions, BoxError> {
+        let mut body = json!({
+            "model": "route/model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": true,
+        });
+        if let Some(include_usage) = include_usage {
+            body["stream_options"] = json!({"include_usage": include_usage});
+        }
+        Ok(decode_request(WireFormat::OpenAiChat, &body)?.extensions)
+    }
+
+    fn collect_chat_events(
+        chunks: Vec<LlmResponseChunk>,
+        extensions: &ProviderExtensions,
+    ) -> Result<Vec<Value>, BoxError> {
+        let chunks: LlmResponseStream = stream::iter(
+            chunks
+                .into_iter()
+                .map(|chunk| Ok::<LlmResponseStreamEvent, LlmClientError>(chunk.into())),
+        )
+        .boxed();
+        Ok(block_on(
+            encode_stream_with_extensions(chunks, WireFormat::OpenAiChat, None, extensions)?
+                .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<_>, LlmStreamError>>()?)
+    }
+
+    fn usage_chunk() -> LlmResponseChunk {
+        LlmResponseChunk::Usage(switchyard_protocol::llm::Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            total_tokens: Some(15),
+            ..Default::default()
+        })
+    }
+
+    fn stop_chunk() -> LlmResponseChunk {
+        LlmResponseChunk::MessageStop {
+            reason: Some("stop".to_string()),
+        }
+    }
 
     // Collects a decoded IR stream, surfacing the first error instead of panicking.
     fn decode_all(
@@ -666,42 +728,102 @@ mod tests {
         Ok(())
     }
 
-    // The guard keys on `errored`, not `finished`, so a normal completion still emits the
-    // trailing usage chunk the OpenAI chat codec reports only after `finished` is set.
     #[test]
-    fn encode_stream_keeps_trailing_usage_after_a_normal_stop() -> Result<(), BoxError> {
-        let chunks: LlmResponseStream = stream::iter(vec![
-            Ok(LlmResponseChunk::TextDelta {
-                index: 0,
-                text: "hi".to_string(),
+    fn openai_chat_stream_usage_is_not_generated_without_boolean_opt_in() -> Result<(), BoxError> {
+        for include_usage in [None, Some(json!(false)), Some(json!("true"))] {
+            for usage_before_stop in [true, false] {
+                let extensions = chat_request_extensions(include_usage.clone())?;
+                let chunks = if usage_before_stop {
+                    vec![usage_chunk(), stop_chunk()]
+                } else {
+                    vec![stop_chunk(), usage_chunk()]
+                };
+                let events = collect_chat_events(chunks, &extensions)?;
+                assert!(events.iter().all(|event| event.get("usage").is_none()));
+                assert_eq!(
+                    events.last().unwrap()["choices"][0]["finish_reason"],
+                    "stop"
+                );
             }
-            .into()),
-            Ok(LlmResponseChunk::MessageStop {
-                reason: Some("stop".to_string()),
-            }
-            .into()),
-            Ok(LlmResponseChunk::Usage(switchyard_protocol::llm::Usage {
-                output_tokens: Some(7),
-                ..Default::default()
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn openai_chat_stream_usage_requested_before_stop_is_trailing() -> Result<(), BoxError> {
+        let extensions = chat_request_extensions(Some(json!(true)))?;
+        let events = collect_chat_events(vec![usage_chunk(), stop_chunk()], &extensions)?;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["choices"][0]["finish_reason"], "stop");
+        assert!(events[0].get("usage").is_none());
+        assert_eq!(events[1]["choices"], json!([]));
+        assert_eq!(
+            events[1]["usage"],
+            json!({
+                "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15
             })
-            .into()),
-        ])
-        .boxed();
-        let events =
-            block_on(encode_stream(chunks, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
-                .into_iter()
-                .collect::<Result<Vec<Value>, LlmStreamError>>()?;
-        let body = serde_json::to_string(&events)?;
-        assert!(
-            events
-                .iter()
-                .any(|event| event["choices"][0]["finish_reason"] == "stop"),
-            "missing stop terminal:\n{body}"
         );
-        assert!(
-            body.contains("\"usage\""),
-            "trailing usage dropped after a normal stop:\n{body}"
+        Ok(())
+    }
+
+    #[test]
+    fn openai_chat_stream_usage_requested_after_stop_is_finalized_at_clean_eof()
+    -> Result<(), BoxError> {
+        let extensions = chat_request_extensions(Some(json!(true)))?;
+        let events = collect_chat_events(vec![stop_chunk(), usage_chunk()], &extensions)?;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["choices"][0]["finish_reason"], "stop");
+        assert_eq!(events[1]["choices"], json!([]));
+        assert_eq!(events[1]["usage"]["total_tokens"], 15);
+        Ok(())
+    }
+
+    #[test]
+    fn openai_chat_stream_usage_requested_without_backend_usage_uses_zero_defaults()
+    -> Result<(), BoxError> {
+        let extensions = chat_request_extensions(Some(json!(true)))?;
+        let events = collect_chat_events(vec![stop_chunk()], &extensions)?;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["choices"][0]["finish_reason"], "stop");
+        assert_eq!(events[1]["choices"], json!([]));
+        assert_eq!(
+            events[1]["usage"],
+            json!({
+                "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0
+            })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn openai_chat_stream_usage_is_not_emitted_after_a_post_stop_error() -> Result<(), BoxError> {
+        let extensions = chat_request_extensions(Some(json!(true)))?;
+        for usage_before_stop in [true, false] {
+            let items = if usage_before_stop {
+                vec![
+                    Ok::<LlmResponseStreamEvent, LlmClientError>(usage_chunk().into()),
+                    Ok::<LlmResponseStreamEvent, LlmClientError>(stop_chunk().into()),
+                    Err(LlmClientError::General("boom".to_string())),
+                ]
+            } else {
+                vec![
+                    Ok::<LlmResponseStreamEvent, LlmClientError>(stop_chunk().into()),
+                    Ok::<LlmResponseStreamEvent, LlmClientError>(usage_chunk().into()),
+                    Err(LlmClientError::General("boom".to_string())),
+                ]
+            };
+            let chunks: LlmResponseStream = stream::iter(items).boxed();
+            let results = block_on(
+                encode_stream_with_extensions(chunks, WireFormat::OpenAiChat, None, &extensions)?
+                    .collect::<Vec<_>>(),
+            );
+
+            let [Ok(finish), Err(LlmStreamError::Client(_))] = results.as_slice() else {
+                return Err(format!("expected finish then input error, got {results:?}").into());
+            };
+            assert_eq!(finish["choices"][0]["finish_reason"], "stop");
+            assert!(finish.get("usage").is_none());
+        }
         Ok(())
     }
 
@@ -719,28 +841,67 @@ mod tests {
     }
 
     #[test]
-    fn stream_helpers_replay_same_format_provider_fields() -> Result<(), BoxError> {
-        let provider_event = json!({
+    fn openai_chat_stream_usage_does_not_change_same_format_raw_replay() -> Result<(), BoxError> {
+        let finish = json!({
             "id": "chatcmpl-test",
             "object": "chat.completion.chunk",
             "system_fingerprint": "fp_provider_specific",
             "choices": [{
                 "index": 0,
-                "delta": {"content": "Hello"},
+                "delta": {},
+                "finish_reason": "stop"
+            }]
+        });
+        let usage = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "system_fingerprint": "fp_provider_specific",
+            "choices": [],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+        });
+        let bytes = stream::once({
+            let frame = format!("data: {finish}\n\ndata: {usage}\n\n").into_bytes();
+            async move { Ok::<Vec<u8>, LlmClientError>(frame) }
+        });
+        let decoded = decode_stream(bytes, WireFormat::OpenAiChat)?;
+        let extensions = chat_request_extensions(Some(json!(true)))?;
+        let replayed = block_on(
+            encode_stream_with_extensions(decoded, WireFormat::OpenAiChat, None, &extensions)?
+                .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<Value>, LlmStreamError>>()?;
+
+        assert_eq!(replayed, vec![finish, usage]);
+        Ok(())
+    }
+
+    #[test]
+    fn openai_chat_stream_usage_does_not_append_to_finish_only_raw_replay() -> Result<(), BoxError>
+    {
+        let finish = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": {},
                 "finish_reason": "stop"
             }]
         });
         let bytes = stream::once({
-            let frame = format!("data: {provider_event}\n\n").into_bytes();
+            let frame = format!("data: {finish}\n\n").into_bytes();
             async move { Ok::<Vec<u8>, LlmClientError>(frame) }
         });
         let decoded = decode_stream(bytes, WireFormat::OpenAiChat)?;
-        let replayed =
-            block_on(encode_stream(decoded, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
-                .into_iter()
-                .collect::<Result<Vec<Value>, LlmStreamError>>()?;
+        let extensions = chat_request_extensions(Some(json!(true)))?;
+        let replayed = block_on(
+            encode_stream_with_extensions(decoded, WireFormat::OpenAiChat, None, &extensions)?
+                .collect::<Vec<_>>(),
+        )
+        .into_iter()
+        .collect::<Result<Vec<Value>, LlmStreamError>>()?;
 
-        assert_eq!(replayed, vec![provider_event]);
+        assert_eq!(replayed, vec![finish]);
         Ok(())
     }
 

@@ -356,18 +356,15 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
         WireFormat::OpenAiResponses,
         WireFormat::OpenAiChat,
     );
-    let events = engine.translate_event(
+    let mut events = engine.translate_event(
         &mut state,
         WireFormat::OpenAiResponses,
         WireFormat::OpenAiChat,
         &json!({"type": "response.completed", "response": body}),
     )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
     assert_eq!(state.usage, decoded.usage);
-    let chat = events
-        .iter()
-        .find(|event| event.get("usage").is_some())
-        .ok_or("missing usage")?;
-    assert_eq!(chat["usage"], output["usage"]);
+    assert!(events.iter().all(|event| event.get("usage").is_none()));
     let mut state = switchyard_translation::StreamTranslationState::new(
         WireFormat::OpenAiChat,
         WireFormat::OpenAiResponses,
@@ -615,6 +612,10 @@ fn anthropic_thinking_response_translates_to_openai_reasoning_content() -> TestR
             assert_eq!(state.usage.reasoning_tokens, Some(thinking_tokens));
             assert_eq!(state.usage.output_tokens, Some(7));
             events.extend(engine.finish_stream(&mut state, target)?);
+            if target == WireFormat::OpenAiChat {
+                assert!(events.iter().all(|event| event.get("usage").is_none()));
+                continue;
+            }
             let usage = events
                 .iter()
                 .find_map(|event| {

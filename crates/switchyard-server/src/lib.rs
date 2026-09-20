@@ -1050,7 +1050,8 @@ async fn handle_llm_request(
             route.algorithm_name(),
         )
     });
-    // Only the Codex namespace mapping is needed downstream, not the whole request.
+    // Response encoding needs caller-owned extensions such as Chat stream usage
+    // opt-in and Codex tool identity restoration.
     let request_extensions = request.llm_request.extensions.clone();
     let observer = stats_observer(
         state.stats.clone(),

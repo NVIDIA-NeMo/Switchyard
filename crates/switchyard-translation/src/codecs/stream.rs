@@ -38,6 +38,12 @@ pub struct StreamTranslationState {
     /// Set once an in-band error event was emitted; the encoder then emits nothing further.
     pub errored: bool,
     pub usage: Usage,
+    /// Whether the inbound Chat caller requested the final usage-only chunk.
+    #[serde(default)]
+    pub(crate) openai_chat_include_usage: bool,
+    /// Marks generated or preserved Chat usage finalization as complete.
+    #[serde(default)]
+    pub(crate) openai_chat_usage_finalized: bool,
 
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,

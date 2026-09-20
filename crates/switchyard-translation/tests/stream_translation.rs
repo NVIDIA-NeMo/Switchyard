@@ -612,8 +612,9 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
         &usage,
     )?;
 
-    assert_eq!(events[0]["usage"]["completion_tokens"], 42);
+    assert!(events[0].get("usage").is_none());
     assert_eq!(events[0]["choices"][0]["finish_reason"], "stop");
+    assert_eq!(state.usage.output_tokens, Some(42));
     Ok(())
 }
 
@@ -822,9 +823,9 @@ fn openai_chat_finish_synthesizes_terminal_chunk_after_incomplete_source() -> Te
     Ok(())
 }
 
-// Verifies provider usage arriving after finish remains visible to OpenAI clients.
+// Verifies provider usage arriving after finish is recorded without an opt-in.
 #[test]
-fn openai_chat_emits_usage_arriving_after_stop() -> TestResult {
+fn openai_chat_records_usage_arriving_after_stop_without_opt_in() -> TestResult {
     let engine = TranslationEngine::default();
     let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
     let stop = json!({
@@ -854,9 +855,8 @@ fn openai_chat_emits_usage_arriving_after_stop() -> TestResult {
         WireFormat::OpenAiChat,
         &usage,
     )?;
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0]["choices"], json!([]));
-    assert_eq!(events[0]["usage"]["total_tokens"], 15);
+    assert!(events.is_empty());
+    assert_eq!(state.usage.total_tokens, Some(15));
     Ok(())
 }
 
@@ -1021,15 +1021,15 @@ fn responses_stream_usage_without_total_keeps_cached_tokens_in_total() -> TestRe
     )?;
     events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
 
-    let Some(usage) = events
-        .iter()
-        .find_map(|event| event.get("usage").filter(|usage| !usage.is_null()))
-    else {
-        return Err("expected a terminal OpenAI chunk carrying usage".into());
-    };
-    assert_eq!(usage["prompt_tokens"], 100);
-    assert_eq!(usage["total_tokens"], 105);
-    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 80);
+    assert!(events.iter().all(|event| event.get("usage").is_none()));
+    assert_eq!(
+        state.usage.input_tokens.unwrap_or(0)
+            + state.usage.cached_input_tokens().unwrap_or(0)
+            + state.usage.cache_creation_input_tokens().unwrap_or(0),
+        100
+    );
+    assert_eq!(state.usage.total_tokens, Some(105));
+    assert_eq!(state.usage.cached_input_tokens(), Some(80));
     Ok(())
 }
 

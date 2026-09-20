@@ -38,6 +38,24 @@ impl StreamCodec for OpenAiChatStreamCodec {
         encode_openai_chat_stream(state, event)
     }
 
+    fn observe_replayed_event(
+        &self,
+        state: &mut StreamTranslationState,
+        _raw: &Value,
+        normalized: Vec<LlmResponseChunk>,
+    ) {
+        let replayed_terminal = normalized
+            .iter()
+            .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }));
+        for chunk in normalized {
+            drop(self.encode_event(state, chunk));
+        }
+        if replayed_terminal {
+            state.finished = true;
+            state.openai_chat_usage_finalized = true;
+        }
+    }
+
     fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
         finish_openai_chat_stream(state)
     }
@@ -292,11 +310,7 @@ fn encode_openai_chat_stream(
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
-            if state.finished {
-                vec![openai_usage_chunk(state)]
-            } else {
-                Vec::new()
-            }
+            Vec::new()
         }
         LlmResponseChunk::MessageStop { reason } => {
             if state.finished {
@@ -307,7 +321,7 @@ fn encode_openai_chat_stream(
                 state,
                 json!({}),
                 Some(openai_finish_reason(reason.as_deref())),
-                state.saw_backend_usage.then(|| openai_usage_value(state)),
+                None,
             )]
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
@@ -321,16 +335,32 @@ fn encode_openai_chat_stream(
 
 // Emits a terminal chunk if the source stream ended before a stop event arrived.
 fn finish_openai_chat_stream(state: &mut StreamTranslationState) -> Vec<Value> {
-    if state.finished || !state.saw_message_start {
+    if state.errored {
+        return Vec::new();
+    }
+    if state.finished {
+        return finalize_openai_chat_usage(state);
+    }
+    if !state.saw_message_start {
         return Vec::new();
     }
     state.finished = true;
-    vec![openai_stream_chunk(
+    let mut out = vec![openai_stream_chunk(
         state,
         json!({}),
         Some(openai_finish_reason(state.stop_reason.as_deref())),
-        state.saw_backend_usage.then(|| openai_usage_value(state)),
-    )]
+        None,
+    )];
+    out.extend(finalize_openai_chat_usage(state));
+    out
+}
+
+fn finalize_openai_chat_usage(state: &mut StreamTranslationState) -> Vec<Value> {
+    if !state.openai_chat_include_usage || state.openai_chat_usage_finalized {
+        return Vec::new();
+    }
+    state.openai_chat_usage_finalized = true;
+    vec![openai_usage_chunk(state)]
 }
 
 // Normalizes OpenAI token usage fields.
