@@ -1538,7 +1538,7 @@ mod tests {
         assert!(captured.lock().unwrap().is_empty());
         assert!(stream.next().await.expect("encoded stream event").is_ok());
         assert!(captured.lock().unwrap().is_empty());
-        assert!(stream.next().await.expect("encoded usage event").is_ok());
+        assert!(stream.next().await.is_none());
 
         let events = captured.lock().unwrap();
         assert_eq!(events.len(), 3);
