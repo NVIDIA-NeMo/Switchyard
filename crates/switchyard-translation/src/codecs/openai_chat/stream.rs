@@ -66,6 +66,22 @@ fn decode_openai_chat_stream(
         }];
     }
 
+    let choices = object.get("choices").and_then(Value::as_array);
+    let has_unsupported_choices = choices.is_some_and(|choices| {
+        choices.len() > 1
+            || choices.iter().any(|choice| {
+                choice
+                    .get("index")
+                    .and_then(Value::as_number)
+                    .is_some_and(|index| index.as_f64() != Some(0.0))
+            })
+    });
+    if has_unsupported_choices {
+        return vec![LlmResponseChunk::DecodeError {
+            message: "multiple OpenAI Chat choices are not supported".to_string(),
+        }];
+    }
+
     let mut out = Vec::new();
     let mut identity_changed = false;
     if state.model.is_none() {
@@ -91,12 +107,7 @@ fn decode_openai_chat_stream(
         out.push(LlmResponseChunk::Usage(usage));
     }
 
-    for choice in object
-        .get("choices")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for choice in choices.into_iter().flatten() {
         let Some(choice) = choice.as_object() else {
             continue;
         };

@@ -40,6 +40,12 @@ impl FormatCodec for OpenAiChatCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = object(body, "$")?;
+        if body.get("n").and_then(Value::as_u64).is_some_and(|n| n > 1) {
+            return Err(TranslationError::InvalidValue {
+                path: "$.n".to_string(),
+                message: "multiple OpenAI Chat choices are not supported; set `n` to 1".to_string(),
+            });
+        }
         let mut diagnostics = Vec::new();
         let mut request = LlmRequest {
             model: body
@@ -269,6 +275,22 @@ impl FormatCodec for OpenAiChatCodec {
         _policy: &TranslationPolicy,
     ) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
+        let choices = object.get("choices").and_then(Value::as_array);
+        let has_unsupported_choices = choices.is_some_and(|choices| {
+            choices.len() > 1
+                || choices.iter().any(|choice| {
+                    choice
+                        .get("index")
+                        .and_then(Value::as_number)
+                        .is_some_and(|index| index.as_f64() != Some(0.0))
+                })
+        });
+        if has_unsupported_choices {
+            return Err(TranslationError::InvalidValue {
+                path: "$.choices".to_string(),
+                message: "multiple OpenAI Chat choices are not supported".to_string(),
+            });
+        }
         let mut response = AggLlmResponse {
             id: object
                 .get("id")
@@ -289,9 +311,7 @@ impl FormatCodec for OpenAiChatCodec {
                 _policy,
             ),
         };
-        if let Some(choice) = object
-            .get("choices")
-            .and_then(Value::as_array)
+        if let Some(choice) = choices
             .and_then(|choices| choices.first())
             .and_then(Value::as_object)
         {

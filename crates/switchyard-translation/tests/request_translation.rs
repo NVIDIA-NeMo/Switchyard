@@ -314,7 +314,8 @@ fn openai_target_prompt_preserves_native_request_fields() -> TestResult {
                 "modalities": ["text", "audio"],
                 "audio": {"voice": "alloy", "format": "wav"},
                 "web_search_options": {"search_context_size": "high"},
-                "n": 2,
+                // OpenAI Chat supports a single choice in this preservation fixture.
+                "n": 1,
                 "logit_bias": {"42": -1},
                 "frequency_penalty": 0.2,
                 "presence_penalty": 0.3,
@@ -3095,6 +3096,51 @@ fn malformed_request_fields_are_rejected() {
         &TranslationPolicy::default(),
     ) {
         panic!("Anthropic null system and zero max_tokens should be accepted: {error}");
+    }
+}
+
+#[test]
+fn openai_chat_request_rejects_multiple_choices_for_buffered_and_streaming() {
+    let engine = TranslationEngine::default();
+    for stream in [false, true] {
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hello"}],
+            "n": 2,
+            "stream": stream,
+        });
+        let error = match engine.decode_request(
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        ) {
+            Ok(_) => panic!("stream={stream} request with n=2 must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), "InvalidValue");
+        assert_eq!(
+            error.to_string(),
+            "invalid value at $.n: multiple OpenAI Chat choices are not supported; set `n` to 1"
+        );
+    }
+}
+
+#[test]
+fn openai_chat_request_accepts_single_choice_defaults() {
+    let engine = TranslationEngine::default();
+    for n in [None, Some(1_u64)] {
+        let mut body = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hello"}],
+        });
+        if let Some(n) = n {
+            body["n"] = json!(n);
+        }
+        if let Err(error) =
+            engine.decode_request(WireFormat::OpenAiChat, &body, &TranslationPolicy::default())
+        {
+            panic!("n={n:?} must remain valid: {error}");
+        }
     }
 }
 

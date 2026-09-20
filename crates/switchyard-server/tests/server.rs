@@ -3393,6 +3393,49 @@ async fn json_extractor_statuses_keep_api_specific_error_envelopes() -> TestResu
 }
 
 #[tokio::test]
+async fn chat_multiple_choice_requests_are_rejected_before_upstream_dispatch() -> TestResult {
+    let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    for stream in [false, true] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": "hello"}],
+                "n": 2,
+                "stream": stream,
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "stream={stream}");
+        assert_eq!(
+            response
+                .headers
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json"),
+            "stream={stream}"
+        );
+        assert_eq!(
+            response.json()?,
+            json!({
+                "error": {
+                    "message": "invalid value at $.n: multiple OpenAI Chat choices are not supported; set `n` to 1",
+                    "type": "invalid_request_error",
+                    "code": "invalid_body"
+                }
+            }),
+            "stream={stream}"
+        );
+    }
+
+    assert!(upstream.calls.lock().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn models_endpoint_reports_declared_route_capabilities_and_null_when_undeclared() -> TestResult
 {
     const CONFIG: &str = r#"

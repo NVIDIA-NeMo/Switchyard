@@ -255,6 +255,48 @@ fn openai_chat_response_translates_to_anthropic_message() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn openai_chat_buffered_response_rejects_unsupported_choice_sets() {
+    let engine = TranslationEngine::default();
+    let cases = [
+        json!({
+            "id": "chatcmpl-two",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "first"}, "finish_reason": "stop"},
+                {"index": 1, "message": {"role": "assistant", "content": "second"}, "finish_reason": "stop"}
+            ]
+        }),
+        json!({
+            "id": "chatcmpl-index-one",
+            "choices": [
+                {"index": 1, "message": {"role": "assistant", "content": "second"}, "finish_reason": "stop"}
+            ]
+        }),
+        json!({
+            "id": "chatcmpl-negative-index",
+            "choices": [
+                {"index": -1, "message": {"role": "assistant", "content": "invalid"}, "finish_reason": "stop"}
+            ]
+        }),
+    ];
+
+    for body in cases {
+        let error = match engine.decode_response(
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        ) {
+            Ok(_) => panic!("unsupported choice set must be rejected: {body}"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), "InvalidValue");
+        assert_eq!(
+            error.to_string(),
+            "invalid value at $.choices: multiple OpenAI Chat choices are not supported"
+        );
+    }
+}
+
 // Verifies Anthropic message responses map to OpenAI Chat completions.
 #[test]
 fn anthropic_message_response_translates_to_openai_chat_completion() -> TestResult {

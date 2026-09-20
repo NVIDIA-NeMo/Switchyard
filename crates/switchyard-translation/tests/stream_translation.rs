@@ -1857,6 +1857,110 @@ fn openai_chat_error_frame_decodes_to_stream_error() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn openai_chat_provider_error_precedes_unsupported_choices() {
+    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
+    let state_before = state.clone();
+    let event = json!({
+        "error": {"message": "upstream exploded", "type": "server_error"},
+        "choices": [
+            {"index": 0, "delta": {"content": "first"}},
+            {"index": 1, "delta": {"content": "second"}}
+        ]
+    });
+
+    let chunks = decode_stream_event(&mut state, WireFormat::OpenAiChat, &event);
+
+    assert_eq!(
+        chunks,
+        vec![LlmResponseChunk::StreamError {
+            message: "upstream exploded".to_string(),
+        }]
+    );
+    assert_eq!(state, state_before);
+}
+
+#[test]
+fn openai_chat_stream_rejects_unsupported_choice_sets_before_state_changes() {
+    let cases = [
+        json!({
+            "id": "chatcmpl-two",
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "id": "call_1",
+                        "function": {"name": "lookup", "arguments": "{}"}
+                    }]},
+                    "finish_reason": "tool_calls"
+                },
+                {"index": 1, "delta": {"content": "second"}}
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        }),
+        json!({
+            "id": "chatcmpl-index-one",
+            "model": "gpt-4o",
+            "choices": [{"index": 1, "delta": {"content": "second"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        }),
+        json!({
+            "id": "chatcmpl-negative-index",
+            "model": "gpt-4o",
+            "choices": [{"index": -1, "delta": {"content": "invalid"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        }),
+    ];
+
+    for event in cases {
+        let mut state =
+            StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+        let state_before = state.clone();
+        let chunks = decode_stream_event(&mut state, WireFormat::OpenAiChat, &event);
+        assert_eq!(
+            chunks,
+            vec![LlmResponseChunk::DecodeError {
+                message: "multiple OpenAI Chat choices are not supported".to_string(),
+            }]
+        );
+        assert_eq!(state, state_before);
+    }
+}
+
+#[test]
+fn openai_chat_same_format_multiple_choices_emit_one_terminal_error_without_raw_replay()
+-> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiChat;
+    let event = json!({
+        "id": "chatcmpl-two",
+        "model": "gpt-4o",
+        "provider_extension": "must not be replayed",
+        "choices": [
+            {"index": 0, "delta": {"content": "first"}},
+            {"index": 1, "delta": {"content": "second"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+    });
+    let mut decode_state = StreamTranslationState::new(format, format);
+    let decode_state_before = decode_state.clone();
+    let preserved = engine.decode_stream_event(&mut decode_state, format, event)?;
+    assert_eq!(decode_state, decode_state_before);
+
+    let mut encode_state = StreamTranslationState::new(format, format);
+    let emitted = engine.encode_stream_event(&mut encode_state, format, preserved)?;
+    assert_eq!(
+        emitted,
+        vec![json!({
+            "error": {"message": "multiple OpenAI Chat choices are not supported"}
+        })]
+    );
+    assert!(engine.finish_stream(&mut encode_state, format)?.is_empty());
+    Ok(())
+}
+
 // Verifies the streaming encoder matches the buffered one: both Responses usage detail objects
 // are present even when the upstream reports no cache or reasoning breakdown.
 #[test]

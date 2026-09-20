@@ -549,6 +549,7 @@ fn response_fixture(format: WireFormat) -> Value {
             "object": "chat.completion",
             "created": 1780000000,
             "model": "gpt-5.2",
+            // OpenAI Chat response translation supports one choice.
             "choices": [
                 {
                     "index": 0,
@@ -576,11 +577,6 @@ fn response_fixture(format: WireFormat) -> Value {
                     },
                     "finish_reason": "tool_calls",
                     "logprobs": {"content": []}
-                },
-                {
-                    "index": 1,
-                    "message": {"role": "assistant", "content": "alternate"},
-                    "finish_reason": "stop"
                 }
             ],
             "usage": {
