@@ -21,7 +21,7 @@ pub mod util;
 
 pub use switchyard_protocol::stream::{
     LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, LlmStreamError,
-    ProviderStreamEvent,
+    ProviderStreamEvent, StreamErrorDetails,
 };
 pub use switchyard_protocol::{format, llm};
 

@@ -4,21 +4,48 @@
 //! Streaming codec for OpenAI Responses API events.
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::LlmResponseChunk;
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
 };
 use crate::codecs::stream::{
-    StreamCodec, StreamTranslationState, record_source_identity,
+    StreamCodec, StreamTranslationState, record_source_identity, stream_error_details,
     target_message_id_or_source_message_id, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
+use crate::{LlmResponseChunk, StreamErrorDetails};
 
 /// Stream codec for OpenAI Responses API events.
 pub struct OpenAiResponsesStreamCodec;
+
+fn responses_error_event(error: StreamErrorDetails) -> Value {
+    let StreamErrorDetails {
+        status,
+        error_type,
+        code,
+        param,
+        message,
+    } = error;
+    let mut payload = Map::new();
+    payload.insert(
+        "type".into(),
+        json!(error_type.unwrap_or_else(|| "api_error".into())),
+    );
+    payload.insert("message".into(), json!(message));
+    if let Some(code) = code {
+        payload.insert("code".into(), code);
+    }
+    if let Some(param) = param {
+        payload.insert("param".into(), param);
+    }
+    let mut event = json!({"type": "error", "error": payload});
+    if let Some(status) = status {
+        event["status"] = json!(status);
+    }
+    event
+}
 
 impl StreamCodec for OpenAiResponsesStreamCodec {
     fn format(&self) -> FormatId {
@@ -299,22 +326,27 @@ fn decode_responses_stream(
         Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
             reason: Some("max_tokens".to_string()),
         }],
-        Some("response.failed") => vec![LlmResponseChunk::StreamError {
-            message: event
-                .get("response")
-                .and_then(|response| response.get("error"))
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Responses stream error")
-                .to_string(),
-        }],
-        Some("error") => vec![LlmResponseChunk::StreamError {
-            message: event
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Responses stream error")
-                .to_string(),
-        }],
+        Some("response.failed") => {
+            let payload = event.pointer("/response/error").unwrap_or(event);
+            vec![LlmResponseChunk::StreamError {
+                error: Box::new(stream_error_details(
+                    event,
+                    payload,
+                    "unknown Responses stream error",
+                )),
+            }]
+        }
+        Some("error") => {
+            let nested = event.get("error");
+            let payload = nested.unwrap_or(event);
+            let mut error = stream_error_details(event, payload, "unknown Responses stream error");
+            if nested.is_none() {
+                error.error_type = None;
+            }
+            vec![LlmResponseChunk::StreamError {
+                error: Box::new(error),
+            }]
+        }
         _ => Vec::new(),
     }
 }
@@ -394,11 +426,16 @@ fn encode_responses_stream(
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
+        LlmResponseChunk::DecodeError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"type": "error", "message": message})]
+            vec![responses_error_event(StreamErrorDetails::new(message))]
+        }
+        LlmResponseChunk::StreamError { error } => {
+            state.finished = true;
+            state.errored = true;
+            vec![responses_error_event(*error)]
         }
     }
 }
@@ -788,7 +825,9 @@ fn snapshot_suffix(
 ) -> Result<Option<String>, LlmResponseChunk> {
     let Some(suffix) = snapshot.strip_prefix(decoded.as_str()) else {
         return Err(LlmResponseChunk::StreamError {
-            message: "Responses snapshot conflicts with streamed content".to_string(),
+            error: Box::new(StreamErrorDetails::new(
+                "Responses snapshot conflicts with streamed content",
+            )),
         });
     };
     if suffix.is_empty() {

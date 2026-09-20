@@ -834,7 +834,9 @@ mod tests {
                 text: "partial".to_string(),
             },
             LlmResponseChunk::StreamError {
-                message: "upstream exploded".to_string(),
+                error: Box::new(switchyard_protocol::StreamErrorDetails::new(
+                    "upstream exploded",
+                )),
             },
         ]);
         let (_, response) = test_drive(orch, request(), serve).await?;

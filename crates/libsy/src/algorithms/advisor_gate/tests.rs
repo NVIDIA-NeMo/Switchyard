@@ -727,7 +727,9 @@ async fn mid_stream_error_propagates_while_buffering() {
                 text: "partial".to_string(),
             }]),
             LlmResponseStreamEvent::new(vec![LlmResponseChunk::StreamError {
-                message: "upstream reset".to_string(),
+                error: Box::new(switchyard_protocol::StreamErrorDetails::new(
+                    "upstream reset",
+                )),
             }]),
         ]))
     };

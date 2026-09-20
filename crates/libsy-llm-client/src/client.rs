@@ -804,8 +804,10 @@ fn first_event_overflow(
         .normalized()
         .iter()
         .find_map(|chunk| match chunk {
-            LlmResponseChunk::StreamError { message } if backend.is_context_overflow(message) => {
-                Some(message.clone())
+            LlmResponseChunk::StreamError { error }
+                if backend.is_context_overflow(&error.message) =>
+            {
+                Some(error.message.clone())
             }
             _ => None,
         })

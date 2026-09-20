@@ -11,7 +11,8 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
-    LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
+    LlmResponseChunk, StreamErrorDetails, StreamTranslationState, TranslationEngine, WireFormat,
+    decode_stream_event,
 };
 
 use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
@@ -1840,20 +1841,156 @@ fn anthropic_empty_tool_input_survives_stream_translation() -> TestResult {
     Ok(())
 }
 
-// An OpenAI-shaped error frame carries no `choices`, so it must decode to a stream error
-// instead of a bare message start that silently drops the upstream message.
 #[test]
-fn openai_chat_error_frame_decodes_to_stream_error() -> TestResult {
-    let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiChat);
-    let event = json!({"error": {"message": "upstream exploded", "type": "server_error"}});
+fn provider_stream_errors_decode_to_structured_details() -> TestResult {
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({"status":429,"error":{"type":"rate_limit_error","code":"quota","param":null,"message":"slow down"}}),
+            StreamErrorDetails {
+                status: Some(429),
+                error_type: Some("rate_limit_error".into()),
+                code: Some(json!("quota")),
+                param: Some(Value::Null),
+                message: "slow down".into(),
+            },
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type":"error","status":99,"error":{"status":429,"type":"rate_limit_error","code":"quota","message":"nested status wins"}}),
+            StreamErrorDetails {
+                status: Some(429),
+                error_type: Some("rate_limit_error".into()),
+                code: Some(json!("quota")),
+                param: None,
+                message: "nested status wins".into(),
+            },
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type":"error","status":"invalid","error":{"status":429,"type":"error","code":"nested_error","message":"nested semantic type"}}),
+            StreamErrorDetails {
+                status: Some(429),
+                error_type: Some("error".into()),
+                code: Some(json!("nested_error")),
+                param: None,
+                message: "nested semantic type".into(),
+            },
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id","message":"Previous response was not found."}}),
+            StreamErrorDetails {
+                status: Some(400),
+                error_type: Some("invalid_request_error".into()),
+                code: Some(json!("previous_response_not_found")),
+                param: Some(json!("previous_response_id")),
+                message: "Previous response was not found.".into(),
+            },
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type":"response.failed","status":503,"response":{"error":{"type":"server_error","code":503,"param":{"region":"west"},"message":"engine unavailable"}}}),
+            StreamErrorDetails {
+                status: Some(503),
+                error_type: Some("server_error".into()),
+                code: Some(json!(503)),
+                param: Some(json!({"region":"west"})),
+                message: "engine unavailable".into(),
+            },
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type":"error","status":500,"code":"server_error","param":null,"message":"flat failure"}),
+            StreamErrorDetails {
+                status: Some(500),
+                error_type: None,
+                code: Some(json!("server_error")),
+                param: Some(Value::Null),
+                message: "flat failure".into(),
+            },
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"type":"error","error":{"type":"overloaded_error","code":"capacity","message":"busy"}}),
+            StreamErrorDetails {
+                status: None,
+                error_type: Some("overloaded_error".into()),
+                code: Some(json!("capacity")),
+                param: None,
+                message: "busy".into(),
+            },
+        ),
+    ];
 
-    let chunks = decode_stream_event(&mut state, WireFormat::OpenAiChat, &event);
-
-    assert_eq!(chunks.len(), 1);
-    match &chunks[0] {
-        LlmResponseChunk::StreamError { message } => assert_eq!(message, "upstream exploded"),
-        other => return Err(format!("expected StreamError, got {other:?}").into()),
+    for (format, event, expected) in cases {
+        let mut state = StreamTranslationState::new(format, format);
+        assert_eq!(
+            decode_stream_event(&mut state, format, &event),
+            vec![LlmResponseChunk::StreamError {
+                error: Box::new(expected),
+            }],
+            "{format:?}: {event}"
+        );
     }
+    Ok(())
+}
+
+#[test]
+fn structured_stream_errors_encode_across_provider_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let input = json!({"type":"error","status":400,"error":{"type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id","message":"missing"}});
+    let mut chat = StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    assert_eq!(
+        engine.translate_event(
+            &mut chat,
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &input
+        )?,
+        vec![
+            json!({"status":400,"error":{"type":"invalid_request_error","code":"previous_response_not_found","param":"previous_response_id","message":"missing"}})
+        ]
+    );
+    let mut anthropic =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::AnthropicMessages);
+    assert_eq!(
+        engine.translate_event(
+            &mut anthropic,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &input
+        )?,
+        vec![
+            json!({"type":"error","error":{"type":"invalid_request_error","code":"previous_response_not_found","message":"missing"}})
+        ]
+    );
+    let input = json!({"status":503,"error":{"type":"server_error","code":null,"param":null,"message":"unavailable"}});
+    let mut responses =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    assert_eq!(
+        engine.translate_event(
+            &mut responses,
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &input
+        )?,
+        vec![
+            json!({"type":"error","status":503,"error":{"type":"server_error","code":null,"param":null,"message":"unavailable"},"sequence_number":0})
+        ]
+    );
+    let input = json!({"type":"error","code":500,"param":null,"message":"flat failure"});
+    let mut anthropic_fallback =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::AnthropicMessages);
+    assert_eq!(
+        engine.translate_event(
+            &mut anthropic_fallback,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &input
+        )?,
+        vec![json!({"type":"error","error":{"type":"api_error","message":"flat failure"}})]
+    );
     Ok(())
 }
 

@@ -347,10 +347,10 @@ async fn buffer_routing_stream(
                 LlmResponseChunk::DecodeError { message } => {
                     return Err(LlmClientError::ResponseTranslation(message.clone()));
                 }
-                LlmResponseChunk::StreamError { message } => {
+                LlmResponseChunk::StreamError { error } => {
                     return Err(LlmClientError::UpstreamHttp {
                         status: StatusCode::BAD_GATEWAY,
-                        body: message.clone(),
+                        body: error.upstream_http_body(),
                     });
                 }
                 _ => {}
@@ -1015,7 +1015,9 @@ mod tests {
                             text: "partial".to_string(),
                         },
                         LlmResponseChunk::StreamError {
-                            message: "stream failed".to_string(),
+                            error: Box::new(switchyard_protocol::StreamErrorDetails::new(
+                                "stream failed",
+                            )),
                         },
                     ])),
                 };
@@ -1940,6 +1942,61 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[tokio::test]
+    async fn routing_buffer_keeps_502_fallback_and_structured_code_visibility() {
+        for embedded_status in [400, 429, 99] {
+            let chunks: LlmResponseStream = stream::iter([Ok(LlmResponseChunk::StreamError {
+                error: Box::new(switchyard_protocol::StreamErrorDetails {
+                    status: Some(embedded_status),
+                    error_type: Some("invalid_request_error".into()),
+                    code: Some(json!("content_policy_violation")),
+                    param: Some(json!("input")),
+                    message: "blocked".into(),
+                }),
+            }
+            .into())])
+            .boxed();
+
+            let source = match buffer_routing_stream(chunks).await {
+                Err(source) => source,
+                Ok(_) => panic!("routing buffer should fail"),
+            };
+            let LlmClientError::UpstreamHttp { status, body } = &source else {
+                panic!("expected upstream HTTP error");
+            };
+            assert_eq!(*status, StatusCode::BAD_GATEWAY, "{embedded_status}");
+            let body: serde_json::Value =
+                serde_json::from_str(body).expect("normalized error body");
+            assert_eq!(body["error"]["code"], "content_policy_violation");
+
+            let error = LibsyError::client_call("target", source);
+            assert_eq!(
+                fallback_reason(&error),
+                Some(RoutingFallbackReason::Unavailable),
+                "{embedded_status}"
+            );
+        }
+
+        let policy = switchyard_protocol::StreamErrorDetails {
+            status: Some(400),
+            error_type: Some("invalid_request_error".into()),
+            code: Some(json!("content_policy_violation")),
+            param: None,
+            message: "blocked".into(),
+        };
+        let error = LibsyError::client_call(
+            "target",
+            LlmClientError::UpstreamHttp {
+                status: policy.effective_http_status(),
+                body: policy.upstream_http_body(),
+            },
+        );
+        assert_eq!(
+            fallback_reason(&error),
+            Some(RoutingFallbackReason::Unavailable)
+        );
     }
 
     #[tokio::test]

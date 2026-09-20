@@ -5,17 +5,44 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::LlmResponseChunk;
 use crate::codecs::common::{first_nonempty_string, reasoning_text_from_details};
 use crate::codecs::stream::{
-    StreamCodec, StreamTranslationState, record_source_identity, state_source_is, string_field,
-    target_model_or_source_model,
+    StreamCodec, StreamTranslationState, record_source_identity, state_source_is,
+    stream_error_details, string_field, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
+use crate::{LlmResponseChunk, StreamErrorDetails};
 
 /// Stream codec for OpenAI Chat Completions chunks.
 pub struct OpenAiChatStreamCodec;
+
+fn openai_chat_error_event(error: StreamErrorDetails) -> Value {
+    let StreamErrorDetails {
+        status,
+        error_type,
+        code,
+        param,
+        message,
+    } = error;
+    let mut payload = Map::new();
+    payload.insert(
+        "type".into(),
+        json!(error_type.unwrap_or_else(|| "api_error".into())),
+    );
+    payload.insert("message".into(), json!(message));
+    if let Some(code) = code {
+        payload.insert("code".into(), code);
+    }
+    if let Some(param) = param {
+        payload.insert("param".into(), param);
+    }
+    let mut event = json!({"error": payload});
+    if let Some(status) = status {
+        event["status"] = json!(status);
+    }
+    event
+}
 
 impl StreamCodec for OpenAiChatStreamCodec {
     fn format(&self) -> FormatId {
@@ -58,11 +85,11 @@ fn decode_openai_chat_stream(
     // `MessageStart` and the error text would be dropped.
     if let Some(error) = object.get("error") {
         return vec![LlmResponseChunk::StreamError {
-            message: error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown OpenAI stream error")
-                .to_string(),
+            error: Box::new(stream_error_details(
+                event,
+                error,
+                "unknown OpenAI stream error",
+            )),
         }];
     }
 
@@ -310,11 +337,16 @@ fn encode_openai_chat_stream(
                 state.saw_backend_usage.then(|| openai_usage_value(state)),
             )]
         }
-        LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
+        LlmResponseChunk::DecodeError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"error": {"message": message}})]
+            vec![openai_chat_error_event(StreamErrorDetails::new(message))]
+        }
+        LlmResponseChunk::StreamError { error } => {
+            state.finished = true;
+            state.errored = true;
+            vec![openai_chat_error_event(*error)]
         }
     }
 }

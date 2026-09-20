@@ -45,8 +45,8 @@ use switchyard_protocol::{
     RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
 };
 use switchyard_protocol::{
-    LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
-    text_response,
+    LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, StreamErrorDetails,
+    text_request, text_response,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -1286,6 +1286,33 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
 /// A streamed response keeps the client span available until terminal usage arrives.
 struct StreamingUsageClient;
 
+struct StreamStatusClient {
+    status: u16,
+}
+
+#[async_trait]
+impl RoutedLlmClient for StreamStatusClient {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        Ok(Response {
+            llm_response: LlmResponse::Stream(
+                futures::stream::iter([Ok(LlmResponseChunk::StreamError {
+                    error: Box::new(StreamErrorDetails {
+                        status: Some(self.status),
+                        error_type: Some("rate_limit_error".into()),
+                        code: Some(json!("quota")),
+                        param: None,
+                        message: "slow down".into(),
+                    }),
+                }
+                .into())])
+                .boxed(),
+            ),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        })
+    }
+}
+
 #[async_trait]
 impl RoutedLlmClient for StreamingUsageClient {
     async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
@@ -1395,6 +1422,35 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
         Some(OtelValue::Array(OtelArray::String(reasons)))
             if reasons.len() == 1 && reasons[0].as_str() == "stop"
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn streamed_error_observability_uses_embedded_or_fallback_status()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    for (suffix, status, expected) in [("429", 429, "429"), ("invalid", 99, "502")] {
+        let (store, _, _, _, _) = telemetry();
+        let model = format!("stream-status-{suffix}");
+        let (_, response) = run(
+            algo("stream-status-algo", &model),
+            Arc::new(StreamStatusClient { status }),
+            request_with_metadata("stream-status-session", "stream-status-corr"),
+        )
+        .await?;
+        response
+            .llm_response
+            .into_agg()
+            .await
+            .expect_err("structured stream should fail");
+
+        let spans = store.spans();
+        let client_span = find_span(&spans, "libsy.client_call", "selected_model", &model);
+        assert_eq!(
+            client_span.fields.get("error.type").map(String::as_str),
+            Some(expected)
+        );
+    }
     Ok(())
 }
 

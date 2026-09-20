@@ -300,8 +300,12 @@ impl ClientStreamObserver {
                 record_client_error(&self.span, "response_translation", message);
                 self.outcome = Outcome::Failed;
             }
-            LlmResponseChunk::StreamError { message } => {
-                record_client_error(&self.span, "502", message);
+            LlmResponseChunk::StreamError { error } => {
+                record_client_error(
+                    &self.span,
+                    error.effective_http_status().as_str(),
+                    &error.message,
+                );
                 self.outcome = Outcome::Failed;
             }
             _ => {}

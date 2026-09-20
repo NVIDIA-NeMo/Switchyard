@@ -559,7 +559,7 @@ mod tests {
     fn encode_stream_stops_after_an_in_band_error() -> Result<(), BoxError> {
         for message in [
             LlmResponseChunk::StreamError {
-                message: "boom".to_string(),
+                error: Box::new(crate::StreamErrorDetails::new("boom")),
             },
             LlmResponseChunk::DecodeError {
                 message: "boom".to_string(),
@@ -645,7 +645,7 @@ mod tests {
             WireFormat::OpenAiResponses,
             json!({"type": "error", "message": "boom"}),
             vec![LlmResponseChunk::StreamError {
-                message: "boom".to_string(),
+                error: Box::new(crate::StreamErrorDetails::new("boom")),
             }],
         );
         let chunks: LlmResponseStream = stream::iter([Ok(error)])
@@ -851,12 +851,12 @@ mod tests {
         let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
         let events = decode_all(bytes, WireFormat::OpenAiResponses)?;
 
-        let Some(LlmResponseChunk::StreamError { message }) =
+        let Some(LlmResponseChunk::StreamError { error }) =
             events.first().and_then(|event| event.normalized().first())
         else {
             return Err("expected response.failed to decode as StreamError".into());
         };
-        assert_eq!(message, "upstream failed");
+        assert_eq!(error.message, "upstream failed");
 
         let chunks: LlmResponseStream = stream::iter(
             events

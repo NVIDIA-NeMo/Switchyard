@@ -66,10 +66,10 @@ pub(crate) async fn buffer_response(
                         LlmResponseChunk::DecodeError { message } => {
                             Some(LlmClientError::ResponseTranslation(message.clone()))
                         }
-                        LlmResponseChunk::StreamError { message } => {
+                        LlmResponseChunk::StreamError { error } => {
                             Some(LlmClientError::UpstreamHttp {
-                                status: http::StatusCode::BAD_GATEWAY,
-                                body: message.clone(),
+                                status: error.effective_http_status(),
+                                body: error.upstream_http_body(),
                             })
                         }
                         chunk => {

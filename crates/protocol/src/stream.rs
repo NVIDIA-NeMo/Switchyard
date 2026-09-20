@@ -10,7 +10,7 @@ use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
 use http::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -20,9 +20,8 @@ use crate::{
     llm::{AggLlmResponse, ContentBlock, ResponseOutput, Role, StopReason, ToolCall, Usage},
 };
 
-/// Status reported for an upstream error delivered inside a streaming body. The
-/// upstream already sent a success status line before failing, so there is no real
-/// code to propagate; 502 matches how a failed upstream call surfaces elsewhere.
+/// Fallback status for an upstream error delivered inside a streaming body when the
+/// event does not embed a valid HTTP status.
 const MID_STREAM_UPSTREAM_STATUS: StatusCode = StatusCode::BAD_GATEWAY;
 
 /// Why a translated event stream stopped early.
@@ -283,14 +282,73 @@ fn push_checked_chunk(
         LlmResponseChunk::DecodeError { message } => {
             Err(LlmClientError::ResponseTranslation(message))
         }
-        LlmResponseChunk::StreamError { message } => Err(LlmClientError::UpstreamHttp {
-            status: MID_STREAM_UPSTREAM_STATUS,
-            body: message,
+        LlmResponseChunk::StreamError { error } => Err(LlmClientError::UpstreamHttp {
+            status: error.effective_http_status(),
+            body: error.upstream_http_body(),
         }),
         chunk => {
             accumulator.push(chunk);
             Ok(())
         }
+    }
+}
+
+/// Provider-neutral details from an error delivered inside a response stream.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StreamErrorDetails {
+    /// HTTP-like status reported inside the stream event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Provider error category, represented as `type` on provider wires.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub error_type: Option<String>,
+    /// Provider error code, retained without narrowing its JSON type.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_json_value"
+    )]
+    pub code: Option<Value>,
+    /// Request parameter associated with the failure, retained as JSON.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_json_value"
+    )]
+    pub param: Option<Value>,
+    /// Human-readable failure description.
+    pub message: String,
+}
+
+fn deserialize_optional_json_value<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
+}
+
+impl StreamErrorDetails {
+    /// Creates a message-only error synthesized inside Switchyard.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            status: None,
+            error_type: None,
+            code: None,
+            param: None,
+            message: message.into(),
+        }
+    }
+
+    /// Returns the embedded valid status or the mid-stream fallback.
+    pub fn effective_http_status(&self) -> StatusCode {
+        self.status
+            .and_then(|status| StatusCode::from_u16(status).ok())
+            .unwrap_or(MID_STREAM_UPSTREAM_STATUS)
+    }
+
+    /// Builds a normalized error body without forwarding a raw provider body.
+    pub fn upstream_http_body(&self) -> String {
+        serde_json::json!({"error": self}).to_string()
     }
 }
 
@@ -352,8 +410,8 @@ pub enum LlmResponseChunk {
     },
     /// Reports an upstream failure delivered inside an otherwise successful stream.
     StreamError {
-        /// Human-readable upstream failure.
-        message: String,
+        /// Provider-neutral error details.
+        error: Box<StreamErrorDetails>,
     },
 }
 
@@ -620,7 +678,7 @@ mod tests {
                 crate::WireFormat::OpenAiChat,
                 json!({"error": {"message": "provider failed"}}),
                 vec![LlmResponseChunk::StreamError {
-                    message: "provider failed".to_string(),
+                    error: Box::new(StreamErrorDetails::new("provider failed")),
                 }],
             ),
         )])));
@@ -633,6 +691,63 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn structured_stream_error_round_trips_without_narrowing_json_fields() {
+        let chunk = LlmResponseChunk::StreamError {
+            error: Box::new(StreamErrorDetails {
+                status: Some(429),
+                error_type: Some("rate_limit_error".to_string()),
+                code: Some(json!({"bucket": 7})),
+                param: Some(Value::Null),
+                message: "slow down".to_string(),
+            }),
+        };
+        let encoded = serde_json::to_value(&chunk).expect("serialize stream error");
+        assert_eq!(encoded["StreamError"]["error"]["type"], "rate_limit_error");
+        assert!(encoded["StreamError"]["error"].get("error_type").is_none());
+        let decoded: LlmResponseChunk =
+            serde_json::from_value(encoded).expect("deserialize stream error");
+        assert_eq!(decoded, chunk);
+    }
+
+    #[test]
+    fn stream_error_status_uses_valid_embedded_status_or_bad_gateway() {
+        let mut error = StreamErrorDetails::new("failed");
+        assert_eq!(error.effective_http_status(), StatusCode::BAD_GATEWAY);
+        error.status = Some(429);
+        assert_eq!(error.effective_http_status(), StatusCode::TOO_MANY_REQUESTS);
+        error.status = Some(99);
+        assert_eq!(error.effective_http_status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn aggregating_stream_errors_uses_embedded_or_fallback_status_and_keeps_code() {
+        for (status, expected) in [
+            (Some(429), StatusCode::TOO_MANY_REQUESTS),
+            (Some(99), StatusCode::BAD_GATEWAY),
+        ] {
+            let response = LlmResponse::Stream(Box::pin(stream::once(async move {
+                Ok(LlmResponseChunk::StreamError {
+                    error: Box::new(StreamErrorDetails {
+                        status,
+                        error_type: Some("invalid_request_error".into()),
+                        code: Some(json!("content_policy_violation")),
+                        param: Some(json!("input")),
+                        message: "blocked".into(),
+                    }),
+                }
+                .into())
+            })));
+            let error = block_on(response.into_agg()).expect_err("stream should fail");
+            let LlmClientError::UpstreamHttp { status, body } = error else {
+                panic!("expected upstream HTTP error");
+            };
+            assert_eq!(status, expected);
+            let body: Value = serde_json::from_str(&body).expect("normalized error body");
+            assert_eq!(body["error"]["code"], "content_policy_violation");
+        }
     }
 
     #[test]

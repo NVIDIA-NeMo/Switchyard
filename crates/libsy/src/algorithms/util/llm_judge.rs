@@ -616,7 +616,9 @@ mod tests {
                 text: "{\"ok\":".to_string(),
             },
             LlmResponseChunk::StreamError {
-                message: "upstream exploded".to_string(),
+                error: Box::new(switchyard_protocol::StreamErrorDetails::new(
+                    "upstream exploded",
+                )),
             },
         ];
         assert_eq!(score_served_with(Ok(streamed(chunks))).await?, "no-verdict");

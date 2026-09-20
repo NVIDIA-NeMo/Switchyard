@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use futures_util::{Stream, StreamExt};
-use http::StatusCode;
 use nemo_relay_plugin::{
     DataSchema, Json, LlmRequest as RelayRequest, LogSeverity, MetricKind, MetricMeasurement,
     MetricValueType, PluginRuntime,
@@ -602,9 +601,9 @@ fn normalized_stream_error(chunks: &[LlmResponseChunk]) -> Option<LlmClientError
         LlmResponseChunk::DecodeError { message } => {
             Some(LlmClientError::ResponseTranslation(message.clone()))
         }
-        LlmResponseChunk::StreamError { message } => Some(LlmClientError::UpstreamHttp {
-            status: StatusCode::BAD_GATEWAY,
-            body: message.clone(),
+        LlmResponseChunk::StreamError { error } => Some(LlmClientError::UpstreamHttp {
+            status: error.effective_http_status(),
+            body: error.upstream_http_body(),
         }),
         _ => None,
     })
@@ -1733,15 +1732,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn normalized_stream_error_emits_failure_telemetry_once() {
-        assert_normalized_stream_failure(
-            LlmResponseChunk::StreamError {
-                message: "provider response body".into(),
-            },
-            "upstream_http",
-            Some(502),
-        )
-        .await;
+    async fn normalized_stream_error_uses_embedded_or_fallback_status() {
+        for (status, expected) in [(429, 429), (99, 502)] {
+            assert_normalized_stream_failure(
+                LlmResponseChunk::StreamError {
+                    error: Box::new(switchyard_protocol::StreamErrorDetails {
+                        status: Some(status),
+                        error_type: Some("rate_limit_error".into()),
+                        code: Some(json!("quota")),
+                        param: None,
+                        message: "provider response body".into(),
+                    }),
+                },
+                "upstream_http",
+                Some(expected),
+            )
+            .await;
+        }
     }
 
     #[tokio::test]

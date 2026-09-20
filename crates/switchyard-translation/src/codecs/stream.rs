@@ -6,10 +6,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::LlmResponseChunk;
 use crate::codecs::anthropic::AnthropicMessagesStreamCodec;
 use crate::codecs::openai_chat::OpenAiChatStreamCodec;
 use crate::codecs::responses::OpenAiResponsesStreamCodec;
@@ -17,6 +17,36 @@ use crate::engine::{FormatRegistry, TranslationEngine};
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
+use crate::{LlmResponseChunk, StreamErrorDetails};
+
+pub(crate) fn stream_error_details(
+    envelope: &Value,
+    payload: &Value,
+    fallback_message: &str,
+) -> StreamErrorDetails {
+    fn numeric_status(value: &Value) -> Option<u16> {
+        value
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|status| u16::try_from(status).ok())
+            .filter(|status| StatusCode::from_u16(*status).is_ok())
+    }
+
+    StreamErrorDetails {
+        status: numeric_status(envelope).or_else(|| numeric_status(payload)),
+        error_type: payload
+            .get("type")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        code: payload.get("code").cloned(),
+        param: payload.get("param").cloned(),
+        message: payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or(fallback_message)
+            .to_owned(),
+    }
+}
 
 /// Mutable state accumulated while translating one streaming response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

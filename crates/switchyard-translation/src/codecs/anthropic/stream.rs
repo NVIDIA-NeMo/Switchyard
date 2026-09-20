@@ -5,16 +5,35 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::LlmResponseChunk;
 use crate::codecs::stream::{
-    StreamCodec, StreamTranslationState, record_source_identity,
+    StreamCodec, StreamTranslationState, record_source_identity, stream_error_details,
     target_message_id_or_source_message_id, target_model_or_source_model,
 };
 use crate::format::{FormatId, WireFormat};
 use crate::util::{desanitize_anthropic_tool_use_id, sanitize_anthropic_tool_use_id};
+use crate::{LlmResponseChunk, StreamErrorDetails};
 
 /// Stream codec for Anthropic Messages events.
 pub struct AnthropicMessagesStreamCodec;
+
+fn anthropic_error_event(error: StreamErrorDetails) -> Value {
+    let StreamErrorDetails {
+        error_type,
+        code,
+        message,
+        ..
+    } = error;
+    let mut payload = Map::new();
+    payload.insert(
+        "type".into(),
+        json!(error_type.unwrap_or_else(|| "api_error".into())),
+    );
+    payload.insert("message".into(), json!(message));
+    if let Some(Value::String(code)) = code {
+        payload.insert("code".into(), json!(code));
+    }
+    json!({"type": "error", "error": payload})
+}
 
 impl StreamCodec for AnthropicMessagesStreamCodec {
     fn format(&self) -> FormatId {
@@ -149,13 +168,11 @@ fn decode_anthropic_stream(
             reason: state.stop_reason.clone(),
         }],
         Some("error") => vec![LlmResponseChunk::StreamError {
-            message: object
-                .get("error")
-                .and_then(Value::as_object)
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Anthropic stream error")
-                .to_string(),
+            error: Box::new(stream_error_details(
+                event,
+                object.get("error").unwrap_or(event),
+                "unknown Anthropic stream error",
+            )),
         }],
         _ => Vec::new(),
     }
@@ -238,11 +255,16 @@ fn encode_anthropic_stream(
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
             Vec::new()
         }
-        LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
+        LlmResponseChunk::DecodeError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"type": "error", "error": {"message": message}})]
+            vec![anthropic_error_event(StreamErrorDetails::new(message))]
+        }
+        LlmResponseChunk::StreamError { error } => {
+            state.finished = true;
+            state.errored = true;
+            vec![anthropic_error_event(*error)]
         }
     }
 }
@@ -259,7 +281,9 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         return encode_anthropic_stream(
             state,
             LlmResponseChunk::StreamError {
-                message: "Tool call ended without a non-empty ID and name".to_string(),
+                error: Box::new(StreamErrorDetails::new(
+                    "Tool call ended without a non-empty ID and name",
+                )),
             },
         );
     }
