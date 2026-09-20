@@ -3,10 +3,13 @@
 
 //! Buffered codec for Anthropic Messages request and response JSON.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    ANTHROPIC_REQUEST_KEY, is_known_role_name, provider_extensions, text_from_blocks,
+    ANTHROPIC_REQUEST_KEY, decode_reasoning_effort, is_known_role_name, provider_extensions,
+    text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
@@ -35,6 +38,9 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 /// Format codec for Anthropic Messages payloads.
 pub struct AnthropicMessagesCodec;
 
+const ANTHROPIC_REDACTED_THINKING: &str = "anthropic.redacted_thinking";
+const ANTHROPIC_SIGNED_THINKING: &str = "anthropic.signed_thinking";
+
 impl FormatCodec for AnthropicMessagesCodec {
     fn format(&self) -> FormatId {
         WireFormat::AnthropicMessages.into()
@@ -55,6 +61,13 @@ impl FormatCodec for AnthropicMessagesCodec {
             })
             .transpose()?;
         let response_format = decode_anthropic_output_format(body, &mut diagnostics, policy)?;
+        let effort = decode_reasoning_effort(
+            body.get("output_config")
+                .and_then(Value::as_object)
+                .and_then(|output_config| output_config.get("effort")),
+            &mut diagnostics,
+            policy,
+        )?;
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -71,13 +84,21 @@ impl FormatCodec for AnthropicMessagesCodec {
                 top_k: body.get("top_k").and_then(Value::as_i64),
             },
             reasoning: ReasoningParams {
-                effort: body
-                    .get("output_config")
-                    .and_then(Value::as_object)
-                    .and_then(|object| object.get("effort"))
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                raw: body.get("thinking").cloned(),
+                effort,
+                raw_by_format: if body.get("thinking").is_some()
+                    || body
+                        .get("output_config")
+                        .and_then(Value::as_object)
+                        .and_then(|output_config| output_config.get("effort"))
+                        .is_some()
+                {
+                    BTreeMap::from([(
+                        WireFormat::AnthropicMessages.into(),
+                        body.get("thinking").cloned().unwrap_or(Value::Null),
+                    )])
+                } else {
+                    BTreeMap::new()
+                },
             },
             stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false),
             preservation: capture_request_preservation(
@@ -308,8 +329,23 @@ impl FormatCodec for AnthropicMessagesCodec {
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
-        if let Some(effort) = &request.reasoning.effort {
-            body.insert("thinking".to_string(), json!({"type": "adaptive"}));
+        if let Some(thinking) = request.reasoning.raw_for(WireFormat::AnthropicMessages)
+            && !thinking.is_null()
+        {
+            body.insert("thinking".to_string(), thinking.clone());
+        }
+        let native_effort = request
+            .reasoning
+            .raw_for(WireFormat::AnthropicMessages)
+            .is_some();
+        let effort = match request.reasoning.effort.as_deref() {
+            Some(effort) if native_effort => Some(effort),
+            Some(effort) => foreign_anthropic_effort(effort, &mut diagnostics, policy)?,
+            None => None,
+        };
+        if let Some(effort) = effort {
+            body.entry("thinking".to_string())
+                .or_insert_with(|| json!({"type": "adaptive"}));
             body.insert("output_config".to_string(), json!({"effort": effort}));
         }
         if let Some(response_format) = &request.output.response_format
@@ -445,6 +481,35 @@ impl FormatCodec for AnthropicMessagesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+fn foreign_anthropic_effort(
+    effort: &str,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<&'static str>> {
+    let effort = effort.trim();
+    let mapped = if effort.eq_ignore_ascii_case("low") {
+        Some("low")
+    } else if effort.eq_ignore_ascii_case("medium") {
+        Some("medium")
+    } else if effort.eq_ignore_ascii_case("high") {
+        Some("high")
+    } else if effort.eq_ignore_ascii_case("xhigh") {
+        Some("xhigh")
+    } else if effort.eq_ignore_ascii_case("max") {
+        Some("max")
+    } else {
+        None
+    };
+    if mapped.is_none() {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic does not support the requested reasoning effort; reasoning effort was omitted",
+        )?;
+    }
+    Ok(mapped)
 }
 
 // Reads the current `output_config.format`, or the beta `output_format` it replaced,
@@ -614,7 +679,7 @@ fn decode_anthropic_content(
                     )?;
                     continue;
                 };
-                content.extend(decode_anthropic_content_block(
+                content.extend(decode_anthropic_request_content_block(
                     block,
                     role,
                     generated_counter + index,
@@ -632,6 +697,47 @@ fn decode_anthropic_content(
         other => Ok(vec![ContentBlock::Text {
             text: string_value(other).unwrap_or_default(),
         }]),
+    }
+}
+
+fn decode_anthropic_request_content_block(
+    block: &Map<String, Value>,
+    role: Role,
+    generated_counter: usize,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<ContentBlock>> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("redacted_thinking") => Ok(vec![ContentBlock::Reasoning {
+            text: String::new(),
+            signature: None,
+            details: vec![json!({
+                "type": ANTHROPIC_REDACTED_THINKING,
+                "data": block.get("data").cloned().unwrap_or(Value::Null),
+            })],
+            provenance: Some(WireFormat::AnthropicMessages.into()),
+        }]),
+        Some("thinking") => {
+            let mut content = decode_anthropic_content_block(
+                block,
+                role,
+                generated_counter,
+                diagnostics,
+                policy,
+            )?;
+            if let Some(ContentBlock::Reasoning {
+                signature: Some(_),
+                details,
+                provenance,
+                ..
+            }) = content.first_mut()
+            {
+                details.push(json!({"type": ANTHROPIC_SIGNED_THINKING}));
+                *provenance = Some(WireFormat::AnthropicMessages.into());
+            }
+            Ok(content)
+        }
+        _ => decode_anthropic_content_block(block, role, generated_counter, diagnostics, policy),
     }
 }
 
@@ -663,6 +769,7 @@ fn decode_anthropic_content_block(
                 .filter(|signature| !signature.is_empty())
                 .map(ToOwned::to_owned),
             details: Vec::new(),
+            provenance: None,
         }],
         Some("tool_use") => vec![ContentBlock::ToolCall(ToolCall {
             id: block
@@ -898,6 +1005,48 @@ fn encode_anthropic_content_with_policy(
     for block in content {
         crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
         match block {
+            ContentBlock::Reasoning {
+                signature: Some(_),
+                details,
+                provenance,
+                ..
+            } if is_anthropic_reasoning_provenance(provenance)
+                && has_anthropic_signed_thinking(details) =>
+            {
+                blocks.extend(encode_one_anthropic_block(block)?);
+            }
+            ContentBlock::Reasoning {
+                signature: Some(_), ..
+            } => {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic cannot replay unqualified signed reasoning; private reasoning was omitted",
+                )?;
+            }
+            ContentBlock::Reasoning {
+                details,
+                provenance,
+                ..
+            } if is_anthropic_reasoning_provenance(provenance) => {
+                if let Some(redacted) = anthropic_redacted_thinking_block(details) {
+                    blocks.push(redacted);
+                } else {
+                    blocks.extend(encode_one_anthropic_block(block)?);
+                }
+            }
+            ContentBlock::Reasoning { details, .. }
+                if anthropic_redacted_thinking_block(details).is_some() =>
+            {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic cannot replay unqualified redacted thinking; opaque reasoning was omitted",
+                )?;
+            }
+            ContentBlock::Reasoning { .. } => {
+                blocks.extend(encode_one_anthropic_block(block)?);
+            }
             ContentBlock::Unknown { provider, raw } => {
                 reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)?;
                 push_lossy(
@@ -914,6 +1063,31 @@ fn encode_anthropic_content_with_policy(
         blocks.push(json!({"type": "text", "text": ""}));
     }
     Ok(blocks)
+}
+
+fn anthropic_redacted_thinking_block(details: &[Value]) -> Option<Value> {
+    details.iter().find_map(|detail| {
+        (detail.get("type").and_then(Value::as_str) == Some(ANTHROPIC_REDACTED_THINKING)).then(
+            || {
+                json!({
+                    "type": "redacted_thinking",
+                    "data": detail.get("data").cloned().unwrap_or(Value::Null),
+                })
+            },
+        )
+    })
+}
+
+fn has_anthropic_signed_thinking(details: &[Value]) -> bool {
+    details
+        .iter()
+        .any(|detail| detail.get("type").and_then(Value::as_str) == Some(ANTHROPIC_SIGNED_THINKING))
+}
+
+fn is_anthropic_reasoning_provenance(provenance: &Option<FormatId>) -> bool {
+    provenance
+        .as_ref()
+        .is_some_and(|source| source.as_str() == WireFormat::AnthropicMessages.as_str())
 }
 
 fn encode_anthropic_file(source: &FileSource) -> Result<Value> {

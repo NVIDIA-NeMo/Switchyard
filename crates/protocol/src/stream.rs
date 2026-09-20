@@ -464,6 +464,7 @@ impl ResponseAccumulator {
                     .into_iter()
                     .filter(|detail| !is_reasoning_id_announcement(detail))
                     .collect(),
+                provenance: None,
             });
         }
         if !self.text.is_empty() {
@@ -685,6 +686,7 @@ mod tests {
                     text: "think".to_string(),
                     signature: None,
                     details: Vec::new(),
+                    provenance: None,
                 },
                 ContentBlock::Text {
                     text: "answer".to_string(),
@@ -737,6 +739,7 @@ mod tests {
                     text: "fallback reasoning".to_string(),
                     signature: None,
                     details: details.clone(),
+                    provenance: None,
                 }],
                 url_citations: Vec::new(),
                 stop_reason: Some(StopReason::EndTurn),

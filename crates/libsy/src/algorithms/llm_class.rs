@@ -1576,6 +1576,7 @@ mod tests {
                         text: "private chain of thought".to_string(),
                         signature: None,
                         details: Vec::new(),
+                        provenance: None,
                     },
                     ContentBlock::Text {
                         text: "visible answer".to_string(),
@@ -1590,6 +1591,7 @@ mod tests {
                     text: "reasoning-only turn".to_string(),
                     signature: None,
                     details: Vec::new(),
+                    provenance: None,
                 }],
             },
             Message::text(Role::User, "follow-up"),

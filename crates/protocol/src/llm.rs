@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::format::FormatId;
+use crate::format::{FormatId, WireFormat};
 
 /// Actor role normalized across provider APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -91,6 +91,9 @@ pub enum ContentBlock {
         /// "reasoning.encrypted", "data": "..." }` object, replayed without modification.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         details: Vec<Value>,
+        /// Wire format that a trusted codec decoded for private reasoning metadata.
+        #[serde(skip)]
+        provenance: Option<FormatId>,
     },
     /// Image content.
     Image {
@@ -270,8 +273,18 @@ pub struct OutputParams {
 pub struct ReasoningParams {
     /// Requested reasoning effort or level.
     pub effort: Option<String>,
-    /// Provider reasoning controls without a normalized field.
-    pub raw: Option<Value>,
+    /// Raw reasoning controls keyed by the wire format that defined them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub raw_by_format: BTreeMap<FormatId, Value>,
+}
+
+impl ReasoningParams {
+    /// Returns raw controls owned by one built-in wire format without allocating a lookup key.
+    pub fn raw_for(&self, format: WireFormat) -> Option<&Value> {
+        self.raw_by_format
+            .iter()
+            .find_map(|(source, value)| (source.as_str() == format.as_str()).then_some(value))
+    }
 }
 
 /// Provider-specific fields that do not have first-class conversation fields.

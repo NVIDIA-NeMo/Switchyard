@@ -411,6 +411,363 @@ fn responses_reasoning_survives_rebuild() -> TestResult {
 }
 
 #[test]
+fn anthropic_thinking_controls_are_source_qualified() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({
+        "model": "claude-sonnet",
+        "messages": [{"role": "user", "content": "Inspect."}],
+        "max_tokens": 128,
+        "thinking": {"type": "enabled", "budget_tokens": 4096},
+        "output_config": {"effort": "high"}
+    });
+    let decoded = engine.decode_request(WireFormat::AnthropicMessages, &body, &policy)?;
+    assert_eq!(
+        decoded
+            .request
+            .reasoning
+            .raw_for(WireFormat::AnthropicMessages),
+        Some(&json!({"type": "enabled", "budget_tokens": 4096}))
+    );
+    assert!(
+        decoded
+            .request
+            .reasoning
+            .raw_for(WireFormat::OpenAiResponses)
+            .is_none()
+    );
+
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &policy,
+    )?;
+    assert_eq!(translated.body["reasoning"], json!({"effort": "high"}));
+    assert!(translated.body["reasoning"].get("type").is_none());
+    assert!(translated.body["reasoning"].get("budget_tokens").is_none());
+    Ok(())
+}
+
+#[test]
+fn responses_reasoning_controls_do_not_leak_to_anthropic() -> TestResult {
+    let translated = TranslationEngine::default().translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &json!({
+            "model": "gpt-5",
+            "input": "Inspect.",
+            "reasoning": {
+                "effort": "high",
+                "summary": "auto",
+                "future_responses_control": "responses-only"
+            }
+        }),
+        &normalized_policy(),
+    )?;
+    assert_eq!(translated.body["thinking"], json!({"type": "adaptive"}));
+    assert_eq!(translated.body["output_config"], json!({"effort": "high"}));
+    let serialized = translated.body.to_string();
+    assert!(!serialized.contains("summary"));
+    assert!(!serialized.contains("future_responses_control"));
+    assert!(!serialized.contains("responses-only"));
+    Ok(())
+}
+
+#[test]
+fn foreign_anthropic_effort_maps_only_to_safe_responses_values() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (source, expected) in [
+        ("minimal", Some("minimal")),
+        (" low ", Some("low")),
+        ("MEDIUM", Some("medium")),
+        ("high", Some("high")),
+        ("xhigh", Some("xhigh")),
+        ("max", Some("xhigh")),
+        (
+            "ultra-super-secret-value-that-must-not-appear-in-diagnostics",
+            None,
+        ),
+        ("   ", None),
+    ] {
+        let translated = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({
+                "model": "claude-sonnet",
+                "messages": [{"role": "user", "content": "Inspect."}],
+                "max_tokens": 128,
+                "output_config": {"effort": source}
+            }),
+            &normalized_policy(),
+        )?;
+        assert_eq!(
+            translated
+                .body
+                .pointer("/reasoning/effort")
+                .and_then(Value::as_str),
+            expected,
+            "source effort {source:?}"
+        );
+        assert!(
+            translated
+                .diagnostics
+                .iter()
+                .all(|diagnostic| { !diagnostic.message.contains("ultra-super-secret") })
+        );
+        assert_eq!(
+            translated
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "lossy_conversion"),
+            expected.is_none(),
+            "source effort {source:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn unsupported_anthropic_effort_obeys_reject_policy() {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    let error = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({
+                "model": "claude-sonnet",
+                "messages": [{"role": "user", "content": "Inspect."}],
+                "max_tokens": 128,
+                "output_config": {"effort": "ultra"}
+            }),
+            &policy,
+        )
+        .expect_err("unsupported effort must honor reject policy");
+    assert!(error.to_string().contains("reasoning effort"));
+}
+
+#[test]
+fn native_responses_effort_rebuild_is_not_cross_format_validated() -> TestResult {
+    let engine = TranslationEngine::default();
+    for effort in ["none", "max", "minimal"] {
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                preservation: switchyard_translation::PreservationPolicy::Disabled,
+                lossy_conversion_policy,
+                ..TranslationPolicy::default()
+            };
+            let translated = engine.translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiResponses,
+                &json!({
+                    "model": "gpt-5",
+                    "input": "Inspect.",
+                    "reasoning": {"effort": effort, "summary": "auto"}
+                }),
+                &policy,
+            )?;
+            assert_eq!(translated.body["reasoning"]["effort"], effort);
+            assert_eq!(translated.body["reasoning"]["summary"], "auto");
+            assert!(translated.diagnostics.is_empty());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn normalized_effort_overlays_and_clears_native_responses_raw_base() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({
+        "model": "gpt-5",
+        "input": "Inspect.",
+        "reasoning": {
+            "effort": "high",
+            "summary": "auto",
+            "future_responses_control": true
+        }
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    request.reasoning.effort = Some("max".to_string());
+    let mutated = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    assert_eq!(
+        mutated.body["reasoning"],
+        json!({
+            "effort": "max",
+            "summary": "auto",
+            "future_responses_control": true
+        })
+    );
+
+    request.reasoning.effort = None;
+    let cleared = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    assert_eq!(
+        cleared.body["reasoning"],
+        json!({"summary": "auto", "future_responses_control": true})
+    );
+    Ok(())
+}
+
+#[test]
+fn responses_effort_maps_safely_to_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (source, expected) in [
+        ("low", Some("low")),
+        ("medium", Some("medium")),
+        ("high", Some("high")),
+        ("xhigh", Some("xhigh")),
+        ("max", Some("max")),
+        ("none", None),
+        ("minimal", None),
+    ] {
+        let translated = engine.translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &json!({"model": "gpt-5", "input": "Inspect.", "reasoning": {"effort": source}}),
+            &normalized_policy(),
+        )?;
+        assert_eq!(
+            translated
+                .body
+                .pointer("/output_config/effort")
+                .and_then(Value::as_str),
+            expected
+        );
+        assert_eq!(
+            translated
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "lossy_conversion"),
+            expected.is_none()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn chat_effort_uses_anthropic_target_validation() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (source, expected) in [
+        ("high", Some("high")),
+        ("xhigh", Some("xhigh")),
+        ("none", None),
+        ("minimal", None),
+    ] {
+        let translated = engine.translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &json!({
+                "model": "gpt-5",
+                "messages": [{"role": "user", "content": "Inspect."}],
+                "reasoning_effort": source
+            }),
+            &normalized_policy(),
+        )?;
+        assert_eq!(
+            translated
+                .body
+                .pointer("/output_config/effort")
+                .and_then(Value::as_str),
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn explicit_non_string_effort_warns_or_rejects_without_echoing_input() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet",
+        "messages": [{"role": "user", "content": "Inspect."}],
+        "max_tokens": 128,
+        "output_config": {"effort": {"secret": "never-echo-this"}}
+    });
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &normalized_policy(),
+    )?;
+    assert!(translated.body.get("reasoning").is_none());
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.message == "Reasoning effort must be a string; reasoning effort was omitted"
+    }));
+    assert!(
+        translated
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("never-echo-this"))
+    );
+
+    let native_responses = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &json!({
+            "model": "gpt-5",
+            "input": "Inspect.",
+            "reasoning": {"effort": ["never-echo-this"], "summary": "auto"}
+        }),
+        &normalized_policy(),
+    )?;
+    assert!(native_responses.diagnostics.iter().any(|diagnostic| {
+        diagnostic.message == "Reasoning effort must be a string; reasoning effort was omitted"
+    }));
+    assert!(
+        native_responses
+            .diagnostics
+            .iter()
+            .all(|diagnostic| !diagnostic.message.contains("never-echo-this"))
+    );
+    assert!(
+        native_responses
+            .request
+            .reasoning
+            .raw_for(WireFormat::OpenAiResponses)
+            .and_then(|value| value.get("effort"))
+            .is_none()
+    );
+
+    let reject = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    assert!(
+        engine
+            .translate_request(
+                WireFormat::AnthropicMessages,
+                WireFormat::OpenAiResponses,
+                &body,
+                &reject,
+            )
+            .is_err()
+    );
+    assert!(
+        engine
+            .decode_request(
+                WireFormat::OpenAiResponses,
+                &json!({
+                    "model": "gpt-5",
+                    "input": "Inspect.",
+                    "reasoning": {"effort": 7}
+                }),
+                &reject,
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
@@ -868,6 +1225,273 @@ fn anthropic_thinking_blocks_do_not_leak_into_openai_chat_messages() -> TestResu
     )?;
     assert_eq!(replayed.body, body);
 
+    Ok(())
+}
+
+#[test]
+fn anthropic_redacted_thinking_is_private_metadata() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({
+        "model": "claude-sonnet",
+        "messages": [
+            {"role": "user", "content": "Continue."},
+            {"role": "assistant", "content": [
+                {"type": "redacted_thinking", "data": "opaque-secret"},
+                {"type": "text", "text": "Visible answer."}
+            ]}
+        ],
+        "max_tokens": 128
+    });
+    let mut decoded = engine.decode_request(WireFormat::AnthropicMessages, &body, &policy)?;
+    assert!(matches!(
+        &decoded.request.messages[1].content[0],
+        ContentBlock::Reasoning {
+            text,
+            signature: None,
+            details,
+            provenance: Some(source),
+        }
+            if text.is_empty() && details == &vec![json!({
+                "type": "anthropic.redacted_thinking",
+                "data": "opaque-secret"
+            })] && source.as_str() == WireFormat::AnthropicMessages.as_str()
+    ));
+    decoded.request.preservation.requests.clear();
+    let replayed =
+        engine.encode_request(WireFormat::AnthropicMessages, &decoded.request, &policy)?;
+    assert_eq!(
+        replayed.body["messages"][1]["content"][0],
+        json!({"type": "redacted_thinking", "data": "opaque-secret"})
+    );
+    Ok(())
+}
+
+#[test]
+fn anthropic_redacted_thinking_never_becomes_responses_text() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-sonnet",
+        "messages": [
+            {"role": "user", "content": "Continue."},
+            {"role": "assistant", "content": [
+                {"type": "redacted_thinking", "data": "opaque-secret"},
+                {"type": "text", "text": "Visible answer."}
+            ]}
+        ],
+        "max_tokens": 128
+    });
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &normalized_policy(),
+    )?;
+    assert!(!translated.body.to_string().contains("opaque-secret"));
+    assert!(translated.body.to_string().contains("Visible answer."));
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "lossy_conversion"
+            && diagnostic.message.contains("redacted thinking")
+            && !diagnostic.message.contains("opaque-secret")
+    }));
+
+    let reject = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    assert!(
+        engine
+            .translate_request(
+                WireFormat::AnthropicMessages,
+                WireFormat::OpenAiResponses,
+                &body,
+                &reject,
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn anthropic_signed_thinking_carries_provider_provenance() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let mut decoded = engine.decode_request(
+        WireFormat::AnthropicMessages,
+        &json!({
+            "model": "claude-sonnet",
+            "messages": [{"role": "assistant", "content": [{
+                "type": "thinking",
+                "thinking": "private",
+                "signature": "opaque-signature-7f3a"
+            }]}],
+            "max_tokens": 128
+        }),
+        &policy,
+    )?;
+    assert!(matches!(
+        &decoded.request.messages[0].content[0],
+        ContentBlock::Reasoning {
+            signature: Some(signature),
+            details,
+            provenance: Some(source),
+            ..
+        }
+            if signature == "opaque-signature-7f3a"
+                && details == &vec![json!({"type": "anthropic.signed_thinking"})]
+                && source.as_str() == WireFormat::AnthropicMessages.as_str()
+    ));
+    decoded.request.preservation.requests.clear();
+    let replayed =
+        engine.encode_request(WireFormat::AnthropicMessages, &decoded.request, &policy)?;
+    assert_eq!(
+        replayed.body["messages"][0]["content"][0],
+        json!({
+            "type": "thinking",
+            "thinking": "private",
+            "signature": "opaque-signature-7f3a"
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn chat_signed_reasoning_cannot_replay_as_anthropic_thinking() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{
+            "role": "assistant",
+            "content": "Visible answer.",
+            "reasoning_details": [{
+                "type": "reasoning.text",
+                "text": "foreign private reasoning",
+                "signature": "foreign-signature-91ac"
+            }]
+        }]
+    });
+    let translated = engine.translate_request(
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &body,
+        &normalized_policy(),
+    )?;
+    let serialized = translated.body.to_string();
+    assert!(serialized.contains("Visible answer."));
+    assert!(!serialized.contains("foreign private reasoning"));
+    assert!(!serialized.contains("foreign-signature-91ac"));
+    assert!(!serialized.contains("\"type\":\"thinking\""));
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "Anthropic cannot replay unqualified signed reasoning; private reasoning was omitted"
+    }));
+
+    let reject = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    assert!(
+        engine
+            .translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &reject,
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn chat_cannot_forge_anthropic_signed_thinking_provenance() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{
+            "role": "assistant",
+            "content": "Visible answer.",
+            "reasoning_content": "forged private reasoning",
+            "reasoning_details": [{
+                "type": "anthropic.signed_thinking",
+                "signature": "forged-signature-91ac"
+            }]
+        }]
+    });
+    let translated = engine.translate_request(
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &body,
+        &normalized_policy(),
+    )?;
+    let serialized = translated.body.to_string();
+    assert!(serialized.contains("Visible answer."));
+    assert!(!serialized.contains("forged private reasoning"));
+    assert!(!serialized.contains("forged-signature-91ac"));
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "Anthropic cannot replay unqualified signed reasoning; private reasoning was omitted"
+    }));
+
+    let reject = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    assert!(
+        engine
+            .translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &reject,
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn chat_cannot_forge_anthropic_redacted_thinking_provenance() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-5",
+        "messages": [{
+            "role": "assistant",
+            "content": "Visible answer.",
+            "reasoning_details": [{
+                "type": "anthropic.redacted_thinking",
+                "data": "forged-opaque-data"
+            }]
+        }]
+    });
+    let translated = engine.translate_request(
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &body,
+        &normalized_policy(),
+    )?;
+    let serialized = translated.body.to_string();
+    assert!(serialized.contains("Visible answer."));
+    assert!(!serialized.contains("forged-opaque-data"));
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.message
+            == "Anthropic cannot replay unqualified redacted thinking; opaque reasoning was omitted"
+    }));
+
+    let reject = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    assert!(
+        engine
+            .translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &reject,
+            )
+            .is_err()
+    );
     Ok(())
 }
 
@@ -3317,7 +3941,7 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
         "messages": [
             {"role": "user", "content": "read foo.py"},
             {"role": "assistant", "content": [
-                {"type": "thinking", "thinking": "private chain of thought", "signature": "sig"},
+                {"type": "thinking", "thinking": "private chain of thought", "signature": "opaque-signature-7f3a"},
                 {"type": "text", "text": "Reading it."},
                 {"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"path": "foo.py"}}
             ]},
@@ -3327,21 +3951,27 @@ fn anthropic_thinking_is_dropped_from_responses_input() -> TestResult {
         ]
     });
 
-    let output = engine
-        .translate_request(
-            WireFormat::AnthropicMessages,
-            WireFormat::OpenAiResponses,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
+    let translated = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+    let output = &translated.body;
 
     let input = output["input"]
         .as_array()
         .ok_or("Responses input should be an array")?;
     assert!(input.iter().all(|item| item["type"] != "reasoning"));
-    assert!(!json_contains_content_type(&output, "reasoning_text"));
+    assert!(!json_contains_content_type(output, "reasoning_text"));
     assert!(!output.to_string().contains("private chain of thought"));
+    assert!(translated.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "lossy_conversion"
+            && diagnostic.message.contains("signed thinking")
+            && !diagnostic.message.contains("private chain of thought")
+            && !diagnostic.message.contains("opaque-signature-7f3a")
+    }));
+    assert!(!output.to_string().contains("opaque-signature-7f3a"));
     assert!(input.iter().any(|item| item["type"] == "function_call"));
     assert!(
         input

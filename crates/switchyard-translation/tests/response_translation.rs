@@ -8,7 +8,7 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_translation::{
-    PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    ContentBlock, PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 use common::{
@@ -626,6 +626,37 @@ fn anthropic_thinking_response_translates_to_openai_reasoning_content() -> TestR
             assert_eq!(usage[details][field], thinking_tokens);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn anthropic_redacted_response_round_trips_without_becoming_unsigned_reasoning() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({
+        "id": "msg_redacted",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet",
+        "content": [
+            {"type": "redacted_thinking", "data": "opaque-response-data"},
+            {"type": "text", "text": "Visible answer."}
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    });
+    let decoded = engine.decode_response(WireFormat::AnthropicMessages, &body, &policy)?;
+    assert!(!matches!(
+        &decoded.response.outputs[0].content[0],
+        ContentBlock::Reasoning {
+            signature: None,
+            ..
+        }
+    ));
+    let replayed =
+        engine.encode_response(WireFormat::AnthropicMessages, &decoded.response, &policy)?;
+    assert_eq!(replayed.body["content"][0], body["content"][0]);
+    assert!(!replayed.body.to_string().contains("input_text"));
     Ok(())
 }
 

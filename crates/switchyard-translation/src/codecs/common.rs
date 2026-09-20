@@ -5,11 +5,34 @@
 
 use serde_json::{Map, Value};
 
+use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::llm::{ContentBlock, LlmRequest, ToolChoice, ToolDefinition};
+use crate::policy::TranslationPolicy;
+use crate::util::push_lossy;
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
+
+/// Decodes a provider reasoning effort without exposing malformed caller data in diagnostics.
+pub(crate) fn decode_reasoning_effort(
+    value: Option<&Value>,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<String>> {
+    match value {
+        None => Ok(None),
+        Some(Value::String(effort)) => Ok(Some(effort.clone())),
+        Some(_) => {
+            push_lossy(
+                diagnostics,
+                policy,
+                "Reasoning effort must be a string; reasoning effort was omitted",
+            )?;
+            Ok(None)
+        }
+    }
+}
 
 /// Converts an OpenAI allowed-tools policy to a restricted function list and mode.
 pub(crate) fn allowed_function_tools(

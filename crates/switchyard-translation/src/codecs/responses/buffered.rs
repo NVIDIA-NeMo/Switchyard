@@ -3,13 +3,14 @@
 
 //! Buffered codec for OpenAI Responses request and response JSON.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
-    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+    collect_responses_reasoning_text, decode_reasoning_effort, encrypted_reasoning_data,
+    encrypted_reasoning_item_id, is_known_role_name, provider_extensions,
+    reasoning_text_from_blocks, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
@@ -49,6 +50,14 @@ impl FormatCodec for OpenAiResponsesCodec {
         let sanitized = strip_codex_compaction_markers(body);
         let body = sanitized.as_ref().unwrap_or(body);
         let mut diagnostics = Vec::new();
+        let effort_value = body.get("reasoning").and_then(|value| value.get("effort"));
+        let effort = decode_reasoning_effort(effort_value, &mut diagnostics, policy)?;
+        let mut raw_reasoning = body.get("reasoning").cloned();
+        if effort_value.is_some_and(|value| !value.is_string())
+            && let Some(object) = raw_reasoning.as_mut().and_then(Value::as_object_mut)
+        {
+            object.remove("effort");
+        }
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -60,13 +69,12 @@ impl FormatCodec for OpenAiResponsesCodec {
                 response_format: decode_responses_text_format(body.get("text")),
             },
             reasoning: ReasoningParams {
-                effort: body
-                    .get("reasoning")
-                    .and_then(Value::as_object)
-                    .and_then(|object| object.get("effort"))
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                raw: body.get("reasoning").cloned(),
+                effort,
+                raw_by_format: raw_reasoning
+                    .map(|reasoning| {
+                        BTreeMap::from([(WireFormat::OpenAiResponses.into(), reasoning)])
+                    })
+                    .unwrap_or_default(),
             },
             sampling: SamplingParams {
                 temperature: body.get("temperature").and_then(Value::as_f64),
@@ -256,14 +264,25 @@ impl FormatCodec for OpenAiResponsesCodec {
                 json!({"format": encode_responses_text_format(response_format)}),
             );
         }
-        let mut reasoning = request
+        let native_reasoning = request
             .reasoning
-            .raw
-            .as_ref()
+            .raw_for(WireFormat::OpenAiResponses)
             .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        if let Some(effort) = &request.reasoning.effort {
+            .cloned();
+        let has_native_reasoning = native_reasoning.is_some();
+        let mut reasoning = native_reasoning.unwrap_or_default();
+        if has_native_reasoning {
+            match request.reasoning.effort.as_deref() {
+                Some(effort) => {
+                    reasoning.insert("effort".to_string(), json!(effort));
+                }
+                None => {
+                    reasoning.remove("effort");
+                }
+            }
+        } else if let Some(effort) = request.reasoning.effort.as_deref()
+            && let Some(effort) = foreign_responses_effort(effort, &mut diagnostics, _policy)?
+        {
             reasoning.insert("effort".to_string(), json!(effort));
         }
         if !reasoning.is_empty() {
@@ -436,6 +455,35 @@ impl FormatCodec for OpenAiResponsesCodec {
             diagnostics: Vec::new(),
         })
     }
+}
+
+fn foreign_responses_effort(
+    effort: &str,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<&'static str>> {
+    let effort = effort.trim();
+    let mapped = if effort.eq_ignore_ascii_case("minimal") {
+        Some("minimal")
+    } else if effort.eq_ignore_ascii_case("low") {
+        Some("low")
+    } else if effort.eq_ignore_ascii_case("medium") {
+        Some("medium")
+    } else if effort.eq_ignore_ascii_case("high") {
+        Some("high")
+    } else if effort.eq_ignore_ascii_case("xhigh") || effort.eq_ignore_ascii_case("max") {
+        Some("xhigh")
+    } else {
+        None
+    };
+    if mapped.is_none() {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Responses does not support the requested reasoning effort; reasoning effort was omitted",
+        )?;
+    }
+    Ok(mapped)
 }
 
 /// Decodes Responses `input` into ordered normalized messages and inline
@@ -852,7 +900,8 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
         return vec![ContentBlock::Reasoning {
             text,
             signature: Some(signature),
-            details: Vec::new(),
+            details: vec![json!({"type": "anthropic.signed_thinking"})],
+            provenance: Some(WireFormat::AnthropicMessages.into()),
         }];
     }
     let mut parts = Vec::new();
@@ -872,6 +921,7 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
         text: parts.join("\n"),
         signature: None,
         details,
+        provenance: None,
     }]
 }
 
@@ -911,6 +961,7 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                                 .to_string(),
                             signature: None,
                             details: Vec::new(),
+                            provenance: None,
                         });
                     }
                     Some("input_image") => {
@@ -1274,21 +1325,7 @@ fn encode_responses_input(
             encoded.push(raw.clone());
             continue;
         }
-        // Anthropic-signed thinking cannot be sent as Responses input.
-        let content = message
-            .content
-            .iter()
-            .filter(|block| {
-                !matches!(
-                    block,
-                    ContentBlock::Reasoning {
-                        signature: Some(_),
-                        ..
-                    }
-                )
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let content = &message.content;
         if content.is_empty() {
             continue;
         }
@@ -1299,7 +1336,7 @@ fn encode_responses_input(
             )
         }) {
             let mut visible_content = Vec::new();
-            for block in &content {
+            for block in content {
                 if let Some(item) = encode_responses_special_input(
                     block,
                     namespaces,
@@ -1337,7 +1374,7 @@ fn encode_responses_input(
         let mut visible_content = Vec::new();
         let mut emitted_special = false;
         let mut omitted_reasoning = false;
-        for block in &content {
+        for block in content {
             if let Some(item) = encode_responses_special_input(
                 block,
                 namespaces,
@@ -1437,11 +1474,36 @@ fn encode_responses_special_input(
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Option<Value>> {
+    if let ContentBlock::Reasoning {
+        signature,
+        details,
+        provenance,
+        ..
+    } = block
+    {
+        let message = match anthropic_reasoning_provenance(provenance, details) {
+            Some(AnthropicReasoningProvenance::Signed) => Some(
+                "Responses cannot replay Anthropic signed thinking; private reasoning was omitted",
+            ),
+            Some(AnthropicReasoningProvenance::Redacted) => Some(
+                "Responses cannot replay Anthropic redacted thinking; opaque reasoning was omitted",
+            ),
+            None if signature.is_some() => {
+                Some("Responses cannot replay signed reasoning; private reasoning was omitted")
+            }
+            None => None,
+        };
+        if let Some(message) = message {
+            push_lossy(diagnostics, policy, message)?;
+            return Ok(None);
+        }
+    }
     Ok(match block {
         ContentBlock::Reasoning {
             text,
             signature: None,
             details,
+            ..
         } => encode_responses_reasoning_input(text, details),
         ContentBlock::ToolCall(call) if custom_tools.contains(&call.name) => {
             // A freeform tool call replays as `custom_tool_call` with its raw input.
@@ -1500,6 +1562,30 @@ fn encode_responses_special_input(
         }
         _ => None,
     })
+}
+
+enum AnthropicReasoningProvenance {
+    Signed,
+    Redacted,
+}
+
+fn anthropic_reasoning_provenance(
+    provenance: &Option<FormatId>,
+    details: &[Value],
+) -> Option<AnthropicReasoningProvenance> {
+    (provenance
+        .as_ref()
+        .is_some_and(|source| source.as_str() == WireFormat::AnthropicMessages.as_str()))
+    .then(|| {
+        details
+            .iter()
+            .find_map(|detail| match detail.get("type").and_then(Value::as_str) {
+                Some("anthropic.signed_thinking") => Some(AnthropicReasoningProvenance::Signed),
+                Some("anthropic.redacted_thinking") => Some(AnthropicReasoningProvenance::Redacted),
+                _ => None,
+            })
+    })
+    .flatten()
 }
 
 // Encodes reasoning in the shape accepted for Responses input history. Response
@@ -1895,6 +1981,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                             text,
                             signature,
                             details,
+                            ..
                         } = block
                         {
                             let encrypted = signature

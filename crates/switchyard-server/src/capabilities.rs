@@ -18,9 +18,9 @@ pub(crate) fn unsupported_capability(
         && (request.reasoning.effort.is_some()
             || request
                 .reasoning
-                .raw
-                .as_ref()
-                .is_some_and(|value| !value.is_null())
+                .raw_by_format
+                .values()
+                .any(|value| !value.is_null())
             || ["reasoning", "reasoning_effort", "thinking"]
                 .iter()
                 .any(|key| body.get(key).is_some_and(|value| !value.is_null()))
@@ -131,8 +131,11 @@ fn unsupported_content(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use serde_json::json;
+    use switchyard_protocol::ReasoningParams;
     use switchyard_translation::WireFormat::{AnthropicMessages, OpenAiChat, OpenAiResponses};
     use switchyard_translation::{WireFormat, decode_request, encode_request};
 
@@ -229,6 +232,29 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn rejects_source_qualified_reasoning_controls() {
+        let request = LlmRequest {
+            reasoning: ReasoningParams {
+                raw_by_format: BTreeMap::from([(
+                    OpenAiResponses.into(),
+                    json!({"summary": "auto"}),
+                )]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let capabilities = ModelCapabilities {
+            reasoning: Some(false),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            unsupported_capability(capabilities, &request, &json!({})),
+            Some("reasoning")
+        );
     }
 
     // Decoded file-ID images and preserved computer screenshots both require vision.

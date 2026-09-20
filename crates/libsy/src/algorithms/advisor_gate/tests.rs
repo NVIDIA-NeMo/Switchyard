@@ -127,6 +127,7 @@ fn reasoning_only_turn() -> Response {
                     text: "thinking about it".to_string(),
                     signature: None,
                     details: Vec::new(),
+                    provenance: None,
                 }],
                 url_citations: Vec::new(),
                 stop_reason: None,

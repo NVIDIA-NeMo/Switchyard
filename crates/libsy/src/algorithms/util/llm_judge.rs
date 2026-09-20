@@ -477,6 +477,7 @@ mod tests {
                     text: r#"{"ok":false}"#.to_string(),
                     signature: None,
                     details: Vec::new(),
+                    provenance: None,
                 },
             );
         }

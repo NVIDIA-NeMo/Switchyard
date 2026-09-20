@@ -6,8 +6,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    first_nonempty_string, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    reasoning_text_from_details, text_from_blocks,
+    decode_reasoning_effort, first_nonempty_string, is_known_role_name, provider_extensions,
+    reasoning_text_from_blocks, reasoning_text_from_details, text_from_blocks,
 };
 use crate::codecs::openai_media::{
     ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
@@ -41,6 +41,8 @@ impl FormatCodec for OpenAiChatCodec {
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = object(body, "$")?;
         let mut diagnostics = Vec::new();
+        let effort =
+            decode_reasoning_effort(body.get("reasoning_effort"), &mut diagnostics, policy)?;
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -61,11 +63,8 @@ impl FormatCodec for OpenAiChatCodec {
                 response_format: body.get("response_format").cloned(),
             },
             reasoning: ReasoningParams {
-                effort: body
-                    .get("reasoning_effort")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                raw: None,
+                effort,
+                raw_by_format: Default::default(),
             },
             preservation: capture_request_preservation(
                 WireFormat::OpenAiChat,
@@ -466,6 +465,7 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
                 text,
                 signature,
                 details: details.clone(),
+                provenance: None,
             },
         );
         return;
@@ -478,6 +478,7 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
                 text: text.to_string(),
                 signature: None,
                 details: Vec::new(),
+                provenance: None,
             },
         );
     }
@@ -492,6 +493,9 @@ fn reasoning_details_from_blocks(content: &[ContentBlock]) -> Vec<Value> {
             _ => None,
         })
         .flatten()
+        .filter(|detail| {
+            detail.get("type").and_then(Value::as_str) != Some("anthropic.signed_thinking")
+        })
         .cloned()
         .collect()
 }
