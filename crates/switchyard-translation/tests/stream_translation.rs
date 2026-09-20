@@ -1033,6 +1033,45 @@ fn responses_stream_usage_without_total_keeps_cached_tokens_in_total() -> TestRe
     Ok(())
 }
 
+#[test]
+fn responses_stream_total_requires_both_counters_without_explicit_total() -> TestResult {
+    let engine = TranslationEngine::default();
+    let cases = [
+        ("input only", json!({"input_tokens": 8}), None),
+        ("output only", json!({"output_tokens": 3}), None),
+        (
+            "explicit total",
+            json!({"input_tokens": 8, "total_tokens": 17}),
+            Some(17),
+        ),
+    ];
+
+    for (label, usage, expected_total) in cases {
+        let event = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_usage",
+                "status": "completed",
+                "output": [],
+                "usage": usage,
+            },
+        });
+        let mut state = StreamTranslationState::default();
+        let decoded = engine.decode_stream_event(&mut state, WireFormat::OpenAiResponses, event)?;
+        let normalized_usage = decoded
+            .normalized()
+            .iter()
+            .find_map(|chunk| match chunk {
+                LlmResponseChunk::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .ok_or("missing terminal usage")?;
+
+        assert_eq!(normalized_usage.total_tokens, expected_total, "{label}");
+    }
+    Ok(())
+}
+
 // Verifies Responses text deltas become OpenAI Chat content chunks.
 #[test]
 fn responses_stream_delta_translates_to_openai_chat_chunk() -> TestResult {

@@ -1151,8 +1151,11 @@ fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
         input_tokens,
         cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
         output_tokens,
-        total_tokens: super::usage_u64(usage, &["total_tokens", "totalTokens"])
-            .or_else(|| Some(aggregate_input_tokens.unwrap_or(0) + output_tokens.unwrap_or(0))),
+        total_tokens: super::usage_u64(usage, &["total_tokens", "totalTokens"]).or_else(|| {
+            aggregate_input_tokens
+                .zip(output_tokens)
+                .map(|(input, output)| input + output)
+        }),
         reasoning_tokens: super::usage_detail_u64(
             usage,
             &[
