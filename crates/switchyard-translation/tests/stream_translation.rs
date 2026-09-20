@@ -2370,6 +2370,225 @@ fn responses_decode_emits_tool_arguments_once() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn responses_completed_snapshots_accept_structured_and_fallback_call_arguments() -> TestResult {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            json!({"arguments": {"city": "Paris"}}),
+            json!({"city": "Paris"}),
+        ),
+        (json!({"arguments": ["Paris", 2]}), json!(["Paris", 2])),
+        (
+            json!({"arguments": null, "input": {"city": "Rome"}}),
+            json!({"city": "Rome"}),
+        ),
+        (
+            json!({"arguments": "", "input": null, "payload": ["Oslo"]}),
+            json!(["Oslo"]),
+        ),
+    ];
+
+    for (fields, expected) in cases {
+        let mut item = fields
+            .as_object()
+            .ok_or("call fields must be an object")?
+            .clone();
+        item.insert("type".into(), json!("function_call"));
+        item.insert("call_id".into(), json!("call_1"));
+        item.insert("name".into(), json!("lookup"));
+        let event = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_structured",
+                "status": "completed",
+                "output": [item],
+            },
+        });
+        let mut state = StreamTranslationState::default();
+        let decoded = engine.decode_stream_event(&mut state, WireFormat::OpenAiResponses, event)?;
+        let arguments = decoded
+            .normalized()
+            .iter()
+            .find_map(|chunk| match chunk {
+                LlmResponseChunk::ToolCallDelta {
+                    arguments_delta: Some(arguments),
+                    ..
+                } => Some(arguments.as_str()),
+                _ => None,
+            })
+            .ok_or("missing completed arguments")?;
+        assert_eq!(serde_json::from_str::<Value>(arguments)?, expected);
+        assert!(decoded.normalized().iter().any(|chunk| matches!(
+            chunk,
+            LlmResponseChunk::MessageStop { reason: Some(reason) } if reason == "tool_use"
+        )));
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_structured_snapshot_matches_full_string_delta_semantically() -> TestResult {
+    let engine = TranslationEngine::default();
+    let full_delta = r#"{"b":2,"a":1}"#;
+    let item = json!({
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "lookup",
+        "arguments": {"a": 1, "b": 2},
+    });
+    let events = [
+        json!({
+            "type": "response.function_call_arguments.delta",
+            "output_index": 0,
+            "delta": full_delta,
+        }),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+        json!({
+            "type": "response.completed",
+            "response": {"status": "completed", "output": [item]},
+        }),
+    ];
+    let mut state = StreamTranslationState::default();
+    let mut seen = String::new();
+    for event in events {
+        let decoded = engine.decode_stream_event(&mut state, WireFormat::OpenAiResponses, event)?;
+        for chunk in decoded.normalized() {
+            if let LlmResponseChunk::ToolCallDelta {
+                arguments_delta: Some(delta),
+                ..
+            } = chunk
+            {
+                seen.push_str(delta);
+            }
+            assert!(!matches!(chunk, LlmResponseChunk::StreamError { .. }));
+        }
+    }
+    assert_eq!(seen, full_delta);
+    assert_eq!(
+        serde_json::from_str::<Value>(&seen)?,
+        json!({"a": 1, "b": 2})
+    );
+    Ok(())
+}
+
+#[test]
+fn responses_stream_decodes_camel_case_usage_aliases() -> TestResult {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            "Responses camel and direct cache",
+            json!({
+                "inputTokens": 100,
+                "prompt_tokens": 900,
+                "outputTokens": 20,
+                "completion_tokens": 90,
+                "totalTokens": 120,
+                "cacheReadInputTokens": 7,
+                "cacheCreationInputTokens": 3,
+                "input_tokens_details": {"cached_tokens": 70, "cache_write_tokens": 30},
+                "outputTokensDetails": {"reasoningTokens": 4},
+            }),
+            (90, 7, 3, 20, 120, 4),
+        ),
+        (
+            "Chat camel and nested cache",
+            json!({
+                "promptTokens": 50,
+                "completionTokens": 8,
+                "totalTokens": 58,
+                "promptTokensDetails": {
+                    "cachedTokens": 5,
+                    "cacheCreationTokens": 2,
+                },
+                "completionTokensDetails": {"thinkingTokens": 3},
+            }),
+            (43, 5, 2, 8, 58, 3),
+        ),
+        (
+            "input camel details and cache-write alias",
+            json!({
+                "inputTokens": 40,
+                "outputTokens": 5,
+                "inputTokensDetails": {
+                    "cachedTokens": 4,
+                    "cacheWriteTokens": 1,
+                },
+                "prompt_tokens_details": {"cached_tokens": 14, "cache_write_tokens": 11},
+                "outputTokensDetails": {"thinkingTokens": 2},
+            }),
+            (35, 4, 1, 5, 45, 2),
+        ),
+        (
+            "alternate direct cache-write alias",
+            json!({
+                "inputTokens": 20,
+                "outputTokens": 1,
+                "cacheWriteInputTokens": 2,
+            }),
+            (18, 0, 2, 1, 21, 0),
+        ),
+        (
+            "snake Responses and direct cache take precedence",
+            json!({
+                "input_tokens": 100,
+                "inputTokens": 200,
+                "prompt_tokens": 300,
+                "promptTokens": 400,
+                "output_tokens": 20,
+                "outputTokens": 30,
+                "completion_tokens": 40,
+                "completionTokens": 50,
+                "total_tokens": 120,
+                "totalTokens": 999,
+                "cache_read_input_tokens": 7,
+                "cacheReadInputTokens": 8,
+                "inputTokensDetails": {"cachedTokens": 70, "cacheWriteTokens": 30},
+                "cache_creation_input_tokens": 3,
+                "cacheWriteInputTokens": 9,
+                "output_tokens_details": {"reasoning_tokens": 4},
+                "outputTokensDetails": {"reasoningTokens": 40},
+            }),
+            (90, 7, 3, 20, 120, 4),
+        ),
+    ];
+
+    for (label, raw_usage, expected) in cases {
+        let event = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_usage",
+                "status": "completed",
+                "output": [],
+                "usage": raw_usage,
+            },
+        });
+        let mut state = StreamTranslationState::default();
+        let decoded = engine.decode_stream_event(&mut state, WireFormat::OpenAiResponses, event)?;
+        let usage = decoded
+            .normalized()
+            .iter()
+            .find_map(|chunk| match chunk {
+                LlmResponseChunk::Usage(usage) => Some(usage),
+                _ => None,
+            })
+            .ok_or("missing terminal usage")?;
+        assert_eq!(
+            (
+                usage.input_tokens.unwrap_or_default(),
+                usage.cached_input_tokens().unwrap_or_default(),
+                usage.cache_creation_input_tokens().unwrap_or_default(),
+                usage.output_tokens.unwrap_or_default(),
+                usage.total_tokens.unwrap_or_default(),
+                usage.reasoning_tokens.unwrap_or_default(),
+            ),
+            expected,
+            "{label}",
+        );
+    }
+    Ok(())
+}
+
 // A Responses `reasoning` output item may carry only `encrypted_content`, with no
 // plaintext. The stream decoder must surface it as a `reasoning.encrypted` detail so a
 // caller that buffers the stream (the escalation router) still holds something the

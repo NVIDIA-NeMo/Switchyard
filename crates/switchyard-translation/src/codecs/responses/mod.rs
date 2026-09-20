@@ -3,11 +3,37 @@
 
 //! OpenAI Responses buffered and streaming codecs.
 
+use serde_json::{Map, Value};
+
 mod buffered;
 mod stream;
 
 pub use buffered::OpenAiResponsesCodec;
 pub use stream::OpenAiResponsesStreamCodec;
+
+pub(super) fn call_arguments(item: &Map<String, Value>) -> Option<&Value> {
+    ["arguments", "input", "payload"]
+        .into_iter()
+        .filter_map(|field| item.get(field))
+        .find(|value| !value.is_null() && !matches!(value, Value::String(text) if text.is_empty()))
+}
+
+pub(super) fn usage_u64(usage: &Map<String, Value>, fields: &[&str]) -> Option<u64> {
+    fields
+        .iter()
+        .find_map(|field| usage.get(*field).and_then(Value::as_u64))
+}
+
+pub(super) fn usage_detail_u64(
+    usage: &Map<String, Value>,
+    detail_fields: &[&str],
+    value_fields: &[&str],
+) -> Option<u64> {
+    detail_fields.iter().find_map(|detail_field| {
+        let details = usage.get(*detail_field)?.as_object()?;
+        usage_u64(details, value_fields)
+    })
+}
 
 pub(crate) fn is_native_output(kind: &str) -> bool {
     matches!(

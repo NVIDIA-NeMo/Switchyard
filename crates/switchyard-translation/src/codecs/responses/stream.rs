@@ -745,23 +745,26 @@ fn decode_responses_completed_item(
         return Vec::new();
     }
     state.decoded_tool_call = true;
-    let custom_arguments = (item_type == Some("custom_tool_call")).then(|| {
-        json!({
+    let tool = state.tool_states.entry(index).or_default();
+    let arguments_delta = if item_type == Some("custom_tool_call") {
+        let arguments = json!({
             crate::codex_custom_tools::INPUT_ARGUMENT:
                 item.get("input").and_then(Value::as_str).unwrap_or_default()
         })
-        .to_string()
-    });
-    let arguments = custom_arguments
-        .as_deref()
-        .or_else(|| item.get("arguments").and_then(Value::as_str));
-    let tool = state.tool_states.entry(index).or_default();
-    let arguments_delta =
-        match arguments.map(|arguments| snapshot_suffix(&mut tool.decoded_arguments, arguments)) {
+        .to_string();
+        match snapshot_suffix(&mut tool.decoded_arguments, &arguments) {
+            Ok(delta) => delta,
+            Err(error) => return vec![error],
+        }
+    } else {
+        match super::call_arguments(item)
+            .map(|snapshot| completed_arguments_suffix(&mut tool.decoded_arguments, snapshot))
+        {
             Some(Ok(delta)) => delta,
             Some(Err(error)) => return vec![error],
             None => None,
-        };
+        }
+    };
     let id = item
         .get("call_id")
         .or_else(|| item.get("id"))
@@ -779,6 +782,26 @@ fn decode_responses_completed_item(
         }];
     }
     Vec::new()
+}
+
+fn completed_arguments_suffix(
+    decoded: &mut String,
+    snapshot: &Value,
+) -> Result<Option<String>, LlmResponseChunk> {
+    if !snapshot.is_string()
+        && !decoded.is_empty()
+        && serde_json::from_str::<Value>(decoded)
+            .ok()
+            .as_ref()
+            .is_some_and(|parsed| parsed == snapshot)
+    {
+        return Ok(None);
+    }
+
+    match snapshot {
+        Value::String(text) => snapshot_suffix(decoded, text),
+        value => snapshot_suffix(decoded, &value.to_string()),
+    }
 }
 
 // A snapshot may extend streamed content, but cannot retract content already sent.
@@ -1061,38 +1084,85 @@ fn encode_responses_tool_delta(
 
 // Normalizes OpenAI Responses token usage fields.
 fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
-    let aggregate_input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
-    let cached_input_tokens = usage
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64);
-    let cache_creation_input_tokens = usage
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cache_write_tokens"))
-        .and_then(Value::as_u64);
+    let aggregate_input_tokens = super::usage_u64(
+        usage,
+        &[
+            "input_tokens",
+            "inputTokens",
+            "prompt_tokens",
+            "promptTokens",
+        ],
+    );
+    let cached_input_tokens =
+        super::usage_u64(usage, &["cache_read_input_tokens", "cacheReadInputTokens"]).or_else(
+            || {
+                super::usage_detail_u64(
+                    usage,
+                    &[
+                        "input_tokens_details",
+                        "inputTokensDetails",
+                        "prompt_tokens_details",
+                        "promptTokensDetails",
+                    ],
+                    &["cached_tokens", "cachedTokens"],
+                )
+            },
+        );
+    let cache_creation_input_tokens = super::usage_u64(
+        usage,
+        &[
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+            "cacheWriteInputTokens",
+        ],
+    )
+    .or_else(|| {
+        super::usage_detail_u64(
+            usage,
+            &[
+                "input_tokens_details",
+                "inputTokensDetails",
+                "prompt_tokens_details",
+                "promptTokensDetails",
+            ],
+            &[
+                "cache_write_tokens",
+                "cacheWriteTokens",
+                "cache_creation_tokens",
+                "cacheCreationTokens",
+            ],
+        )
+    });
     let input_tokens = aggregate_input_tokens.map(|tokens| {
         tokens
             .saturating_sub(cached_input_tokens.unwrap_or(0))
             .saturating_sub(cache_creation_input_tokens.unwrap_or(0))
     });
-    let output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
+    let output_tokens = super::usage_u64(
+        usage,
+        &[
+            "output_tokens",
+            "outputTokens",
+            "completion_tokens",
+            "completionTokens",
+        ],
+    );
     Usage {
         input_tokens,
         cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
         output_tokens,
-        total_tokens: usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
+        total_tokens: super::usage_u64(usage, &["total_tokens", "totalTokens"])
             .or_else(|| Some(aggregate_input_tokens.unwrap_or(0) + output_tokens.unwrap_or(0))),
-        reasoning_tokens: usage
-            .get("output_tokens_details")
-            .and_then(|details| details.get("reasoning_tokens"))
-            .or_else(|| {
-                usage
-                    .get("completion_tokens_details")
-                    .and_then(|details| details.get("reasoning_tokens"))
-            })
-            .and_then(Value::as_u64),
+        reasoning_tokens: super::usage_detail_u64(
+            usage,
+            &[
+                "output_tokens_details",
+                "outputTokensDetails",
+                "completion_tokens_details",
+                "completionTokensDetails",
+            ],
+            &["reasoning_tokens", "reasoningTokens", "thinkingTokens"],
+        ),
     }
 }
 

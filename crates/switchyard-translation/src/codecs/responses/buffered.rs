@@ -11,7 +11,7 @@ use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
 };
-use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::openai_chat::{decode_file_source, decode_image_source, parse_arguments};
 use crate::codecs::openai_media::{
     ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
 };
@@ -333,6 +333,18 @@ impl FormatCodec for OpenAiResponsesCodec {
                     }
                 }
             }
+        }
+        if !has_output
+            && let Some(text) = body
+                .get("output_text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+        {
+            has_output = true;
+            content.push(ContentBlock::Text {
+                text: text.to_string(),
+            });
+            stop_reason = Some(StopReason::EndTurn);
         }
         // The truncation signal is on the response, not the output items.
         if body.get("status").and_then(Value::as_str) == Some("incomplete")
@@ -1774,7 +1786,9 @@ fn decode_responses_output_item(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                arguments: super::call_arguments(item)
+                    .map(parse_arguments)
+                    .unwrap_or_else(|| json!({})),
             })],
             stop_reason: Some(StopReason::ToolUse),
         })),
@@ -2019,57 +2033,88 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
     let Some(value) = value.and_then(Value::as_object) else {
         return Usage::default();
     };
-    let aggregate_input_tokens = value
-        .get("input_tokens")
-        .or_else(|| value.get("prompt_tokens"))
-        .and_then(Value::as_u64);
-    let cached_input_tokens = value
-        .get("input_tokens_details")
-        .or_else(|| value.get("prompt_tokens_details"))
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64);
-    let cache_creation_input_tokens = value
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cache_write_tokens"))
-        .and_then(Value::as_u64)
-        .or_else(|| {
-            value.get("prompt_tokens_details").and_then(|details| {
-                details
-                    .get("cache_write_tokens")
-                    .and_then(Value::as_u64)
-                    .or_else(|| details.get("cache_creation_tokens").and_then(Value::as_u64))
-            })
-        });
+    let aggregate_input_tokens = super::usage_u64(
+        value,
+        &[
+            "input_tokens",
+            "inputTokens",
+            "prompt_tokens",
+            "promptTokens",
+        ],
+    );
+    let cached_input_tokens =
+        super::usage_u64(value, &["cache_read_input_tokens", "cacheReadInputTokens"]).or_else(
+            || {
+                super::usage_detail_u64(
+                    value,
+                    &[
+                        "input_tokens_details",
+                        "inputTokensDetails",
+                        "prompt_tokens_details",
+                        "promptTokensDetails",
+                    ],
+                    &["cached_tokens", "cachedTokens"],
+                )
+            },
+        );
+    let cache_creation_input_tokens = super::usage_u64(
+        value,
+        &[
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+            "cacheWriteInputTokens",
+        ],
+    )
+    .or_else(|| {
+        super::usage_detail_u64(
+            value,
+            &[
+                "input_tokens_details",
+                "inputTokensDetails",
+                "prompt_tokens_details",
+                "promptTokensDetails",
+            ],
+            &[
+                "cache_write_tokens",
+                "cacheWriteTokens",
+                "cache_creation_tokens",
+                "cacheCreationTokens",
+            ],
+        )
+    });
     let input_tokens = aggregate_input_tokens.map(|tokens| {
         tokens
             .saturating_sub(cached_input_tokens.unwrap_or(0))
             .saturating_sub(cache_creation_input_tokens.unwrap_or(0))
     });
-    let output_tokens = value
-        .get("output_tokens")
-        .or_else(|| value.get("completion_tokens"))
-        .and_then(Value::as_u64);
+    let output_tokens = super::usage_u64(
+        value,
+        &[
+            "output_tokens",
+            "outputTokens",
+            "completion_tokens",
+            "completionTokens",
+        ],
+    );
     Usage {
         input_tokens,
         cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
         output_tokens,
-        total_tokens: value
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| {
-                aggregate_input_tokens
-                    .zip(output_tokens)
-                    .map(|(input, output)| input + output)
-            }),
-        reasoning_tokens: value
-            .get("output_tokens_details")
-            .and_then(|details| details.get("reasoning_tokens"))
-            .or_else(|| {
-                value
-                    .get("completion_tokens_details")
-                    .and_then(|details| details.get("reasoning_tokens"))
-            })
-            .and_then(Value::as_u64),
+        total_tokens: super::usage_u64(value, &["total_tokens", "totalTokens"]).or_else(|| {
+            aggregate_input_tokens
+                .zip(output_tokens)
+                .map(|(input, output)| input + output)
+        }),
+        reasoning_tokens: super::usage_detail_u64(
+            value,
+            &[
+                "output_tokens_details",
+                "outputTokensDetails",
+                "completion_tokens_details",
+                "completionTokensDetails",
+            ],
+            &["reasoning_tokens", "reasoningTokens", "thinkingTokens"],
+        ),
     }
 }
 

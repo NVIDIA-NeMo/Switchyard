@@ -846,6 +846,239 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     Ok(())
 }
 
+#[test]
+fn responses_buffered_function_call_uses_first_present_argument_source() -> TestResult {
+    use switchyard_translation::ContentBlock;
+
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            json!({"arguments": {"source": "arguments"}, "input": {"source": "input"}}),
+            json!({"source": "arguments"}),
+        ),
+        (json!({"arguments": ["direct", 1]}), json!(["direct", 1])),
+        (
+            json!({"arguments": r#"{"source":"json-string"}"#}),
+            json!({"source": "json-string"}),
+        ),
+        (json!({"arguments": "not-json"}), json!({"raw": "not-json"})),
+        (
+            json!({"arguments": null, "input": {"source": "input"}}),
+            json!({"source": "input"}),
+        ),
+        (
+            json!({"arguments": "", "input": null, "payload": ["payload", 2]}),
+            json!(["payload", 2]),
+        ),
+    ];
+
+    for (fields, expected) in cases {
+        let mut item = fields
+            .as_object()
+            .ok_or("call fields must be an object")?
+            .clone();
+        item.insert("type".into(), json!("function_call"));
+        item.insert("call_id".into(), json!("call_1"));
+        item.insert("name".into(), json!("lookup"));
+        let body = json!({
+            "id": "resp_call",
+            "status": "completed",
+            "output": [item],
+        });
+        let decoded = engine
+            .decode_response(
+                WireFormat::OpenAiResponses,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .response;
+        let Some(ContentBlock::ToolCall(call)) = decoded.outputs[0].content.first() else {
+            return Err("expected a decoded tool call".into());
+        };
+        assert_eq!(call.arguments, expected);
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_buffered_uses_output_text_only_without_decoded_output() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let fallback = json!({
+        "id": "resp_fallback",
+        "status": "completed",
+        "output": [],
+        "output_text": "fallback text",
+    });
+    let translated = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &fallback,
+            &policy,
+        )?
+        .body;
+    assert_eq!(
+        translated["content"],
+        json!([{"type": "text", "text": "fallback text"}])
+    );
+    assert_eq!(translated["stop_reason"], "end_turn");
+
+    let mut incomplete = fallback.clone();
+    incomplete["status"] = json!("incomplete");
+    incomplete["incomplete_details"] = json!({"reason": "max_output_tokens"});
+    let translated = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &incomplete,
+            &policy,
+        )?
+        .body;
+    assert_eq!(
+        translated["content"],
+        json!([{"type": "text", "text": "fallback text"}])
+    );
+    assert_eq!(translated["stop_reason"], "max_tokens");
+
+    let primary = json!({
+        "id": "resp_primary",
+        "status": "completed",
+        "output_text": "must not be appended",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "primary text"}],
+        }],
+    });
+    let translated = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &primary,
+            &policy,
+        )?
+        .body;
+    assert_eq!(
+        translated["content"],
+        json!([{"type": "text", "text": "primary text"}])
+    );
+    assert_eq!(translated["stop_reason"], "end_turn");
+    Ok(())
+}
+
+#[test]
+fn responses_buffered_decodes_camel_case_usage_aliases() -> TestResult {
+    let engine = TranslationEngine::default();
+    let cases = [
+        (
+            "Responses camel and direct cache",
+            json!({
+                "inputTokens": 100,
+                "prompt_tokens": 900,
+                "outputTokens": 20,
+                "completion_tokens": 90,
+                "totalTokens": 120,
+                "cacheReadInputTokens": 7,
+                "cacheCreationInputTokens": 3,
+                "input_tokens_details": {"cached_tokens": 70, "cache_write_tokens": 30},
+                "outputTokensDetails": {"reasoningTokens": 4},
+            }),
+            (90, 7, 3, 20, 120, 4),
+        ),
+        (
+            "Chat camel and nested cache",
+            json!({
+                "promptTokens": 50,
+                "completionTokens": 8,
+                "totalTokens": 58,
+                "promptTokensDetails": {
+                    "cachedTokens": 5,
+                    "cacheCreationTokens": 2,
+                },
+                "completionTokensDetails": {"thinkingTokens": 3},
+            }),
+            (43, 5, 2, 8, 58, 3),
+        ),
+        (
+            "input camel details and cache-write alias",
+            json!({
+                "inputTokens": 40,
+                "outputTokens": 5,
+                "inputTokensDetails": {
+                    "cachedTokens": 4,
+                    "cacheWriteTokens": 1,
+                },
+                "prompt_tokens_details": {"cached_tokens": 14, "cache_write_tokens": 11},
+                "outputTokensDetails": {"thinkingTokens": 2},
+            }),
+            (35, 4, 1, 5, 45, 2),
+        ),
+        (
+            "alternate direct cache-write alias",
+            json!({
+                "inputTokens": 20,
+                "outputTokens": 1,
+                "cacheWriteInputTokens": 2,
+            }),
+            (18, 0, 2, 1, 21, 0),
+        ),
+        (
+            "snake Responses and direct cache take precedence",
+            json!({
+                "input_tokens": 100,
+                "inputTokens": 200,
+                "prompt_tokens": 300,
+                "promptTokens": 400,
+                "output_tokens": 20,
+                "outputTokens": 30,
+                "completion_tokens": 40,
+                "completionTokens": 50,
+                "total_tokens": 120,
+                "totalTokens": 999,
+                "cache_read_input_tokens": 7,
+                "cacheReadInputTokens": 8,
+                "inputTokensDetails": {"cachedTokens": 70, "cacheWriteTokens": 30},
+                "cache_creation_input_tokens": 3,
+                "cacheWriteInputTokens": 9,
+                "output_tokens_details": {"reasoning_tokens": 4},
+                "outputTokensDetails": {"reasoningTokens": 40},
+            }),
+            (90, 7, 3, 20, 120, 4),
+        ),
+    ];
+
+    for (label, raw_usage, expected) in cases {
+        let body = json!({
+            "id": "resp_usage",
+            "status": "completed",
+            "output": [],
+            "usage": raw_usage,
+        });
+        let usage = engine
+            .decode_response(
+                WireFormat::OpenAiResponses,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .response
+            .usage;
+        assert_eq!(
+            (
+                usage.input_tokens.unwrap_or_default(),
+                usage.cached_input_tokens().unwrap_or_default(),
+                usage.cache_creation_input_tokens().unwrap_or_default(),
+                usage.output_tokens.unwrap_or_default(),
+                usage.total_tokens.unwrap_or_default(),
+                usage.reasoning_tokens.unwrap_or_default(),
+            ),
+            expected,
+            "{label}",
+        );
+    }
+    Ok(())
+}
+
 // Verifies mixed assistant text and tool calls both survive into Responses output.
 #[test]
 fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -> TestResult {
