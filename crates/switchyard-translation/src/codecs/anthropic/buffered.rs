@@ -695,6 +695,9 @@ fn decode_anthropic_content_block(
         Some("image") => vec![ContentBlock::Image {
             source: ImageSource::Raw(Value::Object(block.clone())),
         }],
+        Some("video") => vec![ContentBlock::Video {
+            source: crate::codecs::openai_media::decode_video_source(block),
+        }],
         Some("input_image") | Some("image_url") => decode_image_source(block)
             .map(|source| vec![ContentBlock::Image { source }])
             .unwrap_or_default(),

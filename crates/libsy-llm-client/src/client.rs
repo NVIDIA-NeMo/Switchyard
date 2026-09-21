@@ -14,6 +14,7 @@ use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value, json};
+use switchyard_media::{MediaConfig, MediaError, MediaProcessor};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
     ModelId, Request, Response, RoutedLlmClient,
@@ -63,6 +64,7 @@ pub struct ModelConfig {
     model_name: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    media: Option<MediaConfig>,
 }
 
 impl ModelConfig {
@@ -77,7 +79,14 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            media: None,
         }
+    }
+
+    /// Prepare outgoing media using settings specific to this model endpoint.
+    pub fn with_media(mut self, media: MediaConfig) -> Self {
+        self.media = Some(media);
+        self
     }
 }
 
@@ -126,6 +135,7 @@ pub struct TranslatingLlmClient {
     model_to_config: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
     forward_auth_client: reqwest::Client,
+    media_processor: Option<MediaProcessor>,
 }
 
 impl TranslatingLlmClient {
@@ -133,6 +143,17 @@ impl TranslatingLlmClient {
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
         for config in model_configs {
+            if let Some(media) = &config.media {
+                for backend in std::iter::once(&config.default_backend)
+                    .chain(config.other_backends.iter().flatten())
+                {
+                    media.validate(backend.wire_format()).map_err(|error| {
+                        LlmClientError::Configuration {
+                            message: error.to_string(),
+                        }
+                    })?;
+                }
+            }
             config
                 .default_backend
                 .validate_extra_headers(&config.model_name)?;
@@ -155,7 +176,16 @@ impl TranslatingLlmClient {
             .map(|config| (config.model_name.clone(), config.clone()))
             .collect();
 
+        let media_processor = model_configs
+            .iter()
+            .any(|config| config.media.is_some())
+            .then(MediaProcessor::new)
+            .transpose()
+            .map_err(|error| LlmClientError::Configuration {
+                message: error.to_string(),
+            })?;
         Ok(Self {
+            media_processor,
             model_to_config,
             client,
             forward_auth_client,
@@ -269,6 +299,28 @@ impl TranslatingLlmClient {
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
+        }
+        // Work on the final owned wire body: preserve native controls and prepare once
+        // for all HTTP retries. The routing request remains available for other targets.
+        if let Some(media) = self
+            .model_to_config
+            .get(model)
+            .and_then(|config| config.media.as_ref())
+        {
+            // Construction creates this processor whenever any model has media settings.
+            self.media_processor
+                .as_ref()
+                .expect("configured media processor")
+                .prepare(&mut body, wire_format, media)
+                .await
+                .map_err(|error| match error {
+                    MediaError::Timeout => LlmClientError::Timeout {
+                        source: Box::new(error),
+                    },
+                    _ => LlmClientError::InvalidRequest {
+                        message: format!("media preparation: {error}"),
+                    },
+                })?;
         }
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -1298,6 +1350,72 @@ mod tests {
             max_retries: 0,
             timeout: None,
         }
+    }
+
+    #[tokio::test]
+    async fn target_media_prepares_preserved_body_without_mutating_answer_or_controls()
+    -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
+        use switchyard_media::VideoMode;
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id":"r", "object":"chat.completion", "model":"answer",
+            "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+        }))).expect(2).mount(&server).await;
+        let backend = Backend::OpenAiChat(config(&format!("{}/v1", server.uri())));
+        let client = TranslatingLlmClient::new(&[
+            ModelConfig::new("judge", backend.clone(), None).with_media(MediaConfig {
+                max_images: Some(0),
+                video: VideoMode::Omit,
+                ..Default::default()
+            }),
+            ModelConfig::new("answer", backend, None).with_media(MediaConfig {
+                video: VideoMode::File,
+                ..Default::default()
+            }),
+        ])?;
+        let body = json!({"model":"route", "temperature":0.2, "custom_control":{"keep":true}, "messages":[{"role":"user","content":[
+            {"type":"text","text":"question"},
+            {"type":"image_url","image_url":{"url":"https://example.com/image.png","detail":"high"}},
+            {"type":"video_url","video_url":{"url":"https://example.com/clip.mp4"}}
+        ]}]});
+        let request = Request {
+            llm_request: decode_request(WireFormat::OpenAiChat, &body)?,
+            ..Default::default()
+        };
+        client
+            .call_rewrite_model(request.clone(), Some(&ModelId::from("judge")))
+            .await?;
+        client
+            .call_rewrite_model(request.clone(), Some(&ModelId::from("answer")))
+            .await?;
+        assert_eq!(
+            encode_request(&request.llm_request, WireFormat::OpenAiChat)?,
+            body
+        );
+        let received = server.received_requests().await.unwrap();
+        let judge: Value = serde_json::from_slice(&received[0].body)?;
+        let answer: Value = serde_json::from_slice(&received[1].body)?;
+        assert_eq!(
+            judge["messages"][0]["content"][1]["text"],
+            "[image omitted]"
+        );
+        assert_eq!(
+            judge["messages"][0]["content"][2]["text"],
+            "[video omitted]"
+        );
+        assert_eq!(
+            answer["messages"][0]["content"][1],
+            body["messages"][0]["content"][1]
+        );
+        assert_eq!(
+            answer["messages"][0]["content"][2]["file"]["file_id"],
+            "https://example.com/clip.mp4"
+        );
+        for prepared in [judge, answer] {
+            assert_eq!(prepared["custom_control"], body["custom_control"]);
+            assert_eq!(prepared["temperature"], body["temperature"]);
+        }
+        Ok(())
     }
 
     #[test]

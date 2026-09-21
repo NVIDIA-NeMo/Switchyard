@@ -4105,3 +4105,50 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
     assert_eq!(output["input"], outputs);
     Ok(())
 }
+
+#[test]
+fn video_survives_normalization_judge_rebuild_and_cross_format_translation() {
+    use serde_json::json;
+    use switchyard_protocol::ContentBlock;
+    use switchyard_translation::{WireFormat, decode_request, encode_request};
+
+    for part in [
+        json!({"type":"video_url","video_url":{"url":"https://example.com/clip.mp4"}}),
+        json!({"type":"file","file":{"file_id":"https://example.com/clip.mp4","format":"video/mp4"}}),
+    ] {
+        let body = json!({"model":"video","messages":[{"role":"user","content":[part]}]});
+        let mut request = decode_request(WireFormat::OpenAiChat, &body).unwrap();
+        assert!(matches!(
+            request.messages[0].content[0],
+            ContentBlock::Video { .. }
+        ));
+        // Classifiers build a new request from normalized content without preservation.
+        request.preservation = Default::default();
+        let chat = encode_request(&request, WireFormat::OpenAiChat).unwrap();
+        assert_eq!(
+            chat["messages"][0]["content"][0]["video_url"]["url"],
+            "https://example.com/clip.mp4"
+        );
+        let responses = encode_request(&request, WireFormat::OpenAiResponses).unwrap();
+        assert_eq!(responses["input"][0]["content"][0]["type"], "input_video");
+        let decoded = decode_request(WireFormat::OpenAiResponses, &responses).unwrap();
+        assert!(matches!(
+            decoded.messages[0].content[0],
+            ContentBlock::Video { .. }
+        ));
+    }
+}
+
+#[test]
+fn anthropic_video_source_normalizes_for_a_chat_judge() {
+    let input = serde_json::json!({"model":"route","max_tokens":100,"messages":[{"role":"user","content":[
+        {"type":"video","source":{"type":"base64","media_type":"video/mp4","data":"AQID"}}
+    ]}]});
+    let request =
+        switchyard_translation::decode_request(WireFormat::AnthropicMessages, &input).unwrap();
+    let chat = switchyard_translation::encode_request(&request, WireFormat::OpenAiChat).unwrap();
+    assert_eq!(
+        chat["messages"][0]["content"][0]["video_url"]["url"],
+        "data:video/mp4;base64,AQID"
+    );
+}

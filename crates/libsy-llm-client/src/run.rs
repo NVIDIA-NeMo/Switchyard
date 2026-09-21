@@ -1777,6 +1777,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fallback_media_is_prepared_from_the_original_request() -> Result<()> {
+        use crate::{MediaConfig, VideoMode};
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["model"] == "weak" {
+                ResponseTemplate::new(503)
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id":"r", "model":"strong", "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+                }))
+            }
+        }).expect(2).mount(&server).await;
+        let backend = Backend::OpenAiChat(HttpBackendConfig {
+            base_url: format!("{}/v1", server.uri()),
+            api_key: None,
+            forward_auth: false,
+            extra_headers: BTreeMap::new(),
+            extra_body: BTreeMap::new(),
+            reasoning_effort: None,
+            max_retries: 0,
+            timeout: None,
+        });
+        let client = Arc::new(
+            TranslatingLlmClient::new(&[
+                ModelConfig::new("weak", backend.clone(), None).with_media(MediaConfig {
+                    max_images: Some(0),
+                    video: VideoMode::Omit,
+                    ..Default::default()
+                }),
+                ModelConfig::new("strong", backend, None).with_media(MediaConfig {
+                    video: VideoMode::File,
+                    ..Default::default()
+                }),
+            ])
+            .unwrap(),
+        );
+        let body = json!({"messages":[{"role":"user","content":[
+            {"type":"image_url","image_url":{"url":"https://example.com/a.png"}},
+            {"type":"video_url","video_url":{"url":"https://example.com/a.mp4"}}
+        ]}]});
+        let request = Request {
+            llm_request: switchyard_translation::decode_request(WireFormat::OpenAiChat, &body)
+                .unwrap(),
+            ..Default::default()
+        };
+        let (model, response) = run(
+            Arc::new(CandidateAlgorithm {}),
+            ClientRouter::single(client),
+            request,
+            to_category_map(&["weak", "strong"]),
+            None,
+        )
+        .await?;
+        assert_eq!(model, ModelId::from("weak"));
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
+        let calls = server.received_requests().await.unwrap();
+        let first: Value = serde_json::from_slice(&calls[0].body).unwrap();
+        let second: Value = serde_json::from_slice(&calls[1].body).unwrap();
+        assert_eq!(
+            first["messages"][0]["content"][0]["text"],
+            "[image omitted]"
+        );
+        assert_eq!(
+            second["messages"][0]["content"][0],
+            body["messages"][0]["content"][0]
+        );
+        assert_eq!(
+            second["messages"][0]["content"][1]["file"]["file_id"],
+            "https://example.com/a.mp4"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn each_fallback_candidate_receives_only_its_own_prompt() -> Result<()> {
         let client = Arc::new(CandidateClient {
             calls: Mutex::new(Vec::new()),

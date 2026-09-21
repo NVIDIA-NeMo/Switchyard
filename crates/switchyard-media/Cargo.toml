@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-media"
+version.workspace = true
+description = "Endpoint media preparation for Switchyard LLM clients"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+futures-util.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+ipnet = "2"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+switchyard-protocol.workspace = true
+tempfile = "3"
+thiserror.workspace = true
+tokio.workspace = true

@@ -564,6 +564,20 @@ pub(crate) fn decode_openai_content(
                             content.push(ContentBlock::Image { source });
                         }
                     }
+                    Some("video_url" | "input_video") => content.push(ContentBlock::Video {
+                        source: crate::codecs::openai_media::decode_video_source(block),
+                    }),
+                    Some("file")
+                        if block
+                            .get("file")
+                            .and_then(|file| file.get("format"))
+                            .and_then(Value::as_str)
+                            .is_some_and(|mime| mime.starts_with("video/")) =>
+                    {
+                        content.push(ContentBlock::Video {
+                            source: crate::codecs::openai_media::decode_video_source(block),
+                        })
+                    }
                     Some("input_audio") => content.push(ContentBlock::Audio {
                         source: MediaSource::Raw(Value::Object(block.clone())),
                     }),
@@ -1077,12 +1091,7 @@ pub(crate) fn encode_openai_content(
                 blocks.push(crate::codecs::openai_media::audio_part(source)?);
             }
             ContentBlock::Video { source } => {
-                push_lossy(
-                    diagnostics,
-                    policy,
-                    "OpenAI Chat codec does not have a stable video request mapping yet",
-                )?;
-                blocks.push(openai_text_part(&media_source_text(source)));
+                blocks.push(crate::codecs::openai_media::video_part(source));
             }
             ContentBlock::Unknown { provider, raw } => {
                 reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
@@ -1122,21 +1131,6 @@ fn openai_file_part(source: &FileSource) -> Option<Value> {
     let mut part = json!({"type": "file"});
     part["file"] = Value::Object(file_payload(source)?);
     Some(part)
-}
-
-// Converts unsupported media sources to deterministic text fallback content.
-fn media_source_text(source: &MediaSource) -> String {
-    match source {
-        MediaSource::Url { url, media_type } => json_string(&json!({
-            "url": url,
-            "media_type": media_type,
-        })),
-        MediaSource::Base64 { media_type, data } => json_string(&json!({
-            "media_type": media_type,
-            "data": data,
-        })),
-        MediaSource::Raw(raw) => json_string(raw),
-    }
 }
 
 /// Encodes normalized tool definitions into OpenAI tool JSON.

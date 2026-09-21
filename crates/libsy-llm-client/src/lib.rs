@@ -31,6 +31,7 @@ pub use error::{LlmClientError, Result};
 pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use run::{ClientRouter, decide, run};
+pub use switchyard_media::{MediaConfig, VideoMode};
 pub use switchyard_translation::RawEventStream;
 
 /// Registers process-wide compatibility gauges with the global meter provider.

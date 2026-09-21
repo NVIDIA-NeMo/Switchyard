@@ -918,6 +918,9 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                             out.push(ContentBlock::Image { source });
                         }
                     }
+                    Some("input_video" | "video_url") => out.push(ContentBlock::Video {
+                        source: crate::codecs::openai_media::decode_video_source(block),
+                    }),
                     Some("input_audio") => out.push(ContentBlock::Audio {
                         source: MediaSource::Raw(Value::Object(block.clone())),
                     }),
