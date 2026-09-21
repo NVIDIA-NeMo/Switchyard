@@ -4050,6 +4050,7 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
 }
 
 #[test]
+/// Rebuilt Chat requests retain the source plaintext reasoning field name.
 fn chat_request_rebuild_preserves_reasoning_field_spelling() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = normalized_policy();
@@ -4093,6 +4094,7 @@ fn chat_request_rebuild_preserves_reasoning_field_spelling() -> TestResult {
 }
 
 #[test]
+/// Foreign reasoning defaults to the historical `reasoning` field in Chat requests.
 fn chat_request_rebuild_uses_default_reasoning_spelling_for_foreign_reasoning() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = normalized_policy();
