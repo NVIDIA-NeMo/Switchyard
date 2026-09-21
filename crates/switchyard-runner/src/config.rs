@@ -818,6 +818,12 @@ base_threshold = 0.5
 id = "switchyard/passthrough"
 type = "passthrough"
 target = "weak"
+
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "plan_execute"
+capable_target = "strong"
+efficient_target = "weak"
 "#;
 
     #[test]
@@ -843,6 +849,17 @@ target = "weak"
         assert_eq!(
             models.models_for(&Category::Any),
             [ModelId::from("weak/model"), ModelId::from("strong/model")]
+        );
+        let plan_execute = runner
+            .route("switchyard/plan-execute")
+            .expect("plan-execute route should exist");
+        assert_eq!(
+            plan_execute.models().models_for(&Category::Capable),
+            [ModelId::from("strong/model")]
+        );
+        assert_eq!(
+            plan_execute.models().models_for(&Category::Efficient),
+            [ModelId::from("weak/model")]
         );
         assert!(runner.route("switchyard/passthrough").is_some());
         Ok(())
@@ -1001,6 +1018,7 @@ new = ["send_message"]
                 "switchyard/classifier",
                 "switchyard/noop",
                 "switchyard/passthrough",
+                "switchyard/plan-execute",
                 "switchyard/random",
             ]
         );

@@ -1601,6 +1601,41 @@ fn responses_request_translates_codex_tool_shape_to_openai_chat() -> TestResult 
     Ok(())
 }
 
+#[test]
+fn responses_prompt_injection_preserves_namespace_description() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": "Fix the parser",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for managing sub-agents.",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Start one agent.",
+                "parameters": {"type": "object"}
+            }]
+        }]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"gpt-5.6-sol".into(), Some("Plan first."));
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(
+        output["tools"][0]["description"],
+        "Tools for managing sub-agents."
+    );
+    Ok(())
+}
+
 // Verifies Python-style Responses tool definitions translate into OpenAI Chat tools.
 #[test]
 fn responses_request_translates_python_compatible_tool_shape_to_openai_chat() -> TestResult {

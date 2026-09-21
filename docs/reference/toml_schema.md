@@ -175,6 +175,19 @@ Splits traffic across targets. See
 | `weights` | No | equal | Finite, non-negative relative weights in `targets` order, with at least one positive value. Invalid weights are rejected at load time. |
 | `seed` | No | unset | Reproduces the selection sequence. |
 
+### `plan_execute`
+
+Plans on a capable target, then switches to an efficient target after the first
+file mutation. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `capable_target` | Yes | - | Target used for read-only inspection and planning. |
+| `efficient_target` | Yes | - | Target used after the first edit or write. |
+| `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
+| `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
+| `planner_reasoning_as_text` | No | `false` | Converts visible planner reasoning summaries to assistant text at handoff. |
+
 ### `prefill_router`
 
 !!! warning "Experimental in v0.3.0"
