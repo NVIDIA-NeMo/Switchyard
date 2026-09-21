@@ -311,6 +311,9 @@ DeepSWE uses Harbor's task format but its own runner, [Pier](https://github.com/
 (required since v1.1 for the separate-verifier/collect-hook pattern). It is not part of
 `run-baseline.sh`.
 
+See [DeepSWE v1.1 qualification settings](DEEPSWE_V11_QUALIFICATION.md) for the exact
+versions, timeouts, scoring rules, and routing profiles used for qualification.
+
 ```bash
 git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
 uv tool install 'datacurve-pier>0.3.0'
