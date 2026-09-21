@@ -11,15 +11,14 @@
 #   Switchyard     commit 6a98efdbb63304ff1625f09a240a32381e396d28, config
 #                  schema version 1 (below)
 #   Models         openai/gpt-5.6-luna (efficient) and openai/gpt-5.6-sol
-#                  (capable) on OpenRouter, Responses wire; only Sol is forced
-#                  to reasoning effort `max` by this file
+#                  (capable) on OpenRouter, Responses wire
 #   Routing        efficient-first, confidence threshold 0.5, five recent tool
 #                  results, two capable hold turns, and an escalation handoff note
 #   Benchmark      DeepSWE v1.1 (github.com/datacurve-ai/deep-swe), all 113 tasks,
 #                  closed-book with sandbox network policy `default_deny`
-#   Agent          Codex CLI 0.154.0 at reasoning effort `max`, calling this route
-#                  with model name `gpt-5.6-luna`; Harbor 0.13.2 ran five tasks at
-#                  a time with one trial per task
+#   Agent          Codex CLI 0.154.0 calling this route with model name
+#                  `gpt-5.6-luna`; Harbor 0.13.2 ran five tasks at a time with one
+#                  trial per task
 #   Scoring        strict: tasks with reward 1 over all 113, so the crashed task
 #                  counts as unsolved
 #   Result         76/113 solved (67.3% strict); 76/112 (67.9%) when excluding the
@@ -52,9 +51,6 @@ api_key_env = "OPENROUTER_API_KEY"
 [targets.capable]
 id = "openai/gpt-5.6-sol"
 llm_client = "openrouter"
-
-[targets.capable.extra_body]
-reasoning_effort = "max"
 
 [targets.efficient]
 id = "openai/gpt-5.6-luna"
