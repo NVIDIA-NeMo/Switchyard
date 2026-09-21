@@ -149,7 +149,7 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
     let image = json!({"type": "input_image", "file_id": "file_image", "detail": "auto"});
     let audio =
         json!({"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}});
-    let file = json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"});
+    let file = json!({"type": "input_file", "file_url": "https://example.com/report.pdf"});
     let document = json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}, "title": "report.pdf"});
     let text_file = json!({"type": "input_file", "file_data": "aGVsbG8=", "filename": "notes.txt"});
     let text_document = json!({"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hello"}, "title": "notes.txt"});
@@ -184,7 +184,20 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
         (Responses, Anthropic, audio, None),
         (Responses, Responses, file.clone(), Some(file.clone())),
         (Responses, Chat, file.clone(), None),
-        (Responses, Anthropic, file.clone(), Some(document.clone())),
+        (
+            Responses,
+            Responses,
+            json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"}),
+            Some(file.clone()),
+        ),
+        (
+            Responses,
+            Anthropic,
+            file.clone(),
+            Some(
+                json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}}),
+            ),
+        ),
         (Anthropic, Chat, document.clone(), None),
         (Anthropic, Responses, document, Some(file)),
         (
