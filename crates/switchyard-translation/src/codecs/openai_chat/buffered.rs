@@ -20,9 +20,8 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OpenAiChatReasoningField, OutputParams, ProviderExtensions,
-    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult, Usage,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -443,7 +442,6 @@ impl FormatCodec for OpenAiChatCodec {
 
 // Pulls OpenAI-compatible reasoning fields into private reasoning IR blocks.
 fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map<String, Value>) {
-    let openai_chat_field = openai_chat_reasoning_field(object);
     if let Some(details) = object
         .get("reasoning_details")
         .and_then(Value::as_array)
@@ -468,7 +466,6 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
                 text,
                 signature,
                 details: details.clone(),
-                openai_chat_field,
             },
         );
         return;
@@ -481,41 +478,8 @@ fn prepend_openai_reasoning_blocks(content: &mut Vec<ContentBlock>, object: &Map
                 text: text.to_string(),
                 signature: None,
                 details: Vec::new(),
-                openai_chat_field,
             },
         );
-    }
-}
-
-// Records which OpenAI Chat wire field carried plaintext reasoning so a
-// rebuilt request can replay the same spelling.
-fn openai_chat_reasoning_field(object: &Map<String, Value>) -> OpenAiChatReasoningField {
-    if object
-        .get("reasoning_content")
-        .and_then(Value::as_str)
-        .is_some_and(|text| !text.is_empty())
-    {
-        OpenAiChatReasoningField::ReasoningContent
-    } else {
-        OpenAiChatReasoningField::Reasoning
-    }
-}
-
-// Picks the OpenAI Chat wire field for encoded reasoning: the recorded source
-// spelling when any reasoning block carries one, else the historical default.
-fn openai_chat_reasoning_key(content: &[ContentBlock]) -> &'static str {
-    if content.iter().any(|block| {
-        matches!(
-            block,
-            ContentBlock::Reasoning {
-                openai_chat_field: OpenAiChatReasoningField::ReasoningContent,
-                ..
-            }
-        )
-    }) {
-        "reasoning_content"
-    } else {
-        "reasoning"
     }
 }
 
@@ -983,7 +947,7 @@ fn encode_openai_message_plaintext_reasoning(message: &mut Value, content: &[Con
         .collect::<Vec<_>>()
         .join("\n");
     if !reasoning.is_empty() {
-        message[openai_chat_reasoning_key(content)] = Value::String(reasoning);
+        message["reasoning"] = Value::String(reasoning);
     }
 }
 
@@ -1009,7 +973,7 @@ fn encode_openai_message_structured_reasoning(
         .collect::<Vec<_>>()
         .join("\n");
     if !fallback.is_empty() {
-        message[openai_chat_reasoning_key(content)] = Value::String(fallback);
+        message["reasoning"] = Value::String(fallback);
     }
 }
 

@@ -23,9 +23,8 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OpenAiChatReasoningField, OutputParams, ProviderExtensions,
-    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult, Usage,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -854,8 +853,6 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
             text,
             signature: Some(signature),
             details: Vec::new(),
-            // Responses reasoning items carry no OpenAI Chat wire spelling.
-            openai_chat_field: OpenAiChatReasoningField::default(),
         }];
     }
     let mut parts = Vec::new();
@@ -875,8 +872,6 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
         text: parts.join("\n"),
         signature: None,
         details,
-        // Responses reasoning items carry no OpenAI Chat wire spelling.
-        openai_chat_field: OpenAiChatReasoningField::default(),
     }]
 }
 
@@ -916,8 +911,6 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                                 .to_string(),
                             signature: None,
                             details: Vec::new(),
-                            // Responses reasoning items carry no OpenAI Chat wire spelling.
-                            openai_chat_field: OpenAiChatReasoningField::default(),
                         });
                     }
                     Some("input_image") => {
@@ -1449,7 +1442,6 @@ fn encode_responses_special_input(
             text,
             signature: None,
             details,
-            ..
         } => encode_responses_reasoning_input(text, details),
         ContentBlock::ToolCall(call) if custom_tools.contains(&call.name) => {
             // A freeform tool call replays as `custom_tool_call` with its raw input.
@@ -1903,7 +1895,6 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                             text,
                             signature,
                             details,
-                            ..
                         } = block
                         {
                             let encrypted = signature

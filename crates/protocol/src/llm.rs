@@ -72,27 +72,6 @@ impl Message {
     }
 }
 
-/// Wire-level field used for OpenAI Chat plaintext reasoning.
-///
-/// The two names are provider dialects rather than interchangeable aliases:
-/// some models only accept reasoning replayed under the field they produced.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OpenAiChatReasoningField {
-    /// The `reasoning` field.
-    #[default]
-    Reasoning,
-    /// The `reasoning_content` field.
-    ReasoningContent,
-}
-
-impl OpenAiChatReasoningField {
-    /// Returns true when the field uses the historical default spelling.
-    pub const fn is_default(&self) -> bool {
-        matches!(self, Self::Reasoning)
-    }
-}
-
 /// Normalized content block variants carried by messages and tool results.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -112,9 +91,6 @@ pub enum ContentBlock {
         /// "reasoning.encrypted", "data": "..." }` object, replayed without modification.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         details: Vec<Value>,
-        /// OpenAI Chat field that carried plaintext reasoning.
-        #[serde(default, skip_serializing_if = "OpenAiChatReasoningField::is_default")]
-        openai_chat_field: OpenAiChatReasoningField,
     },
     /// Image content.
     Image {

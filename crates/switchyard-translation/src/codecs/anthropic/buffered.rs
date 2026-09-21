@@ -17,9 +17,8 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OpenAiChatReasoningField, OutputParams, ProviderExtensions,
-    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, ToolCall, ToolChoice,
-    ToolDefinition, ToolResult, Usage,
+    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
+    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -664,8 +663,6 @@ fn decode_anthropic_content_block(
                 .filter(|signature| !signature.is_empty())
                 .map(ToOwned::to_owned),
             details: Vec::new(),
-            // Anthropic thinking blocks carry no OpenAI Chat wire spelling.
-            openai_chat_field: OpenAiChatReasoningField::default(),
         }],
         Some("tool_use") => vec![ContentBlock::ToolCall(ToolCall {
             id: block

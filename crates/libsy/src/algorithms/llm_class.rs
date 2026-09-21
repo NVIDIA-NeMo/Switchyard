@@ -776,9 +776,8 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, ModelId,
-        OpenAiChatReasoningField, ToolCall, ToolResult, completion_text, text_request,
-        text_response,
+        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, ModelId, ToolCall,
+        ToolResult, completion_text, text_request, text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -1577,7 +1576,6 @@ mod tests {
                         text: "private chain of thought".to_string(),
                         signature: None,
                         details: Vec::new(),
-                        openai_chat_field: OpenAiChatReasoningField::default(),
                     },
                     ContentBlock::Text {
                         text: "visible answer".to_string(),
@@ -1592,7 +1590,6 @@ mod tests {
                     text: "reasoning-only turn".to_string(),
                     signature: None,
                     details: Vec::new(),
-                    openai_chat_field: OpenAiChatReasoningField::default(),
                 }],
             },
             Message::text(Role::User, "follow-up"),

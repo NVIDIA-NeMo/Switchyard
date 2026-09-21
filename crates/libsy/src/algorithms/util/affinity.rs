@@ -288,9 +288,7 @@ mod tests {
 
     use std::sync::Arc;
 
-    use switchyard_protocol::{
-        LlmRequest, Metadata, OpenAiChatReasoningField, ToolResult, text_request,
-    };
+    use switchyard_protocol::{LlmRequest, Metadata, ToolResult, text_request};
 
     use crate::core::algorithm::RuntimeModels;
 
@@ -600,7 +598,6 @@ mod tests {
                     text: "Internal provider reasoning.".to_string(),
                     signature: Some("provider-signature".to_string()),
                     details: Vec::new(),
-                    openai_chat_field: OpenAiChatReasoningField::default(),
                 },
             ],
         });

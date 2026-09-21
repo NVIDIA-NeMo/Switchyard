@@ -41,8 +41,8 @@ use switchyard_libsy::{
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{Category, ModelId};
 use switchyard_protocol::{
-    ContentBlock, LlmRequest, LlmResponse, Message, Metadata, OpenAiChatReasoningField, Request,
-    Response, Role, RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
+    ContentBlock, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
+    RoutedLlmClient, ToolCall, ToolResult, Usage, WireFormat,
 };
 use switchyard_protocol::{
     LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
@@ -725,7 +725,6 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
                     text: "provider reasoning".to_string(),
                     signature: None,
                     details: Vec::new(),
-                    openai_chat_field: OpenAiChatReasoningField::default(),
                 }],
             }],
             ..LlmRequest::default()
