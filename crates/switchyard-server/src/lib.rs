@@ -72,6 +72,7 @@ const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
     "request-id",
     "traceparent",
     "tracestate",
+    "x-litellm-response-cost",
     "x-request-id",
 ];
 const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
@@ -1986,5 +1987,21 @@ mod tests {
                 .map(|error| error.0.as_str()),
             Some("invalid request")
         );
+    }
+
+    // LiteLLM's cost header passes through to the client; auth headers do not.
+    #[test]
+    fn upstream_header_forwarding_covers_litellm_cost() {
+        for name in [
+            "baggage",
+            "x-litellm-response-cost",
+            "x-ratelimit-remaining",
+            "x-upstream-retry",
+        ] {
+            let header: HeaderName = name.parse().expect("header name");
+            assert!(should_forward_upstream_header(&header), "{name}");
+        }
+        let secret: HeaderName = "authorization".parse().expect("header name");
+        assert!(!should_forward_upstream_header(&secret));
     }
 }
