@@ -292,14 +292,20 @@ fn native_abuse_identity_is_preserved_but_not_mapped() -> TestResult {
                 for target in formats {
                     let output = engine.encode_request(target, &request, &policy)?.body;
                     let actual = if target == WireFormat::AnthropicMessages {
-                        &output["metadata"]["user_id"]
+                        output
+                            .get("metadata")
+                            .and_then(|metadata| metadata.get("user_id"))
                     } else {
-                        &output["safety_identifier"]
+                        output.get("safety_identifier")
                     };
                     let crosses_anthropic = (source == WireFormat::AnthropicMessages)
                         != (target == WireFormat::AnthropicMessages);
                     let expected = if crosses_anthropic { None } else { identity };
-                    assert_eq!(actual, &json!(expected), "{source:?} -> {target:?}");
+                    assert_eq!(
+                        actual,
+                        expected.map(|value| json!(value)).as_ref(),
+                        "{source:?} -> {target:?}"
+                    );
                     if source != WireFormat::AnthropicMessages
                         && target != WireFormat::AnthropicMessages
                     {
