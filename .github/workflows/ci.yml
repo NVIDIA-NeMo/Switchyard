@@ -122,6 +122,10 @@ jobs:
         run: cargo clippy -p switchyard-server --all-targets --features prefill-router --locked -- -D warnings
       - name: cargo test
         run: cargo test --workspace --locked
+      - name: Install media test runtime
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Media frame extraction tests
+        run: cargo test -p switchyard-media --locked -- --ignored
       - name: cargo test (prefill-router)
         run: cargo test -p switchyard-runner --features prefill-router --locked
 

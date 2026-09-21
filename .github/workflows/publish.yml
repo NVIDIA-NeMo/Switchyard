@@ -487,6 +487,7 @@ jobs:
             switchyard-protocol \
             switchyard-translation \
             switchyard-libsy \
+            switchyard-media \
             switchyard-llm-client \
             prefill-router \
             switchyard-runner \
@@ -525,6 +526,7 @@ jobs:
           publish_crate switchyard-protocol
           publish_crate switchyard-translation
           publish_crate switchyard-libsy
+          publish_crate switchyard-media
           publish_crate switchyard-llm-client
           publish_crate prefill-router
           publish_crate switchyard-runner
