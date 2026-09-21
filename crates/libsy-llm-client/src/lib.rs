@@ -36,6 +36,7 @@ pub use error::{LlmClientError, Result};
 pub use observation::{ModelCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use run::{ClientRouter, decide, run};
+pub use switchyard_media::{MediaConfig, VideoMode};
 pub use switchyard_translation::RawEventStream;
 pub use system_one::SystemOneClient;
 
