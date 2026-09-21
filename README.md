@@ -241,11 +241,24 @@ setup, Switchyard uses the server's `OPENROUTER_API_KEY` for upstream requests.
 Do not use the placeholder with `forward_auth = true` or a gateway that requires
 a real client credential.
 
-Codex CLI and other OpenAI clients use the OpenAI variables instead:
+For Codex CLI, add this provider to `~/.codex/config.toml`:
+
+```toml
+[model_providers.switchyard]
+name = "Switchyard"
+base_url = "http://localhost:4000/v1"
+wire_api = "responses"
+requires_openai_auth = false
+```
+
+Then select the provider and route:
 
 ```bash
-export OPENAI_BASE_URL="http://localhost:4000/v1"
+codex --model switchyard -c 'model_provider="switchyard"'
 ```
+
+No Codex API key is needed for this local setup. Switchyard uses the server's
+`OPENROUTER_API_KEY` for upstream requests.
 
 ## Routing Algorithms
 

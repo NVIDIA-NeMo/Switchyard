@@ -47,8 +47,10 @@ Within this workspace:
 
 ```toml
 [dependencies]
+futures-util = "0.3"
+switchyard-libsy = { path = "../libsy" }
 switchyard-llm-client = { path = "../libsy-llm-client" }
-switchyard-protocol = { path = "../libsy-protocol" }
+switchyard-protocol = { path = "../protocol" }
 switchyard-translation = { path = "../switchyard-translation" }   # for WireFormat
 ```
 
@@ -153,7 +155,7 @@ ordered fallbacks for the client to try. `ClientRouter::single` is the single-pr
 
 ```rust
 use std::sync::Arc;
-use switchyard_libsy::Algorithm;
+use switchyard_libsy::{Algorithm, RuntimeModels};
 use switchyard_llm_client::{ClientRouter, TranslatingLlmClient};
 use switchyard_protocol::Request;
 
@@ -161,10 +163,11 @@ async fn route(
     algorithm: Arc<dyn Algorithm>,
     client: Arc<TranslatingLlmClient>,
     request: Request,
+    models: Arc<RuntimeModels>,
 ) -> switchyard_libsy::Result<String> {
     let clients = ClientRouter::single(client);
     let (selected_model, _response) =
-        switchyard_llm_client::run(algorithm, clients, request, None).await?;
+        switchyard_llm_client::run(algorithm, clients, request, models, None).await?;
     Ok(selected_model.to_string())
 }
 ```
@@ -285,8 +288,8 @@ after a stream has started does not count another attempt.
 | `InvalidResponse { source }` | the upstream response could not be decoded |
 | `Other(source)` | a client-specific failure outside the shared categories |
 
-[`switchyard_protocol::Request`]: ../libsy-protocol
-[`switchyard_protocol::Response`]: ../libsy-protocol
+[`switchyard_protocol::Request`]: ../protocol
+[`switchyard_protocol::Response`]: ../protocol
 [`libsy-proxy`]: ../libsy-proxy
 [`Backend`]: src/backend.rs
 [`HttpBackendConfig`]: src/backend.rs
