@@ -224,3 +224,70 @@ pub(super) fn file_source_text(source: &FileSource) -> String {
         FileSource::Raw(raw) => json_string(raw),
     }
 }
+
+// Normalize common Chat/Responses video extensions before judge construction or translation.
+pub(super) fn decode_video_source(block: &Map<String, Value>) -> MediaSource {
+    if let Some(source) = block.get("source") {
+        let media_type = source
+            .get("media_type")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if let Some(url) = source.get("url").and_then(Value::as_str) {
+            return MediaSource::Url {
+                url: url.to_owned(),
+                media_type,
+            };
+        }
+        if let Some(data) = source.get("data").and_then(Value::as_str) {
+            return MediaSource::Base64 {
+                data: data.to_owned(),
+                media_type,
+            };
+        }
+    }
+    let payload = block
+        .get("file")
+        .and_then(Value::as_object)
+        .unwrap_or(block);
+    let url = block
+        .get("video_url")
+        .and_then(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("url").and_then(Value::as_str))
+        })
+        .or_else(|| payload.get("file_data").and_then(Value::as_str))
+        .or_else(|| payload.get("file_id").and_then(Value::as_str));
+    if let Some(url) = url {
+        return MediaSource::Url {
+            url: url.to_owned(),
+            media_type: payload
+                .get("format")
+                .or_else(|| block.get("media_type"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+    }
+    if let Some(video) = block.get("video")
+        && let Some(data) = video.get("data").and_then(Value::as_str)
+    {
+        return MediaSource::Base64 {
+            data: data.to_owned(),
+            media_type: video
+                .get("media_type")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+    }
+    MediaSource::Raw(Value::Object(block.clone()))
+}
+
+pub(super) fn video_part(source: &MediaSource) -> Value {
+    match source {
+        MediaSource::Url { url, .. } => json!({"type":"video_url", "video_url":{"url":url}}),
+        MediaSource::Base64 { media_type, data } => {
+            json!({"type":"video_url", "video_url":{"url":format!("data:{};base64,{data}", media_type.as_deref().unwrap_or("video/mp4"))}})
+        }
+        MediaSource::Raw(raw) => raw.clone(),
+    }
+}
