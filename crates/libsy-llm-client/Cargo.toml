@@ -18,6 +18,7 @@ publish = ["crates-io"]
 
 [dependencies]
 switchyard-libsy.workspace = true
+switchyard-media.workspace = true
 switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
 reqwest.workspace = true

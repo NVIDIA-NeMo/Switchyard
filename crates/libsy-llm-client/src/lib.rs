@@ -41,6 +41,7 @@ pub use openai_decisions::OpenAiDecisionClient;
 pub use payload_capture::with_payload_capture;
 pub use responses_reasoning::ResponsesReasoningPolicy;
 pub use run::{ClientRouter, decide, run};
+pub use switchyard_media::{MediaConfig, VideoMode};
 pub use switchyard_translation::RawEventStream;
 pub use system_one::SystemOneClient;
 
