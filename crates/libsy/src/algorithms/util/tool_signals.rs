@@ -298,17 +298,6 @@ pub struct ToolSignals {
     pub severity: f32,
     /// Consecutive clean tool results back from the most recent. `0` if the last failed.
     pub no_error_streak: u32,
-    /// Tool results in the whole request whose text matched an error pattern.
-    ///
-    /// Unwindowed, unlike [`ToolSignals::severity`]: a veto that asks "did
-    /// anything fail during this task" must see errors the recent window has
-    /// already decayed out of. This is derived from the conversation the client
-    /// supplied; each consumer decides whether that transcript is trusted.
-    pub error_count: u32,
-    /// Total normalized tool results in the conversation.
-    pub tool_results: u32,
-    /// Whether the final normalized tool result was free of known error patterns.
-    pub tool_tail_clean: bool,
     /// Total edit-style tool calls in the request.
     pub edit_count: u32,
     /// Total write-style tool calls in the request.
@@ -510,9 +499,6 @@ fn extract_tool_signals_with_window_and_semantics(
     let messages = &request.llm_request.messages;
     let mut tool_texts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    let mut tool_results = 0u32;
-    let mut tool_tail_clean = false;
-    let mut error_count = 0u32;
     let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
@@ -532,33 +518,12 @@ fn extract_tool_signals_with_window_and_semantics(
                 ContentBlock::ToolResult(result) => {
                     // Before the empty-text filter: empty results still count.
                     tool_result_count += 1;
-                    tool_results = tool_results.saturating_add(1);
                     let text = result
                         .content
                         .iter()
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    // A structured body reporting `exit_code: 0` has already said
-                    // the command succeeded, and that is the one field here with real
-                    // authority: the executor's own verdict. Nothing else in the
-                    // result may overrule it.
-                    //
-                    // Hermes sends `"error": null` on every success, so key presence
-                    // flagged clean calls; error-shaped output text (`cat` proving a
-                    // path is absent, `grep` finding nothing) did the same. Neither
-                    // survives a self-declared exit 0.
-                    //
-                    // When no `exit_code` is present -- plain-text results, or a
-                    // harness that does not send one -- `exit_ok` is false and every
-                    // term behaves exactly as before.
-                    let exit_ok = exit_code_of(&text) == Some(0);
-                    let is_error = (result.is_error == Some(true)
-                        || structured_error(&text)
-                        || classify_text(&text).0 > 0.0)
-                        && !exit_ok;
-                    tool_tail_clean = !is_error;
-                    error_count = error_count.saturating_add(u32::from(is_error));
                     if !text.is_empty() {
                         tool_texts.push(text);
                     }
@@ -581,9 +546,6 @@ fn extract_tool_signals_with_window_and_semantics(
         recent_window,
         semantics,
     );
-    signal.error_count = error_count;
-    signal.tool_results = tool_results;
-    signal.tool_tail_clean = tool_tail_clean;
     signal.compacted = compacted;
     signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
     signal.assistant_turn_count = u32::try_from(assistant_turn_count).unwrap_or(u32::MAX);
@@ -721,9 +683,6 @@ fn build_signal(
     ToolSignals {
         severity,
         no_error_streak,
-        error_count: 0,
-        tool_results: 0,
-        tool_tail_clean: false,
         edit_count,
         write_count,
         read_count,
@@ -786,22 +745,6 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
         }
     }
     (severity, patterns)
-}
-
-/// The `exit_code` a structured tool-result body reports, when it has one.
-fn exit_code_of(text: &str) -> Option<i64> {
-    serde_json::from_str::<Value>(text)
-        .ok()?
-        .as_object()?
-        .get("exit_code")?
-        .as_i64()
-}
-
-fn structured_error(text: &str) -> bool {
-    serde_json::from_str::<Value>(text)
-        .ok()
-        .and_then(|value| value.as_object().map(|object| object.contains_key("error")))
-        .unwrap_or(false)
 }
 
 fn compute_no_error_streak(tool_texts: &[String]) -> u32 {
@@ -917,14 +860,6 @@ mod tests {
                 is_error: None,
             })],
         }
-    }
-
-    fn tr_with_error_status(text: &str) -> Message {
-        let mut message = tr(text);
-        if let ContentBlock::ToolResult(result) = &mut message.content[0] {
-            result.is_error = Some(true);
-        }
-        message
     }
 
     #[test]
@@ -1043,52 +978,6 @@ mod tests {
         let sig = ToolSignals::from_request(&request, None);
         assert_eq!(sig.severity, 0.0);
         assert_eq!(sig.write_count, 1);
-    }
-
-    #[test]
-    fn a_zero_exit_code_overrules_every_error_inference() {
-        // The executor's own verdict wins. Hermes sends `"error": null` on
-        // success, and a deliberate negative check puts error-shaped text in
-        // the output of a command that succeeded; neither is a failure.
-        let request = with_messages(vec![
-            tr(r#"{"output": "on branch master", "exit_code": 0, "error": null}"#),
-            tr(r#"{"output": "cat: HEAD: No such file or directory", "exit_code": 0, "error": null}"#),
-        ]);
-        let sig = ToolSignals::from_request(&request, None);
-        assert_eq!(sig.error_count, 0);
-        assert!(sig.tool_tail_clean);
-
-        // A non-zero exit still counts, whichever term reports it.
-        let request = with_messages(vec![
-            tr(r#"{"output": "node: not found", "exit_code": 1, "error": null}"#),
-            tr(r#"{"output": "boom", "exit_code": 127, "error": "spawn failed"}"#),
-        ]);
-        let sig = ToolSignals::from_request(&request, None);
-        assert_eq!(sig.error_count, 2);
-        assert!(!sig.tool_tail_clean);
-
-        // Without an `exit_code` the gate is inert and every term behaves as
-        // before: a structured error body and error-shaped text both count.
-        let request = with_messages(vec![
-            tr(r#"{"error": "record not found"}"#),
-            tr("Traceback (most recent call last):\n  ValueError"),
-            tr("done"),
-        ]);
-        let sig = ToolSignals::from_request(&request, None);
-        assert_eq!(sig.error_count, 2);
-        assert!(sig.tool_tail_clean);
-    }
-
-    #[test]
-    fn structured_tool_errors_contribute_to_the_execution_summary() {
-        let request = with_messages(vec![
-            tr(r#"{"error":"record not found"}"#),
-            tr_with_error_status("request failed"),
-            tr("recovered"),
-        ]);
-        let sig = ToolSignals::from_request(&request, None);
-        assert_eq!(sig.error_count, 2);
-        assert!(sig.tool_tail_clean);
     }
 
     #[test]
