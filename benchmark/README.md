@@ -368,6 +368,24 @@ pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
   --ae OPENAI_API_KEY=unused
 ```
 
+The qualified stage-router profile (GPT-5.6 Luna efficient tier, GPT-5.6 Sol capable tier) solved
+76/113 tasks (67.3% strict) on the full closed-book benchmark. Its routing policy is published
+with OpenRouter provider settings so the file runs as-is with `OPENROUTER_API_KEY`. The header
+records the Switchyard commit, model ids, harness inputs, run id, and the one crashed task. The
+profile's public route id is `gpt-5.6-luna`, matching the qualification run:
+
+```bash
+export OPENROUTER_API_KEY="..."
+switchyard-server \
+  --config benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml \
+  --host 0.0.0.0 --port 443
+
+pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
+  --model openai/gpt-5.6-luna \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
 Smoke subset:
 
 ```bash
