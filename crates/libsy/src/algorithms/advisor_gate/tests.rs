@@ -10,8 +10,8 @@ use switchyard_protocol::{ResponseOutput, ToolCall, ToolResult, completion_text}
 
 use futures::StreamExt;
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, ModelId,
-    Response, StopReason,
+    AggLlmResponse, ContentBlock, LlmClientError, LlmResponse, LlmResponseChunk,
+    LlmResponseStreamEvent, ModelId, OpenAiChatReasoningField, Response, StopReason,
 };
 
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
@@ -127,6 +127,7 @@ fn reasoning_only_turn() -> Response {
                     text: "thinking about it".to_string(),
                     signature: None,
                     details: Vec::new(),
+                    openai_chat_field: OpenAiChatReasoningField::default(),
                 }],
                 url_citations: Vec::new(),
                 stop_reason: None,

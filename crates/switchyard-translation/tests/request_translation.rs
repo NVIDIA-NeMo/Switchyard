@@ -4048,3 +4048,83 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
     assert_eq!(output["input"], outputs);
     Ok(())
 }
+
+#[test]
+fn chat_request_rebuild_preserves_reasoning_field_spelling() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for field in ["reasoning_content", "reasoning"] {
+        let mut assistant = serde_json::Map::new();
+        assistant.insert("role".to_string(), json!("assistant"));
+        assistant.insert("content".to_string(), json!("Visible answer"));
+        assistant.insert(field.to_string(), json!("Historical reasoning"));
+        let body = json!({
+            "model": "route",
+            "messages": [
+                {"role": "user", "content": "Hi"},
+                Value::Object(assistant),
+            ],
+        });
+        let output = engine
+            .translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::OpenAiChat,
+                &body,
+                &policy,
+            )?
+            .body;
+        let rebuilt = &output["messages"][1];
+        assert_eq!(
+            rebuilt[field],
+            json!("Historical reasoning"),
+            "rebuilt request must replay reasoning under the source spelling"
+        );
+        let other = if field == "reasoning" {
+            "reasoning_content"
+        } else {
+            "reasoning"
+        };
+        assert!(
+            rebuilt.get(other).is_none(),
+            "rebuilt request must not duplicate reasoning under both spellings"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn chat_request_rebuild_uses_default_reasoning_spelling_for_foreign_reasoning() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({
+        "model": "route",
+        "messages": [
+            {"role": "user", "content": "Hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Fresh reasoning"},
+                    {"type": "text", "text": "Visible answer"},
+                ],
+            },
+        ],
+    });
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?
+        .body;
+    let rebuilt = &output["messages"][1];
+    assert!(
+        rebuilt.get("reasoning").is_some(),
+        "reasoning from another format keeps the historical default spelling"
+    );
+    assert!(
+        rebuilt.get("reasoning_content").is_none(),
+        "rebuilt request must not emit both spellings"
+    );
+    Ok(())
+}

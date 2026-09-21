@@ -400,7 +400,9 @@ mod tests {
     use futures::StreamExt;
     use http::StatusCode;
     use serde::Deserialize;
-    use switchyard_protocol::{ContentBlock, LlmClientError, text_request, text_response};
+    use switchyard_protocol::{
+        ContentBlock, LlmClientError, OpenAiChatReasoningField, text_request, text_response,
+    };
 
     use crate::core::algorithm::Step;
     use crate::core::classifier::Score;
@@ -477,6 +479,7 @@ mod tests {
                     text: r#"{"ok":false}"#.to_string(),
                     signature: None,
                     details: Vec::new(),
+                    openai_chat_field: OpenAiChatReasoningField::default(),
                 },
             );
         }

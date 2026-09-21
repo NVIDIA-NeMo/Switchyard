@@ -17,7 +17,10 @@ use thiserror::Error;
 use crate::{
     LlmClientError,
     format::FormatId,
-    llm::{AggLlmResponse, ContentBlock, ResponseOutput, Role, StopReason, ToolCall, Usage},
+    llm::{
+        AggLlmResponse, ContentBlock, OpenAiChatReasoningField, ResponseOutput, Role, StopReason,
+        ToolCall, Usage,
+    },
 };
 
 /// Status reported for an upstream error delivered inside a streaming body. The
@@ -464,6 +467,9 @@ impl ResponseAccumulator {
                     .into_iter()
                     .filter(|detail| !is_reasoning_id_announcement(detail))
                     .collect(),
+                // Streamed reasoning aggregates response deltas; the Chat
+                // response encoder always writes `reasoning_content`.
+                openai_chat_field: OpenAiChatReasoningField::default(),
             });
         }
         if !self.text.is_empty() {
@@ -685,6 +691,7 @@ mod tests {
                     text: "think".to_string(),
                     signature: None,
                     details: Vec::new(),
+                    openai_chat_field: OpenAiChatReasoningField::default(),
                 },
                 ContentBlock::Text {
                     text: "answer".to_string(),
@@ -737,6 +744,7 @@ mod tests {
                     text: "fallback reasoning".to_string(),
                     signature: None,
                     details: details.clone(),
+                    openai_chat_field: OpenAiChatReasoningField::default(),
                 }],
                 url_citations: Vec::new(),
                 stop_reason: Some(StopReason::EndTurn),
