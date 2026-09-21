@@ -27,7 +27,6 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "please reduce the length of the input",
     "exceeds the maximum allowed input length",
     "exceeds the maximum allowed length",
-    "exceeds the available context size",
     "is longer than the model's context length",
 ];
 
@@ -135,10 +134,6 @@ impl Backend {
             | Backend::OpenAiResponses(config)
             | Backend::Anthropic(config) => config,
         }
-    }
-
-    pub(crate) fn base_url(&self) -> &str {
-        &self.config().base_url
     }
 
     /// The fully resolved upstream URL for this backend's endpoint.
