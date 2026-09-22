@@ -128,7 +128,7 @@ export NEMO_GYM_LITELLM_RESULTS="$RESULTS_DIR"
 echo "Starting LiteLLM at $ROOT_URL; see $RESULTS_DIR/litellm.log"
 PYTHONPATH="$SCRIPT_DIR:$SWITCHYARD_ROOT/examples/litellm/src${PYTHONPATH:+:$PYTHONPATH}" \
     uv run --project "$SWITCHYARD_ROOT/examples/litellm" --locked \
-    --with 'litellm[proxy]==1.97.0' --with 'fastapi==0.136.3' --with 'starlette==1.3.1' \
+    --with 'litellm[proxy]==1.102.0' --with 'fastapi==0.136.3' --with 'starlette==1.3.1' \
     litellm --config "$PROFILE" --host 127.0.0.1 --port "$PORT" --num_workers 1 \
     >"$RESULTS_DIR/litellm.log" 2>&1 &
 PROXY_PID=$!

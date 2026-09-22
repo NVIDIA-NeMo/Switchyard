@@ -20,7 +20,7 @@ RUN /opt/maturin/bin/maturin build \
 
 FROM ghcr.io/astral-sh/uv:0.8.15 AS uv
 
-FROM ghcr.io/berriai/litellm:v1.97.0
+FROM ghcr.io/berriai/litellm:v1.102.0
 
 COPY --from=uv /uv /usr/local/bin/uv
 RUN --mount=type=bind,from=switchyard-builder,source=/wheels,target=/wheels \
@@ -32,7 +32,7 @@ ENV PYTHONPATH=/app/switchyard-plugin/src
 RUN python -c "from importlib.metadata import version; \
 from switchyard.libsy import algorithms; \
 from switchyard_litellm import SwitchyardRoutingPlugin; \
-assert version('litellm') == '1.97.0'; \
+assert version('litellm') == '1.102.0'; \
 SwitchyardRoutingPlugin(algorithms.random())"
 
 RUN addgroup -S -g 10001 litellm \
