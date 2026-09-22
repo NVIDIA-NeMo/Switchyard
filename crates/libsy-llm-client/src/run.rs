@@ -719,8 +719,14 @@ impl ClientRouter {
                             .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                     }
                 } else if let Some(input) = &canonical_input {
-                    self.remember_canonical_response(&agg, &model, store, input)
-                        .map_err(|error| LibsyError::client_call(model.clone(), error))?;
+                    self.remember_canonical_response(
+                        &agg,
+                        &model,
+                        store,
+                        input,
+                        conversation.as_deref(),
+                    )
+                    .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                 }
                 LlmResponse::Agg(agg)
             }
@@ -757,6 +763,7 @@ impl ClientRouter {
                                     &model,
                                     store,
                                     input,
+                                    conversation.as_deref(),
                                 )?;
                             }
                             return Ok(None);
@@ -842,6 +849,7 @@ impl ClientRouter {
         model: &ModelId,
         store: bool,
         input: &CanonicalInput,
+        conversation: Option<&str>,
     ) -> std::result::Result<(), LlmClientError> {
         let response_id = response.id.as_deref().filter(|_| store);
         if response_id.is_none() {
@@ -856,11 +864,12 @@ impl ClientRouter {
             input.parent.clone(),
             Arc::from(segment),
         ));
-        let result =
-            self.inner
-                .state_owners
-                .lock()
-                .remember(response_id, None, model, Some(history));
+        let result = self.inner.state_owners.lock().remember(
+            response_id,
+            conversation,
+            model,
+            Some(history),
+        );
         if let Err(error) = result {
             if matches!(error, LlmClientError::ResponseStateLimitExceeded { .. }) {
                 tracing::warn!(%error, "cross-format Responses state capacity reached; history was not retained");
@@ -1280,6 +1289,96 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cross_format_conversation_lookup_finds_canonical_history() -> Result<()> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|_request: &wiremock::Request| {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "chatcmpl_seed", "object": "chat.completion", "model": "weak",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "seed answer"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(
+            TranslatingLlmClient::new(&[ModelConfig::new(
+                "weak",
+                Backend::OpenAiChat(HttpBackendConfig {
+                    base_url: server.uri(),
+                    api_key: None,
+                    forward_auth: false,
+                    extra_headers: BTreeMap::new(),
+                    extra_body: BTreeMap::new(),
+                    reasoning_effort: None,
+                    max_retries: 0,
+                    timeout: None,
+                }),
+                None,
+            )])
+            .map_err(|error| LibsyError::external("building test client", error))?,
+        );
+        let clients = ClientRouter::new(HashMap::from([(ModelId::from("weak"), client)]));
+        let models = to_category_map(&["weak"]);
+
+        let mut seed = Request {
+            llm_request: switchyard_translation::decode_request(
+                WireFormat::OpenAiResponses,
+                &json!({"model": "route", "input": "SEED", "store": true}),
+            )
+            .map_err(|error| LibsyError::external("decoding seed request", error))?,
+            raw_request: None,
+            metadata: None,
+        };
+        seed.llm_request
+            .extensions
+            .fields
+            .insert("conversation".to_string(), json!("conv_1"));
+
+        let (_, response) = run(
+            Arc::new(switchyard_libsy::Passthrough),
+            clients.clone(),
+            seed,
+            models,
+            None,
+        )
+        .await?;
+        response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|error| LibsyError::client_call("weak", error))?;
+
+        let mut probe = Request {
+            llm_request: switchyard_translation::decode_request(
+                WireFormat::OpenAiResponses,
+                &json!({"model": "route", "input": "RECALL"}),
+            )
+            .map_err(|error| LibsyError::external("decoding continuation request", error))?,
+            raw_request: None,
+            metadata: None,
+        };
+        probe
+            .llm_request
+            .extensions
+            .fields
+            .insert("conversation".to_string(), json!("conv_1"));
+
+        let owner = clients
+            .stored_state_owner(&probe)
+            .expect("conversation id finds the recorded canonical history");
+        assert_eq!(owner.trigger, "conversation");
+        let history = owner.history.expect("materialized canonical history");
+        assert_eq!(history.segment.len(), 2);
         Ok(())
     }
 
