@@ -1213,6 +1213,9 @@ mod tests {
                         reasoning_effort: None,
                         max_retries: 0,
                         timeout: None,
+                        max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
+                        max_error_body_bytes: crate::DEFAULT_MAX_ERROR_BODY_BYTES,
+                        max_stream_event_bytes: crate::DEFAULT_MAX_STREAM_EVENT_BYTES,
                     };
                     let backend = if responses {
                         Backend::OpenAiResponses(config)
@@ -1358,6 +1361,9 @@ mod tests {
                     reasoning_effort: None,
                     max_retries: 0,
                     timeout: None,
+                    max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
+                    max_error_body_bytes: crate::DEFAULT_MAX_ERROR_BODY_BYTES,
+                    max_stream_event_bytes: crate::DEFAULT_MAX_STREAM_EVENT_BYTES,
                 }),
                 None,
             )])
@@ -2029,6 +2035,9 @@ mod tests {
                 reasoning_effort: None,
                 max_retries: 2,
                 timeout: None,
+                max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
+                max_error_body_bytes: crate::DEFAULT_MAX_ERROR_BODY_BYTES,
+                max_stream_event_bytes: crate::DEFAULT_MAX_STREAM_EVENT_BYTES,
             })
         };
         let client = Arc::new(
@@ -2127,6 +2136,9 @@ mod tests {
                 reasoning_effort: None,
                 max_retries: 0,
                 timeout: None,
+                max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
+                max_error_body_bytes: crate::DEFAULT_MAX_ERROR_BODY_BYTES,
+                max_stream_event_bytes: crate::DEFAULT_MAX_STREAM_EVENT_BYTES,
             })
         };
         let client = Arc::new(

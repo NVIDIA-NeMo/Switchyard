@@ -1308,6 +1308,12 @@ fn client_error(error: &LlmClientError) -> Response {
             "context_length_exceeded",
         ),
         LlmClientError::UpstreamHttp { status, body } => upstream_error(*status, body),
+        LlmClientError::UpstreamResponseTooLarge { .. } => error_response(
+            StatusCode::BAD_GATEWAY,
+            error.to_string(),
+            "upstream_error",
+            "upstream_response_too_large",
+        ),
         LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
             error_response(
                 StatusCode::BAD_GATEWAY,

@@ -97,6 +97,13 @@ pub enum LlmClientError {
         body: String,
     },
 
+    /// The upstream response exceeded its configured in-memory size limit.
+    #[error("upstream response exceeded the configured limit of {limit} bytes")]
+    UpstreamResponseTooLarge {
+        /// Maximum number of bytes accepted for this response or stream event.
+        limit: usize,
+    },
+
     /// The upstream returned a response the client could not decode.
     #[error("invalid upstream response: {source}")]
     InvalidResponse {

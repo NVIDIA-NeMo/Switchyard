@@ -19,6 +19,8 @@ use crate::RunnerError;
 pub enum RouteErrorKind {
     /// The upstream returned a non-success HTTP response.
     UpstreamHttp,
+    /// The upstream response exceeded its configured in-memory size limit.
+    UpstreamResponseTooLarge,
     /// The selected target rejected the request because its context window was exceeded.
     ContextWindowExceeded,
     /// The upstream request timed out.
@@ -141,6 +143,9 @@ fn client_error_summary(
         LlmClientError::UpstreamHttp { status, .. } => {
             (RouteErrorKind::UpstreamHttp, Some(status.as_u16()))
         }
+        LlmClientError::UpstreamResponseTooLarge { .. } => {
+            (RouteErrorKind::UpstreamResponseTooLarge, None)
+        }
         LlmClientError::ContextWindowExceeded { .. } => {
             (RouteErrorKind::ContextWindowExceeded, None)
         }
@@ -248,6 +253,10 @@ mod tests {
     #[test]
     fn client_error_kinds_have_stable_telemetry_values() {
         let cases = vec![
+            (
+                LlmClientError::UpstreamResponseTooLarge { limit: 1024 },
+                "upstream_response_too_large",
+            ),
             (
                 LlmClientError::ContextWindowExceeded {
                     model: ModelId::from("weak"),

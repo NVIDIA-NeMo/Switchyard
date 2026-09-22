@@ -53,6 +53,9 @@ pub(crate) fn safe_error_summary(error: &LibsyError) -> String {
 pub(crate) fn safe_client_error(error: &LlmClientError) -> String {
     match error {
         LlmClientError::UpstreamHttp { status, .. } => format!("upstream HTTP {status}"),
+        LlmClientError::UpstreamResponseTooLarge { .. } => {
+            "upstream response exceeded its size limit".to_string()
+        }
         LlmClientError::ContextWindowExceeded { model, .. } => {
             format!("context window exceeded for model {model}")
         }
