@@ -93,7 +93,8 @@ before the router will switch off the picker's default tier. Clear it and the
 router routes to the tier the signals indicate; fall short and the turn stays on
 the default.
 
-With the default `capable_first` picker, every turn starts on the capable tier
+The TOML schema requires you to choose `picker` explicitly; there is no implicit
+default. With the `capable_first` picker, every turn starts on the capable tier
 and only drops to the efficient tier when the signals say "efficient" and clear
 the threshold. So the threshold sets how much evidence it takes to switch to the
 cheaper tier:
@@ -117,7 +118,11 @@ staying on the default tier.)
 | `0.0` | no | Cost/latency-sensitive. Every signal-based verdict is accepted; no per-turn LLM call. Critical-error signals still escalate to capable. |
 | `0.5` | no | Recommended starting point. The scorer is corroborative — one full wrong signal scores ~`0.46`, just under `0.5` — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration. |
 | `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. |
-| `1.0` | yes (required) | Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier. |
+| `1.0` | yes (for classifier-driven behavior) | Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier. |
+
+A route with a `1.0` threshold remains valid without a classifier. In that case,
+ordinary sub-threshold turns fall back to the picker's default tier; hard
+overrides and capable-hold behavior still apply.
 
 The signal-vs-classifier split is dataset-dependent. Measure it in
 production: `/v1/stats` reports stage-router decisions by source and semantic
@@ -297,7 +302,8 @@ and can cause sustained 429s at scale.
 
 ## Observability
 
-Each response carries two routing headers:
+When a model serves the request, the response identifies it with this routing
+header:
 
 | Header | Content |
 |---|---|
