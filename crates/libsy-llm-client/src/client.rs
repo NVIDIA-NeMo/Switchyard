@@ -158,6 +158,21 @@ impl TranslatingLlmClient {
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
         for config in model_configs {
+            if config.reasoning_format.is_some()
+                && !matches!(config.default_backend, Backend::OpenAiChat(_))
+                && !config
+                    .other_backends
+                    .iter()
+                    .flatten()
+                    .any(|backend| matches!(backend, Backend::OpenAiChat(_)))
+            {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {} reasoning_format requires an OpenAI Chat backend",
+                        config.model_name
+                    ),
+                });
+            }
             config
                 .default_backend
                 .validate_extra_headers(&config.model_name)?;
@@ -1188,6 +1203,9 @@ fn apply_reasoning_format(body: &mut Value, reasoning_format: ReasoningFormat) {
         let Some(message) = message.as_object_mut() else {
             continue;
         };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
         let Some(value) = message.remove(other_field) else {
             continue;
         };
@@ -2924,6 +2942,53 @@ mod tests {
             LlmClientError::RequestTranslation(message) if !message.is_empty()
         ));
         Ok(())
+    }
+
+    // A configured dialect must have a reachable Chat backend, including fallbacks.
+    #[test]
+    fn reasoning_format_requires_a_chat_backend() -> std::result::Result<(), Box<dyn Error>> {
+        for backend in [
+            Backend::Anthropic(config("https://example.com")),
+            Backend::OpenAiResponses(config("https://example.com")),
+        ] {
+            let model = ModelConfig::new("gpt", backend.clone(), None);
+            TranslatingLlmClient::new(std::slice::from_ref(&model))?;
+            let result =
+                TranslatingLlmClient::new(
+                    &[model.with_reasoning_format(ReasoningFormat::Deepseek)],
+                );
+            assert!(matches!(result, Err(LlmClientError::Configuration { .. })));
+
+            let mixed = ModelConfig::new(
+                "gpt",
+                backend,
+                Some(vec![Backend::OpenAiChat(config("https://example.com"))]),
+            )
+            .with_reasoning_format(ReasoningFormat::Deepseek);
+            let client = TranslatingLlmClient::new(&[mixed])?;
+            assert!(
+                client
+                    .backend_for(&ModelId::from("gpt"), WireFormat::OpenAiChat)
+                    .is_some()
+            );
+        }
+        Ok(())
+    }
+
+    // Provider extension fields on other message roles must survive normalization.
+    #[test]
+    fn reasoning_format_preserves_non_assistant_messages() {
+        let untouched = json!([
+            {"role": "user", "reasoning": "user extension", "reasoning_content": "keep"},
+            {"role": "system", "reasoning_content": "system extension"},
+            {"role": "tool", "reasoning": "tool extension"},
+            {"reasoning_content": "unknown role"},
+        ]);
+        for format in [ReasoningFormat::OpenAi, ReasoningFormat::Deepseek] {
+            let mut body = json!({"messages": untouched.clone()});
+            apply_reasoning_format(&mut body, format);
+            assert_eq!(body["messages"], untouched);
+        }
     }
 
     // Raw path, buffered: decode an OpenAI Chat body -> call -> encode back to OpenAI
