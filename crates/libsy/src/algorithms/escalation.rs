@@ -41,20 +41,6 @@ fn category(state: &State) -> Option<&str> {
     }
 }
 
-fn bounded_reason(reason: &str) -> String {
-    reason
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .take(240)
-        .collect()
-}
-
 fn assistant_message(response: &AggLlmResponse) -> Message {
     Message {
         role: Role::Assistant,
@@ -167,7 +153,16 @@ impl Classifier<State> for EscalationClassifier {
             .messages
             .push(assistant_message(&efficient_response.agg));
 
-        let verdict = self.judge.verdict(state, &judge_request, driver).await;
+        let judge_models = driver.models_for(&Category::Judge);
+        if judge_models.is_empty() {
+            return Err(LibsyError::AlgorithmError {
+                message: "no models available for category Judge".to_string(),
+            });
+        }
+        let verdict = self
+            .judge
+            .verdict(state, &judge_request, driver, judge_models)
+            .await;
 
         let held = streak(state);
         let held_category = category(state).map(str::to_string);
@@ -178,7 +173,6 @@ impl Classifier<State> for EscalationClassifier {
                     escalate = verdict.escalate,
                     category,
                     new_evidence = verdict.new_evidence,
-                    reason = %bounded_reason(&verdict.reason),
                     "escalation judge verdict"
                 );
                 if verdict.escalate
@@ -445,19 +439,22 @@ mod tests {
         let router = escalation_router_with_confirmations(2)?;
         let request = classify_session_request();
 
-        let (first, _) = test_drive(
+        let (first, _) = test_drive_with_models(
             router.clone(),
             request.clone(),
+            runtime_models(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (second, _) = test_drive(
+        let (second, _) = test_drive_with_models(
             router.clone(),
             request.clone(),
+            runtime_models(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (third, _) = test_drive(router, request, queued(model, judge)).await?;
+        let (third, _) =
+            test_drive_with_models(router, request, runtime_models(), queued(model, judge)).await?;
 
         assert_eq!(first, "efficient");
         assert_eq!(second, "efficient");
@@ -477,9 +474,10 @@ mod tests {
         let request = classify_session_request();
 
         for _ in 0..3 {
-            let (selected, _) = test_drive(
+            let (selected, _) = test_drive_with_models(
                 router.clone(),
                 request.clone(),
+                runtime_models(),
                 queued(Arc::clone(&model), Arc::clone(&judge)),
             )
             .await?;
@@ -499,19 +497,22 @@ mod tests {
         let router = escalation_router_with_confirmations(2)?;
         let request = classify_session_request();
 
-        let (first, _) = test_drive(
+        let (first, _) = test_drive_with_models(
             router.clone(),
             request.clone(),
+            runtime_models(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (second, _) = test_drive(
+        let (second, _) = test_drive_with_models(
             router.clone(),
             request.clone(),
+            runtime_models(),
             queued(Arc::clone(&model), Arc::clone(&judge)),
         )
         .await?;
-        let (third, _) = test_drive(router, request, queued(model, judge)).await?;
+        let (third, _) =
+            test_drive_with_models(router, request, runtime_models(), queued(model, judge)).await?;
 
         assert_eq!(first, "efficient");
         assert_eq!(second, "efficient");

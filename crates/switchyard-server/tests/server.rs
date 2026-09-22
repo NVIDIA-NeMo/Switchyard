@@ -599,7 +599,12 @@ async fn upstream_responses_silo(
             .get("escalate")
             .is_some()
         {
-            json!({"escalate": strong, "reason": "state probe"})
+            json!({
+                "escalate": strong,
+                "category": if strong { "capability_gap" } else { "none" },
+                "new_evidence": strong,
+                "reason": "state probe",
+            })
         } else {
             json!({
                 "crux": "state probe", "primary_rule": if strong { "LIM-1" } else { "SUP-1" },
