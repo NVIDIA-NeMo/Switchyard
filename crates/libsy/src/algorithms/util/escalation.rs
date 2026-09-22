@@ -379,7 +379,7 @@ fn summarize_for_judge(
 
     for instruction in instructions {
         let mut parts = Vec::new();
-        collect_text(&instruction.content, &mut parts);
+        collect_text(&instruction.content, &mut parts, &[]);
         instruction_anchors.push(format!(
             "[{}] {}",
             role_label(instruction.role),

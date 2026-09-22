@@ -202,6 +202,13 @@ Focused regression coverage includes exact and multi-command transcript normaliz
 multiplicity mismatches, category changes, stale evidence, unavailable-judge behavior, and the
 one-way latch.
 
+After rebasing onto current `main` on 2026-09-22, the review fixes were revalidated with Rust
+1.96.1 and Python 3.12 using `cargo fmt --all --check`, workspace clippy with all targets and
+features, and workspace tests with all features. The full Rust gate passed, including 323 `libsy`
+tests and all 56 server integration tests. This post-rebase run caught and fixed stale call
+signatures and mock verdicts that still used the pre-rebase runtime interfaces and escalation
+schema.
+
 No live provider calls are made by the repository validation commands. The live SWE-Atlas checks
 described above were separate, explicitly configured benchmark runs.
 
