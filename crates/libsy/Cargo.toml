@@ -47,7 +47,8 @@ tokio.workspace = true
 tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
 wasm-bindgen-futures = "0.4"
 web-time = "1"
-# Route the transitive RNG through the JS crypto API on wasm targets.
+# Route the transitive RNG through the JS crypto API on wasm targets. Both
+# majors are in the tree: `jsonschema`/`ahash` pull 0.3, `rand` 0.10 pulls 0.4.
 getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
 getrandom-04 = { package = "getrandom", version = "0.4", default-features = false, features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
