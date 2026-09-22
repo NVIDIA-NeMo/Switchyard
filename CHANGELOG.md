@@ -4,9 +4,7 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-## [0.3.0] — Draft
+## [0.3.0]
 
 Switchyard 0.3.0 builds on the native server and Rust library introduced in
 0.2.0. It adds reusable integration paths, Advisor Gate and Composite routing,
@@ -14,9 +12,7 @@ and a simpler Auto preset. It also updates the embedding API and removes the
 legacy Python server and launchers. **This is a breaking upgrade for library
 and Python CLI users.**
 
-This draft covers the remote `v0.2.0` tag (`1fc9ab88`) through `main` at
-`107f7985` on September 22, 2026. It does not indicate final QA approval or
-package publication. See the [v0.3.0 release notes](docs/releases/v0.3.0.md)
+See the [v0.3.0 release notes](docs/releases/v0.3.0.md)
 for highlights, migration guidance, and limitations, or the
 [complete comparison](https://github.com/NVIDIA-NeMo/Switchyard/compare/v0.2.0...107f79853395b89eea26620cad7ca63a80b13ea0).
 
