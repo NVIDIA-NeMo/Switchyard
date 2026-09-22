@@ -271,6 +271,7 @@ where
     decode_stream_inner(bytes, source, Some(max_event_bytes))
 }
 
+// Reassembles SSE frames from arbitrary byte chunks and optionally bounds each frame.
 fn decode_stream_inner<S>(
     bytes: S,
     source: WireFormat,
@@ -378,6 +379,7 @@ where
     Ok(stream)
 }
 
+// Appends bytes only when the current frame remains within its configured limit.
 fn append_sse_bytes(
     frame: &mut Vec<u8>,
     bytes: &[u8],
@@ -392,6 +394,7 @@ fn append_sse_bytes(
     Ok(())
 }
 
+// Validates frame UTF-8 before handing its fields to the shared SSE parser.
 fn parse_sse_frame(
     frame: &[u8],
     marker: Option<&str>,

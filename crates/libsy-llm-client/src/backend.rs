@@ -179,6 +179,7 @@ impl Backend {
         Ok(())
     }
 
+    // Rejects zero-valued response limits before the client can send a request.
     pub(crate) fn validate_response_limits(&self, model_name: &str) -> Result<()> {
         for (name, value) in [
             ("max_response_bytes", self.max_response_bytes()),

@@ -71,9 +71,12 @@ server sends a framed error and ends the stream without a success marker.
 
 The response limits bound memory used for one upstream result. Streaming calls
 apply `max_stream_event_bytes` to each SSE event as it arrives, so a long stream
-of smaller events remains valid. A buffered response or event above its limit
-fails with `502`. Non-success responses keep at most `max_error_body_bytes` and
-include a truncation marker when the upstream sent more.
+of smaller events remains valid. A buffered response or first streamed event
+above its limit fails with `502`. If a later event exceeds the limit after the
+response has started, the server ends the stream with an inline error under the
+already-committed status. Non-success responses keep at most
+`max_error_body_bytes` and include a truncation marker when the upstream sent
+more.
 
 The Rust runner collects streams used during routing before the algorithm
 continues, preserving provider events for replay. After the configured retries,

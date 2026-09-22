@@ -817,6 +817,7 @@ async fn prepare_response_stream(
     }
 }
 
+// Collects a success body and rejects it before cumulative bytes exceed `limit`.
 async fn read_response_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
     let mut body = Vec::with_capacity(
         response
@@ -836,6 +837,7 @@ async fn read_response_body(response: reqwest::Response, limit: usize) -> Result
     Ok(body)
 }
 
+// Retains at most `limit` error bytes and removes a trailing partial UTF-8 codepoint.
 async fn read_error_body(response: reqwest::Response, limit: usize) -> Result<(String, bool)> {
     let mut body = Vec::with_capacity(
         response
