@@ -5,12 +5,16 @@ import pytest
 from litellm.responses.litellm_completion_transformation.transformation import (
     LiteLLMCompletionResponsesConfig,
 )
+from litellm.types.llms.openai import ResponsesAPIOptionalRequestParams
 
 
 @pytest.mark.parametrize(
     "optional_params", [{}, {"tools": []}, {"tools": [], "tool_choice": "auto"}]
 )
-def test_tool_free_responses_do_not_send_empty_chat_tools(optional_params: dict) -> None:
+def test_tool_free_responses_do_not_send_empty_chat_tools(
+    optional_params: ResponsesAPIOptionalRequestParams,
+) -> None:
+    """Omit empty tools and tool_choice while preserving the user message."""
     request = (
         LiteLLMCompletionResponsesConfig.transform_responses_api_request_to_chat_completion_request(
             model="nvidia_nim/example/model",
@@ -26,6 +30,7 @@ def test_tool_free_responses_do_not_send_empty_chat_tools(optional_params: dict)
 
 
 def test_responses_bridge_preserves_nonempty_tools_and_named_choice() -> None:
+    """Preserve nonempty function tools and named choices in Chat format."""
     parameters = {
         "type": "object",
         "properties": {"city": {"type": "string"}},
