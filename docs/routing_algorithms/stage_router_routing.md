@@ -87,36 +87,40 @@ Both pickers read the same signals; only the default tier differs.
 
 ## Tuning `confidence_threshold`
 
-The scorer rates each turn from `0` (signals are neutral) to `1` (signals point
-hard at one tier). `confidence_threshold` is the bar that rating has to clear
-before the router will switch off the picker's default tier. Clear it and the
-router routes to the tier the signals indicate; fall short and the turn stays on
-the default.
+The tool-signal scorer gives each turn a signed score in `(-1, 1)`: negative
+scores point to the efficient tier, positive scores point to the capable tier,
+and the absolute value is the confidence. `confidence_threshold` creates a
+closed **ambiguous band** from `-threshold` to `+threshold`. Scores outside the
+band make a signal-based decision; scores inside it go to the optional
+classifier or fall back to the picker's default tier.
 
 The TOML schema requires you to choose `picker` explicitly; there is no implicit
-default. With the `capable_first` picker, every turn starts on the capable tier
-and only drops to the efficient tier when the signals say "efficient" and clear
-the threshold. So the threshold sets how much evidence it takes to switch to the
-cheaper tier:
-
-- Raise it and only strong, decisive signals drop a turn to efficient, so the
-  router stays on capable longer (more quality, more cost).
-- Lower it and weaker signals are enough to drop to efficient, so more turns go
-  cheap (more savings, more risk).
-
-`efficient_first` is the mirror: turns start on efficient and need a signal that
-clears the threshold to escalate to capable.
-
-(If you add the optional classifier, sub-threshold turns go to it instead of
-staying on the default tier.)
+default.
 
 **Set `0.5` explicitly.** `confidence_threshold` is required by the TOML schema;
-`0.5` is the recommended starting point and what the example below uses.
+`0.5` is the recommended starting point, derived from many coding benchmarks,
+and what the example below uses.
+
+### What `0.5` means with `efficient_first`
+
+![Illustrative Stage score distribution with an ambiguous band from -0.5 to 0.5. Scores below -0.5 route efficient, scores in the band fall back to efficient, and scores above 0.5 route capable.](../assets/stage-router-threshold.svg)
+
+With `picker = "efficient_first"`, no classifier, and a threshold of `0.5`:
+
+- scores below `-0.5` route to efficient from the tool signals;
+- scores from `-0.5` through `+0.5` are ambiguous and fall back to efficient;
+- scores above `+0.5` route to capable from the tool signals.
+
+Hard overrides and capable-hold state can still select capable independently of
+this score. Lowering the threshold narrows the ambiguous band, so more turns are
+decided directly by the scorer. Raising it widens the band, so more turns use the
+picker default (or the classifier, when configured). That movement changes the
+efficient/capable routing split.
 
 | `confidence_threshold` | Include `classifier:` block? | Typical use |
 |---|---|---|
 | `0.0` | no | Cost/latency-sensitive. Every signal-based verdict is accepted; no per-turn LLM call. Critical-error signals still escalate to capable. |
-| `0.5` | no | Recommended starting point. The scorer is corroborative — one full wrong signal scores ~`0.46`, just under `0.5` — so a decisive escalation takes a strong signal plus corroboration, while a critical error overrides regardless. Derived from SWE-Bench Pro Python-75 calibration. |
+| `0.5` | no | Recommended starting point, derived from many coding benchmarks. Signals outside the ambiguous band decide the tier; the rest use the picker default. |
 | `0.7` - `0.9` | yes | Classifier-assisted. Low-confidence turns go to the LLM classifier before falling back to the default tier. |
 | `1.0` | yes (for classifier-driven behavior) | Classifier-driven. Tool signals only apply hard overrides; other turns reach the classifier. |
 
@@ -130,56 +134,15 @@ target, while response headers and structured decision logs explain individual s
 
 ### Calibrating the threshold from run data
 
-The recommended `0.5` starting point was derived from SWE-Bench Pro Python-75
-calibration. To tune for a different task set or model pair, follow this
-minimum-data path.
+Use about 10% of your representative tasks. Replay their agent histories through
+the Stage tool-signal scorer and collect the raw signed score for every turn.
+Plot that distribution, then overlay candidate ambiguous bands.
 
-**What you need**
-
-| Run | Coverage | Purpose |
-|---|---|---|
-| Pure-capable | ~40–75 representative tasks | Baseline outcomes + signal features |
-| Pure-efficient | ~20 tasks (sampled from capable results) | Counterfactual outcomes |
-
-Neither run needs to cover the full task set. A few dozen capable tasks gives
-enough outcome diversity; the efficient probe only needs to cover the interesting
-quadrant candidates identified from those capable results.
-
-**How to sample the efficient probe set**
-
-Stratify the pure-capable results across four quadrant candidates before running efficient:
-
-| Category | Criterion | Count | Value |
-|---|---|---|---|
-| Easy + clean | Capable passes, small diff, clear spec | ~5 | Establishes SAFE floor |
-| Easy + tricky | Capable passes, subtle logic | ~5 | Finds RESCUE candidates |
-| Hard + structural | Capable fails, large multi-file diff | ~5 | HARD noise baseline |
-| Hard + localized | Capable fails, small targeted fix | ~5 | Finds LOSS candidates |
-
-Sample across repos and diff sizes. Don't over-represent one project.
-
-**Building RESCUE / LOSS quadrants**
-
-For efficient-to-capable escalation, group the overlap tasks (those with both
-capable and efficient results):
-
-- `RESCUE` = efficient-fail ∩ capable-pass, a candidate for beneficial escalation
-- `LOSS`   = efficient-pass ∩ capable-fail, a candidate for harmful escalation
-- `SAFE`   = both pass
-- `HARD`   = both fail
-
-Sweep a few candidate thresholds in routed benchmark runs. For
-`efficient_first`, choose the lowest threshold that improves outcomes on RESCUE
-tasks without turning passing LOSS tasks into failures. Because the scorer is
-corroborative, a `0.5` threshold takes
-roughly 1.5 signals of agreement.
-
-**Caveat on fixed-model outcomes vs. routed outcomes**
-
-After a switch, the selected model inherits conversation history from the other
-model. Fixed-model runs do not measure this effect. Inherited context may help
-or hurt, so these quadrants identify candidates, not guaranteed outcomes.
-Validate the threshold with routed runs on the same tasks.
+For `efficient_first`, count how many turns fall below the band, inside it, and
+above it. Those three regions map directly to signal-selected efficient,
+ambiguous/default-efficient, and signal-selected capable decisions when no
+classifier is configured. Choose the threshold that gives the routing split you
+want, then validate it on the same sample before running the full task set.
 
 ## Route configuration
 
