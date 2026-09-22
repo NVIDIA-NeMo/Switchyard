@@ -52,7 +52,6 @@ type SessionStates<S> = Mutex<HashMap<String, SessionState<S>>>;
 const SESSION_STATE_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// Run the expired session cleanup code this often.
-#[cfg(not(target_arch = "wasm32"))]
 const SESSION_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// Processor chain → classifier cascade → routed model call. See the module docs.
@@ -64,6 +63,8 @@ pub struct FallThrough<S = ()> {
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
+    #[cfg(target_arch = "wasm32")]
+    next_cleanup: Mutex<Instant>,
 }
 
 impl FallThrough<()> {
@@ -75,6 +76,8 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             session_states: None,
             cleanup_started: Once::new(),
+            #[cfg(target_arch = "wasm32")]
+            next_cleanup: Mutex::new(Instant::now() + SESSION_CLEANUP_INTERVAL),
         }
     }
 }
@@ -91,6 +94,8 @@ where
             classifiers: Vec::new(),
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
+            #[cfg(target_arch = "wasm32")]
+            next_cleanup: Mutex::new(Instant::now() + SESSION_CLEANUP_INTERVAL),
         }
     }
 
@@ -196,12 +201,13 @@ where
         let states = self.session_states.as_ref()?;
         let session_id = session_id(request)?;
         let now = Instant::now();
-        // Without a Tokio runtime there is no background cleanup task. The registry only
-        // grows when a new session is inserted, so sweep expired sessions right before each
-        // insert; repeat turns of a known session stay O(1).
         #[cfg(target_arch = "wasm32")]
-        if !states.lock().contains_key(&session_id) {
-            remove_inactive_sessions(states, now, SESSION_STATE_TTL);
+        {
+            let mut next_cleanup = self.next_cleanup.lock();
+            if now >= *next_cleanup {
+                remove_inactive_sessions(states, now, SESSION_STATE_TTL);
+                *next_cleanup = now + SESSION_CLEANUP_INTERVAL;
+            }
         }
         let mut states = states.lock();
         let session = states.entry(session_id).or_insert_with(|| SessionState {
