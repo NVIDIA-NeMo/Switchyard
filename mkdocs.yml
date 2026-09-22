@@ -17,8 +17,6 @@ hooks:
 
 nav:
   - Home: index.md
-  - Release Notes:
-      - v0.3.0: releases/v0.3.0.md
   - Get Started:
       - Getting Started: getting_started.md
       - Known Issues: known_issues.md

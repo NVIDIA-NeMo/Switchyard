@@ -15,7 +15,6 @@ The Server Path builds and runs the standalone `switchyard-server` binary.
 
 ## Explore
 
-- [v0.3.0 Release Notes](releases/v0.3.0.md): changes, upgrade guidance, and limitations
 - [Core Concepts](core_concepts.md): learn the LLM client, target, and route layers
 - [Routing Algorithms](routing_algorithms/overview.md): choose how requests select a model
 - [Architecture](architecture.md): understand the proxy and library components

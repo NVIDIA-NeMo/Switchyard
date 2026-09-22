@@ -12,8 +12,7 @@ and a simpler Auto preset. It also updates the embedding API and removes the
 legacy Python server and launchers. **This is a breaking upgrade for library
 and Python CLI users.**
 
-See the [v0.3.0 release notes](docs/releases/v0.3.0.md)
-for highlights, migration guidance, and limitations, or the
+See the
 [complete comparison](https://github.com/NVIDIA-NeMo/Switchyard/compare/v0.2.0...107f79853395b89eea26620cad7ca63a80b13ea0).
 
 ### Added
@@ -440,8 +439,9 @@ for highlights, migration guidance, and limitations, or the
   a documented native-plugin upstream-error propagation issue. Plugin bundles
   are published separately from Switchyard. See the
   [integration guide](docs/integrations/nemo_relay.md#upstream-error-compatibility).
-- Prefill Router and the LiteLLM example remain experimental. See the release
-  notes for deployment, state-retention, and security boundaries.
+- Prefill Router and the LiteLLM example remain experimental. Review the
+  [routing overview](docs/routing_algorithms/overview.md) and
+  [LiteLLM integration guide](examples/litellm/README.md) before deployment.
 
 ## [0.2.0]
 
