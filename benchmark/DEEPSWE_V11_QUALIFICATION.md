@@ -3,6 +3,7 @@
 Routing configurations:
 
 - [Advisor gate: Luna executor with Sol reviews](routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml)
+- [Plan/execute: Sol planner with Luna executor](routing-profiles/deepswe-v11-plan-execute-luna-sol.toml)
 - [Stage router: Luna efficient tier with Sol capable tier](routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
 
 ## Shared settings
@@ -26,18 +27,18 @@ Routing configurations:
 
 ## Routing-specific settings
 
-| Setting | Advisor gate | Stage router |
-| --- | --- | --- |
-| Switchyard revision | `832374ac` | `6a98efdbb63304ff1625f09a240a32381e396d28` |
-| Configuration schema | 1 | 1 |
-| Public route ID | `switchyard` | `gpt-5.6-luna` |
-| Luna role | Executor, reasoning effort `max` | Efficient tier |
-| Sol role | Advisor, reasoning effort `max` | Capable tier |
-| Concurrency | 10 tasks | 5 tasks |
-| Independent runs | 3 | 1 |
-| Reported score | Mean and sample standard deviation | One strict score |
+| Setting | Advisor gate | Plan/execute | Stage router |
+| --- | --- | --- | --- |
+| Switchyard revision | `832374ac` | `08136d7d2ed4f862e5b3dd83488b3f120457d0ac` | `6a98efdbb63304ff1625f09a240a32381e396d28` |
+| Configuration schema | 1 | 1 | 1 |
+| Public route ID | `switchyard` | `switchyard` | `gpt-5.6-luna` |
+| Luna role | Executor, reasoning effort `max` | Executor, reasoning effort `max` | Efficient tier |
+| Sol role | Advisor, reasoning effort `max` | Planner, reasoning effort `max` | Capable tier |
+| Concurrency | 10 tasks | 5, 5, and 8 tasks | 5 tasks |
+| Independent runs | 3 | 3 | 1 |
+| Reported score | Mean and sample standard deviation | Mean and sample standard deviation | One strict score |
 
-The linked files contain the exact routing thresholds, turn windows, review limits, handoff
-settings, and model IDs. Their provider blocks use OpenRouter so they can run outside the original
-evaluation environment. The qualification runs used a different serving stack, so absolute results
-can differ even when the routing settings are unchanged.
+The linked files contain the exact routing parameters, prompts, and model IDs. Their provider
+blocks use OpenRouter so they can run outside the original evaluation environment. The qualification
+runs used a different serving stack, so absolute results can differ even when the routing settings
+are unchanged.

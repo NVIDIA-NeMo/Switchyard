@@ -371,6 +371,24 @@ pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
   --ae OPENAI_API_KEY=unused
 ```
 
+Plan/execute routing uses GPT-5.6 Sol for repository inspection and planning, then hands the
+full trajectory to GPT-5.6 Luna after the first mutation. It measured 60.8% +/- 5.3 at
+$180.51 +/- 9.43 per run on the full closed-book benchmark (k=3). The profile preserves the
+exact planning prompt and routing policy, with provider settings adapted from NVIDIA Inference
+Hub to OpenRouter:
+
+```bash
+export OPENROUTER_API_KEY="..."
+switchyard-server \
+  --config benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml \
+  --host 0.0.0.0 --port 443
+
+pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
+  --model openai/switchyard \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
 The qualified stage-router profile (GPT-5.6 Luna efficient tier, GPT-5.6 Sol capable tier) solved
 76/113 tasks (67.3% strict) on the full closed-book benchmark. Its routing policy is published
 with OpenRouter provider settings so the file runs as-is with `OPENROUTER_API_KEY`. The header
