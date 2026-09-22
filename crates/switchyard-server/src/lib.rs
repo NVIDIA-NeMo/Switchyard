@@ -1341,7 +1341,13 @@ fn upstream_error(status: StatusCode, body: &str) -> Response {
         .as_str()
         .filter(|code| !code.is_empty())
         .unwrap_or("upstream_error");
-    error_response(status, message, "upstream_error", code)
+    let mut response = error_response(status, message, "upstream_error", code);
+    // The provider's message can quote request content, so the request log
+    // records only the stable error class, not the message.
+    response.extensions_mut().insert(RequestLogError(format!(
+        "upstream_error {code} (HTTP {status})"
+    )));
+    response
 }
 
 // Keep error details until the endpoint chooses its response format.
@@ -1986,5 +1992,33 @@ mod tests {
                 .map(|error| error.0.as_str()),
             Some("invalid request")
         );
+    }
+
+    // The provider's message can quote request content, so the request log
+    // records only the error class while the client still sees the message.
+    #[test]
+    fn upstream_error_redacts_request_log_error() {
+        const LEAKED: &str = "SECRET-quoted-request-content";
+        let error = LlmClientError::UpstreamHttp {
+            status: StatusCode::BAD_GATEWAY,
+            body: format!(
+                r#"{{"error":{{"message":"validation failed: {LEAKED}","code":"invalid_request_error"}}}}"#
+            ),
+        };
+        let response = client_error(&error);
+
+        let logged = response
+            .extensions()
+            .get::<RequestLogError>()
+            .map(|error| error.0.as_str())
+            .unwrap_or("");
+        assert!(!logged.contains(LEAKED), "{logged}");
+        assert!(logged.contains("upstream_error"), "{logged}");
+
+        let api_error = response
+            .extensions()
+            .get::<ApiError>()
+            .expect("ApiError extension");
+        assert!(api_error.message.contains(LEAKED), "{}", api_error.message);
     }
 }
