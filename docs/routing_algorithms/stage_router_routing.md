@@ -233,6 +233,13 @@ across categories, and unknown category keys are rejected when the route is
 loaded. Argument-aware wrapper tools, inferred semantics, and learned routing
 rules are outside this exact-name configuration.
 
+MCP tools match by their bare tool name or by their full name. Claude Code sends
+an MCP tool as `mcp__<server>__<tool>`, and Codex sends it with a separate
+`namespace`. For both, `send_payment_request` matches the `send_payment_request`
+tool on the `billing` MCP server, and so does
+`mcp__billing__send_payment_request`. A server name that contains `__` needs the
+full name.
+
 ### Optional: handoff notes
 
 Add a `[routes.stage.handoff_notes]` section to append contextual guidance to a

@@ -17,6 +17,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use switchyard_protocol::codex_namespaces::{split_qualified_name, tool_namespaces};
 use switchyard_protocol::{ContentBlock, Request, Role, WireFormat};
 
 use crate::{LibsyError, Result};
@@ -237,8 +238,9 @@ pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
 /// Exact tool-name semantics added to the stage router's built-in vocabulary.
 ///
-/// Matching is ASCII case-insensitive. These lists are additive: built-in tool
-/// names cannot be reclassified.
+/// Matching is ASCII case-insensitive. An MCP or Codex namespaced tool also
+/// matches by its bare tool name. These lists are additive: built-in tool names
+/// cannot be reclassified.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolSemantics {
@@ -400,9 +402,11 @@ impl ToolSignals {
 }
 
 // `command` is the lowercased Bash command line; None for non-Bash tools.
+// `bare_name` is the tool's own name when `name` joins it to a namespace or MCP server.
 #[derive(Debug, Clone)]
-struct ObservedToolCall {
+struct ObservedToolCall<'a> {
     name: String,
+    bare_name: Option<&'a str>,
     command: Option<String>,
 }
 
@@ -706,6 +710,7 @@ fn extract_tool_signals_with_window_and_semantics(
 ) -> ToolSignals {
     // Read the decoded conversation, including preserved built-in tool outputs.
     let messages = &request.llm_request.messages;
+    let namespaces = tool_namespaces(&request.llm_request.extensions);
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     let mut compacted = false;
@@ -719,8 +724,14 @@ fn extract_tool_signals_with_window_and_semantics(
         for block in &message.content {
             match block {
                 ContentBlock::ToolCall(call) => {
+                    // Responses namespaced tools arrive as `<namespace>__<tool>`.
+                    let bare_name = namespaces
+                        .and_then(|namespaces| split_qualified_name(namespaces, &call.name))
+                        .map(|(tool, _)| tool)
+                        .or_else(|| mcp_tool_name(&call.name));
                     tool_calls.push(ObservedToolCall {
                         name: call.name.clone(),
+                        bare_name,
                         command: command_of(&call.arguments),
                     });
                 }
@@ -821,6 +832,14 @@ fn extract_tool_signals_with_window_and_semantics(
 /// overflowed context. Matched case-insensitively; normal task text never contains it.
 const COMPACTION_MARKER: &str = "session is being continued";
 
+/// The tool part of an `mcp__<server>__<tool>` name, the form Claude Code uses
+/// for MCP tools. The server name is assumed not to contain `__`; the tool name
+/// may.
+fn mcp_tool_name(name: &str) -> Option<&str> {
+    let (_server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+    (!tool.is_empty()).then_some(tool)
+}
+
 /// The shell command a tool call carries, when it has one. Harnesses name the
 /// field `command`; anything else is a tool whose category comes from its name.
 fn command_of(arguments: &Value) -> Option<String> {
@@ -908,7 +927,13 @@ fn build_signal(
     let mut pure_bash_streak = 0u32;
     let mut streak_open = true;
     for (i, tc) in tool_calls.iter().enumerate().rev() {
-        let cat = classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics);
+        // The joined name wins, so configs that list it keep working.
+        let mut cat = classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics);
+        if matches!(cat, ToolSemantic::Unknown)
+            && let Some(bare_name) = tc.bare_name
+        {
+            cat = classify_tool_call_with_semantics(bare_name, tc.command.as_deref(), semantics);
+        }
         if streak_open {
             if matches!(cat, ToolSemantic::Unknown) {
                 pure_bash_streak += 1;
@@ -1252,6 +1277,7 @@ mod tests {
     use super::*;
     use crate::algorithms::util::stage::score_signal;
     use serde_json::json;
+    use switchyard_protocol::codex_namespaces::TOOL_NAMESPACES_KEY;
     use switchyard_protocol::{
         ContentBlock, LlmRequest, Message, Metadata, Role, ToolCall, ToolResult,
     };
@@ -2246,6 +2272,30 @@ mod tests {
         assert_eq!(signal.new_count, 1);
         assert_eq!(signal.recent_new_count, 1);
         assert_eq!(signal.pure_bash_streak, 1);
+    }
+
+    #[test]
+    fn configured_tool_semantics_match_namespaced_and_mcp_tools() {
+        // The Responses decoder flattens namespaced tools and records the mapping.
+        let mut request = with_messages(vec![tc("mcp__billing__send_payment_request")]);
+        request.llm_request.extensions.fields.insert(
+            TOOL_NAMESPACES_KEY.to_string(),
+            json!({"mcp__billing__send_payment_request": "mcp__billing"}),
+        );
+
+        // Claude Code sends MCP tools flat, with no namespace mapping.
+        let claude_request = with_messages(vec![tc("mcp__billing__send_payment_request")]);
+
+        for request in [&request, &claude_request] {
+            for name in ["send_payment_request", "mcp__billing__send_payment_request"] {
+                let semantics = ToolSemantics {
+                    mutate: vec![name.to_string()],
+                    ..Default::default()
+                };
+                let signal = ToolSignals::from_request_with_semantics(request, None, &semantics);
+                assert_eq!(signal.write_count, 1, "{name}");
+            }
+        }
     }
 
     #[test]
