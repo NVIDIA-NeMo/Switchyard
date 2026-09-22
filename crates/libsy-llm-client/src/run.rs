@@ -518,7 +518,14 @@ impl StateOwners {
             }
         }
         if let Some(id) = conversation_id {
-            self.by_id.entry(id.to_owned()).or_insert(state);
+            // Materialized canonical history always describes the conversation's
+            // latest state, so a repeat store replaces the entry; provider-owned
+            // state keeps first-writer routing pins.
+            if materialized {
+                self.by_id.insert(id.to_owned(), state);
+            } else {
+                self.by_id.entry(id.to_owned()).or_insert(state);
+            }
         }
         Ok(())
     }
@@ -1379,6 +1386,101 @@ mod tests {
         assert_eq!(owner.trigger, "conversation");
         let history = owner.history.expect("materialized canonical history");
         assert_eq!(history.segment.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn conversation_lookup_returns_latest_materialized_history() -> Result<()> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|_request: &wiremock::Request| {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "chatcmpl_seed", "object": "chat.completion", "model": "weak",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "seed answer"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(
+            TranslatingLlmClient::new(&[ModelConfig::new(
+                "weak",
+                Backend::OpenAiChat(HttpBackendConfig {
+                    base_url: server.uri(),
+                    api_key: None,
+                    forward_auth: false,
+                    extra_headers: BTreeMap::new(),
+                    extra_body: BTreeMap::new(),
+                    reasoning_effort: None,
+                    max_retries: 0,
+                    timeout: None,
+                }),
+                None,
+            )])
+            .map_err(|error| LibsyError::external("building test client", error))?,
+        );
+        let clients = ClientRouter::new(HashMap::from([(ModelId::from("weak"), client)]));
+        let models = to_category_map(&["weak"]);
+
+        for input in ["FIRST", "SECOND"] {
+            let mut request = Request {
+                llm_request: switchyard_translation::decode_request(
+                    WireFormat::OpenAiResponses,
+                    &json!({"model": "route", "input": input, "store": true}),
+                )
+                .map_err(|error| LibsyError::external("decoding request", error))?,
+                raw_request: None,
+                metadata: None,
+            };
+            request
+                .llm_request
+                .extensions
+                .fields
+                .insert("conversation".to_string(), json!("conv_1"));
+
+            let (_, response) = run(
+                Arc::new(switchyard_libsy::Passthrough),
+                clients.clone(),
+                request,
+                models.clone(),
+                None,
+            )
+            .await?;
+            response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(|error| LibsyError::client_call("weak", error))?;
+        }
+
+        let mut probe = Request {
+            llm_request: switchyard_translation::decode_request(
+                WireFormat::OpenAiResponses,
+                &json!({"model": "route", "input": "RECALL"}),
+            )
+            .map_err(|error| LibsyError::external("decoding continuation request", error))?,
+            raw_request: None,
+            metadata: None,
+        };
+        probe
+            .llm_request
+            .extensions
+            .fields
+            .insert("conversation".to_string(), json!("conv_1"));
+
+        let owner = clients
+            .stored_state_owner(&probe)
+            .expect("conversation id finds the recorded canonical history");
+        assert_eq!(owner.trigger, "conversation");
+        let history = owner.history.expect("materialized canonical history");
+        // The second response stored the full four-message history; a stale
+        // first-writer entry would only hold the first two messages.
+        assert_eq!(history.segment.len(), 4);
         Ok(())
     }
 
