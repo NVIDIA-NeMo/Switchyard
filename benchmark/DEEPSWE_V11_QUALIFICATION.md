@@ -22,7 +22,7 @@ Routing configurations:
 | Infrastructure retries | 2 |
 | Step and cost limits | Disabled |
 | Strict scoring | Reward `1` divided by 113; failures and missing results score zero |
-| Pricing snapshot | OpenRouter list prices from 2026-09-09 |
+| Pricing snapshot | OpenRouter standard list prices from 2026-09-09, promotional pricing excluded |
 | Pricing SHA-256 | `945490e47f9a4d5a234a7ee95b2db7a74bf88d32ced68d3d664dcb36a94bef19` |
 
 ## Routing-specific settings

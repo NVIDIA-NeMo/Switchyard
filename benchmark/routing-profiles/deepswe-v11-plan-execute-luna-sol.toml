@@ -21,7 +21,8 @@
 #   Anchors        same harness and conditions, k=3: Sol alone 62.8% +/- 3.1 at
 #                  $720.95 +/- 19.47 per run. Luna alone 51.0% +/- 3.7 at
 #                  $50.02 +/- 1.04 per run
-#   Pricing        per-token list prices frozen 2026-09-09
+#   Pricing        OpenRouter standard per-token list prices frozen 2026-09-09,
+#                  promotional pricing excluded
 #
 # The routing parameters below are exactly as run. The measured runs reached the
 # same models through NVIDIA Inference Hub. This profile uses OpenRouter so it can
