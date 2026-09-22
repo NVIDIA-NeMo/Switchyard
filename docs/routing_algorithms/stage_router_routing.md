@@ -48,16 +48,49 @@ tool-result history yet has no stage to estimate, so it takes the default tier.
 The routing decision for one turn:
 
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
-flowchart LR
-    t["turn"] --> g{"confidence >= threshold?"}
-    g -->|yes| s["signals pick capable/efficient"]
-    g -->|no| c{"classifier set?"}
-    c -->|yes| k["classifier picks capable/efficient"]
-    c -->|no| d["use picker default tier"]
+%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 28, "rankSpacing": 38}}}%%
+flowchart TB
+    start(["New turn"])
+    history[/"Read tool-result history"/]
+    recovery{"Hard recovery signal<br/>or capable hold?"}
+    scorer["Compute signed tool-signal score"]
+    band{"Outside the<br/>ambiguous band?"}
+    sign{"Score direction?"}
+    classifier{"Classifier configured?"}
+    classify["Run classifier"]
+    verdict{"Classifier verdict?"}
+    picker{"Picker default?"}
+    capable(["Route to CAPABLE"])
+    efficient(["Route to EFFICIENT"])
 
-    classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
-    class t,s,k,d,g,c box;
+    start --> history
+    history --> recovery
+    recovery -->|Yes| capable
+    recovery -->|No| scorer
+    scorer --> band
+    band -->|Yes| sign
+    sign -->|Positive| capable
+    sign -->|Negative| efficient
+    band -->|No · ambiguous| classifier
+    classifier -->|Yes| classify
+    classify --> verdict
+    verdict -->|Capable| capable
+    verdict -->|Efficient| efficient
+    classifier -->|No| picker
+    picker -->|capable_first| capable
+    picker -->|efficient_first| efficient
+
+    classDef input fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px;
+    classDef process fill:#f8fafc,stroke:#64748b,color:#1e293b,stroke-width:1.5px;
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px;
+    classDef capable fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:3px;
+    classDef efficient fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:3px;
+
+    class start,history input;
+    class scorer,classify process;
+    class recovery,band,sign,classifier,verdict,picker decision;
+    class capable capable;
+    class efficient efficient;
 ```
 
 With `capable_first`, the default is capable, so a turn only reaches the cheaper
