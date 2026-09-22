@@ -2325,6 +2325,8 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "http",
  "jsonptr",
  "jsonschema",
@@ -2343,6 +2345,8 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+ "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]

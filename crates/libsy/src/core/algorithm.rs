@@ -4,10 +4,7 @@
 //! The [`Algorithm`] trait and its [`Driver`] — the orchestration contract every
 //! algorithm implements and the offload channel it uses for routing-time model calls.
 
-use std::{
-    collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
@@ -26,6 +23,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{Category, ModelId, Request, Response};
 
+use crate::rt::Instant;
 use crate::{DriverError, LibsyError, Result, observability};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
@@ -419,7 +417,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// Abort guard
-struct AbortOnDrop(tokio::task::AbortHandle);
+struct AbortOnDrop(futures::future::AbortHandle);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -526,7 +524,7 @@ pub trait Algorithm: Send + Sync + 'static {
     fn run_stream(self: Arc<Self>, request: Request, models: Arc<RuntimeModels>) -> StepStream {
         let (driver, step_rx) = Driver::new(self.name(), models);
         let span = observability::run_span(self.name(), &request);
-        let handle = tokio::spawn(
+        let handle = crate::rt::spawn_abortable(
             async move {
                 let algorithm = self.name().to_string();
                 // Catch a panicking algorithm so the run still publishes a terminal step.
@@ -548,7 +546,7 @@ pub trait Algorithm: Send + Sync + 'static {
             .instrument(span),
         );
         // Dropping the stream aborts the algorithm task when its consumer goes away.
-        let abort_guard = AbortOnDrop(handle.abort_handle());
+        let abort_guard = AbortOnDrop(handle);
         Box::pin(ReceiverStream::new(step_rx).map(move |step| {
             // link abort guard to stream
             let _keep_alive = &abort_guard;

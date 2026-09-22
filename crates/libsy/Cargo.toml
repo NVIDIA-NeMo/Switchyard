@@ -33,11 +33,24 @@ rand.workspace = true
 regex.workspace = true
 switchyard-protocol.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", default-features = false }
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Workers/browser targets have no OS threads or epoll: only tokio's
+# runtime-agnostic pieces (channels, mutexes, macros) are linked.
+tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
+wasm-bindgen-futures = "0.4"
+web-time = "1"
+# Route the transitive RNG through the JS crypto API on wasm targets.
+getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+getrandom-04 = { package = "getrandom", version = "0.4", default-features = false, features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.
