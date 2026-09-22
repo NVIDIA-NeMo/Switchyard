@@ -7,8 +7,9 @@ use std::time::Duration;
 use std::{collections::BTreeMap, fmt};
 
 use reqwest::RequestBuilder;
-use reqwest::header::HeaderValue;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::Value;
+use std::str::FromStr;
 use switchyard_protocol::{Metadata, WireFormat};
 
 use crate::error::{LlmClientError, Result, is_overflow_body};
@@ -121,6 +122,42 @@ impl Backend {
                     "model {model_name:?} extra_headers cannot set {name:?}; extra_headers is only for additional headers"
                 ),
             });
+        }
+        // Request construction defers invalid names and values to a builder
+        // error on the first routed request. Reject them here, with the same
+        // conversion semantics, so client construction and --dry-run fail fast.
+        for (name, value) in self.extra_headers().iter() {
+            if HeaderName::from_str(name).is_err() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model_name:?} extra_headers has an invalid header name {name:?}; the HTTP client cannot send it"
+                    ),
+                });
+            }
+            if HeaderValue::from_str(value).is_err() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model_name:?} extra_headers has an invalid value for header {name:?}; the HTTP client cannot send it"
+                    ),
+                });
+            }
+        }
+        if !self.is_forwarding_auth()
+            && let Some(api_key) = self.config().api_key.as_deref()
+        {
+            let auth_value = match self {
+                Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                    format!("Bearer {api_key}")
+                }
+                Backend::Anthropic(_) => api_key.to_string(),
+            };
+            if HeaderValue::from_str(&auth_value).is_err() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model_name:?} api_key cannot be sent as an HTTP header value"
+                    ),
+                });
+            }
         }
         Ok(())
     }
@@ -475,5 +512,42 @@ mod tests {
             )
         );
         assert!(!backend.is_context_overflow(r#"{"error":{"message":"overloaded"}}"#));
+    }
+
+    #[test]
+    fn rejects_headers_the_http_client_cannot_send() {
+        let mut bad_name = config("https://example.com/v1");
+        bad_name
+            .extra_headers
+            .insert("bad header".to_string(), "value".to_string());
+        let error = Backend::OpenAiChat(bad_name)
+            .validate_extra_headers("weak")
+            .expect_err("invalid header name is rejected");
+        assert!(error.to_string().contains("\"bad header\""));
+
+        let mut bad_value = config("https://example.com/v1");
+        bad_value
+            .extra_headers
+            .insert("x-audit".to_string(), "line\nbreak".to_string());
+        let error = Backend::OpenAiChat(bad_value)
+            .validate_extra_headers("weak")
+            .expect_err("invalid header value is rejected");
+        assert!(error.to_string().contains("\"x-audit\""));
+
+        let mut bad_key = config("https://example.com/v1");
+        bad_key.api_key = Some("key\nwith-newline".to_string());
+        let error = Backend::OpenAiChat(bad_key)
+            .validate_extra_headers("weak")
+            .expect_err("unusable api key is rejected");
+        let message = error.to_string();
+        assert!(message.contains("api_key"));
+        assert!(!message.contains("key\nwith-newline"));
+
+        let mut good = config("https://example.com/v1");
+        good.extra_headers
+            .insert("x-audit-header".to_string(), "valid-control".to_string());
+        Backend::OpenAiChat(good)
+            .validate_extra_headers("weak")
+            .expect("sendable headers pass validation");
     }
 }
