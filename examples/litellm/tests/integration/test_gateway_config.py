@@ -19,7 +19,7 @@ def test_example_targets_python_312() -> None:
     assert project["project"]["requires-python"] == ">=3.12,<3.13"
     assert project["project"]["dependencies"] == [
         "nemo-switchyard>=0.1.0",
-        "litellm==1.97.0",
+        "litellm==1.102.0",
     ]
 
 
@@ -41,7 +41,7 @@ def test_compose_builds_the_pinned_plugin_image_and_selects_a_profile() -> None:
         "context": "../../..",
         "dockerfile": "examples/litellm/deployment/Dockerfile",
     }
-    assert service["image"] == "switchyard-litellm:1.97.0"
+    assert service["image"] == "switchyard-litellm:1.102.0"
     assert service["command"] == ["--config", "/app/deployment/litellm.yaml"]
     assert service["environment"] == {
         "OPENROUTER_API_KEY": "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY}",

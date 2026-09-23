@@ -11,7 +11,7 @@ requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 dependencies = [
     "nemo-switchyard>=0.1.0",
-    "litellm==1.97.0",
+    "litellm==1.102.0",
 ]
 
 [dependency-groups]

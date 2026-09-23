@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Stage routing for DeepSWE v1.1: GPT-5.6 Luna handles the efficient tier and
+# GPT-5.6 Sol takes over when repository-work signals call for the capable tier.
+# See docs/routing_algorithms/stage_router_routing.md.
+#
+# This publishes the qualification routing policy with its provider settings adapted
+# to OpenRouter so the profile runs as-is with an `OPENROUTER_API_KEY`.
+#
+#   Switchyard     commit 6a98efdbb63304ff1625f09a240a32381e396d28, config
+#                  schema version 1 (below)
+#   Models         openai/gpt-5.6-luna (efficient) and openai/gpt-5.6-sol
+#                  (capable) on OpenRouter, Responses wire
+#   Routing        efficient-first, confidence threshold 0.5, five recent tool
+#                  results, two capable hold turns, and an escalation handoff note
+#   Benchmark      DeepSWE v1.1 (github.com/datacurve-ai/deep-swe), all 113 tasks,
+#                  closed-book with sandbox network policy `default_deny`
+#   Agent          Codex CLI 0.154.0 calling this route with model name
+#                  `gpt-5.6-luna`; Harbor 0.13.2 ran five tasks at a time with one
+#                  trial per task
+#   Scoring        strict: tasks with reward 1 over all 113, so the crashed task
+#                  counts as unsolved
+#   Result         76/113 solved (67.3% strict); 76/112 (67.9%) when excluding the
+#                  one crashed task, matching the scaled-evals aggregate convention
+#   Run            scaled-evals bmr_95421e7bafaf4f59b1afb3c6b2 on benchmark
+#                  bm_d5d85cb7f25c4f67952956ef5c revision 1
+#
+# Inputs the harness supplies. The harness also owns execution, credentials and results.
+#   OPENROUTER_API_KEY read by this server for both models; never write the value here
+#   OPENAI_BASE_URL   the agent's endpoint, pointed at this server's /v1
+#   OPENAI_API_KEY    any value; this server does not check it
+# Results stay where the harness writes them (Pier: jobs/<job-name>/).
+# The recorded result used a different serving stack; absolute results may vary on OpenRouter.
+#
+# The public route id is intentionally `gpt-5.6-luna`, not `switchyard`: that is the
+# exact id used by the qualification run. The `[routes.switchyard]` table name is only
+# a local configuration reference.
+#
+# Run:
+#   switchyard-server --config benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml --port 4000
+# See benchmark/README.md, section "DeepSWE v1.1", for the Pier command.
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_responses"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[targets.capable]
+id = "openai/gpt-5.6-sol"
+llm_client = "openrouter"
+
+[targets.efficient]
+id = "openai/gpt-5.6-luna"
+llm_client = "openrouter"
+
+[routes.switchyard]
+id = "gpt-5.6-luna"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 5
+capable_hold_turns = 2
+
+[routes.switchyard.handoff_notes]
+escalation_note = "[router-guidance] The router escalated this turn from the efficient tier. Reassess the current repository state, identify the highest-leverage next step, and drive the task to a verified solution."
+only_on_wrong_signal_escalation = true

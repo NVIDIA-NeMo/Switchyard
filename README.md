@@ -65,8 +65,8 @@ flowchart LR
 ### Run Switchyard as a standalone proxy
 
 A server in front of an agent, when you have no gateway to put Switchyard in.
-Point Claude Code, Codex CLI, or any OpenAI/Anthropic SDK client at it;
-Switchyard decides per turn which model serves it.
+Point Claude Code, Codex CLI, pi, Oh My Pi, or any OpenAI/Anthropic SDK client
+at it; Switchyard decides per turn which model serves it.
 
 - Install: `cargo install --locked switchyard-server`
 - Then follow [Path 3 — Run the Standalone Proxy](#path-3--run-the-standalone-proxy):
@@ -241,11 +241,31 @@ setup, Switchyard uses the server's `OPENROUTER_API_KEY` for upstream requests.
 Do not use the placeholder with `forward_auth = true` or a gateway that requires
 a real client credential.
 
-Codex CLI and other OpenAI clients use the OpenAI variables instead:
+For Codex CLI, add this provider to `~/.codex/config.toml`:
+
+```toml
+[model_providers.switchyard]
+name = "Switchyard"
+base_url = "http://localhost:4000/v1"
+wire_api = "responses"
+requires_openai_auth = false
+```
+
+Then select the provider and route:
 
 ```bash
-export OPENAI_BASE_URL="http://localhost:4000/v1"
+codex --model switchyard -c 'model_provider="switchyard"'
 ```
+
+No Codex API key is needed for this local setup. Switchyard uses the server's
+`OPENROUTER_API_KEY` for upstream requests.
+
+For pi, add a `switchyard` provider to `~/.pi/agent/models.json`. For Oh My Pi, add
+the same provider to `~/.omp/agent/models.yml`. Both entries set `baseUrl` to the
+server address and list the route id `switchyard` as a model.
+[Use Switchyard with pi](docs/integrations/pi.md) and
+[Use Switchyard with Oh My Pi](docs/integrations/oh_my_pi.md) give the exact entries,
+say which request API to pick, and show how to confirm the routing.
 
 ## Routing Algorithms
 

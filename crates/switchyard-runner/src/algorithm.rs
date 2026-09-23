@@ -330,6 +330,22 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Plans on the capable target, then permanently hands off after the first mutation.
+    PlanExecute {
+        /// Target used before the first edit or write.
+        capable_target: String,
+        /// Target used from the first edit or write onward.
+        efficient_target: String,
+        /// Replaces the built-in planning instruction.
+        #[serde(default)]
+        planning_prompt: Option<String>,
+        /// Appends an instruction to the handoff request.
+        #[serde(default)]
+        handoff_prompt: Option<String>,
+        /// Replays visible planner reasoning summaries as assistant text at handoff.
+        #[serde(default)]
+        planner_reasoning_as_text: bool,
+    },
     /// Asks a judge model which target should serve the request.
     LlmClassifier {
         /// Judge and tier settings, written directly in the route table.
@@ -546,6 +562,11 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::PlanExecute {
+                capable_target,
+                efficient_target,
+                ..
+            } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::LlmClassifier { config, .. } => match config.classifier_mode() {
                 ClassifierMode::Capability => config
                     .weak_target
@@ -766,6 +787,7 @@ impl AlgorithmSpec {
             Self::Noop { .. }
             | Self::Random { .. }
             | Self::Passthrough { .. }
+            | Self::PlanExecute { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
             | Self::Auto { .. }
@@ -1192,6 +1214,26 @@ fn build_algorithm(
             let algorithm = Passthrough;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
+        }
+        AlgorithmSpec::PlanExecute {
+            planning_prompt,
+            handoff_prompt,
+            planner_reasoning_as_text,
+            ..
+        } => {
+            let mut config = PlanExecuteConfig::default();
+            if let Some(prompt) = planning_prompt {
+                config.planning_prompt = prompt.clone();
+            }
+            config.handoff_prompt.clone_from(handoff_prompt);
+            config.planner_reasoning_as_text = *planner_reasoning_as_text;
+            let algorithm = PlanExecute::new(config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("plan_execute route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
         }
         AlgorithmSpec::LlmClassifier {
             config: classifier_config,

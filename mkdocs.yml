@@ -25,10 +25,13 @@ nav:
       - Architecture: architecture.md
   - Integrations:
       - NeMo Relay: integrations/nemo_relay.md
+      - pi: integrations/pi.md
+      - Oh My Pi: integrations/oh_my_pi.md
   - Routing:
       - Overview: routing_algorithms/overview.md
       - Task (LLM Classifier): routing_algorithms/llm_classifier_routing.md
       - Execution (Stage Router): routing_algorithms/stage_router_routing.md
+      - Plan/Execute Routing: routing_algorithms/plan_execute_routing.md
       - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md
       - Random Routing: routing_algorithms/random_routing.md
       - RLCD Decision Routing: routing_algorithms/rlcd_routing.md
