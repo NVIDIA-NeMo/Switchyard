@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 import importlib.util
 import json
 from pathlib import Path
@@ -37,7 +35,6 @@ def _write_task(root: Path, name: str, task_toml: str, dockerfile: str | None = 
 def _prepare(
     tmp_path: Path,
     source: Path,
-    *,
     source_dataset: str = "openthoughts-tblite@2.0",
 ) -> Path:
     module = _load_generator_module()
@@ -191,6 +188,7 @@ def test_prebuilt_docker_image_task_becomes_derived_dockerfile(tmp_path: Path) -
     assert "@anthropic-ai/claude-code@2.1.211" in dockerfile
     assert "@openai/codex@0.144.5" in dockerfile
     assert "opencode-ai@1.18.3" in dockerfile
+    assert "@earendil-works/pi-coding-agent@0.84.3" in dockerfile
 
 
 def test_dockerfile_only_task_gets_prebake_layer(tmp_path: Path) -> None:
@@ -288,6 +286,7 @@ def test_generated_dataset_manifest_records_pins_tasks_and_digests(tmp_path: Pat
         "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
         "NODE_VERSION": "20.11.1",
         "OPENCODE_VERSION": "1.18.3",
+        "PI_VERSION": "0.84.3",
     }
     assert manifest["closed_book"]["proxy_asset_digest"].startswith("sha256:")
     assert manifest["closed_book"]["verifier_egress"] == "open-via-authenticated-proxy"
@@ -322,6 +321,7 @@ def test_a_hermes_ref_that_is_not_a_commit_sha_is_rejected() -> None:
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
         "OPENCODE_VERSION": "3",
+        "PI_VERSION": "5",
         "NODE_VERSION": "4",
     }
     rejected = (
@@ -346,6 +346,7 @@ def test_the_hermes_installer_is_fetched_at_the_pinned_commit() -> None:
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
         "OPENCODE_VERSION": "3",
+        "PI_VERSION": "5",
         "NODE_VERSION": "4",
         "HERMES_VERSION": sha,
     }
@@ -369,6 +370,7 @@ def test_the_hermes_pin_is_applied_by_commit_and_forced() -> None:
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
         "OPENCODE_VERSION": "3",
+        "PI_VERSION": "5",
         "NODE_VERSION": "4",
         "HERMES_VERSION": sha,
     }
@@ -386,6 +388,7 @@ def test_the_alpine_branch_installs_the_shell_the_installer_needs() -> None:
         "CLAUDE_CODE_VERSION": "1",
         "CODEX_VERSION": "2",
         "OPENCODE_VERSION": "3",
+        "PI_VERSION": "5",
         "NODE_VERSION": "4",
         "HERMES_VERSION": "3c27eb6234bf91b8ceee9e9071591b31e9b148cb",
     }
@@ -400,7 +403,7 @@ def test_a_missing_hermes_pin_is_reported_with_the_other_pins(tmp_path: Path) ->
     module = _load_generator_module()
     versions = tmp_path / "agent-versions.env"
     versions.write_text(
-        "CLAUDE_CODE_VERSION=1\nCODEX_VERSION=2\nOPENCODE_VERSION=3\nNODE_VERSION=4\n"
+        "CLAUDE_CODE_VERSION=1\nCODEX_VERSION=2\nOPENCODE_VERSION=3\nPI_VERSION=5\nNODE_VERSION=4\n"
     )
     module.AGENT_VERSIONS_FILE = versions
     source = tmp_path / "source"

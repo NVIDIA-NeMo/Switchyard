@@ -83,8 +83,8 @@ Metrics use the `switchyard` meter scope. The tables use OTel instrument names.
 | `switchyard.run_duration_ms` | Histogram | `algorithm`, `outcome` | Algorithm-task duration in milliseconds. |
 | `switchyard.algorithms_in_flight` | UpDownCounter | `algorithm` | Active algorithm tasks; exported as a Prometheus gauge. |
 | `switchyard.decisions` | Counter | `algorithm`, `selected_model` | Published routing decisions. |
-| `switchyard.llm_calls` | Counter | `algorithm`, `selected_model`, `outcome` | Logical offloaded and terminal model calls. |
-| `switchyard.llm_call_duration_ms` | Histogram | `algorithm`, `selected_model`, `outcome` | Logical call duration in milliseconds; see streaming limits below. |
+| `switchyard.llm_calls` | Counter | `algorithm`, `selected_model`, `outcome` | Routing-time offloaded calls and each terminal answer candidate, including failures. |
+| `switchyard.llm_call_duration_ms` | Histogram | `algorithm`, `selected_model`, `outcome` | One duration sample in milliseconds per offloaded call or terminal answer candidate, including failures; see streaming limits below. |
 | `switchyard.total_requests` | ObservableGauge | none | Process-wide total of successful and failed answer candidates after routing, including reused routing responses. |
 | `switchyard.total_errors` | ObservableGauge | none | Process-wide total of failures after routing, including failed answer candidates and reused routing responses. |
 | `switchyard.requests` | Counter | `model` | Successful answer candidates or reused routing responses, by model ID. |
@@ -101,9 +101,20 @@ Algorithm/call `outcome` is `ok` or `error`. HTTP attempt `outcome` is `ok` for
 or `none`. Classifier `reason` is `timeout`, `transport`, `upstream_5xx`,
 `upstream_non_5xx`, `invalid_response`, `parse_error`, `client_error`, or `call_error`.
 
-Logical calls, candidate calls, and HTTP attempts are different counts. Candidate
-fallbacks and HTTP retries remain within one logical call. A response produced
-during routing is not counted again as a new terminal model call.
+Client requests, routing decisions, model calls, and HTTP attempts have separate
+counts. For `switchyard.llm_calls` and `switchyard.llm_call_duration_ms`, each
+routing-time offloaded call and each terminal answer candidate contributes one
+observation. HTTP retries stay within the same candidate's count and duration.
+Reusing a response produced during routing keeps only its routing-time call observation.
+
+For example, one buffered client request with no judge calls or retries, a failed
+primary, and a successful fallback produces one client response, one routing decision,
+two `llm_calls`, and two `llm_call_duration_ms` samples. The primary has
+`selected_model=<primary>` and `outcome=error`; the fallback has
+`selected_model=<fallback>` and `outcome=ok`. For terminal answer-candidate observations,
+`selected_model` identifies the model called. For routing-time observations, it
+identifies the initial routing candidate. For `switchyard.decisions`, it identifies
+the initial routing selection.
 
 The five request/error/latency instruments above record each answer candidate after
 routing, not each HTTP attempt. A failed candidate followed by a successful fallback
@@ -112,9 +123,10 @@ model, and one to `requests` for the successful model. Routing-time calls and fa
 before a routing outcome do not contribute. A response reused from routing contributes
 one to `total_requests` and one to either `requests` or `errors` (also `total_errors`
 on failure), but no `model_call_latency_ms` sample. The `model` label is the
-candidate's configured model ID (the serving model for a reused response), not the
-`selected_model` label used by logical-call metrics. The two total gauges are cumulative
-process-wide compatibility values, not counts of requests currently in flight.
+candidate's configured model ID (the serving model for a reused response).
+For terminal answer candidates, it matches `selected_model` on `llm_calls` and
+`llm_call_duration_ms`. The two total gauges are cumulative process-wide
+compatibility values.
 
 For streams, these five instruments record when the response stream ends or is dropped.
 Stream errors count as failures. Dropping an unfinished stream also counts as a failure;
@@ -153,7 +165,8 @@ Advisor Gate instruments use the prefix `switchyard.advisor_gate.`:
 ### Timing and streaming
 
 - `libsy.run` may finish before the answer call. Nested algorithms have separate run spans.
-- `libsy.llm_call` and logical call-duration metrics end at response-handle availability, not stream completion. The span's `input_tokens`, `output_tokens`, `total_tokens`, and `reasoning_tokens` fields are buffered-response only.
+- `libsy.llm_call` and routing-time call metrics end when the host fulfills the offloaded call. They include host queueing. The LLM client driver buffers routing streams before fulfilling the call. The span's `input_tokens`, `output_tokens`, `total_tokens`, and `reasoning_tokens` fields are buffered-response only.
+- For terminal answer candidates, `switchyard.llm_calls` and `switchyard.llm_call_duration_ms` record when the response stream ends or is dropped. Duration includes that candidate's retries and stream consumption. Stream errors and unfinished drops record `outcome=error`; a terminal message permits a successful drop.
 - `libsy.client_call` remains open while its stream is consumed. IDs, usage, and finish reasons update from normalized events. An unfinished stream dropped by its consumer records `cancelled`; a stream error records `error`.
 
 ### Data exposure

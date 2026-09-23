@@ -72,6 +72,7 @@ const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
     "request-id",
     "traceparent",
     "tracestate",
+    "x-litellm-response-cost",
     "x-request-id",
 ];
 const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
@@ -1403,7 +1404,12 @@ fn render_error_response(response: Response, wire_format: WireFormat) -> Respons
     let Some(error) = response.extensions().get::<ApiError>().cloned() else {
         return response;
     };
-    error.into_response(wire_format)
+    let log_error = response.extensions().get::<RequestLogError>().cloned();
+    let mut rendered = error.into_response(wire_format);
+    if let Some(log_error) = log_error {
+        rendered.extensions_mut().insert(log_error);
+    }
+    rendered
 }
 
 fn anthropic_error_response(response: Response) -> Response {
@@ -1560,11 +1566,12 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
         "created": 0,
         "owned_by": "switchyard",
         "display_name": model,
+        // OpenAI-compatible clients read the context window from this field.
+        "context_length": capabilities.context_window,
         "capabilities": {
             "streaming": true,
             "tool_calling": capabilities.tool_calling,
             "vision": capabilities.vision,
-            "context_window": capabilities.context_window,
             "supported_inbound_formats": [
                 "openai-chat-completions",
                 "openai-responses",
@@ -1907,9 +1914,7 @@ mod tests {
             let mut message = String::new();
             event.record(
                 &mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
-                    if field.name() == "message" {
-                        message = format!("{value:?}");
-                    }
+                    message.push_str(&format!("{}={value:?} ", field.name()));
                 },
             );
             self.0.lock().push((*event.metadata().level(), message));
@@ -2004,21 +2009,38 @@ mod tests {
                 r#"{{"error":{{"message":"validation failed: {LEAKED}","code":"invalid_request_{LEAKED}"}}}}"#
             ),
         };
-        let response = client_error(&error);
+        for wire_format in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            let response = render_error_response(client_error(&error), wire_format);
+            let events = captured_events(|| request_log_context().emit(&response));
+            assert_eq!(events.len(), 1);
+            assert!(!events[0].1.contains(LEAKED), "{}", events[0].1);
+            assert!(events[0].1.contains("upstream_error"), "{}", events[0].1);
+            let api_error = response
+                .extensions()
+                .get::<ApiError>()
+                .expect("ApiError extension");
+            assert!(api_error.message.contains(LEAKED), "{}", api_error.message);
+            assert_eq!(api_error.code, format!("invalid_request_{LEAKED}"));
+        }
+    }
 
-        let logged = response
-            .extensions()
-            .get::<RequestLogError>()
-            .map(|error| error.0.as_str())
-            .unwrap_or("");
-        assert!(!logged.contains(LEAKED), "{logged}");
-        assert!(logged.contains("upstream_error"), "{logged}");
-
-        let api_error = response
-            .extensions()
-            .get::<ApiError>()
-            .expect("ApiError extension");
-        assert!(api_error.message.contains(LEAKED), "{}", api_error.message);
-        assert_eq!(api_error.code, format!("invalid_request_{LEAKED}"));
+    // LiteLLM's cost header passes through to the client; auth headers do not.
+    #[test]
+    fn upstream_header_forwarding_covers_litellm_cost() {
+        for name in [
+            "baggage",
+            "x-litellm-response-cost",
+            "x-ratelimit-remaining",
+            "x-upstream-retry",
+        ] {
+            let header: HeaderName = name.parse().expect("header name");
+            assert!(should_forward_upstream_header(&header), "{name}");
+        }
+        let secret: HeaderName = "authorization".parse().expect("header name");
+        assert!(!should_forward_upstream_header(&secret));
     }
 }
