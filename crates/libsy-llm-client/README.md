@@ -40,6 +40,10 @@ It depends on `switchyard-libsy`, `switchyard-protocol`, and
   `stream: true` after `extra_body` is applied, you get `LlmResponse::Stream`; otherwise
   `LlmResponse::Agg`. OpenAI Chat streaming requests default
   `stream_options.include_usage` to `true`; an explicit caller value is preserved.
+- **Responses continuation state.** `ClientRouter` keeps provider ownership and cross-format
+  canonical history in a bounded process-local store by default. Hosts that need multiple routers
+  to resolve the same continuations can implement `ResponseStateStore` and install one shared
+  instance with `ClientRouter::with_response_state_store`.
 
 ## Add the dependency
 
