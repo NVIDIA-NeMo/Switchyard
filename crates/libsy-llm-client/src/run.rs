@@ -530,20 +530,34 @@ struct CanonicalInput {
     messages: Arc<[Message]>,
 }
 
+#[derive(Clone)]
+struct CanonicalInputSource {
+    previous_response_id: Option<String>,
+    messages: Arc<[Message]>,
+}
+
 /// Storage boundary for Responses continuation ownership and canonical history.
 ///
-/// Implementations must commit both IDs atomically and preserve an existing provider-owned record
-/// when another model reports the same ID. Methods are asynchronous so shared stores do not block
-/// request workers.
+/// Implementations must commit both IDs atomically. A provider-owned state without history must
+/// not replace an existing record for another model; return
+/// [`LlmClientError::ResponseStateConflict`] instead. A materialized state with history replaces
+/// its response-ID record. A conversation alias is inserted only when it is absent. Methods are
+/// asynchronous so shared stores do not block request workers.
 #[async_trait]
 pub trait ResponseStateStore: Send + Sync {
     /// Load the state associated with a response or conversation ID.
+    ///
+    /// An error from the initial continuation lookup stops routing. An error from a later history
+    /// lookup fails the translated response or stream completion.
     async fn load(
         &self,
         id: &str,
     ) -> std::result::Result<Option<StoredResponseState>, LlmClientError>;
 
     /// Atomically retain the aliases for one response turn.
+    ///
+    /// [`LlmClientError::ResponseStateLimitExceeded`] is logged and the response continues. Any
+    /// other error fails the response or stream completion.
     async fn store(
         &self,
         response_id: Option<&str>,
@@ -631,6 +645,7 @@ impl InMemoryResponseStateStore {
 
 #[async_trait]
 impl ResponseStateStore for InMemoryResponseStateStore {
+    /// Load a snapshot of one stored response or conversation alias.
     async fn load(
         &self,
         id: &str,
@@ -638,6 +653,7 @@ impl ResponseStateStore for InMemoryResponseStateStore {
         Ok(self.owners.lock().owner(id).cloned())
     }
 
+    /// Store both aliases using the trait's conflict and overwrite rules.
     async fn store(
         &self,
         response_id: Option<&str>,
@@ -823,15 +839,10 @@ impl ClientRouter {
     /// Retain only the new input segment while sharing an existing canonical parent.
     async fn canonical_input(
         &self,
-        request: &Request,
+        previous_response_id: Option<&str>,
+        messages: &[Message],
     ) -> std::result::Result<CanonicalInput, LlmClientError> {
-        let parent = match request
-            .llm_request
-            .extensions
-            .fields
-            .get("previous_response_id")
-            .and_then(Value::as_str)
-        {
+        let parent = match previous_response_id {
             Some(id) => self
                 .inner
                 .state_store
@@ -841,9 +852,9 @@ impl ClientRouter {
             None => None,
         };
         let parent_len = parent.as_ref().map_or(0, |history| history.len);
-        let (parent, messages) = match request.llm_request.messages.get(parent_len..) {
+        let (parent, messages) = match messages.get(parent_len..) {
             Some(messages) => (parent, messages.to_vec()),
-            None => (None, request.llm_request.messages.clone()),
+            None => (None, messages.to_vec()),
         };
         Ok(CanonicalInput {
             parent,
@@ -874,15 +885,6 @@ impl ClientRouter {
         if !responses_request && !self.inner.track_provider_state {
             return Ok(response);
         }
-        let canonical_input = if responses_request {
-            Some(
-                self.canonical_input(request)
-                    .await
-                    .map_err(|error| LibsyError::client_call(model.clone(), error))?,
-            )
-        } else {
-            None
-        };
         response.llm_response = match response.llm_response {
             LlmResponse::Agg(agg) => {
                 if let Some(body) = agg.preservation.responses.get(&responses_format) {
@@ -891,8 +893,15 @@ impl ClientRouter {
                             .await
                             .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                     }
-                } else if let Some(input) = &canonical_input {
-                    self.remember_canonical_response(&agg, &model, store, input)
+                } else if responses_request && store && agg.id.is_some() {
+                    let input = self
+                        .canonical_input(
+                            fields.get("previous_response_id").and_then(Value::as_str),
+                            &request.llm_request.messages,
+                        )
+                        .await
+                        .map_err(|error| LibsyError::client_call(model.clone(), error))?;
+                    self.remember_canonical_response(&agg, &model, store, &input)
                         .await
                         .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                 }
@@ -900,13 +909,20 @@ impl ClientRouter {
             }
             LlmResponse::Stream(stream) => {
                 let router = self.clone();
+                let canonical_input_source = responses_request.then(|| CanonicalInputSource {
+                    previous_response_id: fields
+                        .get("previous_response_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    messages: Arc::from(request.llm_request.messages.clone()),
+                });
                 LlmResponse::Stream(Box::pin(futures_util::stream::try_unfold(
                     (
                         stream,
                         router,
                         model,
                         conversation,
-                        canonical_input,
+                        canonical_input_source,
                         ResponseAccumulator::new(),
                         false,
                         true,
@@ -916,23 +932,28 @@ impl ClientRouter {
                         router,
                         model,
                         conversation,
-                        canonical_input,
+                        canonical_input_source,
                         mut accumulator,
                         mut native_responses,
                         mut valid,
                     )| async move {
                         let Some(event) = stream.next().await else {
-                            if let Some(input) = &canonical_input
+                            if let Some(source) = &canonical_input_source
                                 && !native_responses
                                 && valid
                             {
-                                router
-                                    .remember_canonical_response(
-                                        &accumulator.finish(),
-                                        &model,
-                                        store,
-                                        input,
+                                let response = accumulator.finish();
+                                if !store || response.id.is_none() {
+                                    return Ok(None);
+                                }
+                                let input = router
+                                    .canonical_input(
+                                        source.previous_response_id.as_deref(),
+                                        &source.messages,
                                     )
+                                    .await?;
+                                router
+                                    .remember_canonical_response(&response, &model, store, &input)
                                     .await?;
                             }
                             return Ok(None);
@@ -970,7 +991,7 @@ impl ClientRouter {
                                 router,
                                 model,
                                 conversation,
-                                canonical_input,
+                                canonical_input_source,
                                 accumulator,
                                 native_responses,
                                 valid,
@@ -1014,6 +1035,7 @@ impl ClientRouter {
         Ok(())
     }
 
+    /// Record one translated response while sharing its materialized parent history.
     async fn remember_canonical_response(
         &self,
         response: &AggLlmResponse,
@@ -1459,6 +1481,71 @@ mod tests {
             }) if message == "Responses state store unavailable"
         ));
         assert!(client.calls.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_responses_do_not_load_canonical_history() -> Result<()> {
+        let clients = ClientRouter::single(Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        }))
+        .with_response_state_store(Arc::new(UnavailableStateStore));
+        let mut request = request();
+        request
+            .llm_request
+            .extensions
+            .fields
+            .insert("previous_response_id".to_string(), json!("resp_previous"));
+        request.llm_request.preservation.requests.insert(
+            WireFormat::OpenAiResponses.into(),
+            json!({"previous_response_id": "resp_previous"}),
+        );
+
+        let mut agg = text_response(Some("weak".to_string()), "buffered");
+        agg.preservation.responses.insert(
+            WireFormat::OpenAiResponses.into(),
+            json!({"id": "resp_buffered", "object": "response"}),
+        );
+        let mut buffered = Response {
+            llm_response: LlmResponse::Agg(agg),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        };
+        buffered.set_served_model(&ModelId::from("weak"));
+
+        let event = LlmResponseStreamEvent::preserved(
+            WireFormat::OpenAiResponses,
+            json!({
+                "type": "response.completed",
+                "response": {"id": "resp_streamed", "object": "response"}
+            }),
+            vec![LlmResponseChunk::MessageStop {
+                reason: Some("stop".to_string()),
+            }],
+        );
+        let mut streamed = Response {
+            llm_response: LlmResponse::Stream(futures::stream::iter([Ok(event)]).boxed()),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        };
+        streamed.set_served_model(&ModelId::from("weak"));
+
+        clients
+            .remember_state_owner(&request, buffered)
+            .await?
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|error| LibsyError::client_call("weak", error))?;
+        clients
+            .remember_state_owner(&request, streamed)
+            .await?
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|error| LibsyError::client_call("weak", error))?;
+        Ok(())
     }
 
     #[tokio::test]
