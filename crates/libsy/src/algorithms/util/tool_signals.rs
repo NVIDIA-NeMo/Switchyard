@@ -184,12 +184,25 @@ static GIT_READ_SUBCOMMANDS: &[&str] = &[
 ];
 
 static READ_TOOL_NAMES: &[&str] = &[
-    "read", "view", "read_file", "search_files", "glob", "grep", "find", "ls",
+    "read",
+    "view",
+    "read_file",
+    "search_files",
+    "glob",
+    "grep",
+    "find",
+    "ls",
 ];
 
 // Planning / scratchpad tool calls — investigative (non-producing) activity.
 // `update_plan` is codex's equivalent of `todowrite`.
-static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_plan", "todo_list"];
+static PLAN_TOOL_NAMES: &[&str] = &[
+    "todowrite",
+    "todo_write",
+    "todo",
+    "update_plan",
+    "todo_list",
+];
 
 // Tool names that route through Bash-command pattern matching. `bash` is
 // claude-code's name; `shell_command` is codex's; `shell` / `local_shell_call`
