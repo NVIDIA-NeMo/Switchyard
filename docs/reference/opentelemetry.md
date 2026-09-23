@@ -111,9 +111,10 @@ For example, one buffered client request with no judge calls or retries, a faile
 primary, and a successful fallback produces one client response, one routing decision,
 two `llm_calls`, and two `llm_call_duration_ms` samples. The primary has
 `selected_model=<primary>` and `outcome=error`; the fallback has
-`selected_model=<fallback>` and `outcome=ok`. For these two instruments,
-`selected_model` identifies the model called. For `switchyard.decisions`, it
-identifies the initial routing selection.
+`selected_model=<fallback>` and `outcome=ok`. For terminal answer-candidate observations,
+`selected_model` identifies the model called. For routing-time observations, it
+identifies the initial routing candidate. For `switchyard.decisions`, it identifies
+the initial routing selection.
 
 The five request/error/latency instruments above record each answer candidate after
 routing, not each HTTP attempt. A failed candidate followed by a successful fallback
