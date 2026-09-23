@@ -1,0 +1,22 @@
+{
+  "fallback_target": "human_review",
+  "minimum_confidence": 0.0,
+  "routes": {
+    "routine": {
+      "target": "deterministic_tool",
+      "description": "Exact lookup, calculation, retrieval, or deterministic workflow"
+    },
+    "language": {
+      "target": "small_model",
+      "description": "Bounded, low-risk language transformation or extraction"
+    },
+    "analysis": {
+      "target": "reasoning_model",
+      "description": "Complex analysis, diagnosis, planning, or multi-step reasoning"
+    },
+    "authority": {
+      "target": "human_review",
+      "description": "High-stakes decision, irreversible action, or human authority required"
+    }
+  }
+}
