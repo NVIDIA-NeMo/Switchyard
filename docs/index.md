@@ -10,6 +10,8 @@ It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.
 | Run Switchyard as a standalone proxy for API clients | Server Path | [Build and run the Rust server](getting_started.md#server-path) |
 | Add Switchyard routing to a Rust application | Library Path | [`switchyard-libsy`](../crates/libsy/README.md) |
 | Add Switchyard routing to NeMo Relay | Native Plugin Path | [Use Switchyard with NeMo Relay](integrations/nemo_relay.md) |
+| Point the pi coding agent at the standalone proxy | Server Path | [Use Switchyard with pi](integrations/pi.md) |
+| Point Oh My Pi at the standalone proxy | Server Path | [Use Switchyard with Oh My Pi](integrations/oh_my_pi.md) |
 
 The Server Path builds and runs the standalone `switchyard-server` binary.
 
