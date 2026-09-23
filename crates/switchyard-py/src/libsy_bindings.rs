@@ -15,10 +15,11 @@ use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallDecision, CallModel, CapabilityJudgeConfig, ClassifierContractConfig,
     ClassifierResponseFormat, ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy,
-    DecisionJudgeConfig, DeescalationConfig, EscalationJudgeConfig, HandoffNoteConfig,
-    LibsyError as RustLibsyError, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
-    LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter,
-    StageRouterConfig, State, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, DeescalationConfig, EscalationJudgeConfig,
+    HandoffNoteConfig, LibsyError as RustLibsyError, LlmCapabilityConfig, LlmClassifierConfig,
+    LlmFallback, LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels,
+    StageRouter, StageRouterConfig, State, Step as RustStep, StepStream, TaskClassifierConfig,
+    ToolSemantics,
 };
 use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
@@ -371,6 +372,7 @@ impl PyTaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold,
                     threshold_step,
+                    unmatched_steps: DEFAULT_UNMATCHED_STEPS,
                     contract: classifier_contract(prompt, response_format_type)?,
                     max_output_tokens,
                 }),

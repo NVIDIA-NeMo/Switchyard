@@ -141,6 +141,13 @@ fn invalid_routing_configuration_is_rejected() {
             ),
             "bogus",
         ),
+        (
+            DEPLOYMENT.replace(
+                "weak_target = \"fast\"\n",
+                "weak_target = \"fast\"\nunmatched_steps = 2\n",
+            ),
+            "decision cannot use LLM judge settings",
+        ),
     ] {
         let error = AlgorithmFactory::from_toml(&source)
             .and_then(|factory| factory.build())

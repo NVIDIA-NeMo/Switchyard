@@ -13,11 +13,11 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
-    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
-    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
-    Vgr, VgrConfig,
+    DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
+    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels,
+    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -301,6 +301,9 @@ pub struct LlmClassifierRouteConfig {
     /// Capability mode: how much to raise the threshold when the judge is
     /// uncertain. Added once for an uncertain verdict and twice for unsupported.
     pub threshold_step: Option<f64>,
+    /// Capability mode: threshold steps for an unmatched verdict (no capability rule
+    /// applies). 1 by default, the same as uncertain; 2 treats it like unsupported.
+    pub unmatched_steps: Option<u8>,
     /// Capability mode: routes to the capable tier on judge client failures and deadlines.
     /// Defaults to true when capability mode is selected.
     pub fail_open: Option<bool>,
@@ -1181,6 +1184,7 @@ impl LlmClassifierRouteConfig {
             weak_target,
             base_threshold,
             threshold_step,
+            unmatched_steps,
             fail_open,
             classify_trigger,
             message_hash_fallback,
@@ -1234,6 +1238,7 @@ impl LlmClassifierRouteConfig {
                 let judge = if let Some(decision) = decision {
                     if base_threshold.is_some()
                         || threshold_step.is_some()
+                        || unmatched_steps.is_some()
                         || prompt.is_some()
                         || *response_format_type != ClassifierResponseFormat::JsonSchema
                         || *max_output_tokens != default_classifier_max_output_tokens()
@@ -1251,6 +1256,7 @@ impl LlmClassifierRouteConfig {
                             base_threshold,
                         )?,
                         threshold_step: threshold_step.unwrap_or_default(),
+                        unmatched_steps: unmatched_steps.unwrap_or(DEFAULT_UNMATCHED_STEPS),
                         contract: classifier_contract(prompt.as_deref())
                             .with_response_format_type(*response_format_type),
                         max_output_tokens: *max_output_tokens,
@@ -1293,6 +1299,7 @@ impl LlmClassifierRouteConfig {
                 }
                 let has_capability_settings = base_threshold.is_some()
                     || threshold_step.is_some()
+                    || unmatched_steps.is_some()
                     || fail_open.is_some()
                     || *message_hash_fallback
                     || recent_turn_window.is_some();
@@ -1305,7 +1312,7 @@ impl LlmClassifierRouteConfig {
                     // Existing files that select escalation through the `escalation` table alone
                     // keep loading, but their capability keys do nothing in this mode.
                     tracing::warn!(
-                        "llm_classifier route {route_name} runs in escalation mode because it has an escalation table; base_threshold, threshold_step, fail_open, recent_turn_window and message_hash_fallback are ignored in this mode. Set mode = \"escalation\" and remove them."
+                        "llm_classifier route {route_name} runs in escalation mode because it has an escalation table; base_threshold, threshold_step, unmatched_steps, fail_open, recent_turn_window and message_hash_fallback are ignored in this mode. Set mode = \"escalation\" and remove them."
                     );
                 }
                 Ok(LlmClassifierModeConfig::Escalation(
@@ -1334,6 +1341,7 @@ impl LlmClassifierRouteConfig {
                     || weak_target.is_some()
                     || base_threshold.is_some()
                     || threshold_step.is_some()
+                    || unmatched_steps.is_some()
                     || escalation.is_some()
                     || *response_format_type != ClassifierResponseFormat::JsonSchema
                 {

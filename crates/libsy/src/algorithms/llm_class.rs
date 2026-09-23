@@ -77,10 +77,15 @@ impl TaskClassifierVerdict {
     }
 
     /// Returns the number of threshold steps assigned to this capability boundary.
-    fn boundary_steps(&self) -> Option<u8> {
+    ///
+    /// `unmatched_steps` comes from the route configuration: a request that matches no
+    /// capability rule has no evidence behind its solve probability, so operators can
+    /// require more confidence for it than for an uncertain verdict.
+    fn boundary_steps(&self, unmatched_steps: u8) -> Option<u8> {
         match self.capability_boundary.as_str() {
             "supported" => Some(0),
-            "uncertain" | "unmatched" => Some(1),
+            "uncertain" => Some(1),
+            "unmatched" => Some(unmatched_steps),
             "unsupported" => Some(2),
             _ => None,
         }
@@ -232,6 +237,7 @@ impl ClassifierInput for TaskInput {
 struct TaskClassifierPolicy {
     base_threshold: f64,
     threshold_step: f64,
+    unmatched_steps: u8,
 }
 
 impl TaskClassifierPolicy {
@@ -239,12 +245,14 @@ impl TaskClassifierPolicy {
         Self {
             base_threshold: config.base_threshold,
             threshold_step: config.threshold_step,
+            unmatched_steps: config.unmatched_steps,
         }
     }
 
     /// Returns the required solve probability for one validated verdict.
     fn threshold(&self, verdict: &TaskClassifierVerdict) -> Option<f64> {
-        Some(self.base_threshold + f64::from(verdict.boundary_steps()?) * self.threshold_step)
+        let steps = verdict.boundary_steps(self.unmatched_steps)?;
+        Some(self.base_threshold + f64::from(steps) * self.threshold_step)
     }
 }
 
@@ -346,8 +354,12 @@ pub struct LlmCapabilityConfig {
     /// Lowest solve probability that routes a supported task to the efficient target.
     pub base_threshold: f64,
     /// Amount added per capability-boundary step: zero for supported, one for
-    /// uncertain or unmatched, and two for unsupported.
+    /// uncertain, `unmatched_steps` for unmatched, and two for unsupported.
     pub threshold_step: f64,
+    /// Threshold steps applied to an unmatched verdict (no capability rule applies).
+    ///
+    /// Defaults to 1, the same as an uncertain verdict. 2 treats it like unsupported.
+    pub unmatched_steps: u8,
     /// Prompt and verdict contract settings for the classifier judge.
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
@@ -359,6 +371,7 @@ impl Default for LlmCapabilityConfig {
         Self {
             base_threshold: 0.0,
             threshold_step: 0.0,
+            unmatched_steps: DEFAULT_UNMATCHED_STEPS,
             contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
@@ -374,6 +387,8 @@ struct TaskClassifierConfigWire {
     fail_open: bool,
     #[serde(default)]
     threshold_step: f64,
+    #[serde(default = "default_unmatched_steps")]
+    unmatched_steps: u8,
     #[serde(default)]
     classify_trigger: ClassifyTrigger,
     #[serde(default)]
@@ -403,6 +418,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                 base_threshold: wire.base_threshold,
                 threshold_step: wire.threshold_step,
+                unmatched_steps: wire.unmatched_steps,
                 contract,
                 max_output_tokens: wire.max_output_tokens,
             }),
@@ -416,6 +432,13 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
 
 const fn default_fail_open() -> bool {
     true
+}
+
+/// Unmatched verdicts share the uncertain step unless the route says otherwise.
+pub const DEFAULT_UNMATCHED_STEPS: u8 = 1;
+
+const fn default_unmatched_steps() -> u8 {
+    DEFAULT_UNMATCHED_STEPS
 }
 
 const fn default_judge_max_output_tokens() -> u64 {
@@ -449,6 +472,14 @@ impl LlmCapabilityConfig {
                 message: format!(
                     "threshold_step must be finite and greater than or equal to 0, got {}",
                     self.threshold_step
+                ),
+            });
+        }
+        if self.unmatched_steps > 2 {
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "unmatched_steps must be 0, 1, or 2, got {}",
+                    self.unmatched_steps
                 ),
             });
         }
@@ -1721,6 +1752,55 @@ mod tests {
             "efficient"
         );
         Ok(())
+    }
+
+    #[test]
+    fn unmatched_steps_raise_only_the_unmatched_threshold() -> Result<()> {
+        let policy = TaskClassifierPolicy::new(&LlmCapabilityConfig {
+            threshold_step: 0.1,
+            unmatched_steps: 2,
+            ..llm_config(0.75)
+        });
+
+        // 0.85 clears one step but not two: unmatched now routes to the capable target.
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.85, "unmatched", "none")))?,
+            "capable"
+        );
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.95, "unmatched", "none")))?,
+            "efficient"
+        );
+        // Other boundaries keep their steps.
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.85, "uncertain", "UNC-1")))?,
+            "efficient"
+        );
+        assert_eq!(
+            selected(&policy, Some(&verdict(0.75, "supported", "SUP-2")))?,
+            "efficient"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unmatched_steps_default_to_one_and_reject_values_above_two() {
+        let parsed: TaskClassifierConfig =
+            serde_json::from_value(serde_json::json!({ "base_threshold": 0.5 }))
+                .expect("config without unmatched_steps parses");
+        let CapabilityJudgeConfig::Llm(judge) = &parsed.judge else {
+            panic!("a flat capability config builds an LLM judge");
+        };
+        assert_eq!(judge.unmatched_steps, 1);
+
+        let invalid = TaskClassifierConfig {
+            judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                unmatched_steps: 3,
+                ..llm_config(0.5)
+            }),
+            ..TaskClassifierConfig::default()
+        };
+        assert!(invalid.validate().is_err());
     }
 
     /// The text of each message a judge with `recent_turn_window` would be sent.
