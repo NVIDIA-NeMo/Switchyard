@@ -267,6 +267,30 @@ bash benchmark/run-baseline.sh \
 Tune `--n-concurrent` for your machine and provider quota. Use `--task-id`, `--task-list-file`, or
 `--n-tasks` for subsets.
 
+### Run with the pi coding agent
+
+```bash
+bash benchmark/run-baseline.sh \
+  --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
+  --server-config benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml \
+  --agent pi \
+  --model switchyard \
+  --reasoning-effort high \
+  --harbor-extra --ae --harbor-extra PI_CONTEXT_WINDOW=200000 \
+  --harbor-extra --ae --harbor-extra PI_MAX_OUTPUT_TOKENS=32000 \
+  --n-concurrent 8 \
+  --max-retries 2
+```
+
+With `--server-config`, the script passes the model label `switchyard/<route>` to Harbor's pi
+agent. The patched agent then writes `~/.pi/agent/models.json` inside the task container. That file
+defines a `switchyard` provider that points at `OPENAI_BASE_URL` and uses the `openai-completions`
+API. The agent environment variables `PI_CONTEXT_WINDOW` and `PI_MAX_OUTPUT_TOKENS` set
+`contextWindow` and `maxTokens` on that model entry. When they are unset, pi uses its defaults of
+128000 and 16384. `--reasoning-effort` sets pi's `--thinking` level, so pass one of `off`,
+`minimal`, `low`, `medium`, `high`, or `xhigh`. Without `--server-config`, pass pi's own provider
+label as `--model`, for example `openrouter/openai/gpt-5.5`.
+
 ## Inspect A Run
 
 Run directories are created under `benchmark/tb_runs/`. The most useful artifacts are:
