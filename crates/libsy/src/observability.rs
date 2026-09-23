@@ -33,7 +33,9 @@
 //! negligible next to a model call.
 
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::rt::Instant;
 
 use opentelemetry::metrics::Meter;
 use opentelemetry::{KeyValue, global};

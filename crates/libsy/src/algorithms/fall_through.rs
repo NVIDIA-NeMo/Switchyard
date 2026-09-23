@@ -19,13 +19,18 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Once, Weak},
-    time::{Duration, Instant},
+    sync::{Arc, Once},
+    time::Duration,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Weak;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
+
+use crate::rt::Instant;
 
 use crate::core::algorithm::{self, Algorithm, Driver};
 use crate::core::classifier::{Classifier, Score};
@@ -58,6 +63,8 @@ pub struct FallThrough<S = ()> {
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
+    #[cfg(target_arch = "wasm32")]
+    next_cleanup: Mutex<Instant>,
 }
 
 impl FallThrough<()> {
@@ -69,6 +76,8 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             session_states: None,
             cleanup_started: Once::new(),
+            #[cfg(target_arch = "wasm32")]
+            next_cleanup: Mutex::new(Instant::now() + SESSION_CLEANUP_INTERVAL),
         }
     }
 }
@@ -85,6 +94,8 @@ where
             classifiers: Vec::new(),
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
+            #[cfg(target_arch = "wasm32")]
+            next_cleanup: Mutex::new(Instant::now() + SESSION_CLEANUP_INTERVAL),
         }
     }
 
@@ -128,7 +139,12 @@ where
         };
         let states = Arc::downgrade(states);
         self.cleanup_started.call_once(move || {
+            // Timer-driven background cleanup needs a Tokio runtime; wasm hosts
+            // sweep expired sessions inline in `session_state` instead.
+            #[cfg(not(target_arch = "wasm32"))]
             drop(tokio::spawn(cleanup_inactive_sessions(states)));
+            #[cfg(target_arch = "wasm32")]
+            drop(states);
         });
     }
 
@@ -184,8 +200,16 @@ where
     fn session_state(&self, request: &Request) -> Option<Arc<AsyncMutex<S>>> {
         let states = self.session_states.as_ref()?;
         let session_id = session_id(request)?;
-        let mut states = states.lock();
         let now = Instant::now();
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut next_cleanup = self.next_cleanup.lock();
+            if now >= *next_cleanup {
+                remove_inactive_sessions(states, now, SESSION_STATE_TTL);
+                *next_cleanup = now + SESSION_CLEANUP_INTERVAL;
+            }
+        }
+        let mut states = states.lock();
         let session = states.entry(session_id).or_insert_with(|| SessionState {
             state: Arc::new(AsyncMutex::new(S::default())),
             last_accessed: now,
@@ -246,6 +270,7 @@ where
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 async fn cleanup_inactive_sessions<S>(states: Weak<SessionStates<S>>)
 where
     S: Send + 'static,

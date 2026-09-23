@@ -109,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust components
-        run: rustup component add rustfmt clippy
+        run: rustup component add rustfmt clippy && rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-bin: false
@@ -120,6 +120,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: cargo clippy (prefill-router)
         run: cargo clippy -p switchyard-server --all-targets --features prefill-router --locked -- -D warnings
+      - name: cargo clippy (libsy, wasm32)
+        run: cargo clippy -p switchyard-libsy --target wasm32-unknown-unknown --locked -- -D warnings
       - name: cargo test
         run: cargo test --workspace --locked
       - name: cargo test (prefill-router)
