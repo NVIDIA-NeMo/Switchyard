@@ -6,6 +6,7 @@
 
 pub mod category;
 pub mod client;
+pub mod codex_namespaces;
 pub mod envelope;
 pub mod format;
 pub mod llm;

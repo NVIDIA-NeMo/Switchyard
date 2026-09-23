@@ -1718,6 +1718,23 @@ async fn classifier_stops_on_client_errors_and_records_verdict_fallback()
         }
 
         let snapshots = flushed_metrics(exporter, provider);
+        let outcome = match client.outcome {
+            JudgeOutcome::CallFailure | JudgeOutcome::StreamDecodeFailure => "error",
+            JudgeOutcome::Reply(_) => "ok",
+        };
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.llm_calls",
+                &[
+                    ("algorithm", "llm_task_classifier"),
+                    ("selected_model", judge_model),
+                    ("outcome", outcome),
+                ],
+            ),
+            Some(1),
+            "logical call accounting for {judge_model}"
+        );
         match expected_reason {
             Some(reason) => assert_eq!(
                 u64_counter_value(

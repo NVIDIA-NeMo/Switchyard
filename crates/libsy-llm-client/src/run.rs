@@ -185,7 +185,7 @@ async fn serve(
     };
     let target = call.models.first().ok_or(LibsyError::NoTargets)?;
     let request = clients.prepare_routing_request(call.request.clone(), target);
-    let response = call_one(
+    match call_one(
         &clients,
         target,
         request,
@@ -195,8 +195,11 @@ async fn serve(
         call.models.len(),
         true,
     )
-    .await?;
-    call.respond(Ok(response))
+    .await
+    {
+        Ok(response) => call.respond(Ok(response)),
+        Err(error) => call.fail(error),
+    }
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.
