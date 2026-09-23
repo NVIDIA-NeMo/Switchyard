@@ -183,11 +183,13 @@ static GIT_READ_SUBCOMMANDS: &[&str] = &[
     "tag",
 ];
 
-static READ_TOOL_NAMES: &[&str] = &["read", "view", "read_file", "search_files"];
+static READ_TOOL_NAMES: &[&str] = &[
+    "read", "view", "read_file", "search_files", "glob", "grep", "find", "ls",
+];
 
 // Planning / scratchpad tool calls — investigative (non-producing) activity.
 // `update_plan` is codex's equivalent of `todowrite`.
-static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_plan"];
+static PLAN_TOOL_NAMES: &[&str] = &["todowrite", "todo_write", "todo", "update_plan", "todo_list"];
 
 // Tool names that route through Bash-command pattern matching. `bash` is
 // claude-code's name; `shell_command` is codex's; `shell` / `local_shell_call`
@@ -200,6 +202,8 @@ static BASH_TOOL_NAMES: &[&str] = &[
     "local_shell_call",
     "terminal",
     "exec_command", // codex
+    "exec",         // openclaw
+    "powershell",   // pi on Windows
 ];
 
 // Prefer false negatives: tests_passed clears a capable hold, so a false positive
