@@ -291,7 +291,7 @@ impl TranslatingLlmClient {
         apply_reasoning_effort(&mut body, backend);
         // The effort override replaces any injected `reasoning_effort` with the backend
         // setting, so a reject of that field must not blame `extra_body`.
-        if backend.reasoning_effort().is_some() {
+        if matches!(backend, Backend::OpenAiChat(_)) && backend.reasoning_effort().is_some() {
             injected_extra_body.retain(|key| key != "reasoning_effort");
         }
         if matches!(backend, Backend::Anthropic(_)) {
@@ -1219,15 +1219,36 @@ fn is_param_reject(status: http::StatusCode, body: &str) -> bool {
         .any(|phrase| lowered.contains(phrase))
 }
 
-/// The injected keys the upstream body actually names, matched
-/// case-insensitively. A reject that names no injected key is not attributable
-/// to `extra_body`: the rejected field came from the caller, so converting
-/// would blame the wrong keys and lose the original error.
+// Attribute only an explicit rejected field, never a key mentioned elsewhere in the body.
 fn injected_keys_named_by_upstream(body: &str, injected: &[String]) -> Vec<String> {
-    let lowered = body.to_ascii_lowercase();
+    let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
+    let error = parsed.get("error").unwrap_or(&parsed);
+    let parameter = error.get("param").and_then(Value::as_str);
+    let message = error.get("message").and_then(Value::as_str).unwrap_or(body);
+    let rejected = parameter.or_else(|| {
+        let lowered = message.to_ascii_lowercase();
+        PARAM_REJECT_PHRASES.iter().find_map(|phrase| {
+            let offset = lowered.find(phrase)? + phrase.len();
+            let suffix =
+                message[offset..].trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ':');
+            let suffix = suffix.strip_prefix("argument ").unwrap_or(suffix);
+            if let Some(quote) = suffix
+                .chars()
+                .next()
+                .filter(|c| matches!(c, '\'' | '"' | '`'))
+            {
+                let quoted = &suffix[quote.len_utf8()..];
+                return quoted.find(quote).map(|end| &quoted[..end]);
+            }
+            let end = suffix
+                .find(|c: char| c.is_ascii_whitespace() || matches!(c, ',' | ';'))
+                .unwrap_or(suffix.len());
+            (end > 0).then_some(&suffix[..end])
+        })
+    });
     injected
         .iter()
-        .filter(|key| lowered.contains(key.to_ascii_lowercase().as_str()))
+        .filter(|key| rejected == Some(key.as_str()))
         .cloned()
         .collect()
 }
@@ -3284,6 +3305,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn rejected_parameter_attribution_requires_an_exact_field() {
+        let injected = vec!["max_tokens".to_string()];
+        for body in [
+            r#"{"error":{"message":"unknown parameter: max_tokens_per_second"}}"#,
+            r#"{"error":{"message":"unknown parameter: other; request contained max_tokens"}}"#,
+            r#"{"error":{"message":"unknown parameter: 'max_tokens per_second'"}}"#,
+            r#"{"error":{"message":"unknown parameter: 'max_tokens,other'"}}"#,
+            r#"{"error":{"message":"unknown parameter: 'max_tokens"}}"#,
+            r#"{"error":{"message":"unknown parameter: max_tokens[0]"}}"#,
+            r#"{"error":{"message":"unknown parameter: max_tokens/per_second"}}"#,
+            r#"{"error":{"param":"other","message":"unknown parameter: max_tokens"}}"#,
+        ] {
+            assert!(injected_keys_named_by_upstream(body, &injected).is_empty());
+        }
+        assert_eq!(
+            injected_keys_named_by_upstream(
+                r#"{"error":{"param":"max_tokens","message":"unknown parameter"}}"#,
+                &injected,
+            ),
+            injected,
+        );
+        assert_eq!(
+            injected_keys_named_by_upstream(
+                r#"{"error":{"message":"unknown parameter: 'max_tokens'"}}"#,
+                &injected,
+            ),
+            injected,
+        );
+    }
+
     #[tokio::test]
     async fn an_extra_body_reject_is_reported_as_a_configuration_error()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -3475,6 +3527,44 @@ mod tests {
         };
         assert_eq!(*status, http::StatusCode::BAD_REQUEST);
         assert!(body.contains("reasoning_effort"), "{body}");
+        Ok(())
+    }
+    #[tokio::test]
+    async fn responses_reasoning_effort_injection_remains_attributable()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        // Responses writes reasoning.effort, leaving the injected top-level key intact.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "unknown parameter: reasoning_effort"}
+            })))
+            .mount(&server)
+            .await;
+        let mut backend = config(&format!("{}/v1", server.uri()));
+        backend.reasoning_effort = Some("max".to_string());
+        backend.extra_body = BTreeMap::from([("reasoning_effort".to_string(), json!("low"))]);
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(backend),
+            None,
+        )])?;
+
+        let error = client
+            .call_rewrite_model_raw(
+                json!({"model": "client-facing", "messages": [{"role": "user", "content": "hi"}]}),
+                None,
+                Some(&ModelId::new("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .err()
+            .ok_or("expected the call to fail")?;
+
+        let LlmClientError::Configuration { message } = &error else {
+            return Err(format!("expected a configuration error, got {error:?}").into());
+        };
+        assert!(message.contains("reasoning_effort"), "{message}");
         Ok(())
     }
 }
