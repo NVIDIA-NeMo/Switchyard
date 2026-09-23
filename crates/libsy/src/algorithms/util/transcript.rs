@@ -112,7 +112,11 @@ pub(super) fn collect_text(
                 parts.push(format!("tool_call {}({})", call.name, call.arguments));
             }
             ContentBlock::ToolResult(result) => collect_text(&result.content, parts, &[]),
-            _ => {}
+            _ => {
+                if let Some(marker) = super::judge_text::attachment_marker(block) {
+                    parts.push(marker.to_string());
+                }
+            }
         }
     }
 }
@@ -121,7 +125,7 @@ pub(super) fn collect_text(
 mod tests {
     use super::message_text;
     use serde_json::json;
-    use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
+    use switchyard_protocol::{ContentBlock, ImageSource, Message, Role, ToolCall, ToolResult};
 
     #[test]
     fn message_text_keeps_tool_calls_and_results() {
@@ -153,6 +157,34 @@ mod tests {
             })],
         };
         assert_eq!(message_text(&result), "no such file");
+    }
+
+    /// Attachments, including those inside tool results, render as markers without payload.
+    #[test]
+    fn message_text_marks_attachments_without_their_payload() {
+        let image = ContentBlock::Image {
+            source: ImageSource::Base64 {
+                media_type: Some("image/png".to_string()),
+                data: "private-payload".to_string(),
+            },
+        };
+        let message = Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: vec![
+                    ContentBlock::Text {
+                        text: "screenshot saved".to_string(),
+                    },
+                    image,
+                ],
+                is_error: Some(false),
+            })],
+        };
+
+        let text = message_text(&message);
+
+        assert_eq!(text, "screenshot saved [image attachment]");
     }
 
     /// A raw command batch fully mirrored by structured tool calls is emptied in the judge view.
