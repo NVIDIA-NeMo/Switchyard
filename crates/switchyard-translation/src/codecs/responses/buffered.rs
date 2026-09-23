@@ -33,6 +33,9 @@ use crate::util::{
     push_lossy, stable_id, string_value, validate_request_capabilities,
 };
 
+/// Reasoning controls the OpenAI Responses request body defines.
+const RESPONSES_REASONING_KEYS: [&str; 3] = ["effort", "generate_summary", "summary"];
+
 /// Format codec for OpenAI Responses payloads.
 pub struct OpenAiResponsesCodec;
 
@@ -256,13 +259,31 @@ impl FormatCodec for OpenAiResponsesCodec {
                 json!({"format": encode_responses_text_format(response_format)}),
             );
         }
-        let mut reasoning = request
-            .reasoning
-            .raw
-            .as_ref()
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        let mut reasoning = Map::new();
+        if let Some(raw) = request.reasoning.raw.as_ref().and_then(Value::as_object) {
+            // `raw` holds the source format's reasoning controls verbatim. Only the keys
+            // Responses itself defines can be replayed here. Carrying the rest forward
+            // publishes another provider's spelling under a Responses field name.
+            let mut dropped: Vec<&str> = Vec::new();
+            for (key, value) in raw {
+                if RESPONSES_REASONING_KEYS.contains(&key.as_str()) {
+                    reasoning.insert(key.clone(), value.clone());
+                } else {
+                    dropped.push(key.as_str());
+                }
+            }
+            if !dropped.is_empty() {
+                dropped.sort_unstable();
+                push_lossy(
+                    &mut diagnostics,
+                    _policy,
+                    format!(
+                        "reasoning controls have no OpenAI Responses representation and were dropped: {}",
+                        dropped.join(", ")
+                    ),
+                )?;
+            }
+        }
         if let Some(effort) = &request.reasoning.effort {
             reasoning.insert("effort".to_string(), json!(effort));
         }
