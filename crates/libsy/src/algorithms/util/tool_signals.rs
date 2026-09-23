@@ -764,14 +764,18 @@ fn extract_tool_signals_with_window_and_semantics(
                         .or_else(|| mcp_tool_name(&call.name));
                     let command = command_of(&call.arguments);
                     if !call.id.is_empty() {
-                        // Same precedence as `build_signal`: the joined name wins.
+                        // The joined name wins, as in `build_signal`. A joined name
+                        // configured as observe still counts when its bare name is a
+                        // retrieval tool, such as `mcp__files__read`.
                         let full = classify_tool_call_with_semantics(
                             &call.name,
                             command.as_deref(),
                             semantics,
                         );
                         let name = match (full, bare_name) {
-                            (ToolSemantic::Unknown, Some(bare_name)) => bare_name,
+                            (ToolSemantic::Unknown | ToolSemantic::Observe, Some(bare_name)) => {
+                                bare_name
+                            }
                             _ => call.name.as_str(),
                         };
                         // A reused ID links to its latest call.
