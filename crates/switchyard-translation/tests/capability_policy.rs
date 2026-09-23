@@ -31,7 +31,6 @@ const CASES: [CapabilityCase; 7] = [
     CapabilityCase::StructuredOutput,
 ];
 
-// Build an LLM request with content corresponding to the specified capability case.
 fn request_for(case: CapabilityCase) -> LlmRequest {
     let mut request = LlmRequest::default();
     let content = match case {
@@ -82,24 +81,23 @@ fn request_for(case: CapabilityCase) -> LlmRequest {
     request
 }
 
-// Builds a translation policy for the capability case explicitly based on the value of supported.
 fn policy_for(
     case: CapabilityCase,
-    supported: bool,
+    is_supported: bool,
     lossy_conversion_policy: LossyConversionPolicy,
 ) -> TranslationPolicy {
     let mut target_capabilities = TargetCapabilities::default();
     match case {
-        CapabilityCase::Tools => target_capabilities.supports_tools = Some(supported),
-        CapabilityCase::Images => target_capabilities.supports_images = Some(supported),
-        CapabilityCase::Audio => target_capabilities.supports_audio = Some(supported),
-        CapabilityCase::Video => target_capabilities.supports_video = Some(supported),
-        CapabilityCase::Files => target_capabilities.supports_files = Some(supported),
+        CapabilityCase::Tools => target_capabilities.supports_tools = Some(is_supported),
+        CapabilityCase::Images => target_capabilities.supports_images = Some(is_supported),
+        CapabilityCase::Audio => target_capabilities.supports_audio = Some(is_supported),
+        CapabilityCase::Video => target_capabilities.supports_video = Some(is_supported),
+        CapabilityCase::Files => target_capabilities.supports_files = Some(is_supported),
         CapabilityCase::ReasoningEffort => {
-            target_capabilities.supports_reasoning_effort = Some(supported);
+            target_capabilities.supports_reasoning_effort = Some(is_supported);
         }
         CapabilityCase::StructuredOutput => {
-            target_capabilities.supports_json_schema_response_format = Some(supported);
+            target_capabilities.supports_json_schema_response_format = Some(is_supported);
         }
     }
     TranslationPolicy {
