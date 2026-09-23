@@ -1556,11 +1556,12 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
         "created": 0,
         "owned_by": "switchyard",
         "display_name": model,
+        // OpenAI-compatible clients read the context window from this field.
+        "context_length": capabilities.context_window,
         "capabilities": {
             "streaming": true,
             "tool_calling": capabilities.tool_calling,
             "vision": capabilities.vision,
-            "context_window": capabilities.context_window,
             "supported_inbound_formats": [
                 "openai-chat-completions",
                 "openai-responses",

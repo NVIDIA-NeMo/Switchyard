@@ -3432,21 +3432,22 @@ target = "shared"
     assert_eq!(models.status, StatusCode::OK);
     let body = models.json()?;
     let data = body["data"].as_array().cloned().unwrap_or_default();
-    let capabilities = data
+    let entries = data
         .iter()
-        .filter_map(|entry| entry["id"].as_str().map(|id| (id, &entry["capabilities"])))
+        .filter_map(|entry| entry["id"].as_str().map(|id| (id, entry)))
         .collect::<BTreeMap<_, _>>();
+    let capabilities = |id: &str| &entries[id]["capabilities"];
 
-    assert_eq!(capabilities["declared"]["context_window"], json!(1_000_000));
-    assert_eq!(capabilities["declared"]["tool_calling"], json!(true));
-    assert_eq!(capabilities["restricted"]["context_window"], json!(262_000));
-    assert_eq!(capabilities["restricted"]["tool_calling"], json!(false));
-    assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
-    assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
+    assert_eq!(entries["declared"]["context_length"], json!(1_000_000));
+    assert_eq!(capabilities("declared")["tool_calling"], json!(true));
+    assert_eq!(entries["restricted"]["context_length"], json!(262_000));
+    assert_eq!(capabilities("restricted")["tool_calling"], json!(false));
+    assert_eq!(entries["undeclared"]["context_length"], json!(null));
+    assert_eq!(capabilities("undeclared")["tool_calling"], json!(null));
 
-    assert_eq!(capabilities["declared"]["vision"], json!(true));
-    assert_eq!(capabilities["restricted"]["vision"], json!(false));
-    assert_eq!(capabilities["undeclared"]["vision"], json!(null));
+    assert_eq!(capabilities("declared")["vision"], json!(true));
+    assert_eq!(capabilities("restricted")["vision"], json!(false));
+    assert_eq!(capabilities("undeclared")["vision"], json!(null));
     assert_eq!(body["models"], json!([]));
 
     Ok(())

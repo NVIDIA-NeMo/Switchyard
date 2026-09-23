@@ -147,9 +147,15 @@ are required. All configured semantic names use exact ASCII case-insensitive mat
 handoff notes, per-tier system prompts, and a capability-judge fallback are documented in
 [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
 
-## Codex model discovery
+## Model discovery
 
 `GET /v1/models` returns the standard `data` list and an empty Codex `models` list.
+Each entry reports the route's declared `tool_calling` and `vision` under `capabilities`.
+It reports the route's declared `context_window` as the top-level `context_length` field.
+OpenAI-compatible clients such as Oh My Pi read `context_length` when they build their
+model list from this endpoint. See
+[Use Switchyard with Oh My Pi](../../docs/integrations/oh_my_pi.md).
+
 Codex keeps its own model catalog and instructions. Select a Switchyard route explicitly
 with `codex --model route-id`; route aliases do not appear automatically in Codex's model
 picker. Unknown aliases use Codex's generic defaults and do not receive Switchyard's
