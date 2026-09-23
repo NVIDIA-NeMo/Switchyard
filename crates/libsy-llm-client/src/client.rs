@@ -285,10 +285,15 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
-        let injected_extra_body = merge_extra_body(&mut body, backend.extra_body());
+        let mut injected_extra_body = merge_extra_body(&mut body, backend.extra_body());
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
+        // The effort override replaces any injected `reasoning_effort` with the backend
+        // setting, so a reject of that field must not blame `extra_body`.
+        if backend.reasoning_effort().is_some() {
+            injected_extra_body.retain(|key| key != "reasoning_effort");
+        }
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
         }
@@ -303,8 +308,9 @@ impl TranslatingLlmClient {
         // A 400/422 naming a parameter this target injected is a deployment
         // misconfiguration, not a transient upstream fault. `extra_body` is
         // static, so retrying would fail the same way on every later request;
-        // 400/422 are not retried, so the error below is final. Report it as a
-        // configuration error naming the keys instead of an upstream failure.
+        // 400/422 are not retried, so the error below is final. Only a reject
+        // that names an injected key converts: a reject naming any other field
+        // is the caller's, and blaming `extra_body` would misdirect the operator.
         match self
             .send_with_retries(&url, backend, &body, metadata, model, streaming)
             .await
@@ -312,7 +318,12 @@ impl TranslatingLlmClient {
             Err(LlmClientError::UpstreamHttp { status, body })
                 if !injected_extra_body.is_empty() && is_param_reject(status, &body) =>
             {
-                Err(extra_body_rejected(model, &injected_extra_body))
+                let named = injected_keys_named_by_upstream(&body, &injected_extra_body);
+                if named.is_empty() {
+                    Err(LlmClientError::UpstreamHttp { status, body })
+                } else {
+                    Err(extra_body_rejected(model, &named))
+                }
             }
             result => result,
         }
@@ -1208,10 +1219,24 @@ fn is_param_reject(status: http::StatusCode, body: &str) -> bool {
         .any(|phrase| lowered.contains(phrase))
 }
 
+/// The injected keys the upstream body actually names, matched
+/// case-insensitively. A reject that names no injected key is not attributable
+/// to `extra_body`: the rejected field came from the caller, so converting
+/// would blame the wrong keys and lose the original error.
+fn injected_keys_named_by_upstream(body: &str, injected: &[String]) -> Vec<String> {
+    let lowered = body.to_ascii_lowercase();
+    injected
+        .iter()
+        .filter(|key| lowered.contains(key.to_ascii_lowercase().as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Builds the error returned when an upstream rejects a parameter this target
-/// injected. Names the keys so the operator can correct `extra_body` in the
-/// deployment TOML. The upstream body is left out on purpose: it can quote the
-/// request back, and the key names are enough to act on.
+/// injected. Names exactly the injected keys the upstream named so the operator
+/// can correct `extra_body` in the deployment TOML. The upstream body is left
+/// out on purpose: it can quote the request back, and the key names are enough
+/// to act on.
 fn extra_body_rejected(model: &ModelId, injected: &[String]) -> LlmClientError {
     LlmClientError::Configuration {
         message: format!(
@@ -3334,6 +3359,122 @@ mod tests {
             return Err(format!("expected an upstream error, got {error:?}").into());
         };
         assert_eq!(*status, http::StatusCode::BAD_REQUEST);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_reject_naming_an_uninjected_parameter_preserves_the_upstream_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        // `extra_body` injects `service_tier`, but the upstream rejects the
+        // caller-supplied `max_tokens`. Converting would blame `service_tier`
+        // and lose the original error.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "unknown parameter: max_tokens"}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            BTreeMap::from([("service_tier".to_string(), json!("flex"))]),
+        ))?;
+
+        let error = client
+            .call_rewrite_model_raw(
+                json!({"model": "client-facing", "messages": [{"role": "user", "content": "hi"}]}),
+                None,
+                Some(&ModelId::new("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .err()
+            .ok_or("expected the call to fail")?;
+
+        let LlmClientError::UpstreamHttp { status, body } = &error else {
+            return Err(format!("expected an upstream error, got {error:?}").into());
+        };
+        assert_eq!(*status, http::StatusCode::BAD_REQUEST);
+        assert!(body.contains("max_tokens"), "{body}");
+        drop(server);
+
+        // When the upstream does name an injected key, only that key is named:
+        // the other injected key is not blamed.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "unknown parameter: enable_thinking"}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+            &format!("{}/v1", server.uri()),
+            BTreeMap::from([
+                ("service_tier".to_string(), json!("flex")),
+                ("enable_thinking".to_string(), json!(false)),
+            ]),
+        ))?;
+
+        let error = client
+            .call_rewrite_model_raw(
+                json!({"model": "client-facing", "messages": [{"role": "user", "content": "hi"}]}),
+                None,
+                Some(&ModelId::new("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .err()
+            .ok_or("expected the call to fail")?;
+
+        let LlmClientError::Configuration { message } = &error else {
+            return Err(format!("expected a configuration error, got {error:?}").into());
+        };
+        assert!(message.contains("enable_thinking"), "{message}");
+        assert!(!message.contains("service_tier"), "{message}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_overridden_reasoning_effort_reject_is_not_blamed_on_extra_body()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        // The backend `reasoning_effort` setting overrides the `extra_body`
+        // value, so a reject of `reasoning_effort` must not direct the operator
+        // to edit `extra_body`: the setting is what sends the rejected value.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": {"message": "unknown parameter: reasoning_effort"}
+            })))
+            .mount(&server)
+            .await;
+        let mut backend = config(&format!("{}/v1", server.uri()));
+        backend.reasoning_effort = Some("max".to_string());
+        backend.extra_body = BTreeMap::from([("reasoning_effort".to_string(), json!("low"))]);
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(backend),
+            None,
+        )])?;
+
+        let error = client
+            .call_rewrite_model_raw(
+                json!({"model": "client-facing", "messages": [{"role": "user", "content": "hi"}]}),
+                None,
+                Some(&ModelId::new("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await
+            .err()
+            .ok_or("expected the call to fail")?;
+
+        let LlmClientError::UpstreamHttp { status, body } = &error else {
+            return Err(format!("expected an upstream error, got {error:?}").into());
+        };
+        assert_eq!(*status, http::StatusCode::BAD_REQUEST);
+        assert!(body.contains("reasoning_effort"), "{body}");
         Ok(())
     }
 }
