@@ -12,10 +12,10 @@ use std::sync::Arc;
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
-    PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig,
+    SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -103,6 +103,7 @@ struct CapabilityClassifierRouteConfig {
     weak_target: String,
     base_threshold: f64,
     threshold_step: f64,
+    unmatched_steps: u8,
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
@@ -237,6 +238,9 @@ pub struct LlmClassifierRouteConfig {
     /// Capability mode: how much to raise the threshold when the judge is
     /// uncertain. Added once for an uncertain verdict and twice for unsupported.
     pub threshold_step: Option<f64>,
+    /// Capability mode: threshold steps for an unmatched verdict (no capability rule
+    /// applies). 1 by default, the same as uncertain; 2 treats it like unsupported.
+    pub unmatched_steps: Option<u8>,
     /// How often the judge runs: every request, once per user turn, or once per session.
     pub classify_trigger: ClassifyTrigger,
     /// Reuses the session's target by hashing the first user message when no
@@ -524,6 +528,7 @@ impl StageClassifierConfig {
         TaskClassifierConfig {
             base_threshold: self.base_threshold,
             threshold_step: self.threshold_step,
+            unmatched_steps: DEFAULT_UNMATCHED_STEPS,
             classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
@@ -878,6 +883,7 @@ impl LlmClassifierRouteConfig {
             weak_target,
             base_threshold,
             threshold_step,
+            unmatched_steps,
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
@@ -933,6 +939,7 @@ impl LlmClassifierRouteConfig {
                             base_threshold,
                         )?,
                         threshold_step: threshold_step.unwrap_or_default(),
+                        unmatched_steps: unmatched_steps.unwrap_or(DEFAULT_UNMATCHED_STEPS),
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
@@ -959,6 +966,7 @@ impl LlmClassifierRouteConfig {
                 if mode.is_some()
                     && (base_threshold.is_some()
                         || threshold_step.is_some()
+                        || unmatched_steps.is_some()
                         || *message_hash_fallback
                         || recent_turn_window.is_some())
                 {
@@ -992,6 +1000,7 @@ impl LlmClassifierRouteConfig {
                     || weak_target.is_some()
                     || base_threshold.is_some()
                     || threshold_step.is_some()
+                    || unmatched_steps.is_some()
                     || escalation.is_some()
                     || *response_format_type != ClassifierResponseFormat::JsonSchema
                 {
@@ -1231,6 +1240,7 @@ fn build_algorithm(
                     let classifier_config = TaskClassifierConfig {
                         base_threshold: config.base_threshold,
                         threshold_step: config.threshold_step,
+                        unmatched_steps: config.unmatched_steps,
                         classify_trigger: config.classify_trigger,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
