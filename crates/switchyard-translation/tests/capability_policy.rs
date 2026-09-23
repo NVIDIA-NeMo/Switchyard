@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tests for request capability policy validation.
-
 use serde_json::json;
 use switchyard_translation::util::validate_request_capabilities;
 use switchyard_translation::{
