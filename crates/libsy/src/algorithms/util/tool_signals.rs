@@ -107,6 +107,9 @@ static EDIT_TOOL_NAMES: &[&str] = &[
     "patch", // hermes's str_replace-style edit tool
 ];
 
+/// Editor tools whose `command` argument picks the action. `view` only reads.
+static EDITOR_TOOL_NAMES: &[&str] = &["str_replace_based_edit_tool", "text_editor"];
+
 static WRITE_TOOL_NAMES: &[&str] = &["write", "create_file", "new_file", "write_file"];
 
 // Bash subcommand patterns. Lowercased; callers must lowercase the command
@@ -491,6 +494,9 @@ fn classify_tool_call_with_semantics(
     let lower = name.to_lowercase();
     if WRITE_TOOL_NAMES.contains(&lower.as_str()) {
         return ToolSemantic::Mutate(MutationKind::Write);
+    }
+    if EDITOR_TOOL_NAMES.contains(&lower.as_str()) && command == Some("view") {
+        return ToolSemantic::Observe;
     }
     if EDIT_TOOL_NAMES.contains(&lower.as_str()) {
         return ToolSemantic::Mutate(MutationKind::Edit);
@@ -2049,6 +2055,49 @@ mod tests {
             classify_tool_call("shell_command", Some("./run_tests.sh")),
             ToolSemantic::Unknown,
         );
+    }
+
+    #[test]
+    fn text_editor_view_is_a_read() {
+        for name in ["str_replace_based_edit_tool", "text_editor"] {
+            assert_eq!(
+                classify_tool_call(name, Some("view")),
+                ToolSemantic::Observe
+            );
+            for command in [
+                Some("create"),
+                Some("insert"),
+                Some("str_replace"),
+                Some("undo_edit"),
+                None,
+            ] {
+                assert_eq!(
+                    classify_tool_call(name, command),
+                    ToolSemantic::Mutate(MutationKind::Edit),
+                );
+            }
+        }
+
+        let arguments = [
+            json!({"command": "view", "path": "/app/main.py"}),
+            // the Responses wire format sends arguments as a JSON string
+            json!(r#"{"command":"view","path":"/app/main.py"}"#),
+        ];
+        for arguments in arguments {
+            let call = Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: String::new(),
+                    name: "str_replace_based_edit_tool".to_string(),
+                    arguments,
+                })],
+            };
+            let request = with_messages(vec![call, tr("print('hi')")]);
+            let sig = ToolSignals::from_request(&request, None);
+            assert_eq!(sig.read_count, 1);
+            assert_eq!(sig.recent_read_count, 1);
+            assert_eq!(sig.edit_count, 0);
+        }
     }
 
     #[test]
