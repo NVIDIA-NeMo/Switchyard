@@ -117,6 +117,10 @@ impl JudgeRuntimeConfig {
         }
         Ok(Self { max_output_tokens })
     }
+
+    pub(crate) fn max_output_tokens(&self) -> u64 {
+        self.max_output_tokens
+    }
 }
 
 /// Reusable structured judge assembled from an input view, contract, and verdict decoder.
@@ -302,7 +306,7 @@ where
 /// `error` must already be redacted: `LlmClientError::UpstreamHttp`'s `Display` interpolates the
 /// raw upstream body, which can quote the conversation back. Callers pass a
 /// `robustness::safe_*` summary rather than the error itself.
-fn report_fail_open(judge_model: &str, error: String, reason: &'static str) {
+pub(crate) fn report_fail_open(judge_model: &str, error: String, reason: &'static str) {
     tracing::warn!(
         target: "libsy",
         judge_model,
@@ -322,7 +326,7 @@ pub(crate) fn libsy_error_reason(error: &LibsyError) -> &'static str {
 }
 
 /// Returns a bounded reason from the error kind and HTTP status only.
-fn client_error_reason(error: &LlmClientError) -> &'static str {
+pub(crate) fn client_error_reason(error: &LlmClientError) -> &'static str {
     match error {
         LlmClientError::Timeout { .. } => "timeout",
         LlmClientError::Transport { .. } => "transport",

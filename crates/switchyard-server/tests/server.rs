@@ -414,6 +414,10 @@ async fn upstream_chat(
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
+    } else if model == "model/rlcd-decision" {
+        // The verdict options are the resolved runtime model ids, matching the
+        // candidate enumeration in the decision request.
+        r#"{"target":"model/premium","probabilities":[{"option":"model/weak","probability":0.2},{"option":"model/premium","probability":0.8}]}"#.to_string()
     } else {
         "ok".to_string()
     };
@@ -2482,6 +2486,55 @@ selector = "/decision/target"
             ["target"]["enum"],
         json!(["fast", "balanced", "reasoning", "premium"])
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rlcd_route_consults_a_decision_model_before_routing() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{}"
+max_retries = 0
+[targets.classifier]
+id = "model/rlcd-decision"
+llm_client = "mock"
+[targets.weak]
+id = "model/weak"
+llm_client = "mock"
+[targets.premium]
+id = "model/premium"
+llm_client = "mock"
+[routes.rlcd]
+id = "switchyard/rlcd"
+type = "rlcd"
+classifier_target = "classifier"
+targets = ["weak", "premium"]
+default_target = "weak"
+"#,
+        upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    upstream.calls.lock().await.clear();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/rlcd",
+            "messages": [{"role": "user", "content": "bounded task"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["model"], "model/rlcd-decision");
+    assert_eq!(calls[1]["model"], "model/premium");
     Ok(())
 }
 

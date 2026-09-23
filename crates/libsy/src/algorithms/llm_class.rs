@@ -149,7 +149,7 @@ fn window_start(tail: &[&Message], recent_turn_window: usize) -> usize {
 }
 
 /// Keeps the opening task and the latest user follow-up when they differ.
-fn task_messages(messages: &[Message]) -> Vec<Message> {
+pub(crate) fn task_messages(messages: &[Message]) -> Vec<Message> {
     // Decoders also use the user role for tool results. Select ordinary user content
     // first, so a tool result cannot replace the opening task or latest follow-up.
     let is_task_content = |block: &ContentBlock| {

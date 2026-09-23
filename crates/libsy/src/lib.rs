@@ -27,6 +27,7 @@ pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
 pub use algorithms::plan_execute::{PlanExecute, PlanExecuteConfig};
 pub use algorithms::rand::{Random, RandomClassifier};
+pub use algorithms::rlcd::{Rlcd, RlcdConfig};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};
 pub use algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};

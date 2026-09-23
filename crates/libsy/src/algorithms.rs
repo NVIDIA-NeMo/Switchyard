@@ -15,6 +15,7 @@ pub mod noop;
 pub mod passthrough;
 pub mod plan_execute;
 pub mod rand;
+pub mod rlcd;
 pub mod stage;
 pub mod subagent;
 

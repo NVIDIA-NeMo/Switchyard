@@ -13,9 +13,9 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
     ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
-    PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
+    Rlcd, RlcdConfig, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
+    TaskClassifierConfig, ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -444,6 +444,19 @@ pub enum AlgorithmSpec {
         /// Maximum prompts per encoder forward pass.
         batch_size: Option<usize>,
     },
+    /// Asks an RLCD decision model for a calibrated probability per target and
+    /// routes to the argmax — TypeSafe Jev-style "System One" routing.
+    Rlcd {
+        /// Target through which the decision model is called. Never a routing destination itself.
+        classifier_target: String,
+        /// Candidate targets the decision model chooses among.
+        targets: Vec<String>,
+        /// Target used when the decision model is unavailable or its reply is unusable.
+        default_target: String,
+        /// Most completion tokens the decision verdict may use.
+        #[serde(default = "default_classifier_max_output_tokens")]
+        max_output_tokens: u64,
+    },
 }
 
 /// What fires an advisor route's review.
@@ -607,6 +620,7 @@ impl AlgorithmSpec {
                 executor_target, ..
             } => vec![executor_target],
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::Rlcd { targets, .. } => targets.iter().map(String::as_str).collect(),
         }
     }
 
@@ -642,6 +656,9 @@ impl AlgorithmSpec {
                 names.push(&classifier.target);
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
+            Self::Rlcd {
+                classifier_target, ..
+            } => names.push(classifier_target),
             _ => {}
         }
         // A sub-agent classifier calls its own judge, which is never a completion target.
@@ -676,17 +693,13 @@ impl AlgorithmSpec {
             Self::Passthrough { target, .. } => {
                 category_models([(Category::Any, vec![target.clone()])])
             }
-            Self::PlanExecute {
-                capable_target,
-                efficient_target,
+            Self::Rlcd {
+                classifier_target,
+                targets,
                 ..
             } => category_models([
-                (Category::Capable, vec![capable_target.clone()]),
-                (Category::Efficient, vec![efficient_target.clone()]),
-                (
-                    Category::Any,
-                    vec![capable_target.clone(), efficient_target.clone()],
-                ),
+                (Category::Judge, vec![classifier_target.clone()]),
+                (Category::Any, targets.clone()),
             ]),
             Self::LlmClassifier { config } => {
                 classifier_runtime_model_names(config.validated_classifier_mode(route_name)?)
@@ -779,7 +792,8 @@ impl AlgorithmSpec {
             | Self::StageRouter { .. }
             | Self::Auto { .. }
             | Self::Composite { .. }
-            | Self::PrefillRouter { .. } => None,
+            | Self::PrefillRouter { .. }
+            | Self::Rlcd { .. } => None,
         }
     }
 
@@ -1407,6 +1421,70 @@ fn build_algorithm(
             let algorithm = AdvisorGate::new(config).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("advisor route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
+        }
+        AlgorithmSpec::Rlcd {
+            classifier_target,
+            targets: names,
+            default_target,
+            max_output_tokens,
+        } => {
+            if names.len() < 2 {
+                return Err(AlgorithmConfigError::new(format!(
+                    "rlcd route {route_name} requires at least two targets"
+                )));
+            }
+            let mut seen = BTreeSet::new();
+            if let Some(duplicate) = names.iter().find(|name| !seen.insert(*name)) {
+                return Err(AlgorithmConfigError::new(format!(
+                    "rlcd route {route_name}: targets must be unique, {duplicate} is repeated"
+                )));
+            }
+            if !names
+                .iter()
+                .any(|name| name.as_str() == default_target.as_str())
+            {
+                return Err(AlgorithmConfigError::new(format!(
+                    "rlcd route {route_name} default_target {default_target} must be one of targets"
+                )));
+            }
+            // Candidates are matched by their resolved model id, so validation
+            // runs on ids: two aliases of one model would make every verdict
+            // invalid, and a classifier alias could route to itself.
+            let classifier_id = resolve_target_model_id(route_name, classifier_target, targets)?;
+            let candidate_ids = names
+                .iter()
+                .map(|name| resolve_target_model_id(route_name, name, targets))
+                .collect::<AlgorithmResult<Vec<_>>>()?;
+            let mut resolved = BTreeSet::new();
+            if let Some(duplicate) = candidate_ids
+                .iter()
+                .map(|id| id.as_str())
+                .find(|id| !resolved.insert(*id))
+            {
+                return Err(AlgorithmConfigError::new(format!(
+                    "rlcd route {route_name} targets resolve to duplicate model {duplicate}"
+                )));
+            }
+            if candidate_ids.contains(&classifier_id) {
+                return Err(AlgorithmConfigError::new(format!(
+                    "rlcd route {route_name} classifier_target resolves to candidate model {classifier_id}"
+                )));
+            }
+            let config = RlcdConfig {
+                default_target: resolve_target_model_id(route_name, default_target, targets)?,
+                // Decision models are typically served by self-hosted OpenAI-compatible
+                // endpoints, which broadly support `json_object` but not strict JSON Schema.
+                contract: ClassifierContractConfig::default()
+                    .with_response_format_type(ClassifierResponseFormat::JsonObject),
+                max_output_tokens: *max_output_tokens,
+            };
+            let algorithm = Rlcd::new(config).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("rlcd route {route_name}: {error}"),
                     error,
                 )
             })?;

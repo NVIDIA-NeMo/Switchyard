@@ -34,6 +34,7 @@ nav:
       - Plan/Execute Routing: routing_algorithms/plan_execute_routing.md
       - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md
       - Random Routing: routing_algorithms/random_routing.md
+      - RLCD Decision Routing: routing_algorithms/rlcd_routing.md
       - Composite Routing: routing_algorithms/composite_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
