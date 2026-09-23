@@ -20,7 +20,8 @@ use http_body_util::BodyExt;
 use libsy::{Algorithm, Random};
 use serde_json::{Value, json};
 use switchyard_llm_client::{
-    Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+    Backend, ClientRouter, DEFAULT_MAX_ERROR_BODY_BYTES, DEFAULT_MAX_RESPONSE_BYTES,
+    DEFAULT_MAX_STREAM_EVENT_BYTES, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_protocol::{Category, ModelId, WireFormat};
@@ -260,6 +261,31 @@ async fn upstream_chat(
         return response;
     }
     if body["stream"].as_bool() == Some(true) {
+        if prompt == "response-limit-first-event" {
+            let events = [
+                json!({"id": "chatcmpl-large", "model": model, "choices": [{"index": 0, "delta": {"content": "x".repeat(512)}}]}).to_string(),
+                "[DONE]".to_string(),
+            ];
+            let stream = futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+            );
+            return Sse::new(stream).into_response();
+        }
+        if prompt == "response-limit-later-event" {
+            let events = [
+                json!({"id": "chatcmpl-large", "model": model, "choices": [{"index": 0, "delta": {"content": "ok"}}]}).to_string(),
+                json!({"id": "chatcmpl-large", "model": model, "choices": [{"index": 0, "delta": {"content": "x".repeat(512)}}]}).to_string(),
+                "[DONE]".to_string(),
+            ];
+            let stream = futures_util::stream::iter(
+                events
+                    .into_iter()
+                    .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
+            );
+            return Sse::new(stream).into_response();
+        }
         // Streamed tool call, for the namespace-on-every-event assertions. The
         // model calls a tool by the name it was given, so echo that name back.
         if prompt == "mcp-tool-call" {
@@ -338,6 +364,21 @@ async fn upstream_chat(
                 "finish_reason": "stop"
             }],
             "usage": {"prompt_tokens": 40, "completion_tokens": 4, "total_tokens": 44}
+        }))
+        .into_response();
+    }
+
+    if prompt == "response-limit-buffered" {
+        return Json(json!({
+            "id": "chatcmpl-large",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "x".repeat(512)},
+                "finish_reason": "stop"
+            }],
+            "usage": {}
         }))
         .into_response();
     }
@@ -743,6 +784,24 @@ fn random_state_with_retries(
     routes: &[(&str, &[&str])],
     max_retries: u32,
 ) -> TestResult<ServerState> {
+    random_state_with_limits(
+        base_url,
+        routes,
+        max_retries,
+        DEFAULT_MAX_RESPONSE_BYTES,
+        DEFAULT_MAX_ERROR_BODY_BYTES,
+        DEFAULT_MAX_STREAM_EVENT_BYTES,
+    )
+}
+
+fn random_state_with_limits(
+    base_url: &str,
+    routes: &[(&str, &[&str])],
+    max_retries: u32,
+    max_response_bytes: usize,
+    max_error_body_bytes: usize,
+    max_stream_event_bytes: usize,
+) -> TestResult<ServerState> {
     let backend = Backend::OpenAiChat(HttpBackendConfig {
         base_url: base_url.to_string(),
         api_key: Some("test-key".to_string()),
@@ -752,6 +811,9 @@ fn random_state_with_retries(
         reasoning_effort: None,
         max_retries,
         timeout: None,
+        max_response_bytes,
+        max_error_body_bytes,
+        max_stream_event_bytes,
     });
     let target_models = routes
         .iter()
@@ -4307,6 +4369,58 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
     assert_eq!(response.status, StatusCode::OK);
     assert!(response.text()?.contains("hello"));
     assert!(response.text()?.contains("data: [DONE]"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn upstream_response_limits_cover_buffered_and_streaming_calls() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = random_state_with_limits(
+        &upstream.base_url,
+        &[(ROUTE_MODEL, &["model/a"])],
+        0,
+        256,
+        DEFAULT_MAX_ERROR_BODY_BYTES,
+        256,
+    )?;
+    let app = build_switchyard_router(state);
+
+    for prompt in ["response-limit-buffered", "response-limit-first-event"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": prompt.ends_with("event")
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::BAD_GATEWAY, "{prompt}");
+        assert_eq!(
+            response.json()?["error"]["code"],
+            "upstream_response_too_large",
+            "{prompt}"
+        );
+    }
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "response-limit-later-event"}],
+            "stream": true
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.text()?;
+    assert!(body.contains("upstream response exceeded the configured limit of 256 bytes"));
+    assert!(!body.contains("data: [DONE]"));
     Ok(())
 }
 

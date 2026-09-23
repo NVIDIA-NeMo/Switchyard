@@ -18,6 +18,15 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Default number of retries for server-configured upstream calls.
 pub const DEFAULT_MAX_RETRIES: u32 = 2;
 
+/// Default maximum size of one buffered successful upstream response.
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Default maximum upstream error body retained for reporting.
+pub const DEFAULT_MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// Default maximum size of one upstream SSE event.
+pub const DEFAULT_MAX_STREAM_EVENT_BYTES: usize = 32 * 1024 * 1024;
+
 // Canonical OpenAI phrase plus NVIDIA/LiteLLM wrap variants. Adding a new
 // provider-wrap is a one-line entry here, not a fork of the parsing logic.
 const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
@@ -68,6 +77,12 @@ pub struct HttpBackendConfig {
     /// Deadline for one complete response, including retries, retry delays, and stream reads.
     /// `None` leaves the wait unbounded.
     pub timeout: Option<Duration>,
+    /// Maximum size of one buffered successful upstream response.
+    pub max_response_bytes: usize,
+    /// Maximum upstream error body retained for reporting.
+    pub max_error_body_bytes: usize,
+    /// Maximum size of one upstream SSE event. This does not limit the complete stream.
+    pub max_stream_event_bytes: usize,
 }
 
 impl fmt::Debug for HttpBackendConfig {
@@ -81,6 +96,9 @@ impl fmt::Debug for HttpBackendConfig {
             .field("reasoning_effort", &self.reasoning_effort)
             .field("max_retries", &self.max_retries)
             .field("timeout", &self.timeout)
+            .field("max_response_bytes", &self.max_response_bytes)
+            .field("max_error_body_bytes", &self.max_error_body_bytes)
+            .field("max_stream_event_bytes", &self.max_stream_event_bytes)
             .finish()
     }
 }
@@ -157,6 +175,22 @@ impl Backend {
                     "model {model_name:?} api_key cannot be encoded as an HTTP header"
                 ),
             });
+        }
+        Ok(())
+    }
+
+    // Rejects zero-valued response limits before the client can send a request.
+    pub(crate) fn validate_response_limits(&self, model_name: &str) -> Result<()> {
+        for (name, value) in [
+            ("max_response_bytes", self.max_response_bytes()),
+            ("max_error_body_bytes", self.max_error_body_bytes()),
+            ("max_stream_event_bytes", self.max_stream_event_bytes()),
+        ] {
+            if value == 0 {
+                return Err(LlmClientError::Configuration {
+                    message: format!("model {model_name:?} {name} must be at least 1"),
+                });
+            }
         }
         Ok(())
     }
@@ -311,6 +345,21 @@ impl Backend {
         self.config().timeout
     }
 
+    /// Maximum size of one buffered successful upstream response.
+    pub fn max_response_bytes(&self) -> usize {
+        self.config().max_response_bytes
+    }
+
+    /// Maximum upstream error body retained for reporting.
+    pub fn max_error_body_bytes(&self) -> usize {
+        self.config().max_error_body_bytes
+    }
+
+    /// Maximum size of one upstream SSE event.
+    pub fn max_stream_event_bytes(&self) -> usize {
+        self.config().max_stream_event_bytes
+    }
+
     /// Whether this backend speaks the Anthropic Messages wire format — the only
     /// one with a `count_tokens` endpoint.
     pub fn is_anthropic(&self) -> bool {
@@ -418,6 +467,9 @@ mod tests {
             reasoning_effort: None,
             max_retries: 0,
             timeout: None,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            max_error_body_bytes: DEFAULT_MAX_ERROR_BODY_BYTES,
+            max_stream_event_bytes: DEFAULT_MAX_STREAM_EVENT_BYTES,
         }
     }
 

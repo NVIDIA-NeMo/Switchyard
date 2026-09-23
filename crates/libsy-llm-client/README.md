@@ -256,6 +256,10 @@ fn build_multi_format_client(
   retry delays, and every stream read. Expiry returns `LlmClientError::Timeout`,
   either from the call or from the returned stream, which then ends. `None` leaves
   the wait unbounded.
+- `HttpBackendConfig::max_response_bytes` bounds a buffered success body, and
+  `max_stream_event_bytes` bounds each SSE event without limiting the whole
+  stream. `max_error_body_bytes` limits retained non-success response text and
+  adds a truncation marker when bytes are discarded.
 
 `run` and `decide` collect streams used during routing, including answers that an
 algorithm must inspect, before returning them to the algorithm. They retain the
@@ -285,6 +289,7 @@ after a stream has started does not count another attempt.
 | `Transport { source }` | non-timeout connection or transport failure |
 | `ContextWindowExceeded { model, message }` | upstream 400 detected as a context overflow (checked before `UpstreamHttp`, so callers can evict-and-retry) |
 | `UpstreamHttp { status, body }` | any other non-2xx upstream response |
+| `UpstreamResponseTooLarge { limit }` | a buffered success body or one SSE event exceeded its configured limit |
 | `InvalidResponse { source }` | the upstream response could not be decoded |
 | `Other(source)` | a client-specific failure outside the shared categories |
 
