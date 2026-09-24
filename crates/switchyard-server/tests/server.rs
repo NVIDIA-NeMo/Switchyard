@@ -2485,6 +2485,100 @@ selector = "/decision/target"
     Ok(())
 }
 
+/// Both judge modes limit their own images while forwarding the complete answer request.
+#[tokio::test]
+async fn classifier_image_limits_preserve_answer_images() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let images = json!([
+        {"type": "text", "text": "Compare these images."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,b2xk", "detail": "low"}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,bmV3", "detail": "high"}}
+    ]);
+    for custom in [false, true] {
+        for limit in [None, Some(0), Some(1)] {
+            for invalid in [false, true] {
+                if invalid && !custom {
+                    continue;
+                }
+                let mode = if custom {
+                    r#"mode = "custom"
+models = { judge = ["classifier"], weak = ["weak"], premium = ["premium"], any = ["weak", "premium"] }
+default_target = "weak"
+response_schema = '{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["weak","premium"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}'
+policy = { type = "target_selector", selector = "/decision/target" }"#
+                } else {
+                    "mode = \"capability\"\nclassifier_target = \"classifier\"\nstrong_target = \"premium\"\nweak_target = \"weak\"\nbase_threshold = 0.5"
+                };
+                let limit_config = limit
+                    .map(|n| format!("judge_max_images = {n}"))
+                    .unwrap_or_default();
+                let prompt = if invalid {
+                    "return an invalid verdict"
+                } else {
+                    "route to premium"
+                };
+                let state = load_test_config(&format!(
+                    r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{}"
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+[targets.premium]
+id = "model/premium"
+llm_client = "upstream"
+[routes.vision]
+id = "vision"
+type = "llm_classifier"
+prompt = "{prompt}"
+{mode}
+{limit_config}
+"#,
+                    upstream.base_url
+                ))?;
+                let app = build_switchyard_router(state);
+                upstream.calls.lock().await.clear();
+                let response = send(
+                    &app,
+                    "POST",
+                    "/v1/chat/completions",
+                    Some(json!({
+                        "model": "vision", "messages": [{"role": "user", "content": images}]
+                    })),
+                )
+                .await?;
+                assert_eq!(response.status, StatusCode::OK);
+                let calls = upstream.calls.lock().await;
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0]["model"], "model/classifier");
+                let judge = calls[0]["messages"][1]["content"].to_string();
+                assert!(judge.contains("Compare these images."));
+                assert_eq!(
+                    judge.matches("image_url").count(),
+                    limit.unwrap_or(2).min(2) * 2
+                );
+                assert_eq!(judge.contains("bmV3"), limit != Some(0));
+                assert_eq!(judge.contains("b2xk"), limit.is_none());
+                assert_eq!(calls[1]["messages"][0]["content"], images);
+                assert_eq!(
+                    calls[1]["model"],
+                    if custom && !invalid {
+                        "model/premium"
+                    } else {
+                        "model/weak"
+                    }
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn classifier_contract_overrides_reach_every_server_mode() -> TestResult {
     let upstream = MockUpstream::start().await?;
