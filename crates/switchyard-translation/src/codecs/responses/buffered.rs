@@ -1253,7 +1253,11 @@ fn encode_responses_text_format(response_format: &Value) -> Value {
     Value::Object(output)
 }
 
-// Encodes normalized messages into the Responses `input` shape.
+/// Encodes normalized messages into the Responses `input` shape.
+///
+/// The result is always a message-item list: strict Responses backends reject the scalar
+/// single-user-string shorthand, and every Responses implementation accepts the list form, so
+/// there is no scalar fast path to fall back to.
 fn encode_responses_input(
     messages: &[Message],
     diagnostics: &mut Vec<TranslationDiagnostic>,
@@ -1266,14 +1270,6 @@ fn encode_responses_input(
     // custom outputs. A tool result is typed by the call it answers, and Responses history
     // always lists the call before its output, so recording ids as calls are encoded is enough
     // to type the outputs that follow.
-    if messages.len() == 1
-        && matches!(messages[0].role, Role::User)
-        && messages[0].content.len() == 1
-        && matches!(messages[0].content[0], ContentBlock::Text { .. })
-        && let ContentBlock::Text { text } = &messages[0].content[0]
-    {
-        return Ok(Value::String(text.clone()));
-    }
     let mut encoded = Vec::new();
     // Some upstream translators (Kimi K3) resolve a tool output by an explicit
     // `name`, so pair every output with the name of the call it answers.
@@ -1555,12 +1551,14 @@ fn encode_responses_reasoning_input(text: &str, details: &[Value]) -> Option<Val
     }))
 }
 
-// Maps normalized roles back to Responses role strings.
+/// Maps normalized roles back to Responses role strings.
+///
+/// Instruction roles encode as `developer`: strict Responses backends reject `system`-role
+/// input items, and `developer` is the instruction role every Responses implementation accepts.
 fn role_to_responses(role: Role) -> &'static str {
     match role {
         Role::Assistant => "assistant",
-        Role::System => "system",
-        Role::Developer => "developer",
+        Role::System | Role::Developer => "developer",
         Role::User | Role::Tool => "user",
     }
 }
