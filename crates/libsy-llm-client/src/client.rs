@@ -1231,7 +1231,10 @@ fn injected_keys_named_by_upstream(body: &str, injected: &[String]) -> Vec<Strin
         details
             .iter()
             .filter_map(|detail| {
-                if detail.get("type").and_then(Value::as_str) != Some("extra_forbidden") {
+                if !matches!(
+                    detail.get("type").and_then(Value::as_str),
+                    Some("extra_forbidden" | "value_error.extra")
+                ) {
                     return None;
                 }
                 let location = detail.get("loc")?.as_array()?;
@@ -3370,6 +3373,10 @@ mod tests {
             (
                 422,
                 json!({"detail": [{"type": "extra_forbidden", "loc": ["body", "service_tier"], "msg": "Extra inputs are not permitted"}]}),
+            ),
+            (
+                422,
+                json!({"detail": [{"type": "value_error.extra", "loc": ["body", "service_tier"], "msg": "extra fields not permitted"}]}),
             ),
         ] {
             let server = MockServer::start().await;
