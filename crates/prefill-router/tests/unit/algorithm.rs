@@ -97,6 +97,97 @@ fn request(messages: Vec<Message>) -> Request {
 }
 
 #[tokio::test]
+async fn empty_trailing_turn_does_not_score_the_previous_exchange() -> libsy::Result<()> {
+    let (forward, calls, prompts) = forward();
+    let route: Arc<dyn Algorithm> = Arc::new(
+        PrefillRouterAlgo::from_forward(target_set(), forward).map_err(|error| {
+            LibsyError::AlgorithmError {
+                message: error.to_string(),
+            }
+        })?,
+    );
+    // The newest user turn has no text; the turn before the assistant's reply
+    // belongs to a finished exchange and must not be scored in its place.
+    let routed = selected(
+        route,
+        request(vec![
+            Message::text(Role::User, "initial task"),
+            Message::text(Role::Assistant, "done"),
+            Message::text(Role::User, "   "),
+        ]),
+    )
+    .await?;
+    assert_eq!(routed, "small");
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(prompts.lock().expect("test prompts lock").is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_user_turn_beside_the_person_still_scores_the_person() -> libsy::Result<()> {
+    let (forward, _calls, prompts) = forward();
+    let route: Arc<dyn Algorithm> = Arc::new(
+        PrefillRouterAlgo::from_forward(target_set(), forward).map_err(|error| {
+            LibsyError::AlgorithmError {
+                message: error.to_string(),
+            }
+        })?,
+    );
+    // No assistant reply between the two: the empty turn is skipped and the
+    // person's text in the same exchange is scored.
+    selected(
+        route,
+        request(vec![
+            Message::text(Role::User, "initial task"),
+            Message::text(Role::User, "   "),
+        ]),
+    )
+    .await?;
+    assert_eq!(
+        prompts.lock().expect("test prompts lock").as_slice(),
+        ["initial task"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn tool_result_after_the_person_is_walked_past_not_skipped() -> libsy::Result<()> {
+    let (forward, _calls, prompts) = forward();
+    let route: Arc<dyn Algorithm> = Arc::new(
+        PrefillRouterAlgo::from_forward(target_set(), forward).map_err(|error| {
+            LibsyError::AlgorithmError {
+                message: error.to_string(),
+            }
+        })?,
+    );
+    // A tool result is a text-less user message inside the current exchange;
+    // it must not count as a skipped turn that ends the search at the tool call.
+    selected(
+        route,
+        request(vec![
+            Message::text(Role::User, "follow-up task"),
+            Message::text(Role::Assistant, "calling a tool"),
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: "call-1".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "tool output".to_string(),
+                    }],
+                    is_error: None,
+                })],
+            },
+        ]),
+    )
+    .await?;
+    assert_eq!(
+        prompts.lock().expect("test prompts lock").as_slice(),
+        ["follow-up task"]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn routes_on_latest_user_text_and_reuses_decision_for_tool_steps() -> libsy::Result<()> {
     let (forward, calls, prompts) = forward();
     let route: Arc<dyn Algorithm> = Arc::new(
