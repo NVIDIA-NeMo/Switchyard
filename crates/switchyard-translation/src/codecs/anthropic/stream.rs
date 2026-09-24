@@ -242,7 +242,7 @@ fn encode_anthropic_stream(
             // An in-band error is terminal: emit the error, then nothing further.
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"type": "error", "error": {"message": message}})]
+            vec![json!({"type": "error", "error": {"type": "api_error", "message": message}})]
         }
     }
 }

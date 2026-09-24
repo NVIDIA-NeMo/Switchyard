@@ -365,6 +365,22 @@ mod tests {
         assert!(routed.llm_request.instructions.is_empty());
     }
 
+    #[tokio::test]
+    async fn editor_view_keeps_planning() {
+        let messages = vec![tool_call(
+            "str_replace_based_edit_tool",
+            json!({"command": "view", "path": "/app/main.py"}),
+        )];
+
+        let (selected, _) = route_and_capture(
+            algorithm(PlanExecuteConfig::default()),
+            request(messages, None),
+        )
+        .await;
+
+        assert_eq!(selected, CAPABLE);
+    }
+
     #[test]
     fn rejects_blank_prompts() {
         for config in [

@@ -35,6 +35,9 @@ confidence in `[0, 1]`. One maxed scoring dimension produces about `0.46`;
 corroborating evidence pushes confidence decisively past a `0.5` threshold.
 Repeated failures, critical-error severity, and context compaction are hard
 overrides to the capable tier. An active capable hold also bypasses the scorer.
+Severity and test results come from tool output that ran something. The contents
+returned by the built-in read and search tools do not count, unless the tool
+reports a failure.
 
 `confidence_threshold` sets how sure that estimate must be before the router acts
 on the signal alone. Scores inside the ambiguous band go to the optional
@@ -232,6 +235,13 @@ Configuration cannot reclassify a built-in tool. Empty names, duplicate names
 across categories, and unknown category keys are rejected when the route is
 loaded. Argument-aware wrapper tools, inferred semantics, and learned routing
 rules are outside this exact-name configuration.
+
+MCP tools match by their bare tool name or by their full name. Claude Code sends
+an MCP tool as `mcp__<server>__<tool>`, and Codex sends it with a separate
+`namespace`. For both, `send_payment_request` matches the `send_payment_request`
+tool on the `billing` MCP server, and so does
+`mcp__billing__send_payment_request`. A server name that contains `__` needs the
+full name.
 
 ### Optional: handoff notes
 

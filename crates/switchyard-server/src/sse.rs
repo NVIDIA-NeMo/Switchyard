@@ -99,13 +99,18 @@ fn error_event(target_format: WireFormat, message: String, redactor: &Redactor) 
             ),
         ),
         WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
+            let error_type = if target_format == WireFormat::AnthropicMessages {
+                "api_error"
+            } else {
+                "SwitchyardError"
+            };
             Event::default().event("error").data(
                 redactor.json(
                     json!({
                         "type": "error",
                         "error": {
                             "message": message,
-                            "type": "SwitchyardError",
+                            "type": error_type,
                         }
                     })
                     .to_string(),
@@ -179,6 +184,29 @@ mod tests {
         assert!(!body.contains("SwitchyardError"));
         assert!(!body.contains("after"));
         assert!(!body.contains("[DONE]"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_error_uses_api_error_type() -> TestResult {
+        let failure = LlmClientError::General("boom".to_string());
+        let stream: RawEventStream =
+            Box::pin(stream::iter(vec![Err(LlmStreamError::Client(failure))]));
+        let response = frame_stream(
+            stream,
+            WireFormat::AnthropicMessages,
+            Arc::new(Redactor::default()),
+        )
+        .into_response();
+        let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await?.to_vec())?;
+        let data = body
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .ok_or("missing data line")?;
+        assert_eq!(
+            serde_json::from_str::<Value>(data)?,
+            json!({"type": "error", "error": {"type": "api_error", "message": "boom"}})
+        );
         Ok(())
     }
 }

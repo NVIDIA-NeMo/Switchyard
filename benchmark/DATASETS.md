@@ -130,10 +130,11 @@ For each task, the rewriter prepares an image with pinned agent tooling:
 - If the task already has `environment/Dockerfile`, it appends the pinned agent install layer.
 - If neither exists, it creates a minimal `environment/Dockerfile` from `ubuntu:22.04`.
 
-The injected layer installs the pinned Node, Claude Code, Codex, and OpenCode versions from
-`benchmark/agent-versions.env`, then runs `claude --version`, `codex --version`, and
-`opencode --version` during image build. The base image must support `apt-get`, `apk`, or `yum`, or
-already provide `curl`, `tar`, and `gzip`. It must be `x86_64/amd64` or `aarch64/arm64`.
+The injected layer installs the pinned Node, Claude Code, Codex, OpenCode, and pi versions from
+`benchmark/agent-versions.env`, then runs `claude --version`, `codex --version`,
+`opencode --version`, and `pi --version` during image build. The base image must support `apt-get`,
+`apk`, or `yum`, or already provide `curl`, `tar`, and `gzip`. It must be `x86_64/amd64` or
+`aarch64/arm64`.
 
 For non-TB datasets, inspect generated Dockerfiles before a full run:
 

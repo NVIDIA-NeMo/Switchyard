@@ -694,11 +694,21 @@ pub(crate) fn decode_openai_tool_call(
             }
             DeterministicIdPolicy::Preserve => String::new(),
         });
-    let arguments = function
-        .get("arguments")
-        .map(parse_arguments)
-        .unwrap_or_else(|| json!({}));
-    let name = function
+    // A custom (freeform) call has `custom.name` and a raw `custom.input` string. Carry the
+    // input as the single `input` argument, the same way Responses custom calls are carried.
+    let custom = tool_call.get("custom").and_then(Value::as_object);
+    let arguments = match custom {
+        Some(custom) => json!({
+            crate::codex_custom_tools::INPUT_ARGUMENT:
+                custom.get("input").and_then(Value::as_str).unwrap_or_default()
+        }),
+        None => function
+            .get("arguments")
+            .map(parse_arguments)
+            .unwrap_or_else(|| json!({})),
+    };
+    let name = custom
+        .unwrap_or(&function)
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default()

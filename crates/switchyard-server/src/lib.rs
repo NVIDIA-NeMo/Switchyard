@@ -72,6 +72,7 @@ const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
     "request-id",
     "traceparent",
     "tracestate",
+    "x-litellm-response-cost",
     "x-request-id",
 ];
 const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
@@ -1555,11 +1556,12 @@ fn model_entry_json(model: &str, capabilities: ModelCapabilities) -> Value {
         "created": 0,
         "owned_by": "switchyard",
         "display_name": model,
+        // OpenAI-compatible clients read the context window from this field.
+        "context_length": capabilities.context_window,
         "capabilities": {
             "streaming": true,
             "tool_calling": capabilities.tool_calling,
             "vision": capabilities.vision,
-            "context_window": capabilities.context_window,
             "supported_inbound_formats": [
                 "openai-chat-completions",
                 "openai-responses",
@@ -1986,5 +1988,21 @@ mod tests {
                 .map(|error| error.0.as_str()),
             Some("invalid request")
         );
+    }
+
+    // LiteLLM's cost header passes through to the client; auth headers do not.
+    #[test]
+    fn upstream_header_forwarding_covers_litellm_cost() {
+        for name in [
+            "baggage",
+            "x-litellm-response-cost",
+            "x-ratelimit-remaining",
+            "x-upstream-retry",
+        ] {
+            let header: HeaderName = name.parse().expect("header name");
+            assert!(should_forward_upstream_header(&header), "{name}");
+        }
+        let secret: HeaderName = "authorization".parse().expect("header name");
+        assert!(!should_forward_upstream_header(&secret));
     }
 }
