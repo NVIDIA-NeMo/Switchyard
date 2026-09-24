@@ -1225,30 +1225,53 @@ fn injected_keys_named_by_upstream(body: &str, injected: &[String]) -> Vec<Strin
     let error = parsed.get("error").unwrap_or(&parsed);
     let parameter = error.get("param").and_then(Value::as_str);
     let message = error.get("message").and_then(Value::as_str).unwrap_or(body);
-    let rejected = parameter.or_else(|| {
+    let rejected: Vec<&str> = if let Some(parameter) = parameter {
+        vec![parameter]
+    } else if let Some(details) = parsed.get("detail").and_then(Value::as_array) {
+        details
+            .iter()
+            .filter_map(|detail| {
+                if detail.get("type").and_then(Value::as_str) != Some("extra_forbidden") {
+                    return None;
+                }
+                let location = detail.get("loc")?.as_array()?;
+                match location.as_slice() {
+                    [source, field] if source.as_str() == Some("body") => field.as_str(),
+                    _ => None,
+                }
+            })
+            .collect()
+    } else {
         let lowered = message.to_ascii_lowercase();
-        PARAM_REJECT_PHRASES.iter().find_map(|phrase| {
-            let offset = lowered.find(phrase)? + phrase.len();
-            let suffix =
-                message[offset..].trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ':');
-            let suffix = suffix.strip_prefix("argument ").unwrap_or(suffix);
-            if let Some(quote) = suffix
-                .chars()
-                .next()
-                .filter(|c| matches!(c, '\'' | '"' | '`'))
-            {
-                let quoted = &suffix[quote.len_utf8()..];
-                return quoted.find(quote).map(|end| &quoted[..end]);
-            }
-            let end = suffix
-                .find(|c: char| c.is_ascii_whitespace() || matches!(c, ',' | ';'))
-                .unwrap_or(suffix.len());
-            (end > 0).then_some(&suffix[..end])
-        })
-    });
+        PARAM_REJECT_PHRASES
+            .iter()
+            .flat_map(|phrase| {
+                lowered
+                    .match_indices(*phrase)
+                    .filter_map(move |(start, _)| {
+                        let offset = start + phrase.len();
+                        let suffix = message[offset..]
+                            .trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ':');
+                        let suffix = suffix.strip_prefix("argument ").unwrap_or(suffix);
+                        if let Some(quote) = suffix
+                            .chars()
+                            .next()
+                            .filter(|c| matches!(c, '\'' | '"' | '`'))
+                        {
+                            let quoted = &suffix[quote.len_utf8()..];
+                            return quoted.find(quote).map(|end| &quoted[..end]);
+                        }
+                        let end = suffix
+                            .find(|c: char| c.is_ascii_whitespace() || matches!(c, ',' | ';'))
+                            .unwrap_or(suffix.len());
+                        (end > 0).then_some(&suffix[..end])
+                    })
+            })
+            .collect()
+    };
     injected
         .iter()
-        .filter(|key| rejected == Some(key.as_str()))
+        .filter(|key| rejected.contains(&key.as_str()))
         .cloned()
         .collect()
 }
@@ -3334,6 +3357,57 @@ mod tests {
             ),
             injected,
         );
+    }
+
+    #[tokio::test]
+    async fn structured_and_repeated_rejections_identify_injected_fields()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (status, body) in [
+            (
+                400,
+                json!({"error": {"message": "unknown field: caller_flag; unknown field: service_tier"}}),
+            ),
+            (
+                422,
+                json!({"detail": [{"type": "extra_forbidden", "loc": ["body", "service_tier"], "msg": "Extra inputs are not permitted"}]}),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body.clone()))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+                &format!("{}/v1", server.uri()),
+                BTreeMap::from([("service_tier".to_string(), json!("flex"))]),
+            ))?;
+            let error = client.call_rewrite_model_raw(
+                json!({"model": "client-facing", "messages": [{"role": "user", "content": "hi"}]}),
+                None, Some(&ModelId::new("gpt")), WireFormat::OpenAiChat,
+            ).await.err().ok_or("expected rejection")?;
+            let LlmClientError::Configuration { message } = error else {
+                return Err(
+                    format!("expected configuration error for {body}, got {error:?}").into(),
+                );
+            };
+            assert!(message.contains("service_tier"), "{message}");
+            assert!(!message.contains("caller_flag"), "{message}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn structured_rejections_ignore_nested_and_non_body_fields() {
+        let injected = vec!["service_tier".to_string()];
+        for loc in [
+            json!(["body", "options", "service_tier"]),
+            json!(["query", "service_tier"]),
+        ] {
+            let body = json!({"detail": [{"type": "extra_forbidden", "loc": loc, "msg": "Extra inputs are not permitted"}]}).to_string();
+            assert!(injected_keys_named_by_upstream(&body, &injected).is_empty());
+        }
     }
 
     #[tokio::test]
