@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::LlmResponseStreamEvent;
 use crate::codecs::FormatCodec;
 use crate::codecs::anthropic::AnthropicMessagesCodec;
+use crate::codecs::gemini::GeminiGenerateContentCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
 use crate::codecs::stream::{
@@ -61,6 +62,7 @@ impl FormatRegistry {
         registry.register(OpenAiChatCodec);
         registry.register(AnthropicMessagesCodec);
         registry.register(OpenAiResponsesCodec);
+        registry.register(GeminiGenerateContentCodec);
         registry
     }
 
