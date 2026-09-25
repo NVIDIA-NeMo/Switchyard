@@ -963,12 +963,15 @@ impl LlmClassifierRouteConfig {
                         "llm_classifier route {route_name} mode escalation cannot use classify_trigger"
                     )));
                 }
-                if mode.is_some()
-                    && (base_threshold.is_some()
-                        || threshold_step.is_some()
-                        || unmatched_steps.is_some()
-                        || *message_hash_fallback
-                        || recent_turn_window.is_some())
+                // `unmatched_steps` is new, so no existing escalation configuration carries it:
+                // reject it even when the mode is implied by `escalation`. The older capability
+                // keys stay tolerated in that implicit form for compatibility.
+                if unmatched_steps.is_some()
+                    || (mode.is_some()
+                        && (base_threshold.is_some()
+                            || threshold_step.is_some()
+                            || *message_hash_fallback
+                            || recent_turn_window.is_some()))
                 {
                     return Err(AlgorithmConfigError::new(format!(
                         "llm_classifier route {route_name} mode escalation cannot use capability routing settings"
