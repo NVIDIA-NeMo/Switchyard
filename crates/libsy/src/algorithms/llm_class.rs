@@ -203,7 +203,9 @@ fn latest_task_message(messages: &[Message]) -> Vec<Message> {
 /// turn last, so the judge reads the context first and the task it must route at the end.
 ///
 /// The window is counted over the messages before the task and keeps tool pairs whole
-/// the same way [`trim_messages`] does for the trailing window.
+/// the same way [`trim_messages`] does for the trailing window. The task itself is sent
+/// with its ordinary content only, so a tool result decoded into the same user message
+/// never travels without the call that introduced it.
 fn trim_messages_before_latest(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
     let is_instruction = |message: &Message| matches!(message.role, Role::System | Role::Developer);
     let mut kept: Vec<&Message> = messages.iter().filter(|m| is_instruction(m)).collect();
@@ -215,8 +217,11 @@ fn trim_messages_before_latest(messages: &[Message], recent_turn_window: usize) 
         .filter(|m| !is_instruction(m))
         .collect();
     kept.extend(&head[window_start(&head, recent_turn_window)..]);
-    kept.push(&messages[task]);
-    kept.into_iter().cloned().collect()
+    let task_message = task_only(&messages[task]);
+    kept.into_iter()
+        .cloned()
+        .chain(std::iter::once(task_message))
+        .collect()
 }
 
 /// Which user message a capability or custom classifier treats as the task.
@@ -1870,6 +1875,53 @@ mod tests {
         let two = texts(&built);
         assert!(!two.contains(&"add caching".to_string()), "{two:?}");
         assert_eq!(two[two.len() - 2], "now write the migration");
+    }
+
+    /// A tool result decoded into the same user message as the task stays out of the
+    /// task line, so a zero window never sends a result whose call is not in the window.
+    #[test]
+    fn latest_user_turn_anchor_sends_the_task_without_its_tool_results() {
+        let mut mixed = tool_result("call-1");
+        mixed.role = Role::User;
+        mixed.content.push(ContentBlock::Text {
+            text: "now write the migration".to_string(),
+        });
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![
+                    Message::text(Role::User, "add caching"),
+                    tool_call("call-1"),
+                    mixed,
+                ],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let built = TaskInput {
+            recent_turn_window: Some(0),
+            task_anchor: TaskAnchor::LatestUserTurn,
+        }
+        .build_messages(&State::default(), &request);
+
+        assert!(
+            !built
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|block| matches!(block, ContentBlock::ToolResult(_))),
+            "{built:?}"
+        );
+        assert_eq!(
+            built
+                .iter()
+                .filter_map(|message| message.text_content("\n"))
+                .collect::<Vec<_>>(),
+            vec![
+                "now write the migration".to_string(),
+                TRAILING_ROUTING_INSTRUCTION.to_string(),
+            ]
+        );
     }
 
     #[test]
