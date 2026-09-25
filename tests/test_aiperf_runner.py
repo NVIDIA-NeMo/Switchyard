@@ -110,10 +110,10 @@ def test_process_group_probe_ignores_an_unowned_reused_group(monkeypatch) -> Non
 
 def test_validate_aiperf_version_rejects_uncovered_release(tmp_path) -> None:
     fake = tmp_path / "aiperf"
-    fake.write_text("#!/bin/sh\nprintf '0.12.0\\n'\n")
+    fake.write_text("#!/bin/sh\nprintf '0.11.0\\n'\n")
     fake.chmod(0o755)
 
-    with pytest.raises(RuntimeError, match="AIPerf 0.12.0 is unsupported"):
+    with pytest.raises(RuntimeError, match="AIPerf 0.11.0 is unsupported"):
         validate_aiperf_version(str(fake))
 
 
@@ -122,7 +122,7 @@ def test_aggregate_exports_combines_independent_runs(tmp_path) -> None:
     for index, throughput in enumerate((10.0, 14.0), start=1):
         path = tmp_path / f"run-{index}.json"
         document = {
-            "aiperf_version": "0.11.0",
+            "aiperf_version": "0.12.0",
             "error_request_count": None,
             "request_count": {"unit": "requests", "avg": 20},
             "request_throughput": {
