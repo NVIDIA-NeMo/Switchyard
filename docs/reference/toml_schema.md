@@ -222,13 +222,14 @@ checkpoint = "/models/router.pt"
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
-`max_output_tokens` applies to all three.
+`max_output_tokens` and `judge_char_budget` apply to all three.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `judge_char_budget` | No | `18000` | Most characters sent to the judge per call, so one large tool result cannot decide judge cost and latency. A window narrows from the oldest turn until it fits; without a window the task messages are clipped, marked with `...[trimmed]`. Roughly four characters per token. Must be at least `256`. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
 Capability mode classifies before serving. See
