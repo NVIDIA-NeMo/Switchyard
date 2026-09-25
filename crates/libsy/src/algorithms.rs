@@ -17,6 +17,7 @@ pub mod plan_execute;
 pub mod rand;
 pub mod stage;
 pub mod subagent;
+mod vgr;
 
 pub mod util;
 
