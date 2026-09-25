@@ -17,7 +17,7 @@ use switchyard_libsy::{
     CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
     PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig,
-    Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    Step as RustStep, StepStream, TaskAnchor, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -284,6 +284,7 @@ impl PyTaskClassifierConfig {
                 classify_trigger: classify_trigger(session_affinity),
                 message_hash_fallback,
                 recent_turn_window,
+                task_anchor: TaskAnchor::default(),
                 contract: classifier_contract(prompt, response_format_type)?,
                 max_output_tokens,
             },
