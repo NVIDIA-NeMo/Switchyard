@@ -807,7 +807,13 @@ impl FormatCodec for GeminiGenerateContentCodec {
                     ));
                 }
             };
-            contents.push(json!({"role":role,"parts":calls.encode_parts(&message.content, policy, &mut diagnostics)?}));
+            let parts = calls.encode_parts(&message.content, policy, &mut diagnostics)?;
+            if !parts.is_empty() {
+                contents.push(json!({"role":role,"parts":parts}));
+            }
+        }
+        if contents.is_empty() {
+            return Err(invalid("contents", "no representable conversation content"));
         }
         body["contents"] = json!(contents);
         if !request.tools.is_empty() {

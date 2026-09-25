@@ -437,3 +437,38 @@ fn nontext_thought_is_not_projected_as_visible_media() {
     ));
     assert!(!ir.diagnostics.is_empty());
 }
+
+#[test]
+fn lossy_request_omits_messages_with_no_representable_parts() {
+    let engine = TranslationEngine::default();
+    let body = json!({"messages":[
+        {"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]},
+        {"role":"user","content":"Keep this text"}
+    ]});
+    let output = engine
+        .translate_request(WireFormat::OpenAiChat, GEMINI, &body, &reconstruct())
+        .unwrap();
+    assert_eq!(
+        output.body["contents"],
+        json!([{"role":"user","parts":[{"text":"Keep this text"}]}])
+    );
+    assert!(!output.diagnostics.is_empty());
+    let all_dropped = json!({"messages":[body["messages"][0].clone()]});
+    let error = engine
+        .translate_request(WireFormat::OpenAiChat, GEMINI, &all_dropped, &reconstruct())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("no representable conversation content")
+    );
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..reconstruct()
+    };
+    assert!(
+        engine
+            .translate_request(WireFormat::OpenAiChat, GEMINI, &body, &strict)
+            .is_err()
+    );
+}
