@@ -34,6 +34,12 @@ It depends on `switchyard-libsy`, `switchyard-protocol`, and
   static `extra_headers`, default `extra_body` fields, and `max_retries`). The
   variant fixes the URL path and auth scheme (Bearer vs `x-api-key` +
   `anthropic-version`).
+- **Client certificates.** An upstream that authenticates callers by mutual TLS
+  needs a [`ClientCertificate`] rather than an `api_key`. Build the client with
+  [`TranslatingLlmClient::with_client_certificate`] and it presents that chain and
+  key on every backend the client serves. The two PEM buffers are joined into the
+  single buffer reqwest expects. An unparsable pair fails there, not on the first
+  call.
 - **Model rewrite.** The resolved [`ModelId`] is both the map key and the model id
   sent upstream — it overwrites whatever `model` the request arrived with.
 - **Streaming is chosen by the encoded request body.** If the body has

@@ -101,6 +101,9 @@ Target-level `system_prompt` values are prepended when that target serves a comp
 Selected and fallback targets are prepared independently.
 `max_retries` defaults to `2` and applies to transport failures, timeouts, HTTP 408/429, and 5xx
 responses.
+A client that reaches an upstream requiring mutual TLS sets `client_cert_path` and
+`client_key_path` to a PEM certificate chain and its private key. Both keys are required
+together, and both files are read at startup, so a missing file fails `--dry-run`.
 
 Random-route `weights` are relative, follow target order, and do not need to sum to one. Omit them
 for equal weighting. The optional `seed` reproduces the selection sequence for the same call order.

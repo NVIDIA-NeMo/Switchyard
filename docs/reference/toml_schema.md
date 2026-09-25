@@ -55,6 +55,8 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
+| `client_cert_path` | No | unset | PEM certificate chain presented to upstreams that authenticate callers by client certificate (mTLS). Requires `client_key_path`. |
+| `client_key_path` | No | unset | PEM private key for `client_cert_path`, PKCS#8 or SEC1. Requires `client_cert_path`. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientCertificate, ClientRouter, DEFAULT_MAX_RETRIES,
+    HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
 
@@ -326,8 +326,12 @@ impl DeploymentConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
+            let client_config = self.llm_clients.get(&name).ok_or_else(|| {
+                RunnerError::configuration("validated llm client was not initialized")
+            })?;
+            let certificate = load_client_certificate(&name, client_config)?;
             let client = Arc::new(
-                TranslatingLlmClient::new(&model_configs)
+                TranslatingLlmClient::with_client_certificate(&model_configs, certificate.as_ref())
                     .map_err(|error| RunnerError::configuration(error.to_string()))?,
             );
             clients.insert(name, client);
@@ -570,6 +574,11 @@ struct LlmClientConfig {
     max_retries: u32,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
+    /// PEM certificate chain presented to upstreams that authenticate by client
+    /// certificate. Requires `client_key_path`.
+    client_cert_path: Option<PathBuf>,
+    /// PEM private key for `client_cert_path`. Requires `client_cert_path`.
+    client_key_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -633,6 +642,36 @@ fn resolve_category_models(
             Ok((category, models))
         })
         .collect()
+}
+
+// Reads the PEM files for a client that authenticates by certificate. Reading at
+// load time means a missing or unreadable file fails startup and `--dry-run`,
+// rather than the first upstream call.
+fn load_client_certificate(
+    client_name: &str,
+    config: &LlmClientConfig,
+) -> RunnerResult<Option<ClientCertificate>> {
+    let (cert_path, key_path) = match (&config.client_cert_path, &config.client_key_path) {
+        (Some(cert_path), Some(key_path)) => (cert_path, key_path),
+        (None, None) => return Ok(None),
+        _ => {
+            return Err(RunnerError::configuration(format!(
+                "llm client {client_name} must set both client_cert_path and client_key_path"
+            )));
+        }
+    };
+    let read = |path: &Path, field: &str| {
+        fs::read(path).map_err(|error| {
+            RunnerError::configuration(format!(
+                "llm client {client_name} could not read {field} {}: {error}",
+                path.display()
+            ))
+        })
+    };
+    Ok(Some(ClientCertificate::from_pem(
+        read(cert_path, "client_cert_path")?,
+        read(key_path, "client_key_path")?,
+    )))
 }
 
 fn build_backend(
@@ -892,6 +931,59 @@ target = "strong"
             Ok(_) => "configuration unexpectedly succeeded".to_string(),
             Err(error) => error.to_string(),
         }
+    }
+
+    // Adds certificate keys to the `primary` client in VALID_CONFIG.
+    fn with_client_certificate(extra: &str) -> String {
+        let primary = "[llm_clients.primary]\nformat = \"openai_chat\"\nbase_url = \"https://example.test/v1\"";
+        VALID_CONFIG.replace(primary, &format!("{primary}\n{extra}"))
+    }
+
+    #[test]
+    fn a_client_certificate_requires_both_paths() {
+        let error = error_message(&with_client_certificate(
+            "client_cert_path = \"/nonexistent/chain.pem\"",
+        ));
+        assert!(
+            error.contains("llm client primary must set both client_cert_path and client_key_path"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_missing_certificate_file_fails_at_load_time() {
+        let error = error_message(&with_client_certificate(
+            "client_cert_path = \"/nonexistent/chain.pem\"\nclient_key_path = \"/nonexistent/private.pem\"",
+        ));
+        assert!(
+            error.contains("could not read client_cert_path /nonexistent/chain.pem"),
+            "{error}"
+        );
+    }
+
+    // Exercises the PEM parse in the HTTP client, not just the file read.
+    #[test]
+    fn an_unparsable_client_certificate_is_rejected() -> RunnerResult<()> {
+        let io = |error: std::io::Error| RunnerError::configuration(error.to_string());
+        let dir = std::env::temp_dir().join(format!(
+            "switchyard-unparsable-cert-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).map_err(io)?;
+        let chain = dir.join("chain.pem");
+        let key = dir.join("private.pem");
+        fs::write(&chain, b"not a certificate").map_err(io)?;
+        fs::write(&key, b"not a key").map_err(io)?;
+
+        let error = error_message(&with_client_certificate(&format!(
+            "client_cert_path = {:?}\nclient_key_path = {:?}",
+            chain.display().to_string(),
+            key.display().to_string()
+        )));
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(error.contains("invalid client certificate"), "{error}");
+        Ok(())
     }
 
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
