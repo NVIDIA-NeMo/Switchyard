@@ -3,7 +3,7 @@
 
 //! Version-1 TOML deployment loading for the shared runner.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -193,9 +193,10 @@ impl DeploymentConfig {
                     let (first_name, first) = slot.get();
                     if first.reasoning_effort != target.reasoning_effort
                         || first.extra_body != target.extra_body
+                        || first.omit_body_fields != target.omit_body_fields
                     {
                         return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort or extra_body; one target per model id is kept, so give each its own model id or llm client",
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
                             target.id, target.llm_client
                         )));
                     }
@@ -280,7 +281,13 @@ impl DeploymentConfig {
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
-            let backend = build_backend(name, client_config, &BTreeMap::new(), None)?;
+            let backend = build_backend(
+                name,
+                client_config,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                None,
+            )?;
             let (Backend::OpenAiChat(config)
             | Backend::OpenAiResponses(config)
             | Backend::Anthropic(config)) = backend;
@@ -318,6 +325,7 @@ impl DeploymentConfig {
                     &target.llm_client,
                     client_config,
                     &target.extra_body,
+                    &target.omit_body_fields,
                     target.reasoning_effort.clone(),
                 )?,
                 None,
@@ -579,6 +587,10 @@ struct TargetConfig {
     llm_client: String,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
+    /// Top-level request fields dropped from the outbound body before `extra_body` is merged.
+    /// For providers that reject an otherwise standard field.
+    #[serde(default)]
+    omit_body_fields: BTreeSet<String>,
     system_prompt: Option<String>,
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     /// Only meaningful on `openai_chat` and `openai_responses` clients.
@@ -639,6 +651,7 @@ fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
+    omit_body_fields: &BTreeSet<String>,
     reasoning_effort: Option<String>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
@@ -684,6 +697,7 @@ fn build_backend(
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
+        omit_body_fields: omit_body_fields.clone(),
         reasoning_effort,
         max_retries: config.max_retries,
         timeout: config.timeout_ms.map(Duration::from_millis),
@@ -1194,7 +1208,8 @@ new = ["send_message"]
             ),
         );
         assert!(
-            error_message(&conflicting).contains("different reasoning_effort or extra_body"),
+            error_message(&conflicting)
+                .contains("different reasoning_effort, extra_body, or omit_body_fields"),
             "{}",
             error_message(&conflicting)
         );
@@ -1625,7 +1640,13 @@ confidence_threshold = 0.5
         let Some(client) = config.llm_clients.get("primary") else {
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
-        let backend = build_backend("primary", client, &target.extra_body, None)?;
+        let backend = build_backend(
+            "primary",
+            client,
+            &target.extra_body,
+            &target.omit_body_fields,
+            None,
+        )?;
 
         assert_eq!(
             backend.extra_body().get("service_tier"),
@@ -1642,6 +1663,35 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn target_omit_body_fields_is_parsed_and_applied_to_its_backend() -> RunnerResult<()> {
+        let configured = VALID_CONFIG.replacen(
+            "llm_client = \"primary\"",
+            "llm_client = \"primary\"\n\
+             omit_body_fields = [\"max_output_tokens\"]",
+            1,
+        );
+        let config: DeploymentConfig = toml::from_str(&configured).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse config: {error}"))
+        })?;
+        let Some(target) = config.targets.get("classifier") else {
+            return Err(RunnerError::configuration("classifier target is missing"));
+        };
+        let Some(client) = config.llm_clients.get("primary") else {
+            return Err(RunnerError::configuration("primary llm client is missing"));
+        };
+        let backend = build_backend(
+            "primary",
+            client,
+            &target.extra_body,
+            &target.omit_body_fields,
+            None,
+        )?;
+
+        assert!(backend.omit_body_fields().contains("max_output_tokens"));
+        Ok(())
+    }
+
+    #[test]
     fn client_deadline_defaults_and_rejects_zero() -> RunnerResult<()> {
         for (setting, expected) in [
             ("", None),
@@ -1652,7 +1702,7 @@ confidence_threshold = 0.5
                 "format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\n{setting}"
             );
             let config: LlmClientConfig = toml::from_str(&source).expect("valid deadline config");
-            let backend = build_backend("test", &config, &BTreeMap::new(), None);
+            let backend = build_backend("test", &config, &BTreeMap::new(), &BTreeSet::new(), None);
             if expected == Some(0) {
                 assert!(backend.is_err());
             } else {
