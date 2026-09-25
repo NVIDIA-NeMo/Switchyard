@@ -51,6 +51,7 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 http-body-util = "0.1"
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["testing"] }
 tempfile = "3"
 tokio.workspace = true
 tower = { version = "0.5", features = ["util"] }
