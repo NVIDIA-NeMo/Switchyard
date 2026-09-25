@@ -1400,11 +1400,11 @@ impl ApiError {
     }
 }
 
-fn render_error_response(response: Response, wire_format: WireFormat) -> Response {
-    let Some(error) = response.extensions().get::<ApiError>().cloned() else {
+fn render_error_response(mut response: Response, wire_format: WireFormat) -> Response {
+    let Some(error) = response.extensions_mut().remove::<ApiError>() else {
         return response;
     };
-    let log_error = response.extensions().get::<RequestLogError>().cloned();
+    let log_error = response.extensions_mut().remove::<RequestLogError>();
     let mut rendered = error.into_response(wire_format);
     if let Some(log_error) = log_error {
         rendered.extensions_mut().insert(log_error);
