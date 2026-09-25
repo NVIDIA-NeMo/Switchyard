@@ -15,6 +15,13 @@ and Python CLI users.**
 See the
 [complete comparison](https://github.com/NVIDIA-NeMo/Switchyard/compare/v0.2.0...107f79853395b89eea26620cad7ca63a80b13ea0).
 
+### Fixed
+
+- **Request log distinguishes an absent id from an empty one** — the terminal
+  request event rendered `session_id` and `correlation_id` with
+  `unwrap_or("")`, so a request that carried no session and one that carried a
+  blank session both logged `session_id=`. An absent id now omits the field.
+
 ### Added
 
 - **Benchmark reproduction paths** — DeepSWE v1.1 Harbor/Pier instructions,
