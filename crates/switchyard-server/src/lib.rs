@@ -705,6 +705,15 @@ async fn decision(
     headers: HeaderMap,
     body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
 ) -> Response {
+    let span = observability::request_span(&headers);
+    decision_inner(state, headers, body).instrument(span).await
+}
+
+async fn decision_inner(
+    state: ServerState,
+    headers: HeaderMap,
+    body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
+) -> Response {
     let body = match body {
         Ok(Json(body)) if body.request.is_object() => body,
         Ok(_) => {
@@ -1674,6 +1683,78 @@ mod tests {
     use tokio::sync::{Notify, oneshot};
 
     use super::*;
+
+    #[tokio::test]
+    async fn decision_continues_incoming_w3c_trace_context() {
+        use std::io::Write as _;
+
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tower::ServiceExt as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("decision-test")));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut config = tempfile::NamedTempFile::new().expect("config file");
+        config
+            .write_all(
+                br#"schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://127.0.0.1:9/v1"
+
+[targets.only]
+id = "only-model"
+llm_client = "upstream"
+
+[routes.pick]
+id = "pick"
+type = "random"
+targets = ["only"]
+"#,
+            )
+            .expect("write config");
+        let app = build_switchyard_router(config::load_server_state(config.path()).expect("state"));
+
+        let request = axum::http::Request::post("/v1/decision")
+            .header("content-type", "application/json")
+            .header(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            )
+            .body(axum::body::Body::from(
+                r#"{"input_format":"openai_chat","request":{"model":"pick","messages":[{"role":"user","content":"hi"}]}}"#,
+            ))
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let span = |name: &str| {
+            spans
+                .iter()
+                .find(|span| span.name == name)
+                .unwrap_or_else(|| panic!("{name} span"))
+        };
+        let request_span = span("switchyard.request");
+        assert_eq!(
+            request_span.span_context.trace_id().to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+        assert_eq!(request_span.parent_span_id.to_string(), "00f067aa0ba902b7");
+        let run_span = span("libsy.run");
+        assert_eq!(
+            run_span.span_context.trace_id(),
+            request_span.span_context.trace_id()
+        );
+    }
 
     /// A successful judge call lands in the per-session routing snapshot under its
     /// model id with the classifier tier, while routed calls stay off the observer's
