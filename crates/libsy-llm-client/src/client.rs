@@ -860,7 +860,14 @@ fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // Reqwest labels truncated or otherwise unreadable response bodies as decode
     // errors, so distinguish them from serde JSON failures at the call site.
     let error = error.without_url();
-    if error.is_timeout() {
+    // reqwest reports a connect-phase timeout as both `is_connect()` and
+    // `is_timeout()`. Check connect first: no request was sent, so it is a
+    // transport failure like a refused connection.
+    if error.is_connect() {
+        LlmClientError::Transport {
+            source: Box::new(error),
+        }
+    } else if error.is_timeout() {
         LlmClientError::Timeout {
             source: Box::new(error),
         }
@@ -2626,6 +2633,40 @@ mod tests {
             panic!("expected the reqwest timeout source");
         };
         assert!(source.is_timeout());
+        Ok(())
+    }
+
+    // A connect that never completes sends nothing, like a refused connection.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn connect_timeout_is_a_transport_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        // Linux drops SYNs once a listener's accept queue is full, so later
+        // connects hang like an upstream behind a dropping firewall.
+        let socket = tokio::net::TcpSocket::new_v4()?;
+        socket.bind("127.0.0.1:0".parse()?)?;
+        let listener = socket.listen(0)?;
+        let addr = listener.local_addr()?;
+        let _queued: Vec<_> = (0..2)
+            .map(|_| {
+                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100))
+            })
+            .collect();
+
+        let mut client = TranslatingLlmClient::new(&chat_map(&format!("http://{addr}/v1")))?;
+        // Stands in for the OS connect timeout (30 s on Linux via reqwest's default
+        // TCP_USER_TIMEOUT); both surface as `is_connect() && is_timeout()`.
+        client.client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(100))
+            .build()?;
+
+        let Err(error) = client.call(request_for(Some("gpt"), false)).await else {
+            panic!("expected the connect to fail");
+        };
+        assert!(
+            matches!(error, LlmClientError::Transport { .. }),
+            "expected Transport, got {error:?}"
+        );
         Ok(())
     }
 

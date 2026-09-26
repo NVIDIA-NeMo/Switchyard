@@ -2056,6 +2056,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refused_connection_falls_back_to_the_next_candidate() -> Result<()> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "answer",
+                "model": "strong",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = |base_url: String| {
+            Backend::OpenAiChat(HttpBackendConfig {
+                base_url,
+                api_key: None,
+                forward_auth: false,
+                extra_headers: BTreeMap::new(),
+                extra_body: BTreeMap::new(),
+                omit_body_fields: BTreeSet::new(),
+                reasoning_effort: None,
+                max_retries: 0,
+                timeout: None,
+            })
+        };
+        let client = Arc::new(
+            TranslatingLlmClient::new(&[
+                // Nothing listens on port 1, so the connection is refused.
+                ModelConfig::new("weak", backend("http://127.0.0.1:1/v1".to_string()), None),
+                ModelConfig::new("strong", backend(format!("{}/v1", server.uri())), None),
+            ])
+            .map_err(|error| LibsyError::external("building test client", error))?,
+        );
+        let (_, response) = run(
+            Arc::new(CandidateAlgorithm {}),
+            ClientRouter::single(client),
+            request(),
+            to_category_map(&["weak", "strong"]),
+            None,
+        )
+        .await?;
+
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn streams_are_outside_the_candidate_fallback_boundary() -> Result<()> {
         // Receiving a stream handle is a successful call and ends candidate selection.
         let (client, result) = run_candidates(FirstOutcome::StreamSuccess).await;
