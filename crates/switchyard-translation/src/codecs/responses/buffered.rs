@@ -92,12 +92,17 @@ impl FormatCodec for OpenAiResponsesCodec {
                 }],
             });
         }
-        // With `previous_response_id`, the provider holds the earlier turns, so a tool output
-        // may answer a call that is not in this body.
+        // Stored continuations may answer a tool call that is not in this body.
         let stored_state = body
             .get("previous_response_id")
             .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty());
+            .is_some_and(|id| !id.is_empty())
+            || body.get("conversation").is_some_and(|conversation| {
+                conversation
+                    .as_str()
+                    .or_else(|| conversation.get("id").and_then(Value::as_str))
+                    .is_some_and(|id| !id.is_empty())
+            });
         let mut custom_call_outputs = Vec::new();
         let (messages, instructions) = decode_responses_input(
             body.get("input").unwrap_or(&Value::String(String::new())),
@@ -641,7 +646,7 @@ fn decode_responses_input(
                             }],
                         };
                         // An output whose call is not in this body answers a call the provider
-                        // holds behind `previous_response_id`; it stays a tool result so routing
+                        // holds behind a continuation ID; it stays a tool result so routing
                         // sees a tool continuation, not a new user turn. Without stored state
                         // the request is malformed, and the output becomes readable user text.
                         let answers_pending_call = pending_tool_calls
