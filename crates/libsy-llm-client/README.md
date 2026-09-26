@@ -265,7 +265,8 @@ also applies when `timeout` is `None` or an advisor has `fail_open = true`.
 `libsy` and custom hosts that drive it directly are unchanged.
 
 Retries replay the same upstream request to the same model. After routing completes,
-non-timeout failures may try another completion candidate. A timeout stops the call.
+non-timeout failures may try another completion candidate. A timeout stops the call;
+a connection that times out before it is established is a `Transport` failure.
 A transport failure can duplicate a request that the provider processed but did not
 finish returning. Each attempt is counted once; expiry during a retry delay or
 after a stream has started does not count another attempt.
@@ -282,7 +283,7 @@ after a stream has started does not count another attempt.
 | `RequestEncoding(msg)` | re-encoding an already-decoded request to the wire format failed (internal fault) |
 | `ResponseTranslation(msg)` | response decoding or encoding failed in the translation engine |
 | `Timeout { source }` | request or response body read exceeded its timeout |
-| `Transport { source }` | non-timeout connection or transport failure |
+| `Transport { source }` | connection failure, including a connect timeout, or another transport failure |
 | `ContextWindowExceeded { model, message }` | upstream 400 detected as a context overflow (checked before `UpstreamHttp`, so callers can evict-and-retry) |
 | `UpstreamHttp { status, body }` | any other non-2xx upstream response |
 | `InvalidResponse { source }` | the upstream response could not be decoded |

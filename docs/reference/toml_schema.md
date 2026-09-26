@@ -263,7 +263,9 @@ Custom mode validates the judge's JSON against `response_schema`, resolves the
 policy selector, and routes to a runtime model group. A verdict names a group and
 the first model in it serves the turn. An eligible non-timeout failure tries the
 rest of that group, then any remaining models in `models.any`. A timeout stops
-the request without trying another model.
+the request without trying another model. A connection that times out before it
+is established counts as a connection failure, not a timeout, so it tries the
+next model.
 
 The `[routes.<name>.models]` table takes any group name you choose. `any` and
 `judge` are reserved and required; `capable` and `efficient` are reserved for the
