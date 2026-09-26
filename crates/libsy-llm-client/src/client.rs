@@ -4,7 +4,7 @@
 //! [`TranslatingLlmClient`] — the crate's single public entry point: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::ready;
 use std::time::{Duration, SystemTime};
 
@@ -260,6 +260,7 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
+        omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
@@ -1145,6 +1146,15 @@ fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     }
 }
 
+fn omit_configured_body_fields(body: &mut Value, omit_body_fields: &BTreeSet<String>) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    for key in omit_body_fields {
+        object.remove(key);
+    }
+}
+
 // Anthropic and Bedrock both cap a request at four blocks carrying
 // `cache_control`, counting tools, system blocks and message blocks together.
 const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
@@ -1294,6 +1304,7 @@ mod tests {
             forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
             timeout: None,
@@ -1399,6 +1410,15 @@ mod tests {
     ) -> Vec<ModelConfig> {
         let mut backend = config(base_url);
         backend.extra_body = extra_body;
+        vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn chat_map_with_omit_body_fields(
+        base_url: &str,
+        omit_body_fields: BTreeSet<String>,
+    ) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.omit_body_fields = omit_body_fields;
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
     }
 
@@ -2036,6 +2056,50 @@ mod tests {
         let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
             &format!("{}/v1", server.uri()),
             extra_body,
+        ))?;
+        let raw = json!({
+            "model": "client-facing",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 7
+        });
+
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn omit_body_fields_strips_a_field_extra_body_cannot_override()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                body.get("max_tokens").is_none()
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1",
+                "model": "gpt",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map_with_omit_body_fields(
+            &format!("{}/v1", server.uri()),
+            BTreeSet::from(["max_tokens".to_string()]),
         ))?;
         let raw = json!({
             "model": "client-facing",
