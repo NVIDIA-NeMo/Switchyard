@@ -8,8 +8,8 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy,
-    WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, LlmRequest, LossyConversionPolicy, Message, Role, TranslationEngine,
+    TranslationPolicy, WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -4149,5 +4149,85 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
         )?
         .body;
     assert_eq!(output["input"], outputs);
+    Ok(())
+}
+
+// Canonical Chat -> Responses encoding must never emit the scalar string `input` shorthand:
+// strict Responses backends reject it, while list input is accepted by every Responses
+// implementation. A single user text encodes as one message item with the text preserved.
+#[test]
+fn responses_encode_of_single_user_text_is_a_message_list() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4o",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert!(
+        !output["input"].is_string(),
+        "canonical encoding must never emit scalar input: {output}"
+    );
+    let input = output["input"]
+        .as_array()
+        .ok_or("encoded input must be a message-item list")?;
+    assert_eq!(input.len(), 1, "a single user text encodes as one message");
+    assert_eq!(input[0]["type"], "message");
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(input[0]["content"], "hi", "text must survive verbatim");
+    Ok(())
+}
+
+// Instruction roles in normalized IR encode as `developer`: strict Responses backends reject
+// `system`-role input items, and `developer` is the instruction role accepted everywhere. The
+// inbound decoders fold wire-level system and developer content into `instructions`, so this
+// drives the IR directly to reach the role mapping.
+#[test]
+fn responses_encode_maps_instruction_roles_to_developer() -> TestResult {
+    let engine = TranslationEngine::default();
+    let request = LlmRequest {
+        model: Some("gpt-4o".to_string()),
+        messages: vec![
+            Message::text(Role::System, "system rules"),
+            Message::text(Role::Developer, "developer rules"),
+            Message::text(Role::User, "hi"),
+        ],
+        ..LlmRequest::default()
+    };
+
+    let encoded = engine.encode_request(
+        WireFormat::OpenAiResponses,
+        &request,
+        &TranslationPolicy::default(),
+    )?;
+    let input = encoded.body["input"]
+        .as_array()
+        .ok_or("encoded input must be a message-item list")?;
+
+    assert_eq!(input.len(), 3);
+    assert_eq!(
+        input[0]["role"], "developer",
+        "Role::System must encode as developer"
+    );
+    assert_eq!(
+        input[1]["role"], "developer",
+        "Role::Developer must stay developer"
+    );
+    assert_eq!(input[2]["role"], "user");
+    for item in input {
+        assert_ne!(
+            item["role"], "system",
+            "no generated system role may reach the Responses wire"
+        );
+    }
     Ok(())
 }
