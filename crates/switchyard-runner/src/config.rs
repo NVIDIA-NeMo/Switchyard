@@ -1177,6 +1177,34 @@ new = ["send_message"]
     }
 
     #[test]
+    fn unmatched_steps_is_a_capability_setting() -> RunnerResult<()> {
+        // Accepted on a capability route; the value range is checked by the algorithm.
+        runner_from_toml(&VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nunmatched_steps = 2",
+        ))?;
+        assert!(
+            error_message(&VALID_CONFIG.replace(
+                "base_threshold = 0.5",
+                "base_threshold = 0.5\nunmatched_steps = 3",
+            ))
+            .contains("unmatched_steps must be 0, 1, or 2")
+        );
+
+        // Rejected on an escalation route, including the implicit form where the
+        // `escalation` table alone selects the mode: the key is new, so no existing
+        // configuration relies on it being ignored there.
+        assert!(
+            error_message(&VALID_CONFIG.replace(
+                "base_threshold = 0.5",
+                "base_threshold = 0.5\nunmatched_steps = 2\nescalation = { confirmations = 2 }",
+            ))
+            .contains("mode escalation cannot use capability routing settings")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_target_reasoning_effort_parses_and_is_rejected_where_unsupported() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
         let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";

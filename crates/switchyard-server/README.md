@@ -129,7 +129,8 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 | Key | Default | Meaning |
 |---|---|---|
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
-| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain verdicts, `unmatched_steps` times for unmatched verdicts, and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `unmatched_steps` | `1` | Threshold steps for an unmatched verdict. `0`, `1`, or `2`; `2` treats it like unsupported. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request including tool continuations, `user_turn` judges each new user message and holds that target across the tool calls between, `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 

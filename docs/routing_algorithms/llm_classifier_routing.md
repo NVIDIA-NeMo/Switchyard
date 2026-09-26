@@ -70,7 +70,8 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 `strong_target`:
 
 - `supported` uses `base_threshold`.
-- `uncertain` and `unmatched` use `base_threshold + threshold_step`.
+- `uncertain` uses `base_threshold + threshold_step`.
+- `unmatched` uses `base_threshold + unmatched_steps * threshold_step` (`unmatched_steps` defaults to `1`).
 - `unsupported` uses `base_threshold + 2 * threshold_step`.
 
 An invalid, inconsistent, or unparseable verdict routes to
@@ -121,6 +122,7 @@ for the server merge behavior.
 |---|---|---|
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
+| `unmatched_steps` | `1` | Boundary steps applied to an `unmatched` verdict. `0`, `1`, or `2`; `2` requires the same confidence as an `unsupported` verdict. |
 | `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
