@@ -235,6 +235,10 @@ opening task and the latest user follow-up when they differ, excluding tool call
 tool results, and reasoning. It keeps ordinary user content from messages that
 also contain tool results. Set `recent_turn_window` when intervening conversation
 context affects the forecast.
+Image, audio, video, and file blocks reach the judge as short text markers such as
+`[image attachment]`, so a text-only judge model can still rule on an attached
+request. The projection applies to the judge's copy only; the request that serves
+the turn keeps its attachments.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.

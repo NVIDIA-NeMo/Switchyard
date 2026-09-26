@@ -238,7 +238,11 @@ fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
                 parts.push(format!("tool_call {}({})", call.name, call.arguments));
             }
             ContentBlock::ToolResult(result) => collect_text(&result.content, parts),
-            _ => {}
+            _ => {
+                if let Some(marker) = super::judge_text::attachment_marker(block) {
+                    parts.push(marker.to_string());
+                }
+            }
         }
     }
 }
@@ -403,7 +407,7 @@ pub(crate) fn request_at_turn(session_id: Option<&str>, turn: usize) -> Request 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
+    use switchyard_protocol::{ContentBlock, ImageSource, Message, Role, ToolCall, ToolResult};
 
     use super::*;
     use crate::algorithms::util::llm_judge::Judge;
@@ -552,6 +556,36 @@ mod tests {
 
         // Under the limit the text is returned untouched.
         assert_eq!(truncate_middle("short", 50), "short");
+    }
+
+    /// Attachments appear in the trajectory summary as markers, never as payload.
+    #[test]
+    fn summary_marks_attachments_without_their_payload() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "describe the diagram".to_string(),
+                    },
+                    ContentBlock::Image {
+                        source: ImageSource::Base64 {
+                            media_type: Some("image/png".to_string()),
+                            data: "private-payload".to_string(),
+                        },
+                    },
+                ],
+            },
+            Message::text(Role::Assistant, "it shows two services"),
+        ];
+
+        let summary = summarize_for_judge(&[], &messages, 1, &EscalationJudgeConfig::default());
+
+        assert!(
+            summary.contains("[user (task)] describe the diagram [image attachment]"),
+            "{summary}"
+        );
+        assert!(!summary.contains("private-payload"), "{summary}");
     }
 
     #[test]

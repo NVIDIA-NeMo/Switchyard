@@ -98,6 +98,8 @@ calling another target or selecting the strong tier for subsequent session turns
 The trajectory judge uses the same response contract and provider/model
 compatibility guidance as the LLM classifier judge. See
 [Judge model compatibility](llm_classifier_routing.md#judge-model-compatibility).
+The transcript summary records image, audio, video, and file blocks as short
+markers such as `[image attachment]`; their payload never reaches the judge.
 
 ## Tuning options
 

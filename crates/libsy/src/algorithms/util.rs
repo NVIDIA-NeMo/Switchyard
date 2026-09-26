@@ -5,6 +5,7 @@ pub mod affinity;
 pub(crate) mod buffered_response;
 pub(crate) mod classifier_contract;
 pub mod escalation;
+pub(crate) mod judge_text;
 pub(crate) mod llm_judge;
 pub(crate) mod prompts;
 pub(crate) mod robustness;
