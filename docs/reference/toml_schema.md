@@ -243,6 +243,7 @@ Capability mode classifies before serving. See
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `task_anchor` | No | `opening_task` | Which user message is the task. `opening_task` keeps the behavior above. `latest_user_turn` judges the newest ordinary user message; with `recent_turn_window`, the window then counts the messages before that turn and the turn is sent last. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
 
 Escalation mode serves the weak target first and judges the completed turn. See
@@ -284,6 +285,7 @@ how one route chooses between more than two models.
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `task_anchor` | No | `opening_task` | Which user message is the task. `opening_task` keeps the behavior above. `latest_user_turn` judges the newest ordinary user message; with `recent_turn_window`, the window then counts the messages before that turn and the turn is sent last. |
 
 The selected JSON label must name a configured group. A label naming a target
 rather than a group, or a group you did not configure, falls back to

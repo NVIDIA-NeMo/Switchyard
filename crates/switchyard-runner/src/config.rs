@@ -1177,6 +1177,34 @@ new = ["send_message"]
     }
 
     #[test]
+    fn task_anchor_is_a_capability_setting() -> RunnerResult<()> {
+        // Accepted on a capability route; unknown values fail at parse time.
+        runner_from_toml(&VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\ntask_anchor = \"latest_user_turn\"",
+        ))?;
+        assert!(
+            error_message(&VALID_CONFIG.replace(
+                "base_threshold = 0.5",
+                "base_threshold = 0.5\ntask_anchor = \"middle\"",
+            ))
+            .contains("unknown variant")
+        );
+
+        // Rejected on an escalation route, including the implicit form where the
+        // `escalation` table alone selects the mode: the key is new, so no existing
+        // configuration relies on it being ignored there.
+        assert!(
+            error_message(&VALID_CONFIG.replace(
+                "base_threshold = 0.5",
+                "base_threshold = 0.5\ntask_anchor = \"latest_user_turn\"\nescalation = { confirmations = 2 }",
+            ))
+            .contains("mode escalation cannot use capability routing settings")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn a_target_reasoning_effort_parses_and_is_rejected_where_unsupported() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
         let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";

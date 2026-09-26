@@ -122,6 +122,7 @@ for the server merge behavior.
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
 | `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
+| `task_anchor` | `opening_task` | Which user message is the task. `opening_task` is the behavior described above. `latest_user_turn` judges the newest ordinary user message; without a window it is sent alone, and with `recent_turn_window = N` the judge sees the `N` messages before that turn and then the turn itself. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
@@ -258,6 +259,20 @@ classify_trigger = "user_turn"
 Tool results are the agent continuing work the user already asked for, so they
 do not re-open the decision. A failed or unusable verdict keeps the current
 target. When no target has been selected yet, the next request is judged again.
+
+By default each of those decisions is still anchored to the conversation's
+opening task, with the new user message shown as a follow-up. In a long session
+where later user messages open different jobs, set `task_anchor =
+"latest_user_turn"` so the judge treats the message that triggered the decision
+as the task, with `recent_turn_window` supplying the messages before it as
+context:
+
+```toml
+[routes.smart]
+classify_trigger = "user_turn"
+task_anchor = "latest_user_turn"
+recent_turn_window = 4
+```
 
 `new_session` judges once and reuses that target for the rest of the session,
 including `strong_target` when it was selected as the fallback for an unusable

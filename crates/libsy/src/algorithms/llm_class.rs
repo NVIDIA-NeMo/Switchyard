@@ -148,18 +148,30 @@ fn window_start(tail: &[&Message], recent_turn_window: usize) -> usize {
     counted
 }
 
+/// Ordinary user content. Decoders also use the user role for tool results, so a
+/// message made only of tool results is never a task.
+fn is_task_content(block: &ContentBlock) -> bool {
+    !matches!(
+        block,
+        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_) | ContentBlock::Reasoning { .. }
+    )
+}
+
+/// The ordinary user content of `message`, as the judge's task line.
+fn task_only(message: &Message) -> Message {
+    Message {
+        role: Role::User,
+        content: message
+            .content
+            .iter()
+            .filter(|block| is_task_content(block))
+            .cloned()
+            .collect(),
+    }
+}
+
 /// Keeps the opening task and the latest user follow-up when they differ.
 fn task_messages(messages: &[Message]) -> Vec<Message> {
-    // Decoders also use the user role for tool results. Select ordinary user content
-    // first, so a tool result cannot replace the opening task or latest follow-up.
-    let is_task_content = |block: &ContentBlock| {
-        !matches!(
-            block,
-            ContentBlock::ToolCall(_)
-                | ContentBlock::ToolResult(_)
-                | ContentBlock::Reasoning { .. }
-        )
-    };
     let mut user_messages = messages.iter().filter(|message| {
         message.role == Role::User && message.content.iter().any(is_task_content)
     });
@@ -169,30 +181,80 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
     [Some(opening_task), user_messages.next_back()]
         .into_iter()
         .flatten()
-        .map(|message| Message {
-            role: Role::User,
-            content: message
-                .content
-                .iter()
-                .filter(|block| is_task_content(block))
-                .cloned()
-                .collect(),
-        })
+        .map(task_only)
         .collect()
+}
+
+/// Index of the newest message that carries ordinary user content.
+fn latest_user_turn(messages: &[Message]) -> Option<usize> {
+    messages.iter().rposition(|message| {
+        message.role == Role::User && message.content.iter().any(is_task_content)
+    })
+}
+
+/// Keeps the latest user turn alone.
+fn latest_task_message(messages: &[Message]) -> Vec<Message> {
+    latest_user_turn(messages)
+        .map(|task| vec![task_only(&messages[task])])
+        .unwrap_or_default()
+}
+
+/// Keeps the last `recent_turn_window` messages before the latest user turn, then that
+/// turn last, so the judge reads the context first and the task it must route at the end.
+///
+/// The window is counted over the messages before the task and keeps tool pairs whole
+/// the same way [`trim_messages`] does for the trailing window. The task itself is sent
+/// with its ordinary content only, so a tool result decoded into the same user message
+/// never travels without the call that introduced it.
+fn trim_messages_before_latest(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
+    let is_instruction = |message: &Message| matches!(message.role, Role::System | Role::Developer);
+    let mut kept: Vec<&Message> = messages.iter().filter(|m| is_instruction(m)).collect();
+    let Some(task) = latest_user_turn(messages) else {
+        return kept.into_iter().cloned().collect();
+    };
+    let head: Vec<&Message> = messages[..task]
+        .iter()
+        .filter(|m| !is_instruction(m))
+        .collect();
+    kept.extend(&head[window_start(&head, recent_turn_window)..]);
+    let task_message = task_only(&messages[task]);
+    kept.into_iter()
+        .cloned()
+        .chain(std::iter::once(task_message))
+        .collect()
+}
+
+/// Which user message a capability or custom classifier treats as the task.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskAnchor {
+    /// The conversation's first ordinary user message; later user messages are
+    /// follow-ups to it.
+    #[default]
+    OpeningTask,
+    /// The newest ordinary user message. Suits `classify_trigger = "user_turn"` in
+    /// long sessions where each user message may open a different job.
+    LatestUserTurn,
 }
 
 /// Selects the task messages shown to capability and custom-schema classifiers.
 struct TaskInput {
     recent_turn_window: Option<usize>,
+    task_anchor: TaskAnchor,
 }
 
 impl ClassifierInput for TaskInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
-        // The default preserves the whole-task anchor and latest user update. A
-        // configured window widens that to the surrounding conversation.
-        let mut messages = match self.recent_turn_window {
-            Some(window) => trim_messages(&request.llm_request.messages, window),
-            None => task_messages(&request.llm_request.messages),
+        // The anchor picks the task; a configured window widens the judge's view to the
+        // surrounding conversation: after the opening task, or before the latest turn.
+        let conversation = &request.llm_request.messages;
+        let mut messages = match (self.task_anchor, self.recent_turn_window) {
+            (TaskAnchor::OpeningTask, Some(window)) => trim_messages(conversation, window),
+            (TaskAnchor::OpeningTask, None) => task_messages(conversation),
+            (TaskAnchor::LatestUserTurn, Some(window)) => {
+                trim_messages_before_latest(conversation, window)
+            }
+            (TaskAnchor::LatestUserTurn, None) => latest_task_message(conversation),
         };
         // Reasoning is provider-private and not required to classify the task. Some
         // upstreams also reject an unsigned reasoning item replayed without the
@@ -318,6 +380,11 @@ pub struct TaskClassifierConfig {
     /// `Some(n)` widens that to the client instructions, the opening task, and
     /// the last `n` turns after it.
     pub recent_turn_window: Option<usize>,
+    /// Which user message is the task: the opening one (default) or the latest.
+    ///
+    /// With `LatestUserTurn`, `recent_turn_window` counts the messages before the
+    /// task instead of after it.
+    pub task_anchor: TaskAnchor,
     /// Prompt and verdict contract settings for the classifier judge.
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
@@ -337,6 +404,8 @@ struct TaskClassifierConfigWire {
     message_hash_fallback: bool,
     #[serde(default)]
     recent_turn_window: Option<usize>,
+    #[serde(default)]
+    task_anchor: TaskAnchor,
     #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
@@ -362,6 +431,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             classify_trigger: wire.classify_trigger,
             message_hash_fallback: wire.message_hash_fallback,
             recent_turn_window: wire.recent_turn_window,
+            task_anchor: wire.task_anchor,
             contract,
             max_output_tokens: wire.max_output_tokens,
         })
@@ -380,6 +450,7 @@ impl Default for TaskClassifierConfig {
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
+            task_anchor: TaskAnchor::default(),
             contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
@@ -464,6 +535,8 @@ pub struct CustomClassifierConfig {
     pub message_hash_fallback: bool,
     /// Trailing conversation turns shown to the classifier judge.
     pub recent_turn_window: Option<usize>,
+    /// Which user message is the task: the opening one (default) or the latest.
+    pub task_anchor: TaskAnchor,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
 }
@@ -482,6 +555,7 @@ impl CustomClassifierConfig {
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
+            task_anchor: TaskAnchor::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
     }
@@ -637,6 +711,7 @@ impl LlmTaskClassifier {
                 StructuredJudge::new(
                     TaskInput {
                         recent_turn_window: config.recent_turn_window,
+                        task_anchor: config.task_anchor,
                     },
                     contract,
                     SerdeDecoder::new(),
@@ -665,6 +740,7 @@ impl LlmTaskClassifier {
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
+            task_anchor,
             max_output_tokens,
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
@@ -675,7 +751,10 @@ impl LlmTaskClassifier {
         };
         let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
             StructuredJudge::new(
-                TaskInput { recent_turn_window },
+                TaskInput {
+                    recent_turn_window,
+                    task_anchor,
+                },
                 contract,
                 JsonSchemaDecoder::new(),
                 JudgeRuntimeConfig::new(max_output_tokens)?,
@@ -1382,7 +1461,10 @@ mod tests {
     /// The no-window case is covered by `capability_judge_builds_a_structured_request`.
     fn capability_judge(recent_turn_window: Option<usize>) -> Result<CapabilityJudge> {
         Ok(StructuredJudge::new(
-            TaskInput { recent_turn_window },
+            TaskInput {
+                recent_turn_window,
+                task_anchor: TaskAnchor::default(),
+            },
             LlmTaskClassifier::load_capability_contract(&ClassifierContractConfig::default())?,
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)?,
@@ -1470,6 +1552,7 @@ mod tests {
         });
         let input = TaskInput {
             recent_turn_window: None,
+            task_anchor: TaskAnchor::default(),
         };
         let mut request = Request {
             llm_request: LlmRequest {
@@ -1646,6 +1729,7 @@ mod tests {
 
         let built = TaskInput {
             recent_turn_window: Some(10),
+            task_anchor: TaskAnchor::default(),
         }
         .build_messages(&State::default(), &request);
 
@@ -1698,6 +1782,161 @@ mod tests {
                 .any(|text| text.contains(TRAILING_ROUTING_INSTRUCTION))
         );
         Ok(())
+    }
+
+    /// `latest_user_turn` judges the newest ordinary user message as the task. A user
+    /// message made only of tool results does not count, so an Anthropic-style tool
+    /// continuation never displaces the request the user actually typed.
+    #[test]
+    fn latest_user_turn_anchor_sends_the_newest_user_message_alone() {
+        let mut continuation = tool_result("call-9");
+        continuation.role = Role::User;
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![
+                    Message::text(Role::System, "client instructions"),
+                    Message::text(Role::User, "add caching"),
+                    Message::text(Role::Assistant, "done"),
+                    Message::text(Role::User, "now write the migration"),
+                    continuation,
+                ],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let built = TaskInput {
+            recent_turn_window: None,
+            task_anchor: TaskAnchor::LatestUserTurn,
+        }
+        .build_messages(&State::default(), &request);
+
+        assert_eq!(built.len(), 1, "{built:?}");
+        assert_eq!(
+            built[0].text_content("\n").as_deref(),
+            Some("now write the migration")
+        );
+    }
+
+    /// With a window, the context precedes the task and tool pairs inside it stay whole.
+    #[test]
+    fn latest_user_turn_anchor_window_precedes_the_task_and_keeps_tool_pairs_whole() {
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![
+                    Message::text(Role::User, "add caching"),
+                    Message::text(Role::Assistant, "plan"),
+                    tool_call("call-1"),
+                    tool_result("call-1"),
+                    Message::text(Role::Assistant, "cached"),
+                    Message::text(Role::User, "now write the migration"),
+                ],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+        let build = |window: usize| {
+            TaskInput {
+                recent_turn_window: Some(window),
+                task_anchor: TaskAnchor::LatestUserTurn,
+            }
+            .build_messages(&State::default(), &request)
+        };
+        let texts = |built: &[Message]| -> Vec<String> {
+            built
+                .iter()
+                .filter_map(|message| message.text_content("\n"))
+                .collect()
+        };
+
+        // A window of 0 is the task alone, plus the trailing routing instruction.
+        assert_eq!(
+            texts(&build(0)),
+            vec![
+                "now write the migration".to_string(),
+                TRAILING_ROUTING_INSTRUCTION.to_string(),
+            ]
+        );
+        // A window of 1 counts back from the message before the task.
+        assert_eq!(
+            texts(&build(1)),
+            vec![
+                "cached".to_string(),
+                "now write the migration".to_string(),
+                TRAILING_ROUTING_INSTRUCTION.to_string(),
+            ]
+        );
+        // A window of 2 would open on the tool result, so it widens to include its call.
+        let built = build(2);
+        assert!(built.contains(&tool_call("call-1")));
+        assert!(built.contains(&tool_result("call-1")));
+        let two = texts(&built);
+        assert!(!two.contains(&"add caching".to_string()), "{two:?}");
+        assert_eq!(two[two.len() - 2], "now write the migration");
+    }
+
+    /// A tool result decoded into the same user message as the task stays out of the
+    /// task line, so a zero window never sends a result whose call is not in the window.
+    #[test]
+    fn latest_user_turn_anchor_sends_the_task_without_its_tool_results() {
+        let mut mixed = tool_result("call-1");
+        mixed.role = Role::User;
+        mixed.content.push(ContentBlock::Text {
+            text: "now write the migration".to_string(),
+        });
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![
+                    Message::text(Role::User, "add caching"),
+                    tool_call("call-1"),
+                    mixed,
+                ],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let built = TaskInput {
+            recent_turn_window: Some(0),
+            task_anchor: TaskAnchor::LatestUserTurn,
+        }
+        .build_messages(&State::default(), &request);
+
+        assert!(
+            !built
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|block| matches!(block, ContentBlock::ToolResult(_))),
+            "{built:?}"
+        );
+        assert_eq!(
+            built
+                .iter()
+                .filter_map(|message| message.text_content("\n"))
+                .collect::<Vec<_>>(),
+            vec![
+                "now write the migration".to_string(),
+                TRAILING_ROUTING_INSTRUCTION.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn task_anchor_parses_and_defaults_to_the_opening_task() {
+        let parsed: TaskClassifierConfig =
+            serde_json::from_value(serde_json::json!({ "base_threshold": 0.5 }))
+                .expect("config without task_anchor parses");
+        assert_eq!(parsed.task_anchor, TaskAnchor::OpeningTask);
+
+        let parsed: TaskClassifierConfig = serde_json::from_value(serde_json::json!({
+            "base_threshold": 0.5,
+            "task_anchor": "latest_user_turn",
+        }))
+        .expect("config with task_anchor parses");
+        assert_eq!(parsed.task_anchor, TaskAnchor::LatestUserTurn);
     }
 
     #[test]
@@ -1800,6 +2039,7 @@ mod tests {
         let judge: CapabilityJudge = StructuredJudge::new(
             TaskInput {
                 recent_turn_window: None,
+                task_anchor: TaskAnchor::default(),
             },
             contract,
             SerdeDecoder::new(),

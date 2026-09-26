@@ -15,7 +15,7 @@ use libsy::{
     CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
     PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    SubagentRouterConfig, TaskAnchor, TaskClassifierConfig, ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -106,6 +106,7 @@ struct CapabilityClassifierRouteConfig {
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
+    task_anchor: TaskAnchor,
     prompt: Option<String>,
     response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
@@ -132,6 +133,7 @@ struct CustomClassifierRouteConfig {
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
+    task_anchor: TaskAnchor,
     max_output_tokens: u64,
 }
 
@@ -245,6 +247,9 @@ pub struct LlmClassifierRouteConfig {
     /// How many trailing turns the judge sees. Unset shows it the opening task
     /// and the latest user follow-up only.
     pub recent_turn_window: Option<usize>,
+    /// Which user message is the task: the opening one (default) or the latest.
+    /// With `latest_user_turn`, `recent_turn_window` counts the messages before it.
+    pub task_anchor: Option<TaskAnchor>,
     /// Replaces the packaged judge prompt. Required in custom mode.
     pub prompt: Option<String>,
     /// How the judge is asked for structured output. Use `json_object` when the
@@ -527,6 +532,7 @@ impl StageClassifierConfig {
             classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
+            task_anchor: TaskAnchor::default(),
             contract: classifier_contract(self.prompt.as_deref())
                 .with_response_format_type(self.response_format_type),
             max_output_tokens: self.max_output_tokens,
@@ -881,6 +887,7 @@ impl LlmClassifierRouteConfig {
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
+            task_anchor,
             prompt,
             response_format_type,
             max_output_tokens,
@@ -936,6 +943,7 @@ impl LlmClassifierRouteConfig {
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
+                        task_anchor: task_anchor.unwrap_or_default(),
                         prompt: prompt.clone(),
                         response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
@@ -956,11 +964,15 @@ impl LlmClassifierRouteConfig {
                         "llm_classifier route {route_name} mode escalation cannot use classify_trigger"
                     )));
                 }
-                if mode.is_some()
-                    && (base_threshold.is_some()
-                        || threshold_step.is_some()
-                        || *message_hash_fallback
-                        || recent_turn_window.is_some())
+                // `task_anchor` is new, so no existing escalation configuration carries it:
+                // reject it even when the mode is implied by `escalation`. The older
+                // capability keys stay tolerated in that implicit form for compatibility.
+                if task_anchor.is_some()
+                    || (mode.is_some()
+                        && (base_threshold.is_some()
+                            || threshold_step.is_some()
+                            || *message_hash_fallback
+                            || recent_turn_window.is_some()))
                 {
                     return Err(AlgorithmConfigError::new(format!(
                         "llm_classifier route {route_name} mode escalation cannot use capability routing settings"
@@ -1031,6 +1043,7 @@ impl LlmClassifierRouteConfig {
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
+                        task_anchor: task_anchor.unwrap_or_default(),
                         max_output_tokens: *max_output_tokens,
                     },
                 ))
@@ -1117,6 +1130,7 @@ fn build_subagent_router_config(
                 config.policy.into_libsy(),
             );
             classifier_config.recent_turn_window = config.recent_turn_window;
+            classifier_config.task_anchor = config.task_anchor;
             classifier_config.max_output_tokens = config.max_output_tokens;
             let classifier = Arc::new(
                 LlmTaskClassifier::new(LlmClassifierConfig::Custom {
@@ -1234,6 +1248,7 @@ fn build_algorithm(
                         classify_trigger: config.classify_trigger,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
+                        task_anchor: config.task_anchor,
                         contract: classifier_contract(config.prompt.as_deref())
                             .with_response_format_type(config.response_format_type),
                         max_output_tokens: config.max_output_tokens,
@@ -1270,6 +1285,7 @@ fn build_algorithm(
                     classifier_config.classify_trigger = config.classify_trigger;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
+                    classifier_config.task_anchor = config.task_anchor;
                     classifier_config.max_output_tokens = config.max_output_tokens;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                         default_target: config.default_target,
