@@ -4,6 +4,7 @@
 import json
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -110,7 +111,7 @@ while not Path(sys.argv[3]).exists():
     ],
 )
 def test_run_profile_recovers_only_expected_timeouts(
-    tmp_path, error_type, log_message, recovers
+    tmp_path: Path, error_type: str, log_message: str, recovers: bool
 ) -> None:
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir(parents=True)
