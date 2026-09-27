@@ -149,7 +149,7 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
     let image = json!({"type": "input_image", "file_id": "file_image", "detail": "auto"});
     let audio =
         json!({"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}});
-    let file = json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"});
+    let file = json!({"type": "input_file", "file_url": "https://example.com/report.pdf"});
     let document = json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}, "title": "report.pdf"});
     let text_file = json!({"type": "input_file", "file_data": "aGVsbG8=", "filename": "notes.txt"});
     let text_document = json!({"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hello"}, "title": "notes.txt"});
@@ -184,7 +184,20 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
         (Responses, Anthropic, audio, None),
         (Responses, Responses, file.clone(), Some(file.clone())),
         (Responses, Chat, file.clone(), None),
-        (Responses, Anthropic, file.clone(), Some(document.clone())),
+        (
+            Responses,
+            Responses,
+            json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"}),
+            Some(file.clone()),
+        ),
+        (
+            Responses,
+            Anthropic,
+            file.clone(),
+            Some(
+                json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}}),
+            ),
+        ),
         (Anthropic, Chat, document.clone(), None),
         (Anthropic, Responses, document, Some(file)),
         (
@@ -239,7 +252,7 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
 }
 
 #[test]
-fn abuse_identity_survives_request_translation() -> TestResult {
+fn native_abuse_identity_is_preserved_but_not_mapped() -> TestResult {
     let engine = TranslationEngine::default();
     let formats = [
         WireFormat::OpenAiChat,
@@ -248,7 +261,12 @@ fn abuse_identity_survives_request_translation() -> TestResult {
     ];
     for policy in [TranslationPolicy::default(), normalized_policy()] {
         for source in formats {
-            for identity in [Some("opaque-user-6cc3d8d5"), None] {
+            let long_identity = "u".repeat(150);
+            for identity in [
+                Some("opaque-user-6cc3d8d5"),
+                Some(long_identity.as_str()),
+                None,
+            ] {
                 let mut body = match source {
                     WireFormat::OpenAiChat => json!({
                         "messages": [{"role": "user", "content": "hi"}]
@@ -274,11 +292,20 @@ fn abuse_identity_survives_request_translation() -> TestResult {
                 for target in formats {
                     let output = engine.encode_request(target, &request, &policy)?.body;
                     let actual = if target == WireFormat::AnthropicMessages {
-                        &output["metadata"]["user_id"]
+                        output
+                            .get("metadata")
+                            .and_then(|metadata| metadata.get("user_id"))
                     } else {
-                        &output["safety_identifier"]
+                        output.get("safety_identifier")
                     };
-                    assert_eq!(actual, &json!(identity), "{source:?} -> {target:?}");
+                    let crosses_anthropic = (source == WireFormat::AnthropicMessages)
+                        != (target == WireFormat::AnthropicMessages);
+                    let expected = if crosses_anthropic { None } else { identity };
+                    assert_eq!(
+                        actual,
+                        expected.map(|value| json!(value)).as_ref(),
+                        "{source:?} -> {target:?}"
+                    );
                     if source != WireFormat::AnthropicMessages
                         && target != WireFormat::AnthropicMessages
                     {
@@ -407,6 +434,47 @@ fn responses_reasoning_survives_rebuild() -> TestResult {
         json!({"effort": "max", "summary": "auto"})
     );
     assert_eq!(output["include"], json!(["reasoning.encrypted_content"]));
+    Ok(())
+}
+
+#[test]
+fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for (thinking, effort, expected) in [
+        (
+            json!({"type": "adaptive"}),
+            Some("low"),
+            Some(json!({"effort": "low"})),
+        ),
+        (
+            json!({"type": "enabled", "budget_tokens": 2048}),
+            None,
+            None,
+        ),
+        (
+            json!({"type": "disabled"}),
+            None,
+            Some(json!({"effort": "none"})),
+        ),
+    ] {
+        let mut body = json!({
+            "model": "route",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": thinking
+        });
+        if let Some(effort) = effort {
+            body["output_config"] = json!({"effort": effort});
+        }
+        let output = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?;
+        assert_eq!(output.body.get("reasoning"), expected.as_ref());
+    }
     Ok(())
 }
 
@@ -1570,6 +1638,41 @@ fn responses_request_translates_codex_tool_shape_to_openai_chat() -> TestResult 
     assert_eq!(
         output["tools"][0]["function"]["parameters"]["required"],
         json!(["cmd"])
+    );
+    Ok(())
+}
+
+#[test]
+fn responses_prompt_injection_preserves_namespace_description() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": "Fix the parser",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for managing sub-agents.",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Start one agent.",
+                "parameters": {"type": "object"}
+            }]
+        }]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"gpt-5.6-sol".into(), Some("Plan first."));
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(
+        output["tools"][0]["description"],
+        "Tools for managing sub-agents."
     );
     Ok(())
 }

@@ -100,7 +100,7 @@ markers = [
 ]
 # For integration/production tests, recommend using -x to stop on first failure:
 #   pytest tests/offline_production_tests/ -v -x
-addopts = "-x"  # Stop on first failure by default (use --no-x to override)
+addopts = "-x"  # Stop on first failure by default (use -o addopts= to override)
 
 [tool.mypy]
 python_version = "3.10"

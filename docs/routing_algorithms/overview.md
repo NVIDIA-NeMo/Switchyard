@@ -42,6 +42,7 @@ These options remain available when you need a different routing policy.
 
 | Strategy | Use it when | Route `type` |
 |---|---|---|
+| [Plan/Execute](plan_execute_routing.md) | Use a capable model to inspect and plan, then switch to an efficient model after the first file mutation. | `plan_execute` |
 | [Composite](composite_routing.md) | Combine Task and Execution. A classifier sets the stage router's default tier. | `composite` |
 | [Escalation](escalation_router_routing.md) | Start on the efficient model and escalate when an LLM judge detects trouble. | `llm_classifier` with `mode = "escalation"` |
 | [Custom](llm_classifier_routing.md#custom-multi-target-routing) | Route among two or more models using your own classification schema and rules. | `llm_classifier` with `mode = "custom"` |

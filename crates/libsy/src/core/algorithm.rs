@@ -109,18 +109,50 @@ pub struct CallModel {
     pub request: Request,
     /// Candidate models, tried in order until one answers. Never empty.
     pub models: Vec<ModelId>,
-    // How to send the response back to the algorithm
-    reply: oneshot::Sender<Result<Response>>,
+    /// How to send the response back to the algorithm. `None` once the call is recorded.
+    reply: Option<oneshot::Sender<Result<Response>>>,
+    started: Instant,
 }
 
 impl CallModel {
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
-    pub fn respond(self, result: Result<Response>) -> Result<()> {
+    pub fn respond(mut self, result: Result<Response>) -> Result<()> {
+        self.record(result.is_ok());
         self.reply
+            .take()
+            .ok_or(DriverError::ResponseDropped)?
             .send(result)
             .map_err(|_| DriverError::ResponseDropped.into())
+    }
+
+    /// Record a failed call and return its error to stop [`drive`].
+    /// Leaves the promise unfulfilled so the driver can cancel the algorithm.
+    pub fn fail(mut self, error: LibsyError) -> Result<()> {
+        self.reply = None;
+        self.record(false);
+        Err(error)
+    }
+
+    fn record(&self, is_ok: bool) {
+        observability::record_llm_call(
+            &self.algorithm,
+            self.models
+                .first()
+                .map(ModelId::as_str)
+                .unwrap_or("NoTargets"),
+            self.started.elapsed(),
+            is_ok,
+        );
+    }
+}
+
+impl Drop for CallModel {
+    fn drop(&mut self) {
+        if self.reply.is_some() {
+            self.record(false);
+        }
     }
 }
 
@@ -239,8 +271,9 @@ impl Driver {
     /// Errors if the stream is closed or the call failed.
     /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
     /// the algorithm observes it (host queueing/serving included; a streamed
-    /// response resolves when its stream handle arrives); latency, outcome, and
-    /// token usage are recorded when it resolves. The provider call itself is the
+    /// response resolves when its stream handle arrives). The host records call metrics
+    /// through [`CallModel::respond`] or [`CallModel::fail`]; outcome and token usage
+    /// are recorded on the span when the promise resolves. The provider call itself is the
     /// host's, and is instrumented by whoever makes it.
     #[tracing::instrument(
         target = "libsy",
@@ -258,7 +291,7 @@ impl Driver {
         )
     )]
     pub async fn call_model(&self, mut request: Request, models: Vec<ModelId>) -> Result<Response> {
-        let Some(selected_model_id) = models.first().cloned() else {
+        let Some(selected_model_id) = models.first() else {
             return Err(LibsyError::NoTargets);
         };
         request.llm_request.model = Some(selected_model_id.to_string());
@@ -268,7 +301,8 @@ impl Driver {
             algorithm: self.algorithm.clone(),
             request,
             models,
-            reply,
+            reply: Some(reply),
+            started,
         };
         let result = async {
             self.step_tx
@@ -280,14 +314,7 @@ impl Driver {
                 .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
         }
         .await;
-        let elapsed = started.elapsed();
-        observability::record_llm_call(
-            &self.algorithm,
-            selected_model_id.as_str(),
-            elapsed,
-            &result,
-            &tracing::Span::current(),
-        );
+        observability::record_llm_call_span(&result, &tracing::Span::current());
         result
     }
 
@@ -363,9 +390,10 @@ pub enum Step {
 /// Returns the final [`RoutingOutcome`].
 /// `serve` owns the call: it performs it however the host likes and must fulfill the promise
 /// with [`CallModel::respond`]. A failed *model* call belongs in `respond` — the
-/// algorithm may route around it. Returning `Err` from `serve` aborts the whole run, so
-/// reserve it for infrastructure failures. Calls are served concurrently, so an algorithm
-/// that offloads several at once (hedging, fan-out) gets real parallelism.
+/// algorithm may route around it. To stop routing on a model-call failure, return
+/// [`CallModel::fail`] instead. Returning `Err` from `serve` aborts the whole run.
+/// Calls are served concurrently, so an algorithm that offloads several at once (hedging, fan-out)
+/// gets real parallelism.
 ///
 /// libsy performs no I/O; this is only the mechanics of consuming its own step stream, kept
 /// here so every host does not reimplement the same loop. `switchyard-llm-client`'s `run`

@@ -3,8 +3,6 @@
 
 """Prepare a local closed-book Harbor dataset with prebaked coding agents."""
 
-from __future__ import annotations
-
 import argparse
 import hashlib
 import json
@@ -200,6 +198,7 @@ def _install_layer(pins: dict[str, str]) -> str:
     claude_version = pins["CLAUDE_CODE_VERSION"]
     codex_version = pins["CODEX_VERSION"]
     opencode_version = pins["OPENCODE_VERSION"]
+    pi_version = pins["PI_VERSION"]
     # Hermes (NousResearch hermes-agent) is a per-user uv app installed from
     # GitHub, not an npm package. Baking it here (build-time, with host network)
     # means the runtime install() skip-guard short-circuits, so tasks need no
@@ -228,7 +227,7 @@ def _install_layer(pins: dict[str, str]) -> str:
     return f"""
 
 # Switchyard benchmark prebaked coding agents.
-ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},node={node_version},hermes={hermes_version}"
+ENV SWITCHYARD_PREBAKED_AGENT_VERSIONS="claude-code={claude_version},codex={codex_version},opencode={opencode_version},pi={pi_version},node={node_version},hermes={hermes_version}"
 RUN set -eux; \\
     if command -v apt-get >/dev/null 2>&1; then \\
         apt-get update; \\
@@ -265,10 +264,12 @@ RUN set -eux; \\
     npm install -g \\
         "@anthropic-ai/claude-code@{claude_version}" \\
         "@openai/codex@{codex_version}" \\
-        "opencode-ai@{opencode_version}"; \\
+        "opencode-ai@{opencode_version}" \\
+        "@earendil-works/pi-coding-agent@{pi_version}"; \\
     claude --version; \\
     codex --version; \\
-    opencode --version
+    opencode --version; \\
+    pi --version
 RUN set -eux; \\
     export HOME=/root; \\
     export PATH="/root/.local/bin:$PATH"; \\
@@ -506,13 +507,17 @@ def _merge_compose(task_dir: Path, proxy_allowlist_hosts: tuple[str, ...]) -> di
 
 
 def prepare_dataset(
-    *,
     source_dataset: str,
     source_dir: Path | None,
     output_dir: Path,
     harbor_command: str,
     overwrite: bool,
 ) -> Path:
+    """Copy a Harbor dataset to `output_dir` and bake the pinned agents into its task images.
+
+    Every agent pin in `benchmark/agent-versions.env` must be present; a missing pin raises
+    `ValueError` before any download or copy starts.
+    """
     pins = _read_env_file(AGENT_VERSIONS_FILE)
     required = {
         "CLAUDE_CODE_VERSION",
@@ -520,6 +525,7 @@ def prepare_dataset(
         "HERMES_VERSION",
         "NODE_VERSION",
         "OPENCODE_VERSION",
+        "PI_VERSION",
     }
     missing = sorted(required - pins.keys())
     if missing:

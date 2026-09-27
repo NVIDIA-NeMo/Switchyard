@@ -131,7 +131,7 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
 | `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request including tool continuations, `user_turn` judges each new user message and holds that target across the tool calls between, `new_session` judges once and reuses that target for the session. |
-| `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `classify_trigger = "new_session"`. |
+| `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 
 Session affinity retains a decision for the process lifetime, including a `strong_target`
 fallback produced while the judge was unreachable. `message_hash_fallback` keys on request
@@ -147,9 +147,15 @@ are required. All configured semantic names use exact ASCII case-insensitive mat
 handoff notes, per-tier system prompts, and a capability-judge fallback are documented in
 [Stage-Router Routing](../../docs/routing_algorithms/stage_router_routing.md).
 
-## Codex model discovery
+## Model discovery
 
 `GET /v1/models` returns the standard `data` list and an empty Codex `models` list.
+Each entry reports the route's declared `tool_calling` and `vision` under `capabilities`.
+It reports the route's declared `context_window` as the top-level `context_length` field.
+OpenAI-compatible clients such as Oh My Pi read `context_length` when they build their
+model list from this endpoint. See
+[Use Switchyard with Oh My Pi](../../docs/integrations/oh_my_pi.md).
+
 Codex keeps its own model catalog and instructions. Select a Switchyard route explicitly
 with `codex --model route-id`; route aliases do not appear automatically in Codex's model
 picker. Unknown aliases use Codex's generic defaults and do not receive Switchyard's

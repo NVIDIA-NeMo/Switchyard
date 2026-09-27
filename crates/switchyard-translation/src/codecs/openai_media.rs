@@ -113,6 +113,9 @@ fn raw_file_payload(raw: &Value) -> Option<Map<String, Value>> {
     if block.get("type").and_then(Value::as_str) == Some("input_file") {
         let mut payload = block.clone();
         payload.remove("type");
+        if payload.contains_key("file_url") {
+            payload.remove("filename");
+        }
         return Some(payload);
     }
     if block.get("type").and_then(Value::as_str) != Some("document") {
@@ -124,9 +127,6 @@ fn raw_file_payload(raw: &Value) -> Option<Map<String, Value>> {
         "url" => {
             let mut payload = Map::new();
             payload.insert("file_url".into(), source.get("url")?.clone());
-            if let Some(filename) = filename {
-                payload.insert("filename".into(), filename.into());
-            }
             Some(payload)
         }
         "text" => Some(file_data_payload(

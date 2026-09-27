@@ -4,10 +4,34 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0]
+
+Switchyard 0.3.0 builds on the native server and Rust library introduced in
+0.2.0. It adds reusable integration paths, Advisor Gate and Composite routing,
+and a simpler Auto preset. It also updates the embedding API and removes the
+legacy Python server and launchers. **This is a breaking upgrade for library
+and Python CLI users.**
+
+See the
+[complete comparison](https://github.com/NVIDIA-NeMo/Switchyard/compare/v0.2.0...107f79853395b89eea26620cad7ca63a80b13ea0).
 
 ### Added
 
+- **Benchmark reproduction paths** — DeepSWE v1.1 Harbor/Pier instructions,
+  Stage Router and Advisor Gate profiles, and qualification settings document
+  the workload, agent, budgets, scoring denominator, and provider differences.
+  A NeMo Gym tutorial compares fixed-model and routed runs through LiteLLM.
+  These are reproduction tools, not a claim that every configuration improves
+  quality or cost. (#701, #680, #811, #812, #814)
+- **Unmatched-request forwarding and input capabilities** — an optional
+  `fallback_client` proxies unmatched requests; routes can declare image input
+  support for client discovery and reject inputs disabled by their capabilities.
+  (#547, #567, #750)
+- **Experimental research tools** — checkpoint-backed Prefill Router gains
+  batched inference and native route configuration. No supported checkpoint,
+  exporter, or compatible encoder assets are supplied. CRAFT task generation
+  is added under `experimental/`, separately from the routing runtime.
+  (#539, #593, #616, #572)
 - **`timeout_ms` on `[llm_clients.<name>]`** — one deadline covers all attempts,
   retry delays, and the complete response, including stream reads. Unset leaves
   the wait unbounded; `0` is rejected. A timeout returns `504` without trying another
@@ -79,9 +103,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Runner deployment from TOML source** — `Runner::from_toml(&str)` builds a
   configured runner from in-memory deployment text through the same
   version-1 parser and validation path as `Runner::load(path)`. (#545)
-- **Hierarchical routing** — libsy adds hierarchical routing, with stages
-  delegating to their own sub-router; a hierarchical stage router that
-  carries its own judge is rejected. (#533)
+- **Composite routing** — an LLM classifier sets the Stage Router's fall-open
+  tier. The shipped pairing is fixed; arbitrary nesting of algorithms is not
+  supported. This was developed as hierarchical routing and renamed before
+  release. (#533, #548)
 - **Upstream response headers forwarded** — the LLM client records the
   upstream HTTP response headers on both the buffered and the streaming path,
   and `switchyard-server` replays an allowlisted subset to the downstream
@@ -139,6 +164,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Python 3.10+ and a smaller package** — the core package has no declared
+  Python runtime dependencies. Applications supply their own model client
+  dependencies when embedding the library. Development and benchmark tools
+  have separate requirements. (#391, #343, #705)
+- **Host-driven routing contract** *(source-breaking)* — hosts drive
+  `Step::CallModel` and `Step::Done`, supply runtime category-to-model mappings,
+  and consume ordered `RoutingOutcome.selected_model_ids`. Python integrations
+  should migrate to `switchyard.libsy`; old chain/profile imports are removed.
+  Use the current Rust and Python examples rather than 0.2.0 signatures.
+  (#340, #361, #479, #592, #630)
+- **Metric vocabulary and attribution** — successful algorithm/call outcomes
+  use `ok`; the legacy `routing_tier` dimension is removed. Review dashboards
+  against the [OpenTelemetry reference](docs/reference/opentelemetry.md), which
+  distinguishes routing decisions, logical calls, answer candidates, and HTTP
+  attempts. (#554, #609, #773, #787)
 - **HTTP client errors stop routing** — after the configured retries, the Rust
   runner stops the request instead of letting the routing algorithm choose a
   fallback. This also applies when `timeout_ms` is unset or an advisor has
@@ -170,24 +210,65 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the FastAPI endpoints and legacy chain, the `switchyard-components` crate,
   and their compatibility PyO3 bindings are removed. Use `switchyard-server`
   with native TOML deployments.
-- **Packaging extras `[server]`, `[gpu]`, `[all]`, and `[cli]`** — dropped
+- **Packaging extras `[server]`, `[all]`, and `[cli]`** — dropped
   together with the deprecated Python server stack and launcher CLI. Install
   server functionality via the standalone `switchyard-server` binary instead.
+  The legacy `[tracing]` and `[affinity-redis]` extras are also removed; the
+  current package declares no optional dependency extras.
 
 ### Fixed
 
+- **RC protocol and tool-loop compatibility** — preserve parallel tool-call
+  limits, tool allowlists, native tool history, reasoning controls and
+  signatures, URL citations, and terminal Responses output. Streaming fixes
+  retain late response IDs, assemble fragmented tool names, and keep empty
+  tool inputs. Unsupported cross-format native output fails explicitly instead
+  of disappearing. (#729, #730, #771, #774, #777, #778, #779, #780, #782,
+  #784, #785, #788)
+- **Media re-encoding and caller identity** — keep supported image, audio,
+  document, and tool-result payloads in valid provider wire shapes, including
+  URL-versus-attachment handling and PDF data URLs. Stop mapping caller identity
+  between provider-specific fields, which caused Hub requests to fail.
+  (#755, #765, #783, #808, #810)
+- **Cross-format Responses state** — materialize stored conversation history
+  for Chat Completions and Anthropic targets, rather than forwarding unsupported
+  Responses state handles. This retains transcripts in process memory; it is
+  not stateless forwarding. See the
+  [state and retention guidance](docs/routing_algorithms/llm_classifier_routing.md#responses-continuations-by-id).
+  (#781, #809)
+- **Routing and fallback correctness** — zero-weight Random targets are never
+  fallback candidates; ambiguous same-model clients within a route are rejected;
+  escalation handles first-event context overflow and preserves instruction
+  anchors. Stage Router recognizes failed Anthropic tool results and Responses
+  patch/shell outputs. Codex compaction stays on the parent route, while spawned
+  threads use the sub-agent route. (#694, #700, #708, #722, #748, #754, #758, #789)
+- **Credentials and request trust boundaries** — redact configured provider
+  keys from server and Relay outputs, strip caller-controlled internal
+  translation metadata, and prevent unintended credential/header forwarding.
+  Relay rejects `forward_auth` because it cannot supply caller credentials.
+  Redaction is per event, not a guarantee against reconstructing secrets split
+  across stream events. (#690, #704, #720, #725, #738, #759)
+- **Accurate failure and usage reporting** — failed or abandoned streams count
+  as errors, fallback metrics identify each answer candidate, and translated
+  cache-write and thinking-token usage is retained. Same-format decode failures
+  produce stream errors rather than appearing successful. (#747, #769, #770,
+  #772, #773)
+- **Provider and integration compatibility** — retain query parameters in
+  provider URLs, preserve Codex's built-in instructions during model discovery,
+  repair LiteLLM routing after the library API migration, and preserve tool-free
+  Responses requests with the pinned LiteLLM integration. (#693, #699, #757, #816)
 - **Responses continuations stay with the provider that holds their state** — a
   request with `previous_response_id` or `conversation` could reach another
   provider and fail with `400 state_not_found`. When answer targets use different
   `[llm_clients]` entries, Switchyard records which model served each stored
   Responses ID and conversation ID. Known continuations return to that model
   without running the algorithm or trying another provider. Each route keeps up
-  to 65,536 IDs per process without discarding older records. Recording another
-  model for an existing ID returns `response_state_conflict`; exceeding the cap
-  returns `response_state_limit_exceeded`. Buffered replies use HTTP 409 and 503,
-  respectively; streams emit an error and stop. These checks happen after the
-  provider has done work. Records are lost on restart. A separate classifier
-  client does not affect routes whose answer targets share one client.
+  to 65,536 ID-to-model records per process without discarding older records.
+  At capacity, it logs a warning and returns the completed reply without saving
+  new state; later continuations from unsaved IDs may fail. Conflicting native
+  Responses IDs return HTTP 409 with `response_state_conflict`, or a stream
+  error after headers are sent. Records are lost on restart. Cross-format
+  continuations also retain history, even when answer targets share one client.
 - **Cross-format tool results keep image and file content** — an Anthropic
   `tool_result` carrying image or document blocks reached a Responses target
   as text only, and an image-only result became an empty `output`. In the other
@@ -348,6 +429,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reads `file_data`/`filename` carried directly on the content block, not
   only nested under `file`, so flat payloads no longer fall through to
   `FileSource::Raw`. (#590)
+
+### Limitations
+
+- The standalone server remains a demo/evaluation component, not a production
+  gateway. Release validation covers Ubuntu 24.04 on Linux x86_64; other
+  platforms are outside that scope.
+- The Relay integration requires `>=0.8.0, <1.0.0`. Relay 0.8.x and 0.9.0 have
+  a documented native-plugin upstream-error propagation issue. Plugin bundles
+  are published separately from Switchyard. See the
+  [integration guide](docs/integrations/nemo_relay.md#upstream-error-compatibility).
+- Prefill Router and the LiteLLM example remain experimental. Review the
+  [routing overview](docs/routing_algorithms/overview.md) and
+  [LiteLLM integration guide](examples/litellm/README.md) before deployment.
 
 ## [0.2.0]
 

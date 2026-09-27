@@ -204,6 +204,45 @@ fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
 }
 
 #[test]
+fn anthropic_errors_include_type_and_terminate_stream() -> TestResult {
+    let engine = TranslationEngine::default();
+    let target = WireFormat::AnthropicMessages;
+    let message = "stream failed";
+    for chunk in [
+        LlmResponseChunk::StreamError {
+            message: message.into(),
+        },
+        LlmResponseChunk::DecodeError {
+            message: message.into(),
+        },
+    ] {
+        let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
+        let events = engine.encode_stream_event(
+            &mut state,
+            target,
+            LlmResponseStreamEvent::new(vec![chunk]),
+        )?;
+        assert_eq!(
+            events,
+            vec![json!({"type": "error", "error": {"type": "api_error", "message": message}})]
+        );
+        assert!(
+            engine
+                .encode_stream_event(
+                    &mut state,
+                    target,
+                    LlmResponseStreamEvent::new(vec![LlmResponseChunk::MessageStop {
+                        reason: None
+                    }]),
+                )?
+                .is_empty()
+        );
+        assert!(engine.finish_stream(&mut state, target)?.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
 fn same_format_decode_failure_emits_terminal_error() -> TestResult {
     let cases = [
         (

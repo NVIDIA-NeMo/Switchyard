@@ -6,7 +6,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    ANTHROPIC_REQUEST_KEY, is_known_role_name, provider_extensions, text_from_blocks,
+    ANTHROPIC_REQUEST_KEY, is_anthropic_request, is_known_role_name, provider_extensions,
+    text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
@@ -159,7 +160,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "output_config",
                 "output_format",
                 "stream",
-                // OpenAI's opaque abuse-attribution ID; derive it from Anthropic metadata below.
+                // OpenAI-only identity fields must not leak through Anthropic decoding.
                 "safety_identifier",
             ],
         );
@@ -172,17 +173,6 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .extensions
                 .fields
                 .insert("parallel_tool_calls".to_string(), Value::Bool(!is_disabled));
-        }
-        // OpenAI codecs share this extension for abuse attribution.
-        if let Some(user_id) = body
-            .get("metadata")
-            .and_then(|metadata| metadata.get("user_id"))
-            .and_then(Value::as_str)
-        {
-            request
-                .extensions
-                .fields
-                .insert("safety_identifier".to_string(), json!(user_id));
         }
         request
             .extensions
@@ -263,7 +253,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             }
             body.insert("tool_choice".to_string(), choice);
         }
-        if request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true)) {
+        if is_anthropic_request(request) {
             for field in [
                 "inference_geo",
                 "service_tier",
@@ -278,13 +268,6 @@ impl FormatCodec for AnthropicMessagesCodec {
                     body.insert(field.to_string(), value.clone());
                 }
             }
-        } else if let Some(identity) = request
-            .extensions
-            .fields
-            .get("safety_identifier")
-            .and_then(Value::as_str)
-        {
-            body.insert("metadata".to_string(), json!({"user_id": identity}));
         }
         if let Some(stop_sequences) =
             anthropic_stop_sequences_from_extensions(&request.extensions.fields)

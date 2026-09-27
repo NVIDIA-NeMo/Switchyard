@@ -11,6 +11,11 @@ use crate::llm::{ContentBlock, LlmRequest, ToolChoice, ToolDefinition};
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
 
+/// Returns true when the request was decoded from an Anthropic Messages body.
+pub(crate) fn is_anthropic_request(request: &LlmRequest) -> bool {
+    request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true))
+}
+
 /// Converts an OpenAI allowed-tools policy to a restricted function list and mode.
 pub(crate) fn allowed_function_tools(
     request: &LlmRequest,
