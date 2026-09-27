@@ -35,6 +35,9 @@ confidence in `[0, 1]`. One maxed scoring dimension produces about `0.46`;
 corroborating evidence pushes confidence decisively past a `0.5` threshold.
 Repeated failures, critical-error severity, and context compaction are hard
 overrides to the capable tier. An active capable hold also bypasses the scorer.
+Severity and test results come from tool output that ran something. The contents
+returned by the built-in read and search tools do not count, unless the tool
+reports a failure.
 
 `confidence_threshold` sets how sure that estimate must be before the router acts
 on the signal alone. Scores inside the ambiguous band go to the optional

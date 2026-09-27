@@ -6,7 +6,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    ANTHROPIC_REQUEST_KEY, is_known_role_name, provider_extensions, text_from_blocks,
+    ANTHROPIC_REQUEST_KEY, is_anthropic_request, is_known_role_name, provider_extensions,
+    text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::{
@@ -252,7 +253,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             }
             body.insert("tool_choice".to_string(), choice);
         }
-        if request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true)) {
+        if is_anthropic_request(request) {
             for field in [
                 "inference_geo",
                 "service_tier",

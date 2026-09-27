@@ -12,6 +12,7 @@
 
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -534,6 +535,13 @@ fn classify_tool_call_with_semantics(
     semantics.classify(name).unwrap_or(ToolSemantic::Unknown)
 }
 
+/// Built-in tools that return file or search contents instead of running anything.
+fn is_retrieval_tool(name: &str, command: Option<&str>) -> bool {
+    let lower = name.to_lowercase();
+    READ_TOOL_NAMES.contains(&lower.as_str())
+        || (EDITOR_TOOL_NAMES.contains(&lower.as_str()) && command == Some("view"))
+}
+
 fn is_builtin_tool_name(lower: &str) -> bool {
     WRITE_TOOL_NAMES.contains(&lower)
         || EDIT_TOOL_NAMES.contains(&lower)
@@ -736,6 +744,8 @@ fn extract_tool_signals_with_window_and_semantics(
     let namespaces = tool_namespaces(&request.llm_request.extensions);
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
+    // IDs whose latest call is a retrieval tool.
+    let mut retrieval_calls: HashSet<&str> = HashSet::new();
     let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
@@ -752,10 +762,33 @@ fn extract_tool_signals_with_window_and_semantics(
                         .and_then(|namespaces| split_qualified_name(namespaces, &call.name))
                         .map(|(tool, _)| tool)
                         .or_else(|| mcp_tool_name(&call.name));
+                    let command = command_of(&call.arguments);
+                    if !call.id.is_empty() {
+                        // The joined name wins, as in `build_signal`. A joined name
+                        // configured as observe still counts when its bare name is a
+                        // retrieval tool, such as `mcp__files__read`.
+                        let full = classify_tool_call_with_semantics(
+                            &call.name,
+                            command.as_deref(),
+                            semantics,
+                        );
+                        let name = match (full, bare_name) {
+                            (ToolSemantic::Unknown | ToolSemantic::Observe, Some(bare_name)) => {
+                                bare_name
+                            }
+                            _ => call.name.as_str(),
+                        };
+                        // A reused ID links to its latest call.
+                        if is_retrieval_tool(name, command.as_deref()) {
+                            retrieval_calls.insert(call.id.as_str());
+                        } else {
+                            retrieval_calls.remove(call.id.as_str());
+                        }
+                    }
                     tool_calls.push(ObservedToolCall {
                         name: call.name.clone(),
                         bare_name,
-                        command: command_of(&call.arguments),
+                        command,
                     });
                 }
                 ContentBlock::ToolResult(result) => {
@@ -768,8 +801,17 @@ fn extract_tool_signals_with_window_and_semantics(
                         .collect::<Vec<_>>()
                         .join("\n");
                     let is_error = result.is_error == Some(true);
+                    let is_retrieval_result =
+                        !is_error && retrieval_calls.contains(result.tool_call_id.as_str());
                     // An explicit failure remains a signal even without text.
                     if !text.is_empty() || is_error {
+                        // Read and search results show file contents, not the outcome
+                        // of a run. Drop the text but keep the slot so windows don't shift.
+                        let text = if is_retrieval_result {
+                            String::new()
+                        } else {
+                            text
+                        };
                         tool_texts.push((text, is_error));
                     }
                 }
@@ -1568,6 +1610,43 @@ mod tests {
             ],
             DEFAULT_RECENT_WINDOW
         ));
+    }
+
+    #[test]
+    fn retrieved_file_contents_are_ignored() {
+        let call = |id: &str, name: &str, arguments: Value| Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments,
+            })],
+        };
+        let result = |id: &str, text: &str| Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: id.to_string(),
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                }],
+                is_error: None,
+            })],
+        };
+        let signal = extract_tool_signals_with_window(
+            &with_messages(vec![
+                call("a", "Bash", json!({"command": "pytest"})),
+                result("a", "Traceback (most recent call last):\nValueError"),
+                call("b", "Read", json!({"file_path": "notes.md"})),
+                result("b", "the worker ran out of memory"),
+                call("c", "Grep", json!({"pattern": "passed"})),
+                result("c", "CHANGELOG.md: all tests passed"),
+            ]),
+            DEFAULT_RECENT_WINDOW,
+        );
+        // Only the real pytest run counts.
+        assert_eq!(signal.severity, HARD);
+        assert!(!signal.tests_passed);
+        assert_eq!(signal.tool_result_count, 3);
     }
 
     #[test]

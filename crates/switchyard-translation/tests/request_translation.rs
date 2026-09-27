@@ -438,6 +438,47 @@ fn responses_reasoning_survives_rebuild() -> TestResult {
 }
 
 #[test]
+fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for (thinking, effort, expected) in [
+        (
+            json!({"type": "adaptive"}),
+            Some("low"),
+            Some(json!({"effort": "low"})),
+        ),
+        (
+            json!({"type": "enabled", "budget_tokens": 2048}),
+            None,
+            None,
+        ),
+        (
+            json!({"type": "disabled"}),
+            None,
+            Some(json!({"effort": "none"})),
+        ),
+    ] {
+        let mut body = json!({
+            "model": "route",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": thinking
+        });
+        if let Some(effort) = effort {
+            body["output_config"] = json!({"effort": effort});
+        }
+        let output = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?;
+        assert_eq!(output.body.get("reasoning"), expected.as_ref());
+    }
+    Ok(())
+}
+
+#[test]
 fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
