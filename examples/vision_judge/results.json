@@ -1,0 +1,204 @@
+{
+  "started_at": "2026-09-19T00:58:34.761061+00:00",
+  "config_sha256": "fd902f53f047ccb257063439c9daffad9a3fc8a8814941104f3f63b122ab8493",
+  "image_sha256": "04a9ef879f493b109f51527e72b73350b67927308819e8584a0be1ab28b019bd",
+  "cases": [
+    {
+      "route": "vision/text-judge",
+      "task": "description",
+      "status": 200,
+      "selected_model": "nvidia/nvidia/cosmos3-nano-reasoner",
+      "answer": "The image shows a wet city street under an overcast sky, with a red traffic light in the foreground and a pedestrian crossing visible. Several vehicles, including a black SUV and a white sedan, are stopped at the intersection, while a few pedestrians wait on the sidewalk.",
+      "calls": [
+        {
+          "phase": "judge",
+          "model": "nvidia/nvidia/cosmos3-nano-reasoner",
+          "path": "/v1/chat/completions",
+          "image_sha256": [],
+          "status": 200,
+          "seconds": 1.042,
+          "text": "{\n  \"target\": \"cosmos\",\n  \"reason\": \"The description requires identifying and summarizing the primary elements of a scene, which is a broad visual task.\"\n}",
+          "usage": {
+            "completion_tokens": 37,
+            "prompt_tokens": 140,
+            "total_tokens": 177
+          }
+        },
+        {
+          "phase": "answer",
+          "model": "nvidia/nvidia/cosmos3-nano-reasoner",
+          "path": "/v1/chat/completions",
+          "image_sha256": [
+            "04a9ef879f493b109f51527e72b73350b67927308819e8584a0be1ab28b019bd"
+          ],
+          "status": 200,
+          "seconds": 3.124,
+          "text": "The image shows a wet city street under an overcast sky, with a red traffic light in the foreground and a pedestrian crossing visible. Several vehicles, including a black SUV and a white sedan, are stopped at the intersection, while a few pedestrians wait on the sidewalk.",
+          "usage": {
+            "completion_tokens": 55,
+            "prompt_tokens": 2063,
+            "total_tokens": 2118
+          }
+        }
+      ],
+      "verified": true
+    },
+    {
+      "route": "vision/text-judge",
+      "task": "pointing",
+      "status": 200,
+      "selected_model": "openai/openai/gpt-6-astra",
+      "answer": "C: (335,721). It points to the leftmost SUV, which appears largest among the marked cars.",
+      "calls": [
+        {
+          "phase": "judge",
+          "model": "nvidia/nvidia/cosmos3-nano-reasoner",
+          "path": "/v1/chat/completions",
+          "image_sha256": [],
+          "status": 200,
+          "seconds": 6.144,
+          "text": "{\n  \"target\": \"astra\",\n  \"reason\": \"The largest car in the image is at point A: (370,722).\"\n}",
+          "usage": {
+            "completion_tokens": 37,
+            "prompt_tokens": 187,
+            "total_tokens": 224
+          }
+        },
+        {
+          "phase": "answer",
+          "model": "openai/openai/gpt-6-astra",
+          "path": "/v1/responses",
+          "image_sha256": [
+            "04a9ef879f493b109f51527e72b73350b67927308819e8584a0be1ab28b019bd"
+          ],
+          "status": 200,
+          "seconds": 5.989,
+          "text": "C: (335,721). It points to the leftmost SUV, which appears largest among the marked cars.",
+          "usage": {
+            "input_tokens": 2499,
+            "input_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 2496,
+              "text_tokens": null,
+              "cache_write_tokens": 0
+            },
+            "output_tokens": 68,
+            "output_tokens_details": {
+              "reasoning_tokens": 39,
+              "text_tokens": null
+            },
+            "total_tokens": 2567,
+            "cost": null
+          }
+        }
+      ],
+      "verified": true
+    },
+    {
+      "route": "vision/image-judge",
+      "task": "description",
+      "status": 200,
+      "selected_model": "openai/openai/gpt-6-astra",
+      "answer": "A rain-soaked intersection with broad white crosswalks and red traffic lights is seen through a windshield dotted with raindrops, with cars and residential buildings lining the left side. On the right, pedestrians share an umbrella beside a grassy waterfront, with sailboat masts, a distant suspension bridge, and hills beneath a gray, overcast sky.",
+      "calls": [
+        {
+          "phase": "judge",
+          "model": "nvidia/nvidia/cosmos3-nano-reasoner",
+          "path": "/v1/chat/completions",
+          "image_sha256": [
+            "04a9ef879f493b109f51527e72b73350b67927308819e8584a0be1ab28b019bd"
+          ],
+          "status": 200,
+          "seconds": 1.495,
+          "text": "{\n  \"target\": \"astra\",\n  \"reason\": \"The user wants to know the colors of the taillights on the three cars stopped at the red light. I can see the taillights of the three cars clearly, and they are red, yellow, and blue. I will provide the colors of the taillights in order from left to right.\"\n}",
+          "usage": {
+            "completion_tokens": 78,
+            "prompt_tokens": 2175,
+            "total_tokens": 2253
+          }
+        },
+        {
+          "phase": "answer",
+          "model": "openai/openai/gpt-6-astra",
+          "path": "/v1/responses",
+          "image_sha256": [
+            "04a9ef879f493b109f51527e72b73350b67927308819e8584a0be1ab28b019bd"
+          ],
+          "status": 200,
+          "seconds": 4.696,
+          "text": "A rain-soaked intersection with broad white crosswalks and red traffic lights is seen through a windshield dotted with raindrops, with cars and residential buildings lining the left side. On the right, pedestrians share an umbrella beside a grassy waterfront, with sailboat masts, a distant suspension bridge, and hills beneath a gray, overcast sky.",
+          "usage": {
+            "input_tokens": 2468,
+            "input_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 2465,
+              "text_tokens": null,
+              "cache_write_tokens": 0
+            },
+            "output_tokens": 74,
+            "output_tokens_details": {
+              "reasoning_tokens": 0,
+              "text_tokens": null
+            },
+            "total_tokens": 2542,
+            "cost": null
+          }
+        }
+      ],
+      "verified": true
+    },
+    {
+      "route": "vision/image-judge",
+      "task": "pointing",
+      "status": 200,
+      "selected_model": "openai/openai/gpt-6-astra",
+      "answer": "C: (335,721). It marks the leftmost SUV, which appears largest among the cars.",
+      "calls": [
+        {
+          "phase": "judge",
+          "model": "nvidia/nvidia/cosmos3-nano-reasoner",
+          "path": "/v1/chat/completions",
+          "image_sha256": [
+            "04a9ef879f493b109f51527e72b73350b67927308819e8584a0be1ab28b019bd"
+          ],
+          "status": 200,
+          "seconds": 3.893,
+          "text": "{\"target\": \"astra\", \"reason\": \"The car at coordinate A is larger than the other cars in the image.\"}",
+          "usage": {
+            "completion_tokens": 28,
+            "prompt_tokens": 2222,
+            "total_tokens": 2250
+          }
+        },
+        {
+          "phase": "answer",
+          "model": "openai/openai/gpt-6-astra",
+          "path": "/v1/responses",
+          "image_sha256": [
+            "04a9ef879f493b109f51527e72b73350b67927308819e8584a0be1ab28b019bd"
+          ],
+          "status": 200,
+          "seconds": 3.526,
+          "text": "C: (335,721). It marks the leftmost SUV, which appears largest among the cars.",
+          "usage": {
+            "input_tokens": 2499,
+            "input_tokens_details": {
+              "audio_tokens": null,
+              "cached_tokens": 2496,
+              "text_tokens": null,
+              "cache_write_tokens": 0
+            },
+            "output_tokens": 56,
+            "output_tokens_details": {
+              "reasoning_tokens": 29,
+              "text_tokens": null
+            },
+            "total_tokens": 2555,
+            "cost": null
+          }
+        }
+      ],
+      "verified": true
+    }
+  ]
+}

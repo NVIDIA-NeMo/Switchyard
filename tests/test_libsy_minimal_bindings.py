@@ -243,6 +243,77 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
     assert response["model"] == "weak"
 
 
+@pytest.mark.parametrize("custom", [False, True])
+@pytest.mark.parametrize("image_limit", [None, 0, 1])
+async def test_judge_image_limit_preserves_answer_request(
+    custom: bool, image_limit: int | None
+) -> None:
+    """Both Python classifier constructors limit judge images without rewriting answer input."""
+    request = request_body()
+    request["messages"][0]["content"] += [
+        {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "data": {"url": f"https://example.test/{i}.png", "detail": None},
+            },
+        }
+        for i in range(2)
+    ]
+    if custom:
+        config = LlmClassifierConfig.custom(
+            default_target="strong",
+            config=CustomClassifierConfig(
+                "Choose a target.",
+                {
+                    "type": "object",
+                    "properties": {"target": {"type": "string"}},
+                    "required": ["target"],
+                },
+                "/target",
+                judge_max_images=image_limit,
+            ),
+        )
+        verdict = '{"target":"weak"}'
+    else:
+        config = LlmClassifierConfig.capability(
+            config=TaskClassifierConfig(0.5, judge_max_images=image_limit),
+        )
+        verdict = '{"crux":"visible object","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}'
+    algorithm = algorithms.llm_classifier(config)
+    judged = False
+    models = {
+        "judge": ["judge"], "weak": ["weak"], "strong": ["strong"],
+        "efficient": ["weak"], "capable": ["strong"], "any": ["weak", "strong"],
+    }
+    async for step in algorithm.run_stream(request, models):
+        match step:
+            case Step.CallModel(call):
+                judged = True
+                content = call.request["messages"][0]["content"]
+                images = [block for block in content if block["type"] == "image"]
+                assert len(images) == (2 if image_limit is None else image_limit)
+                if image_limit == 1:
+                    assert images[0]["source"]["data"]["url"].endswith("/1.png")
+                call.respond(
+                    LlmResponse.Agg(
+                        {
+                            "outputs": [
+                                {
+                                    "role": "assistant",
+                                    "content": [{"type": "text", "text": verdict}],
+                                    "stop_reason": "end_turn",
+                                }
+                            ]
+                        }
+                    )
+                )
+            case Step.Done(outcome):
+                assert outcome.selected_model_ids[0] == "weak"
+                assert outcome.request["messages"] == request["messages"]
+    assert judged
+
+
 async def test_custom_classifier_routes_across_named_targets() -> None:
     class JudgeClient(EchoClient):
         async def call(self, request: dict[str, Any]) -> dict[str, Any]:
