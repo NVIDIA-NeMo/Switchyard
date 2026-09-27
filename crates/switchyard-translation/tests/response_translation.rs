@@ -1058,14 +1058,19 @@ fn failed_responses_return_upstream_failure_with_provider_message() -> TestResul
 }
 
 #[test]
-fn error_bodies_without_output_return_upstream_failure() -> TestResult {
+fn error_bodies_return_upstream_failure_with_provider_message() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
     let cases = [
         (
             WireFormat::OpenAiChat,
-            json!({"error": {"message": "deterministic upstream failure"}}),
+            json!({"choices": [], "error": {"message": "deterministic upstream failure"}}),
             json!({"choices": [{"message": {"role": "assistant", "content": "hi"}}], "error": {}}),
+        ),
+        (
+            WireFormat::OpenAiChat,
+            json!({"choices": [{"message": {"role": "assistant", "content": "partial"}, "finish_reason": null, "error": {"message": "deterministic upstream failure"}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop", "error": null}]}),
         ),
         (
             WireFormat::AnthropicMessages,
@@ -1077,15 +1082,20 @@ fn error_bodies_without_output_return_upstream_failure() -> TestResult {
         let error = engine
             .translate_response(source, WireFormat::OpenAiChat, &error_body, &policy)
             .err()
-            .ok_or_else(|| format!("{source:?} error body decoded as a completion"))?;
-        assert_eq!(error.kind(), "UpstreamFailure");
-        assert!(error.to_string().contains("deterministic upstream failure"));
+            .ok_or_else(|| format!("error body decoded as a completion: {error_body}"))?;
+        assert_eq!(error.kind(), "UpstreamFailure", "input: {error_body}");
+        assert!(
+            error.to_string().contains("deterministic upstream failure"),
+            "input: {error_body}"
+        );
 
-        // An `error` beside real output is a provider extension, not a failure.
         let output = engine
             .translate_response(source, WireFormat::OpenAiChat, &output_body, &policy)?
             .body;
-        assert_eq!(output["choices"][0]["message"]["content"], "hi");
+        assert_eq!(
+            output["choices"][0]["message"]["content"], "hi",
+            "input: {output_body}"
+        );
     }
     Ok(())
 }

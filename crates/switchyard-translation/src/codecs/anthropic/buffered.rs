@@ -321,7 +321,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         _policy: &TranslationPolicy,
     ) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
-        // Providers can return HTTP 200 with an error object and no content.
+        // 200 with an error object and no content blocks fails the turn.
         if let Some(error) = body.get("error").filter(|error| error.is_object())
             && body
                 .get("content")
