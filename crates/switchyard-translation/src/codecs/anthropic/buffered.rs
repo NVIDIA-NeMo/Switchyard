@@ -321,6 +321,17 @@ impl FormatCodec for AnthropicMessagesCodec {
         _policy: &TranslationPolicy,
     ) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
+        // Providers can return HTTP 200 with an error object and no content.
+        if let Some(error) = body.get("error").filter(|error| error.is_object())
+            && body
+                .get("content")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        {
+            return Err(TranslationError::UpstreamFailure {
+                error: error.clone(),
+            });
+        }
         let mut content = Vec::new();
         if let Some(blocks) = body.get("content").and_then(Value::as_array) {
             for (index, block) in blocks.iter().enumerate() {
