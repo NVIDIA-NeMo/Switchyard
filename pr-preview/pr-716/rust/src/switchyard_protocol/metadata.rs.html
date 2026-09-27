@@ -75,7 +75,7 @@
 <a href=#75 id=75 data-nosnippet>75</a><span class="doccomment">/// Harness-defined sub-agent kinds that carry delegated user work rather than
 <a href=#76 id=76 data-nosnippet>76</a>/// harness maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds
 <a href=#77 id=77 data-nosnippet>77</a>/// are excluded deliberately; extend with captured request fixtures.
-<a href=#78 id=78 data-nosnippet>78</a></span><span class="kw">const </span>SUBAGENT_WORK_KINDS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str] = <span class="kw-2">&amp;</span>[<span class="string">"collab_spawn"</span>, <span class="string">"review"</span>];
+<a href=#78 id=78 data-nosnippet>78</a></span><span class="kw">const </span>SUBAGENT_WORK_KINDS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str] = <span class="kw-2">&amp;</span>[<span class="string">"collab_spawn"</span>, <span class="string">"thread_spawn"</span>, <span class="string">"review"</span>];
 <a href=#79 id=79 data-nosnippet>79</a>
 <a href=#80 id=80 data-nosnippet>80</a><span class="doccomment">/// Ordered candidate lookup paths for each correlation field, keyed by the field's
 <a href=#81 id=81 data-nosnippet>81</a>/// canonical `x-switchyard-*` header name.
@@ -267,9 +267,9 @@
 <a href=#267 id=267 data-nosnippet>267</a>    </span><span class="kw">let </span>parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
 <a href=#268 id=268 data-nosnippet>268</a>        .or_else(|| claude_parent.map(str::to_string));
 <a href=#269 id=269 data-nosnippet>269</a>
-<a href=#270 id=270 data-nosnippet>270</a>    <span class="comment">// Current Codex releases identify spawned children through lineage rather than
-<a href=#271 id=271 data-nosnippet>271</a>    // `subagent_kind`. Require both fields so a parent id used only for correlation
-<a href=#272 id=272 data-nosnippet>272</a>    // cannot accidentally route an ordinary turn as delegated work.
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="comment">// Codex child lineage requires both a parent id and `thread_source = subagent`.
+<a href=#271 id=271 data-nosnippet>271</a>    // A parent id used only for correlation must not route an ordinary turn as
+<a href=#272 id=272 data-nosnippet>272</a>    // delegated work.
 <a href=#273 id=273 data-nosnippet>273</a>    </span><span class="kw">let </span>codex_child = parent.is_some()
 <a href=#274 id=274 data-nosnippet>274</a>        &amp;&amp; resolve_path(headers, CODEX_THREAD_SOURCE_PATH).as_deref() == <span class="prelude-val">Some</span>(<span class="string">"subagent"</span>);
 <a href=#275 id=275 data-nosnippet>275</a>

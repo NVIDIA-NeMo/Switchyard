@@ -232,33 +232,33 @@
 <a href=#232 id=232 data-nosnippet>232</a>        );
 <a href=#233 id=233 data-nosnippet>233</a>}
 <a href=#234 id=234 data-nosnippet>234</a>
-<a href=#235 id=235 data-nosnippet>235</a><span class="doccomment">/// Records the resolution of one offloaded model call: the call counter and
-<a href=#236 id=236 data-nosnippet>236</a>/// latency histogram and the outcome/token fields on `span`, without error details.
-<a href=#237 id=237 data-nosnippet>237</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>record_llm_call(
-<a href=#238 id=238 data-nosnippet>238</a>    algorithm: <span class="kw-2">&amp;</span>str,
-<a href=#239 id=239 data-nosnippet>239</a>    selected_model: <span class="kw-2">&amp;</span>str,
-<a href=#240 id=240 data-nosnippet>240</a>    duration: Duration,
-<a href=#241 id=241 data-nosnippet>241</a>    result: <span class="kw-2">&amp;</span><span class="prelude-ty">Result</span>&lt;Response&gt;,
-<a href=#242 id=242 data-nosnippet>242</a>    span: <span class="kw-2">&amp;</span>Span,
-<a href=#243 id=243 data-nosnippet>243</a>) {
-<a href=#244 id=244 data-nosnippet>244</a>    <span class="kw">let </span>outcome = outcome_value(result);
-<a href=#245 id=245 data-nosnippet>245</a>    span.record(<span class="string">"outcome"</span>, outcome);
-<a href=#246 id=246 data-nosnippet>246</a>
-<a href=#247 id=247 data-nosnippet>247</a>    <span class="kw">let </span>meter = meter();
-<a href=#248 id=248 data-nosnippet>248</a>    <span class="kw">let </span>call_attributes = [
-<a href=#249 id=249 data-nosnippet>249</a>        KeyValue::new(<span class="string">"algorithm"</span>, algorithm.to_string()),
-<a href=#250 id=250 data-nosnippet>250</a>        KeyValue::new(<span class="string">"selected_model"</span>, selected_model.to_string()),
-<a href=#251 id=251 data-nosnippet>251</a>        KeyValue::new(<span class="string">"outcome"</span>, outcome),
-<a href=#252 id=252 data-nosnippet>252</a>    ];
+<a href=#235 id=235 data-nosnippet>235</a><span class="doccomment">/// Records the call counter and latency histogram for a completed offloaded call.
+<a href=#236 id=236 data-nosnippet>236</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>record_llm_call(
+<a href=#237 id=237 data-nosnippet>237</a>    algorithm: <span class="kw-2">&amp;</span>str,
+<a href=#238 id=238 data-nosnippet>238</a>    selected_model: <span class="kw-2">&amp;</span>str,
+<a href=#239 id=239 data-nosnippet>239</a>    duration: Duration,
+<a href=#240 id=240 data-nosnippet>240</a>    is_ok: bool,
+<a href=#241 id=241 data-nosnippet>241</a>) {
+<a href=#242 id=242 data-nosnippet>242</a>    <span class="kw">let </span>outcome = <span class="kw">if </span>is_ok { <span class="string">"ok" </span>} <span class="kw">else </span>{ <span class="string">"error" </span>};
+<a href=#243 id=243 data-nosnippet>243</a>    <span class="kw">let </span>meter = meter();
+<a href=#244 id=244 data-nosnippet>244</a>    <span class="kw">let </span>call_attributes = [
+<a href=#245 id=245 data-nosnippet>245</a>        KeyValue::new(<span class="string">"algorithm"</span>, algorithm.to_string()),
+<a href=#246 id=246 data-nosnippet>246</a>        KeyValue::new(<span class="string">"selected_model"</span>, selected_model.to_string()),
+<a href=#247 id=247 data-nosnippet>247</a>        KeyValue::new(<span class="string">"outcome"</span>, outcome),
+<a href=#248 id=248 data-nosnippet>248</a>    ];
+<a href=#249 id=249 data-nosnippet>249</a>    meter
+<a href=#250 id=250 data-nosnippet>250</a>        .u64_counter(<span class="string">"switchyard.llm_calls"</span>)
+<a href=#251 id=251 data-nosnippet>251</a>        .build()
+<a href=#252 id=252 data-nosnippet>252</a>        .add(<span class="number">1</span>, <span class="kw-2">&amp;</span>call_attributes);
 <a href=#253 id=253 data-nosnippet>253</a>    meter
-<a href=#254 id=254 data-nosnippet>254</a>        .u64_counter(<span class="string">"switchyard.llm_calls"</span>)
+<a href=#254 id=254 data-nosnippet>254</a>        .f64_histogram(<span class="string">"switchyard.llm_call_duration_ms"</span>)
 <a href=#255 id=255 data-nosnippet>255</a>        .build()
-<a href=#256 id=256 data-nosnippet>256</a>        .add(<span class="number">1</span>, <span class="kw-2">&amp;</span>call_attributes);
-<a href=#257 id=257 data-nosnippet>257</a>    meter
-<a href=#258 id=258 data-nosnippet>258</a>        .f64_histogram(<span class="string">"switchyard.llm_call_duration_ms"</span>)
-<a href=#259 id=259 data-nosnippet>259</a>        .build()
-<a href=#260 id=260 data-nosnippet>260</a>        .record(duration.as_secs_f64() * <span class="number">1000.0</span>, <span class="kw-2">&amp;</span>call_attributes);
-<a href=#261 id=261 data-nosnippet>261</a>
+<a href=#256 id=256 data-nosnippet>256</a>        .record(duration.as_secs_f64() * <span class="number">1000.0</span>, <span class="kw-2">&amp;</span>call_attributes);
+<a href=#257 id=257 data-nosnippet>257</a>}
+<a href=#258 id=258 data-nosnippet>258</a>
+<a href=#259 id=259 data-nosnippet>259</a><span class="doccomment">/// Records the outcome and token fields on the algorithm's call span.
+<a href=#260 id=260 data-nosnippet>260</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>record_llm_call_span(result: <span class="kw-2">&amp;</span><span class="prelude-ty">Result</span>&lt;Response&gt;, span: <span class="kw-2">&amp;</span>Span) {
+<a href=#261 id=261 data-nosnippet>261</a>    span.record(<span class="string">"outcome"</span>, outcome_value(result));
 <a href=#262 id=262 data-nosnippet>262</a>    <span class="kw">if let </span><span class="prelude-val">Ok</span>(response) = result {
 <a href=#263 id=263 data-nosnippet>263</a>        <span class="comment">// Token usage exists only once a response is buffered; a streamed
 <a href=#264 id=264 data-nosnippet>264</a>        // response resolves before its usage is known, so none is recorded.

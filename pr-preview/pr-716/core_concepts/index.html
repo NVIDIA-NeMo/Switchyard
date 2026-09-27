@@ -720,6 +720,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integrations/pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../integrations/oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -814,6 +870,90 @@
   
   
     <li class="md-nav__item">
+      <a href="../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task (LLM Classifier)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../routing_algorithms/plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../routing_algorithms/subagent_routing/" class="md-nav__link">
         
   
@@ -850,62 +990,6 @@
     
   
     Random Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../routing_algorithms/stage_router_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Stage-Router Routing
   
 
     
@@ -1489,8 +1573,10 @@ inside the TOML file. Their <code>id</code> fields have different external meani
 </ul>
 <p>The server lists route IDs on <code>GET /v1/models</code>. A request selects a route by
 putting that ID in its <code>model</code> field. The native Rust server does not discover
-or register additional provider models automatically. The response includes an empty
-Codex <code>models</code> array so Codex keeps its own catalog and instructions. Select route
+or register additional provider models automatically. Each entry reports the route's
+declared <code>context_window</code> as its top-level <code>context_length</code> field (see
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/47b2cd74c2dd215b6ab4c5e17ec9a0b6ad1d8e1c/crates/switchyard-server/README.md#model-discovery">model discovery</a>). The
+response includes an empty Codex <code>models</code> array so Codex keeps its own catalog and instructions. Select route
 aliases explicitly; they do not appear automatically in Codex's model picker.</p>
 <h2 id="routing-algorithms">Routing Algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h2>
 <p>An algorithm receives the normalized request, publishes a routing decision,
