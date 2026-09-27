@@ -484,6 +484,74 @@ fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
     Ok(())
 }
 
+// Verifies dropping an Anthropic thinking budget on the way to Responses is reported,
+// and rejected when the caller asked for lossy conversions to fail.
+#[test]
+fn anthropic_thinking_budget_drop_to_responses_is_reported() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "max_tokens": 32000,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled", "budget_tokens": 10000}
+    });
+
+    let output = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &normalized_policy(),
+    )?;
+    assert_eq!(output.body.get("reasoning"), None);
+    assert_eq!(output.diagnostics.len(), 1);
+    assert_eq!(output.diagnostics[0].code, "lossy_conversion");
+    assert!(output.diagnostics[0].message.contains("budget_tokens"));
+
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    let result = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &body,
+        &policy,
+    );
+    assert!(result.is_err());
+    Ok(())
+}
+
+// Verifies Anthropic thinking controls that Responses can express translate without a
+// lossy diagnostic.
+#[test]
+fn anthropic_thinking_without_budget_to_responses_is_not_reported() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    for (thinking, output_config) in [
+        (json!({"type": "adaptive"}), json!({"effort": "low"})),
+        (json!({"type": "disabled"}), json!({})),
+    ] {
+        let body = json!({
+            "model": "route",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": thinking,
+            "output_config": output_config
+        });
+        let output = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?;
+        assert!(output.diagnostics.is_empty());
+    }
+    Ok(())
+}
+
 #[test]
 fn anthropic_reconstruction_preserves_thinking() -> TestResult {
     let engine = TranslationEngine::default();
