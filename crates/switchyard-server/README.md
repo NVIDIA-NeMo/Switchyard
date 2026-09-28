@@ -4,6 +4,11 @@
 and Anthropic Messages endpoints. A TOML file explicitly defines the LLM clients, targets, and
 algorithm routes served by the process.
 
+The standalone binary listens on `127.0.0.1` unless `--host` is set. Pass
+`--host 0.0.0.0` to accept remote clients. The provided Docker image and systemd
+service opt into that address explicitly. A later `--host` argument overrides
+the container's default.
+
 ```toml
 # routes.toml
 schema_version = 1
