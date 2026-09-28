@@ -5,8 +5,6 @@ algorithm while routing delegated sub-agent work separately. It is available on
 `passthrough`, `stage_router`, and `composite` routes through the optional
 `subagents` table.
 
-> Requires unreleased features. [Build from source](../getting_started.md#build-from-source) to run this example.
-
 ```toml
 schema_version = 1
 

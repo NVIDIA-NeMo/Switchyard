@@ -153,9 +153,10 @@ Read the standard stats endpoint:
 curl -s http://localhost:4000/v1/stats
 ```
 
-The snapshot reports per-model calls, tokens, latency, and cost for the strong
+The snapshot reports per-model calls, token usage, and latency for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
-token cost and latency remain visible as routing overhead.
+token usage and latency remain visible as routing overhead. Dollar costs are not
+included. Calculate them separately using the recorded usage and model pricing.
 
 When the server runs with a routing log, successful judge calls also appear in
 per-session routing stats under the judge's model id, tagged with the
