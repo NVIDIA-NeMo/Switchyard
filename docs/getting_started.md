@@ -79,8 +79,6 @@ The Rust server reads an explicit TOML file.
 
 Create `routes.toml` with an auto route:
 
-> Requires unreleased features. [Build from source](#build-from-source) to run this example.
-
 ```toml
 schema_version = 1
 
