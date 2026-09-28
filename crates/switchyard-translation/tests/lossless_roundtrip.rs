@@ -240,6 +240,34 @@ fn in_memory_preservation_replays_exact_original_when_encoding_from_the_same_ir(
     Ok(())
 }
 
+// Exact replay stays exact for preserved instruction roles: a preserved Responses body keeps its
+// `system`-role input items verbatim. The stricter encoding rules apply to bodies Switchyard
+// generates from normalized IR, not to preserved client JSON.
+#[test]
+fn in_memory_preservation_replays_preserved_system_role_items_exactly() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let original = json!({
+        "model": "gpt-4o",
+        "input": [
+            {"type": "message", "role": "system", "content": "Be terse."},
+            {"type": "message", "role": "user", "content": "hi"}
+        ],
+        "metadata": {"trace": "keep-me"},
+        "store": false
+    });
+
+    let decoded = engine.decode_request(WireFormat::OpenAiResponses, &original, &policy)?;
+    let encoded = engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &policy)?;
+
+    assert_eq!(encoded.body, original);
+    assert_eq!(
+        encoded.body["input"][0]["role"], "system",
+        "preserved system role must replay unchanged"
+    );
+    Ok(())
+}
+
 // Builds the policy used by exact wire round-trip tests.
 fn embed_policy() -> TranslationPolicy {
     TranslationPolicy {
