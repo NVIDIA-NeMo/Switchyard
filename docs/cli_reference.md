@@ -14,7 +14,7 @@ switchyard-server --config <deployment.toml> [options]
 | Option | Default | Purpose |
 |---|---|---|
 | `--config PATH` | Required | TOML file defining LLM clients, targets, and algorithm routes. |
-| `--host HOST` | `0.0.0.0` | Address on which the server listens. |
+| `--host HOST` | `127.0.0.1` | Address on which the server listens. Use `0.0.0.0` for remote clients. |
 | `-p, --port PORT` | `4000` | Port on which the server listens. |
 | `--backlog BACKLOG` | `65535` | TCP listen backlog configured before accepting traffic. |
 | `--shutdown-timeout SHUTDOWN_TIMEOUT` | `30s` | Maximum time active requests may drain during shutdown. |
