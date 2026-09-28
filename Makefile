@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 .DEFAULT_GOAL := help
-.PHONY: help install-linux install-linux-dry-run uninstall-linux
+.PHONY: help install-linux install-linux-dry-run uninstall-linux install-macos install-macos-dry-run uninstall-macos
 
 help:
 	@echo "install-linux          Install the systemd user service and Codex profile"
@@ -20,3 +20,15 @@ install-linux-dry-run:
 ## Remove the systemd user service, the sy Codex profile, and the codex alias.
 uninstall-linux:
 	@scripts/linux/uninstall.sh
+
+## Install the Switchyard background server and menu bar app for this user.
+install-macos:
+	@scripts/macos/install.sh
+
+## Print what install-macos would do, without changing anything.
+install-macos-dry-run:
+	@scripts/macos/install.sh --dry-run
+
+## Remove the LaunchAgents, the sy Codex profile, and the codex alias.
+uninstall-macos:
+	@scripts/macos/uninstall.sh
