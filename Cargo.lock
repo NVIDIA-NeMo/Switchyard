@@ -2325,7 +2325,6 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
- "getrandom 0.3.4",
  "getrandom 0.4.3",
  "http",
  "jsonptr",

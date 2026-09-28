@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::sync::Weak;
 
 use async_trait::async_trait;
@@ -63,7 +63,7 @@ pub struct FallThrough<S = ()> {
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     session_states: Option<Arc<SessionStates<S>>>,
     cleanup_started: Once,
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     next_cleanup: Mutex<Instant>,
 }
 
@@ -76,7 +76,7 @@ impl FallThrough<()> {
             classifiers: Vec::new(),
             session_states: None,
             cleanup_started: Once::new(),
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             next_cleanup: Mutex::new(Instant::now() + SESSION_CLEANUP_INTERVAL),
         }
     }
@@ -94,7 +94,7 @@ where
             classifiers: Vec::new(),
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             next_cleanup: Mutex::new(Instant::now() + SESSION_CLEANUP_INTERVAL),
         }
     }
@@ -141,9 +141,9 @@ where
         self.cleanup_started.call_once(move || {
             // Timer-driven background cleanup needs a Tokio runtime; wasm hosts
             // sweep expired sessions inline in `session_state` instead.
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             drop(tokio::spawn(cleanup_inactive_sessions(states)));
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             drop(states);
         });
     }
@@ -201,7 +201,7 @@ where
         let states = self.session_states.as_ref()?;
         let session_id = session_id(request)?;
         let now = Instant::now();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         {
             let mut next_cleanup = self.next_cleanup.lock();
             if now >= *next_cleanup {
@@ -270,7 +270,7 @@ where
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 async fn cleanup_inactive_sessions<S>(states: Weak<SessionStates<S>>)
 where
     S: Send + 'static,

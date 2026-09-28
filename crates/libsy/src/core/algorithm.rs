@@ -417,7 +417,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// Abort guard
-struct AbortOnDrop(futures::future::AbortHandle);
+struct AbortOnDrop(crate::rt::AbortHandle);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {

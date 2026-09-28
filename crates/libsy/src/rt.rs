@@ -5,37 +5,37 @@
 //! runs on native Tokio hosts and on single-threaded wasm32 hosts (browsers,
 //! Cloudflare Workers) alike.
 
-use futures::future::{AbortHandle, Abortable};
-
 /// Monotonic instant. On wasm32 `std::time::Instant::now()` aborts, so a
 /// JS-clock-backed drop-in replacement is used there.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) use web_time::Instant;
 
+/// Handle that aborts the task returned by [`spawn_abortable`].
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) use futures::future::AbortHandle;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) use tokio::task::AbortHandle;
+
 /// Spawns a future on the host runtime and returns a handle that aborts it.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn spawn_abortable<F>(future: F) -> AbortHandle
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    let (handle, registration) = AbortHandle::new_pair();
-    drop(tokio::spawn(async move {
-        let _ = Abortable::new(future, registration).await;
-    }));
-    handle
+    tokio::spawn(future).abort_handle()
 }
 
 /// Spawns a future on the JS microtask queue and returns a handle that aborts it.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn spawn_abortable<F>(future: F) -> AbortHandle
 where
     F: std::future::Future<Output = ()> + 'static,
 {
     let (handle, registration) = AbortHandle::new_pair();
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = Abortable::new(future, registration).await;
+        let _ = futures::future::Abortable::new(future, registration).await;
     });
     handle
 }

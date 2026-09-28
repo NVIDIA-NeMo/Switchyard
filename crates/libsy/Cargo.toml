@@ -38,19 +38,18 @@ tracing.workspace = true
 tracing-opentelemetry.workspace = true
 uuid.workspace = true
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 tokio.workspace = true
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 # Workers/browser targets have no OS threads or epoll: only tokio's
 # runtime-agnostic pieces (channels, mutexes, macros) are linked.
 tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
 wasm-bindgen-futures = "0.4"
 web-time = "1"
-# Route the transitive RNG through the JS crypto API on wasm targets. Both
-# majors are in the tree: `jsonschema`/`ahash` pull 0.3, `rand` 0.10 pulls 0.4.
-getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
-getrandom-04 = { package = "getrandom", version = "0.4", default-features = false, features = ["wasm_js"] }
+# `rand` 0.10 pulls getrandom 0.4; route it through the JS crypto API.
+# (`jsonschema` already does the same for the 0.3 line that `ahash` uses.)
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
