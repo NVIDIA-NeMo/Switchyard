@@ -29,7 +29,7 @@
 # run as written with an `OPENROUTER_API_KEY`. Absolute results may vary by serving
 # stack.
 #
-#   switchyard-server --config benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml --port 4000
+#   switchyard-server --config benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml --host 0.0.0.0 --port 4000
 
 schema_version = 1
 
