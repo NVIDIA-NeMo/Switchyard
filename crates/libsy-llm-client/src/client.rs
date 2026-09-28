@@ -269,6 +269,8 @@ impl TranslatingLlmClient {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
         }
+        omit_configured_body_fields(&mut body, backend.omit_body_fields());
+        merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::OpenAiResponses(_)) {
             self.model_to_config
                 .get(model)
@@ -276,8 +278,6 @@ impl TranslatingLlmClient {
                 .unwrap_or_default()
                 .normalize(&mut body);
         }
-        omit_configured_body_fields(&mut body, backend.omit_body_fields());
-        merge_extra_body(&mut body, backend.extra_body());
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
@@ -2212,6 +2212,62 @@ mod tests {
                 WireFormat::AnthropicMessages,
             )
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_policy_normalizes_input_replaced_by_target_defaults()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (policy, expected_reasoning) in [
+            (crate::ResponsesReasoningPolicy::PreserveEncrypted, 1),
+            (crate::ResponsesReasoningPolicy::Drop, 0),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/responses"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "resp_1", "object": "response", "model": "gpt",
+                    "status": "completed", "output": [],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let mut backend = config(&format!("{}/v1", server.uri()));
+            backend.omit_body_fields.insert("input".to_string());
+            backend.extra_body.insert("input".to_string(), json!([
+                {"type": "message", "role": "user", "content": "replacement"},
+                {"type": "reasoning", "encrypted_content": "opaque", "content": [{"type": "reasoning_text", "text": "private"}]},
+                {"type": "reasoning", "encrypted_content": null, "content": [{"type": "reasoning_text", "text": "local"}]}
+            ]));
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "gpt",
+                Backend::OpenAiResponses(backend),
+                None,
+            )
+            .with_responses_reasoning(policy)])?;
+            client
+                .call_rewrite_model_raw(
+                    json!({"model": "gpt", "input": "original"}),
+                    None,
+                    Some(&ModelId::from("gpt")),
+                    WireFormat::OpenAiResponses,
+                )
+                .await?;
+            let requests = server.received_requests().await.expect("recorded requests");
+            let body: Value = serde_json::from_slice(&requests[0].body)?;
+            let input = body["input"].as_array().expect("replacement input");
+            assert_eq!(input[0]["content"], "replacement");
+            let reasoning: Vec<_> = input
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .collect();
+            assert_eq!(reasoning.len(), expected_reasoning);
+            for item in reasoning {
+                assert_eq!(item["encrypted_content"], "opaque");
+                assert_eq!(item["content"], json!([]));
+            }
+        }
         Ok(())
     }
 
