@@ -8,8 +8,8 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy,
-    WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationError,
+    TranslationPolicy, WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -197,6 +197,12 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
             Some(
                 json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}}),
             ),
+        ),
+        (
+            Responses,
+            Anthropic,
+            json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"}),
+            Some(document.clone()),
         ),
         (Anthropic, Chat, document.clone(), None),
         (Anthropic, Responses, document, Some(file)),
@@ -3499,6 +3505,150 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
     assert_eq!(file["file"]["file_data"], "JVBERi0xLjQK");
     assert_eq!(file["file"]["filename"], "report.pdf");
     Ok(())
+}
+
+#[test]
+fn openai_invalid_text_file_data_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    for (file_data, expected_message) in [
+        ("%%%", "invalid base64 text document"),
+        ("/w==", "text document must be UTF-8"),
+    ] {
+        let cases = [
+            (
+                WireFormat::OpenAiChat,
+                json!({
+                    "model": "route",
+                    "messages": [{
+                        "role": "user",
+                        "content": [{
+                            "type": "file",
+                            "file": {"file_data": file_data, "filename": "notes.txt"}
+                        }]
+                    }]
+                }),
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                json!({
+                    "model": "route",
+                    "input": [{
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_file",
+                            "file_data": file_data,
+                            "filename": "notes.txt"
+                        }]
+                    }]
+                }),
+            ),
+        ];
+
+        for (source, body) in cases {
+            let error = engine
+                .translate_request(
+                    source,
+                    WireFormat::AnthropicMessages,
+                    &body,
+                    &TranslationPolicy::default(),
+                )
+                .expect_err("invalid text file data must be rejected");
+            match error {
+                TranslationError::InvalidValue { path, message } => {
+                    assert_eq!(path, "file_data", "{source:?}");
+                    assert_eq!(message, expected_message, "{source:?}");
+                }
+                other => {
+                    panic!("expected InvalidValue for {source:?} {file_data:?}, got {other:?}")
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn openai_unsupported_file_media_type_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    let file_data = "data:image/png;base64,aGVsbG8=";
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "route",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "file",
+                        "file": {"file_data": file_data, "filename": "image.png"}
+                    }]
+                }]
+            }),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({
+                "model": "route",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_file",
+                        "file_data": file_data,
+                        "filename": "image.png"
+                    }]
+                }]
+            }),
+        ),
+    ];
+
+    for (source, body) in cases {
+        let error = engine
+            .translate_request(
+                source,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )
+            .expect_err("unsupported document media type must be rejected");
+        match error {
+            TranslationError::LossyConversion(message) => {
+                assert_eq!(
+                    message, "Anthropic requires PDF or plain-text documents",
+                    "{source:?}"
+                );
+            }
+            other => panic!("expected LossyConversion for {source:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn responses_file_without_source_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_file", "filename": "notes.txt"}]
+        }]
+    });
+
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("file without data, ID, or URL must be rejected");
+    match error {
+        TranslationError::LossyConversion(message) => {
+            assert_eq!(message, "unsupported Anthropic document source");
+        }
+        other => panic!("expected LossyConversion, got {other:?}"),
+    }
 }
 
 // Verifies parallel tool calls serialize as adjacent call/output pairs so
