@@ -252,6 +252,10 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `ModelConfig::with_responses_reasoning` controls Responses reasoning replay.
+  Every Responses model defaults to `PreserveEncrypted`: plaintext is removed,
+  encrypted provider state is retained. Set `Drop` explicitly for a backend
+  that cannot consume encrypted reasoning. Messages and tool history are retained.
 - `HttpBackendConfig::timeout` bounds one complete response, including retries,
   retry delays, and every stream read. Expiry returns `LlmClientError::Timeout`,
   either from the call or from the returned stream, which then ends. `None` leaves
