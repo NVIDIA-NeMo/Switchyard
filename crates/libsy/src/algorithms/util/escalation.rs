@@ -272,14 +272,18 @@ fn message_text(message: &Message) -> String {
 /// The model-facing request remains untouched. Only the judge's plain-text view is normalized,
 /// so one action cannot look like two attempts while the agent still sees its native history.
 fn without_duplicated_terminus_commands(text: &str, tool_commands: &[&str]) -> String {
-    for (start, character) in text.char_indices() {
-        if character != '{' {
-            continue;
-        }
+    let mut normalized_text = String::with_capacity(text.len());
+    let mut unmatched_tool_commands = tool_commands.to_vec();
+    let mut copied_through = 0;
+    let mut scan_from = 0;
+
+    while let Some(relative_start) = text[scan_from..].find('{') {
+        let start = scan_from + relative_start;
 
         let mut values =
             serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
         let Some(Ok(mut value)) = values.next() else {
+            scan_from = start + 1;
             continue;
         };
         let end = start + values.byte_offset();
@@ -287,6 +291,7 @@ fn without_duplicated_terminus_commands(text: &str, tool_commands: &[&str]) -> S
             .get("commands")
             .and_then(|commands| commands.as_array())
         else {
+            scan_from = start + 1;
             continue;
         };
         let Some(command_batch) = commands
@@ -294,30 +299,38 @@ fn without_duplicated_terminus_commands(text: &str, tool_commands: &[&str]) -> S
             .map(|command| command.get("keystrokes").and_then(|value| value.as_str()))
             .collect::<Option<Vec<_>>>()
         else {
+            scan_from = start + 1;
             continue;
         };
-        let mut unmatched_tool_commands = tool_commands.to_vec();
+        let mut remaining_tool_commands = unmatched_tool_commands.clone();
         let fully_encoded = command_batch.iter().all(|command| {
-            let Some(index) = unmatched_tool_commands
+            let Some(index) = remaining_tool_commands
                 .iter()
                 .position(|candidate| candidate == command)
             else {
                 return false;
             };
-            unmatched_tool_commands.swap_remove(index);
+            remaining_tool_commands.swap_remove(index);
             true
         });
         if command_batch.is_empty() || !fully_encoded {
+            scan_from = start + 1;
             continue;
         }
 
         value["commands"] = serde_json::Value::Array(Vec::new());
         let Ok(normalized) = serde_json::to_string(&value) else {
+            scan_from = start + 1;
             continue;
         };
-        return format!("{}{}{}", &text[..start], normalized, &text[end..]);
+        normalized_text.push_str(&text[copied_through..start]);
+        normalized_text.push_str(&normalized);
+        copied_through = end;
+        scan_from = end;
+        unmatched_tool_commands = remaining_tool_commands;
     }
-    text.to_string()
+    normalized_text.push_str(&text[copied_through..]);
+    normalized_text
 }
 
 /// Appends the judge-relevant text of each block, descending into tool results.
@@ -675,6 +688,48 @@ mod tests {
         assert_eq!(text.matches("grep -n bug app.py").count(), 1, "{text}");
         assert_eq!(text.matches("sed -n '1,80p' app.py").count(), 1, "{text}");
         assert_eq!(text.matches("tool_call bash_command(").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn message_text_deduplicates_multiple_batches_once_per_tool_call() {
+        let first_command = "grep -n bug app.py\n";
+        let second_command = "sed -n '1,80p' app.py\n";
+        let batch = |command| {
+            json!({
+                "analysis": "inspect",
+                "commands": [{"keystrokes": command}],
+            })
+            .to_string()
+        };
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Text {
+                    text: format!(
+                        "First {} second {} repeated {}",
+                        batch(first_command),
+                        batch(second_command),
+                        batch(first_command)
+                    ),
+                },
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-1".to_string(),
+                    name: "bash_command".to_string(),
+                    arguments: json!({"keystrokes": first_command}),
+                }),
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-2".to_string(),
+                    name: "bash_command".to_string(),
+                    arguments: json!({"keystrokes": second_command}),
+                }),
+            ],
+        };
+
+        let text = message_text(&message);
+
+        assert_eq!(text.matches(r#""commands":[]"#).count(), 2, "{text}");
+        assert_eq!(text.matches("grep -n bug app.py").count(), 2, "{text}");
+        assert_eq!(text.matches("sed -n '1,80p' app.py").count(), 1, "{text}");
     }
 
     #[test]

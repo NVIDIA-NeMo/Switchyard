@@ -216,6 +216,11 @@ impl Classifier<State> for EscalationClassifier {
                 "source": "escalation",
                 "verdict": "pending",
             }));
+        } else if verdict.is_some() {
+            driver.set_evidence(serde_json::json!({
+                "source": "escalation",
+                "verdict": "continue",
+            }));
         }
 
         Ok((
@@ -362,6 +367,43 @@ mod tests {
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn records_continue_evidence_when_judge_declines() -> Result<()> {
+        let judge = Queue::new([
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"progressing"}"#,
+        ]);
+        let model = Queue::new(["efficient answer"]);
+        let serve = Arc::new(queued(model, judge));
+        let routing_serve = Arc::clone(&serve);
+        let outcome = crate::drive(
+            escalation_router()?,
+            classify_request(),
+            Arc::new(crate::core::algorithm::RuntimeModels::new(runtime_models())),
+            move |call| {
+                let serve = Arc::clone(&routing_serve);
+                async move {
+                    let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+                    let request = call.request.clone();
+                    let response = serve
+                        .serve(target.clone(), request)
+                        .await
+                        .map_err(|source| LibsyError::client_call(target, source));
+                    call.respond(response)
+                }
+            },
+        )
+        .await?;
+
+        assert_eq!(
+            outcome.metadata.and_then(|metadata| metadata.evidence),
+            Some(serde_json::json!({
+                "source": "escalation",
+                "verdict": "continue",
+            }))
         );
         Ok(())
     }

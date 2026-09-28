@@ -167,9 +167,9 @@ per-session routing stats under the judge's model id, tagged with the
 `classifier` tier — so per-session token accounting includes judge overhead
 alongside the tiers the session was served by.
 
-The server log records each parsed escalation verdict's category,
-`new_evidence` flag, and bounded reason so false-positive or missed escalation
-decisions can be diagnosed without retaining unbounded judge output.
+The server log records each parsed escalation verdict's `escalate` decision,
+category, and `new_evidence` flag. The judge's free-form reason is neither
+retained nor logged.
 
 ## When not to use escalation routing
 
