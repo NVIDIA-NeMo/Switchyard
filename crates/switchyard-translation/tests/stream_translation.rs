@@ -18,6 +18,68 @@ use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {
+    let engine = TranslationEngine::default();
+    for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
+        for (early_arguments, arguments) in [("{", "}"), ("", "{}"), ("", "")] {
+            let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
+            let mut events = Vec::new();
+            for event in [
+                json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                    "id": "call_weather", "function": {"name": "wea", "arguments": ""}}]}}]}),
+                json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                    "function": {"arguments": early_arguments}}]}}]}),
+                json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                    "function": {"name": "ther", "arguments": arguments}}]}}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            ] {
+                let translated =
+                    engine.translate_event(&mut state, WireFormat::OpenAiChat, target, &event)?;
+                if event["choices"][0]["finish_reason"].is_null() {
+                    assert!(
+                        translated.iter().all(|event| {
+                            event["type"] != "content_block_start"
+                                && event["type"] != "response.output_item.added"
+                        }),
+                        "tool name must not be announced before completion"
+                    );
+                }
+                events.extend(translated);
+            }
+            events.extend(engine.finish_stream(&mut state, target)?);
+            let names: Vec<_> = events
+                .iter()
+                .filter_map(|event| {
+                    event
+                        .get("content_block")
+                        .or_else(|| event.get("item"))?
+                        .get("name")?
+                        .as_str()
+                })
+                .collect();
+            let expected = if target == WireFormat::AnthropicMessages {
+                vec!["weather"]
+            } else {
+                vec!["weather", "weather"]
+            };
+            assert_eq!(names, expected, "{target:?}, arguments={arguments:?}");
+            let emitted_arguments: String = events
+                .iter()
+                .filter_map(|event| {
+                    if event["type"] == "response.function_call_arguments.delta" {
+                        event["delta"].as_str()
+                    } else {
+                        event["delta"]["partial_json"].as_str()
+                    }
+                })
+                .collect();
+            assert_eq!(emitted_arguments, format!("{early_arguments}{arguments}"));
+        }
+    }
+    Ok(())
+}
+
 // Reduces Anthropic stream events to ordered labels (`<block>_start`, `<delta>`,
 // `<block>_stop`) so ordering assertions stay readable without restating each payload.
 fn event_labels(events: &[Value]) -> Vec<String> {
@@ -138,6 +200,45 @@ fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
             json!({"type": "error", "message": "boom"}),
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn anthropic_errors_include_type_and_terminate_stream() -> TestResult {
+    let engine = TranslationEngine::default();
+    let target = WireFormat::AnthropicMessages;
+    let message = "stream failed";
+    for chunk in [
+        LlmResponseChunk::StreamError {
+            message: message.into(),
+        },
+        LlmResponseChunk::DecodeError {
+            message: message.into(),
+        },
+    ] {
+        let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
+        let events = engine.encode_stream_event(
+            &mut state,
+            target,
+            LlmResponseStreamEvent::new(vec![chunk]),
+        )?;
+        assert_eq!(
+            events,
+            vec![json!({"type": "error", "error": {"type": "api_error", "message": message}})]
+        );
+        assert!(
+            engine
+                .encode_stream_event(
+                    &mut state,
+                    target,
+                    LlmResponseStreamEvent::new(vec![LlmResponseChunk::MessageStop {
+                        reason: None
+                    }]),
+                )?
+                .is_empty()
+        );
+        assert!(engine.finish_stream(&mut state, target)?.is_empty());
+    }
     Ok(())
 }
 
@@ -1438,6 +1539,94 @@ fn responses_function_call_stream() -> Vec<Value> {
     ]
 }
 
+#[test]
+fn anthropic_thinking_survives_responses_tool_continuation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = common::normalized_policy();
+    let thinking = json!({
+        "type": "thinking", "thinking": "Check the weather.\n", "signature": "opaque-signature"
+    });
+    let empty_thinking =
+        json!({"type": "thinking", "thinking": "", "signature": "second-signature"});
+    let tool = json!({"type": "tool_use", "id": "toolu_weather", "name": "weather", "input": {}});
+    let buffered = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({"id": "msg_test", "type": "message", "role": "assistant", "model": "claude",
+            "content": [thinking, empty_thinking, tool], "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1}}),
+            &policy,
+        )?
+        .body;
+    let events = vec![
+        json!({"type": "message_start", "message": {"id": "msg_test", "model": "claude"}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {
+            "type": "thinking", "thinking": "Check ", "signature": "opaque-"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {
+            "type": "thinking_delta", "thinking": "the weather.\n"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {
+            "type": "signature_delta", "signature": "sig"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {
+            "type": "signature_delta", "signature": "nature"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": empty_thinking}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "content_block_start", "index": 2, "content_block": tool}),
+        json!({"type": "content_block_delta", "index": 2, "delta": {
+            "type": "input_json_delta", "partial_json": "{}"}}),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+        json!({"type": "message_stop"}),
+    ];
+    let streamed = translate_stream(
+        &engine,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &events,
+    )?;
+    let done_items: Vec<Value> = streamed
+        .iter()
+        .filter(|event| event["type"] == "response.output_item.done")
+        .map(|event| event["item"].clone())
+        .collect();
+    let completed = streamed
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .unwrap();
+    for output in [
+        &buffered["output"],
+        &json!(done_items),
+        &completed["response"]["output"],
+    ] {
+        let mut input = output.as_array().unwrap().clone();
+        for item in &mut input {
+            if item["type"] == "reasoning" {
+                assert!(item["encrypted_content"].is_string());
+                // Replay must use the signed original, not a client's edited summary.
+                item["summary"] = json!([]);
+            }
+        }
+        input.push(
+            json!({"type": "function_call_output", "call_id": "toolu_weather", "output": "sunny"}),
+        );
+        let replay = engine
+            .translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &json!({"model": "claude", "input": input}),
+                &policy,
+            )?
+            .body;
+        assert_eq!(
+            replay["messages"][0]["content"],
+            json!([thinking, empty_thinking, tool])
+        );
+        assert_eq!(replay["messages"][1]["content"][0]["type"], "tool_result");
+    }
+    Ok(())
+}
+
 // Translates a whole source stream into `target` events, including the encoder's finish.
 fn translate_stream(
     engine: &TranslationEngine,
@@ -1583,6 +1772,167 @@ fn chat_tool_call_index_counts_tool_calls_not_content_blocks() -> TestResult {
         &responses,
     )?;
     assert_eq!(tool_indices(&chat), vec![json!(0), json!(0)]);
+    Ok(())
+}
+
+#[test]
+fn anthropic_empty_tool_input_survives_stream_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::AnthropicMessages;
+    for empty_fragments in [vec![""], vec![], vec!["{}"]] {
+        let mut upstream = vec![
+            json!({"type": "message_start", "message": {"id": "msg_tools", "model": "claude"}}),
+            json!({"type": "content_block_start", "index": 1, "content_block": {
+                "type": "tool_use", "id": "call_empty", "name": "clock", "input": {}}}),
+            json!({"type": "content_block_start", "index": 2, "content_block": {
+                "type": "tool_use", "id": "call_lookup", "name": "lookup", "input": {}}}),
+        ];
+        for fragment in empty_fragments {
+            upstream.push(json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": fragment}}));
+        }
+        upstream.extend([
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": ""}}),
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": "{\"q\":"}}),
+            json!({"type": "content_block_stop", "index": 1}),
+            json!({"type": "content_block_delta", "index": 2,
+                "delta": {"type": "input_json_delta", "partial_json": "\"rust\"}"}}),
+            json!({"type": "content_block_stop", "index": 2}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}}),
+            json!({"type": "message_stop"}),
+        ]);
+        let mut observed = Vec::new();
+        for separate_states in [false, true] {
+            for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses, source] {
+                let mut decoder = StreamTranslationState::new(source, target);
+                let mut encoder = StreamTranslationState::new(source, target);
+                let mut events = Vec::new();
+                for event in &upstream {
+                    let decoded =
+                        engine.decode_stream_event(&mut decoder, source, event.clone())?;
+                    if event["delta"]["partial_json"] == "{\"q\":" {
+                        assert!(
+                            decoded.normalized().iter().any(|chunk| matches!(chunk,
+                            LlmResponseChunk::ToolCallDelta { arguments_delta: Some(delta), .. }
+                                if delta == "{\"q\":")),
+                            "nonempty input must stream immediately"
+                        );
+                    }
+                    let state = if separate_states {
+                        &mut encoder
+                    } else {
+                        &mut decoder
+                    };
+                    events.extend(engine.encode_stream_event(state, target, decoded)?);
+                }
+                let state = if separate_states {
+                    &mut encoder
+                } else {
+                    &mut decoder
+                };
+                events.extend(engine.finish_stream(state, target)?);
+                assert!(engine.finish_stream(state, target)?.is_empty());
+                if target == source {
+                    assert_eq!(events, upstream);
+                    continue;
+                }
+                let mut arguments = [String::new(), String::new()];
+                for event in &events {
+                    if target == WireFormat::OpenAiChat {
+                        if let Some(calls) = event["choices"][0]["delta"]["tool_calls"].as_array() {
+                            for call in calls {
+                                let index =
+                                    call["index"].as_u64().ok_or("missing tool index")? as usize;
+                                if let Some(delta) = call["function"]["arguments"].as_str() {
+                                    arguments[index].push_str(delta);
+                                }
+                            }
+                        }
+                    } else if event["type"] == "response.function_call_arguments.delta" {
+                        let index = event["output_index"]
+                            .as_u64()
+                            .ok_or("missing output index")?
+                            as usize;
+                        arguments[index]
+                            .push_str(event["delta"].as_str().ok_or("missing argument delta")?);
+                    }
+                }
+                if target == WireFormat::OpenAiResponses {
+                    let completed = events.last().ok_or("missing completion")?;
+                    assert_eq!(completed["type"], "response.completed");
+                    for (index, argument) in arguments.iter().enumerate() {
+                        assert_eq!(
+                            completed["response"]["output"][index]["arguments"],
+                            *argument
+                        );
+                        let done = events
+                            .iter()
+                            .find(|event| {
+                                event["type"] == "response.output_item.done"
+                                    && event["output_index"] == index
+                            })
+                            .ok_or("missing completed tool")?;
+                        assert_eq!(done["item"]["arguments"], *argument);
+                        let done = events
+                            .iter()
+                            .find(|event| {
+                                event["type"] == "response.function_call_arguments.done"
+                                    && event["output_index"] == index
+                            })
+                            .ok_or("missing completed arguments")?;
+                        assert_eq!(done["arguments"], *argument);
+                    }
+                }
+                observed.push(arguments);
+            }
+        }
+        assert_eq!(
+            observed,
+            vec![["{}".to_string(), r#"{"q":"rust"}"#.to_string()]; 4]
+        );
+        for arguments in observed {
+            assert_eq!(serde_json::from_str::<Value>(&arguments[0])?, json!({}));
+            assert_eq!(
+                serde_json::from_str::<Value>(&arguments[1])?,
+                json!({"q": "rust"})
+            );
+        }
+    }
+    // Initial values and partial inputs must not be replaced or completed with {}.
+    for (input, fragment, closes, expected) in [
+        (json!({"q": "rust"}), "", true, r#"{"q":"rust"}"#),
+        (json!({}), "{", true, "{"),
+        (json!({}), "", false, ""),
+    ] {
+        let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+        let mut events = vec![
+            json!({"type": "content_block_start", "index": 0, "content_block": {
+                "type": "tool_use", "id": "call_control", "name": "lookup", "input": input}}),
+            json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": fragment}}),
+        ];
+        if closes {
+            events.push(json!({"type": "content_block_stop", "index": 0}));
+        }
+        events.push(json!({"type": "message_delta", "delta": {"stop_reason": "max_tokens"}}));
+        events.push(json!({"type": "message_stop"}));
+        let mut arguments = String::new();
+        for event in events {
+            for chunk in decode_stream_event(&mut state, source, &event) {
+                if let LlmResponseChunk::ToolCallDelta {
+                    arguments_delta: Some(delta),
+                    ..
+                } = chunk
+                {
+                    arguments.push_str(&delta);
+                }
+            }
+        }
+        assert_eq!(arguments, expected);
+    }
+
     Ok(())
 }
 
@@ -2040,24 +2390,28 @@ fn translated_responses_text_and_tool_events_keep_item_identity_until_done() -> 
                 .iter()
                 .filter(|event| event["output_index"] == index)
                 .collect::<Vec<_>>();
+            let mut expected_types = vec![
+                "response.output_item.added",
+                "response.function_call_arguments.delta",
+                "response.function_call_arguments.done",
+                "response.output_item.done",
+            ];
+            if source == WireFormat::AnthropicMessages {
+                expected_types.insert(2, "response.function_call_arguments.delta");
+            }
             assert_eq!(
                 tool_events
                     .iter()
                     .map(|event| event["type"].as_str().unwrap_or_default())
                     .collect::<Vec<_>>(),
-                [
-                    "response.output_item.added",
-                    "response.function_call_arguments.delta",
-                    "response.function_call_arguments.delta",
-                    "response.function_call_arguments.done",
-                    "response.output_item.done"
-                ]
+                expected_types
             );
-            let done = tool_events[3];
+            let done = tool_events[tool_events.len() - 2];
             assert_eq!(done["name"], name);
             assert_eq!(done["arguments"], arguments);
-            assert_eq!(tool_events[4]["item"]["id"], items[&index]["id"]);
-            assert_eq!(tool_events[4]["item"]["call_id"], call_id);
+            let item_done = tool_events[tool_events.len() - 1];
+            assert_eq!(item_done["item"]["id"], items[&index]["id"]);
+            assert_eq!(item_done["item"]["call_id"], call_id);
         }
         let completed = events.last().ok_or("missing response completion")?;
         assert_eq!(completed["type"], "response.completed");
@@ -2733,5 +3087,175 @@ fn responses_stream_empty_reasoning_delta_opens_no_summary_part() -> TestResult 
         "{types:?}"
     );
     assert!(types.contains(&"response.output_item.added"), "{types:?}");
+    Ok(())
+}
+
+#[test]
+fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let output = json!([
+        {"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "Visible answer"}
+        ]},
+        {"type": "function_call", "id": "fc_1", "call_id": "call_1",
+         "name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}
+    ]);
+    let response =
+        json!({"id": "resp_1", "model": "fixture", "status": "completed", "output": output});
+    let mut expected = engine
+        .decode_response(source, &response, &Default::default())?
+        .response;
+    if let switchyard_protocol::ContentBlock::ToolCall(call) = &mut expected.outputs[0].content[1] {
+        call.arguments = json!({"city": "Paris"});
+    }
+    for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        for mode in [
+            "terminal",
+            "done",
+            "partial",
+            "full",
+            "name_only",
+            "id_only",
+        ] {
+            let mut events = vec![
+                json!({"type": "response.created", "response": {"id": "resp_1", "model": "fixture"}}),
+            ];
+            if matches!(mode, "partial" | "full") {
+                events.push(
+                    json!({"type": "response.output_text.delta", "output_index": 0,
+                    "delta": if mode == "full" { "Visible answer" } else { "Visible " }}),
+                );
+                events.push(json!({"type": "response.output_item.added", "output_index": 1,
+                    "item": {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": ""}}));
+                events.push(
+                    json!({"type": "response.function_call_arguments.delta", "output_index": 1,
+                    "delta": if mode == "full" { "{\"city\":\"Paris\"}" } else { "{\"city\":" }}),
+                );
+            }
+            if matches!(mode, "name_only" | "id_only") {
+                let mut item =
+                    json!({"type": "function_call", "arguments": "{\"city\":\"Paris\"}"});
+                if mode == "name_only" {
+                    item["name"] = json!("get_weather");
+                } else {
+                    item["call_id"] = json!("call_1");
+                }
+                for event_type in ["response.output_item.added", "response.output_item.done"] {
+                    events.push(json!({"type": event_type, "output_index": 1, "item": item}));
+                }
+            } else if mode != "terminal" {
+                for (index, item) in output.as_array().unwrap().iter().enumerate() {
+                    events.push(json!({"type": "response.output_item.done", "output_index": index, "item": item}));
+                }
+            }
+            events.push(json!({"type": "response.completed", "response": response}));
+            let mut decoder = StreamTranslationState::new(source, target);
+            let mut encoder = StreamTranslationState::new(source, target);
+            let mut reader = StreamTranslationState::new(target, target);
+            let mut accumulator = ResponseAccumulator::new();
+            for event in events {
+                let is_incomplete_identity = matches!(mode, "name_only" | "id_only")
+                    && event["type"] != "response.completed";
+                let decoded = engine.decode_stream_event(&mut decoder, source, event)?;
+                for encoded in engine.encode_stream_event(&mut encoder, target, decoded)? {
+                    if target == WireFormat::AnthropicMessages && is_incomplete_identity {
+                        assert_ne!(encoded["content_block"]["type"], "tool_use");
+                    }
+                    for chunk in decode_stream_event(&mut reader, target, &encoded) {
+                        accumulator.push(chunk);
+                    }
+                }
+            }
+            for encoded in engine.finish_stream(&mut encoder, target)? {
+                for chunk in decode_stream_event(&mut reader, target, &encoded) {
+                    accumulator.push(chunk);
+                }
+            }
+            assert_eq!(
+                expected.outputs,
+                accumulator.finish().outputs,
+                "{target:?}: {mode}"
+            );
+        }
+    }
+    for event_type in ["response.output_item.added", "response.output_item.done"] {
+        for identity in [
+            json!({}),
+            json!({"call_id": "", "name": "get_weather"}),
+            json!({"id": "fc_1", "name": ""}),
+        ] {
+            let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+            let mut item = identity;
+            item["type"] = json!("function_call");
+            let incomplete = engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": event_type, "output_index": 1, "item": item}),
+            )?;
+            let target = WireFormat::AnthropicMessages;
+            let mut encoder = StreamTranslationState::new(source, target);
+            let early = engine.encode_stream_event(&mut encoder, target, incomplete)?;
+            assert!(
+                early
+                    .iter()
+                    .all(|event| event["content_block"]["type"] != "tool_use")
+            );
+            let terminal = engine.finish_stream(&mut encoder, target)?;
+            assert_eq!(terminal.len(), 1);
+            assert_eq!(terminal[0]["type"], "error");
+            assert!(engine.finish_stream(&mut encoder, target)?.is_empty());
+            let decoded = engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": "response.completed", "response": response}),
+            )?;
+            assert!(
+                decoded.normalized().iter().any(|chunk| matches!(chunk,
+                    LlmResponseChunk::ToolCallDelta { id: Some(id), name: Some(name), .. }
+                    if id == "call_1" && name == "get_weather"
+                )),
+                "{event_type}: {item}"
+            );
+            engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": event_type, "output_index": 1, "item": item}),
+            )?;
+            let repeated = engine.decode_stream_event(
+                &mut state,
+                source,
+                json!({"type": "response.completed", "response": response}),
+            )?;
+            assert!(
+                !repeated
+                    .normalized()
+                    .iter()
+                    .any(|chunk| matches!(chunk, LlmResponseChunk::ToolCallDelta { .. }))
+            );
+        }
+    }
+    for delta in [
+        json!({"type": "response.output_text.delta", "output_index": 0, "delta": "Different"}),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "["}),
+    ] {
+        let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+        engine.decode_stream_event(&mut state, source, delta)?;
+        let decoded = engine.decode_stream_event(
+            &mut state,
+            source,
+            json!({"type": "response.completed", "response": response}),
+        )?;
+        assert!(matches!(
+            decoded.normalized().last(),
+            Some(LlmResponseChunk::StreamError { .. })
+        ));
+        assert!(
+            !decoded
+                .normalized()
+                .iter()
+                .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }))
+        );
+    }
     Ok(())
 }

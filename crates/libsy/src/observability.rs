@@ -232,18 +232,14 @@ pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static st
         );
 }
 
-/// Records the resolution of one offloaded model call: the call counter and
-/// latency histogram and the outcome/token fields on `span`, without error details.
+/// Records the call counter and latency histogram for a completed offloaded call.
 pub(crate) fn record_llm_call(
     algorithm: &str,
     selected_model: &str,
     duration: Duration,
-    result: &Result<Response>,
-    span: &Span,
+    is_ok: bool,
 ) {
-    let outcome = outcome_value(result);
-    span.record("outcome", outcome);
-
+    let outcome = if is_ok { "ok" } else { "error" };
     let meter = meter();
     let call_attributes = [
         KeyValue::new("algorithm", algorithm.to_string()),
@@ -258,7 +254,11 @@ pub(crate) fn record_llm_call(
         .f64_histogram("switchyard.llm_call_duration_ms")
         .build()
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
+}
 
+/// Records the outcome and token fields on the algorithm's call span.
+pub(crate) fn record_llm_call_span(result: &Result<Response>, span: &Span) {
+    span.record("outcome", outcome_value(result));
     if let Ok(response) = result {
         // Token usage exists only once a response is buffered; a streamed
         // response resolves before its usage is known, so none is recorded.

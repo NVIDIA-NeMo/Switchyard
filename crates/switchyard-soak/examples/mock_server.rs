@@ -72,6 +72,10 @@ fn classifier_content(marker: Option<&str>) -> &'static str {
     r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":1.0}"#
 }
 
+fn should_inject_failure(name: &str, attempt: u64) -> bool {
+    name == "upstream_500" || attempt <= 2
+}
+
 fn completion(model: &str, content: &str) -> Value {
     json!({
         "id": "chatcmpl-switchyard-soak",
@@ -192,9 +196,11 @@ async fn chat(State(state): State<BackendState>, Json(body): Json<Value>) -> Res
                 *attempt += 1;
                 *attempt
             };
-            if attempt <= 2 {
+            if should_inject_failure(name, attempt) {
+                // Keep retry-exhaustion scenarios fast enough for local benchmarks.
                 return (
                     status,
+                    [("retry-after", "0")],
                     Json(
                         json!({"error": {"message": format!("injected {name} attempt {attempt}")}}),
                     ),
@@ -255,7 +261,7 @@ async fn run(args: Args) -> Result<(), String> {
 mod tests {
     use serde_json::json;
 
-    use super::requested_output_tokens;
+    use super::{requested_output_tokens, should_inject_failure};
 
     #[test]
     fn output_tokens_follow_openai_limits_and_stay_bounded() {
@@ -265,6 +271,13 @@ mod tests {
             4_096
         );
         assert_eq!(requested_output_tokens(&json!({})), 2);
+    }
+
+    #[test]
+    fn failure_pressure_recovers_429_but_not_500() {
+        assert!(should_inject_failure("upstream_429", 2));
+        assert!(!should_inject_failure("upstream_429", 3));
+        assert!(should_inject_failure("upstream_500", 11));
     }
 }
 

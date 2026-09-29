@@ -3,7 +3,7 @@
 
 //! Integration tests for the libsy Rust server.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::convert::Infallible;
 use std::error::Error;
 use std::io::Write;
@@ -749,6 +749,7 @@ fn random_state_with_retries(
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        omit_body_fields: BTreeSet::new(),
         reasoning_effort: None,
         max_retries,
         timeout: None,
@@ -3432,23 +3433,183 @@ target = "shared"
     assert_eq!(models.status, StatusCode::OK);
     let body = models.json()?;
     let data = body["data"].as_array().cloned().unwrap_or_default();
-    let capabilities = data
+    let entries = data
         .iter()
-        .filter_map(|entry| entry["id"].as_str().map(|id| (id, &entry["capabilities"])))
+        .filter_map(|entry| entry["id"].as_str().map(|id| (id, entry)))
         .collect::<BTreeMap<_, _>>();
+    let capabilities = |id: &str| &entries[id]["capabilities"];
 
-    assert_eq!(capabilities["declared"]["context_window"], json!(1_000_000));
-    assert_eq!(capabilities["declared"]["tool_calling"], json!(true));
-    assert_eq!(capabilities["restricted"]["context_window"], json!(262_000));
-    assert_eq!(capabilities["restricted"]["tool_calling"], json!(false));
-    assert_eq!(capabilities["undeclared"]["context_window"], json!(null));
-    assert_eq!(capabilities["undeclared"]["tool_calling"], json!(null));
+    assert_eq!(entries["declared"]["context_length"], json!(1_000_000));
+    assert_eq!(capabilities("declared")["tool_calling"], json!(true));
+    assert_eq!(entries["restricted"]["context_length"], json!(262_000));
+    assert_eq!(capabilities("restricted")["tool_calling"], json!(false));
+    assert_eq!(entries["undeclared"]["context_length"], json!(null));
+    assert_eq!(capabilities("undeclared")["tool_calling"], json!(null));
 
-    assert_eq!(capabilities["declared"]["vision"], json!(true));
-    assert_eq!(capabilities["restricted"]["vision"], json!(false));
-    assert_eq!(capabilities["undeclared"]["vision"], json!(null));
+    assert_eq!(capabilities("declared")["vision"], json!(true));
+    assert_eq!(capabilities("restricted")["vision"], json!(false));
+    assert_eq!(capabilities("undeclared")["vision"], json!(null));
     assert_eq!(body["models"], json!([]));
 
+    Ok(())
+}
+
+// Build routes through the TOML loader to test disabled, enabled, and unset capabilities.
+fn capability_app(base_url: &str, format: &str) -> TestResult<Router> {
+    Ok(build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "{format}"
+base_url = "{base_url}"
+[targets]
+shared = {{ id = "model/efficient", llm_client = "upstream" }}
+[routes]
+restricted = {{ id = "restricted", type = "passthrough", target = "shared", vision = false, reasoning = false, tool_calling = false }}
+enabled = {{ id = "enabled", type = "passthrough", target = "shared", vision = true, reasoning = true, tool_calling = true }}
+undeclared = {{ id = "undeclared", type = "passthrough", target = "shared" }}
+"#,
+    ))?))
+}
+
+// Chat Completions, Responses, and Messages reject disabled inputs before dispatch.
+// Allowed Responses input retains instructions and options after translation
+// to Chat Completions.
+#[tokio::test]
+async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = capability_app(&upstream.base_url, "openai_chat")?;
+    let cases = [
+        (
+            "/v1/chat/completions",
+            "vision",
+            json!({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}]}]}),
+        ),
+        (
+            "/v1/messages",
+            "vision",
+            json!({"messages": [{"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}}]}]}),
+        ),
+        (
+            "/v1/responses",
+            "vision",
+            json!({"input": [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.test/image.png"}]}]}),
+        ),
+        (
+            "/v1/chat/completions",
+            "reasoning",
+            json!({"messages": [{"role": "user", "content": "hello"}], "reasoning_effort": "high"}),
+        ),
+        (
+            "/v1/messages",
+            "reasoning",
+            json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "enabled", "budget_tokens": 1024}}),
+        ),
+        (
+            "/v1/responses",
+            "reasoning",
+            json!({"input": "hello", "reasoning": {"summary": "auto"}}),
+        ),
+        (
+            "/v1/chat/completions",
+            "tool_calling",
+            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "exec_command", "parameters": {"type": "object"}}}]}),
+        ),
+        (
+            "/v1/messages",
+            "tool_calling",
+            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"name": "exec_command", "input_schema": {"type": "object"}}]}),
+        ),
+        (
+            "/v1/responses",
+            "tool_calling",
+            json!({"input": [{"type": "additional_tools", "tools": [{"type": "function", "name": "exec_command", "parameters": {"type": "object"}}]}, {"role": "user", "content": "hello"}]}),
+        ),
+    ];
+    for (endpoint, capability, mut body) in cases {
+        body["model"] = json!("restricted");
+        let response = send(&app, "POST", endpoint, Some(body)).await?;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{endpoint}: {capability}"
+        );
+        let error = response.json()?;
+        assert_eq!(error["error"]["type"], "invalid_request_error");
+        if endpoint == "/v1/messages" {
+            assert_eq!(error["type"], "error");
+        } else {
+            assert_eq!(error["error"]["code"], "unsupported_capability");
+        }
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(&format!("{capability} = false"))
+        );
+    }
+    assert!(upstream.calls.lock().await.is_empty());
+
+    let body = json!({
+        "model": "restricted", "instructions": "Keep the caller's instructions.", "input": "hello"
+    });
+    let response = send(&app, "POST", "/v1/responses", Some(body)).await?;
+    assert_eq!(response.status, StatusCode::OK);
+    for model in ["enabled", "undeclared"] {
+        let response = send(&app, "POST", "/v1/responses", Some(json!({
+            "model": model,
+            "instructions": "Keep the caller's instructions.",
+            "input": [{"role": "user", "content": [{"type": "input_image", "image_url": "https://example.test/image.png"}]}],
+            "reasoning": {"effort": "high"},
+            "tools": [{"type": "function", "name": "exec_command", "parameters": {"type": "object"}}]
+        }))).await?;
+        assert_eq!(response.status, StatusCode::OK);
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 3);
+    assert!(
+        calls
+            .iter()
+            .all(|call| has_system_prompt(call, "Keep the caller's instructions."))
+    );
+    for call in &calls[1..] {
+        assert_eq!(call["reasoning_effort"], "high");
+        assert_eq!(call["tools"][0]["function"]["name"], "exec_command");
+        assert!(call["messages"].as_array().is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| message["content"][0]["type"] == "image_url")
+        }));
+    }
+    Ok(())
+}
+
+// Approval replies can resume tool use without a tools field or a decoded tool call.
+#[tokio::test]
+async fn tool_approval_replies_follow_route_capabilities() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let base_url = format!("{}/buffered", upstream.base_url.trim_end_matches("/v1"));
+    let app = capability_app(&base_url, "openai_responses")?;
+    let input = json!([
+        {"type": "mcp_approval_response", "approval_request_id": "approval_1", "approve": true}
+    ]);
+    for model in ["restricted", "enabled", "undeclared"] {
+        let body = json!({"model": model, "input": input});
+        let response = send(&app, "POST", "/v1/responses", Some(body)).await?;
+        if model == "restricted" {
+            assert_eq!(response.status, StatusCode::BAD_REQUEST);
+            let error = response.json()?;
+            assert_eq!(error["error"]["code"], "unsupported_capability");
+            assert!(upstream.calls.lock().await.is_empty());
+        } else {
+            assert_eq!(response.status, StatusCode::OK);
+        }
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    for call in calls.iter() {
+        assert_eq!(call["input"], input);
+    }
     Ok(())
 }
 

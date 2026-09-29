@@ -52,6 +52,9 @@ pyproject.toml                    # Python package and development tooling
 uv sync
 source .venv/bin/activate
 
+# Build the Python extension
+uv run maturin develop
+
 # Run unit tests
 uv run pytest tests/ -v
 

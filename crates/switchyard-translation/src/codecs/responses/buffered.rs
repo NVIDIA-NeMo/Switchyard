@@ -9,7 +9,8 @@ use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
-    is_known_role_name, provider_extensions, reasoning_text_from_blocks, text_from_blocks,
+    is_anthropic_request, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
+    text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
@@ -256,13 +257,30 @@ impl FormatCodec for OpenAiResponsesCodec {
                 json!({"format": encode_responses_text_format(response_format)}),
             );
         }
-        let mut reasoning = request
-            .reasoning
-            .raw
-            .as_ref()
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
+        // An Anthropic request's raw reasoning is its `thinking` object, which Responses
+        // does not accept. Keep only whether thinking is disabled.
+        let mut reasoning = if is_anthropic_request(request) {
+            let mut reasoning = Map::new();
+            if request
+                .reasoning
+                .raw
+                .as_ref()
+                .and_then(|thinking| thinking.get("type"))
+                .and_then(Value::as_str)
+                == Some("disabled")
+            {
+                reasoning.insert("effort".to_string(), json!("none"));
+            }
+            reasoning
+        } else {
+            request
+                .reasoning
+                .raw
+                .as_ref()
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default()
+        };
         if let Some(effort) = &request.reasoning.effort {
             reasoning.insert("effort".to_string(), json!(effort));
         }
@@ -844,6 +862,17 @@ fn flush_responses_tool_block(
 
 // Decodes a Responses reasoning item into private reasoning IR content.
 fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
+    if let Some((text, signature)) = item
+        .get("encrypted_content")
+        .and_then(Value::as_str)
+        .and_then(super::decode_anthropic_thinking)
+    {
+        return vec![ContentBlock::Reasoning {
+            text,
+            signature: Some(signature),
+            details: Vec::new(),
+        }];
+    }
     let mut parts = Vec::new();
     collect_responses_reasoning_text(item.get("content"), &mut parts);
     collect_responses_reasoning_text(item.get("summary"), &mut parts);
@@ -992,6 +1021,7 @@ fn decode_responses_tools(
                 .get("name")
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty());
+            let description = tool.get("description").and_then(Value::as_str);
             for mut child in decode_responses_tools(tool.get("tools"), namespaces, custom_tools) {
                 // A nested container already qualified its own children, and the
                 // innermost name is the one that identifies the tool.
@@ -1002,7 +1032,10 @@ fn decode_responses_tools(
                     let qualified =
                         crate::codex_namespaces::qualified_tool_name(container, &child.name);
                     crate::codex_namespaces::record_tool_namespace(
-                        namespaces, &qualified, container,
+                        namespaces,
+                        &qualified,
+                        container,
+                        description,
                     );
                     child.name = qualified;
                 }
@@ -1139,6 +1172,11 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
                     },
                 }
             })
+        }
+        Value::Object(object)
+            if object.get("type").and_then(Value::as_str) == Some("allowed_tools") =>
+        {
+            Some(ToolChoice::Raw(value.clone()))
         }
         Value::Object(_) => None,
         _ => Some(ToolChoice::Raw(value.clone())),
@@ -1282,6 +1320,7 @@ fn encode_responses_input(
                 ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
             )
         }) {
+            let mut visible_content = Vec::new();
             for block in &content {
                 if let Some(item) = encode_responses_special_input(
                     block,
@@ -1292,8 +1331,28 @@ fn encode_responses_input(
                     diagnostics,
                     policy,
                 )? {
+                    if !visible_content.is_empty() {
+                        let content =
+                            encode_responses_content(&visible_content, diagnostics, policy)?;
+                        encoded.push(json!({
+                            "type": "message",
+                            "role": role_to_responses(message.role),
+                            "content": content,
+                        }));
+                        visible_content.clear();
+                    }
                     encoded.push(item);
+                } else if !matches!(block, ContentBlock::Reasoning { .. }) {
+                    visible_content.push(block.clone());
                 }
+            }
+            if !visible_content.is_empty() {
+                let content = encode_responses_content(&visible_content, diagnostics, policy)?;
+                encoded.push(json!({
+                    "type": "message",
+                    "role": role_to_responses(message.role),
+                    "content": content,
+                }));
             }
             continue;
         }
@@ -1360,6 +1419,7 @@ fn pair_tool_calls_with_outputs(items: &mut Vec<Value>) {
         let output = items
             .iter()
             .skip(index + 1)
+            .take_while(|item| item.get("type").and_then(Value::as_str) != Some("message"))
             .position(|item| call_id(item, output_kind).as_deref() == Some(&id))
             .map(|offset| index + 1 + offset);
         if let Some(output) = output
@@ -1422,7 +1482,7 @@ fn encode_responses_special_input(
                 .and_then(|namespaces| {
                     crate::codex_namespaces::split_qualified_name(namespaces, &call.name)
                 })
-                .map_or((call.name.clone(), None), |(name, namespace)| {
+                .map_or((call.name.as_str(), None), |(name, namespace)| {
                     (name, Some(namespace))
                 });
             let mut item = json!({
@@ -1432,7 +1492,7 @@ fn encode_responses_special_input(
                 "arguments": json_string(&call.arguments),
             });
             if let Some(namespace) = namespace {
-                item["namespace"] = Value::String(namespace);
+                item["namespace"] = Value::String(namespace.to_string());
             }
             Some(item)
         }
@@ -1455,8 +1515,8 @@ fn encode_responses_special_input(
                     .and_then(|namespaces| {
                         crate::codex_namespaces::split_qualified_name(namespaces, name)
                     })
-                    .map_or_else(|| (*name).to_string(), |(name, _)| name);
-                item["name"] = Value::String(name);
+                    .map_or(*name, |(name, _)| name);
+                item["name"] = Value::String(name.to_string());
             }
             Some(item)
         }
@@ -1656,21 +1716,27 @@ fn encode_responses_tools(
         match split {
             None => out.push(item),
             Some((name, namespace)) => {
-                item["name"] = Value::String(name);
+                item["name"] = Value::String(name.to_string());
                 match containers
                     .iter_mut()
                     .find(|(existing, _)| *existing == namespace)
                 {
                     Some((_, children)) => children.push(item),
-                    None => containers.push((namespace, vec![item])),
+                    None => containers.push((namespace.to_string(), vec![item])),
                 }
             }
         }
     }
     for (namespace, children) in containers {
+        let description = namespaces
+            .and_then(|namespaces| {
+                crate::codex_namespaces::namespace_description(namespaces, &namespace)
+            })
+            .unwrap_or_default();
         out.push(json!({
             "type": "namespace",
             "name": namespace,
+            "description": description,
             "tools": children,
         }));
     }
@@ -1767,6 +1833,15 @@ fn decode_responses_output_item(
             content: decode_responses_reasoning_item(item),
             stop_reason: None,
         })),
+        Some(kind) if super::is_native_output(kind) => Ok(Some(ResponseOutput {
+            url_citations: Vec::new(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::Unknown {
+                provider: WireFormat::OpenAiResponses.into(),
+                raw: Value::Object(item.clone()),
+            }],
+            stop_reason: None,
+        })),
         _ => Ok(None),
     }
 }
@@ -1810,10 +1885,12 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
         outputs
             .iter()
             .flat_map(|output| {
-                let has_tool_calls = output
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolCall(_)));
+                let has_output_items = output.content.iter().any(|block| {
+                    matches!(block, ContentBlock::ToolCall(_))
+                        || matches!(block, ContentBlock::Unknown { provider, raw }
+                            if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                                && raw["type"].as_str().is_some_and(super::is_native_output))
+                });
                 let text = text_from_blocks(&output.content, "");
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
                 let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
@@ -1831,7 +1908,37 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
                     _ => None,
                 });
-                if !reasoning.is_empty() || encrypted_reasoning.is_some() {
+                let has_signed_reasoning = output.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::Reasoning {
+                            signature: Some(_),
+                            ..
+                        }
+                    )
+                });
+                if has_signed_reasoning {
+                    for (index, block) in output.content.iter().enumerate() {
+                        if let ContentBlock::Reasoning {
+                            text,
+                            signature,
+                            details,
+                        } = block
+                        {
+                            let encrypted = signature
+                                .as_deref()
+                                .map(|signature| super::encode_anthropic_thinking(text, signature))
+                                .or_else(|| encrypted_reasoning_data(details));
+                            let id = encrypted_reasoning_item_id(details)
+                                .unwrap_or_else(|| format!("rs_switchyard_{index}"));
+                            items.push(encode_responses_reasoning_output(
+                                text,
+                                encrypted.as_deref(),
+                                Some(&id),
+                            ));
+                        }
+                    }
+                } else if !reasoning.is_empty() || encrypted_reasoning.is_some() {
                     items.push(encode_responses_reasoning_output(
                         &reasoning,
                         encrypted_reasoning.as_deref(),
@@ -1839,7 +1946,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ));
                 }
 
-                if !text.is_empty() || (!has_tool_calls && reasoning.is_empty()) {
+                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
@@ -1866,6 +1973,12 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                         "name": call.name,
                         "arguments": json_string_python_style(&call.arguments),
                     })),
+                    ContentBlock::Unknown { provider, raw }
+                        if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                            && raw["type"].as_str().is_some_and(super::is_native_output) =>
+                    {
+                        Some(raw.clone())
+                    }
                     _ => None,
                 }));
 

@@ -418,10 +418,12 @@ impl TaskClassifierConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
+        // Only `every_request` is rejected: it retains no target, so a fallback identity has nothing to key on. Both retaining triggers can key the retained target on a message hash when the caller sends no session id.
+        if self.message_hash_fallback && self.classify_trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires classify_trigger = new_session"
-                    .to_string(),
+                message:
+                    "message_hash_fallback requires classify_trigger = new_session or user_turn"
+                        .to_string(),
             });
         }
         Ok(())
@@ -490,10 +492,12 @@ impl CustomClassifierConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        if self.message_hash_fallback && self.classify_trigger != ClassifyTrigger::NewSession {
+        // Only `every_request` is rejected: it retains no target, so a fallback identity has nothing to key on. Both retaining triggers can key the retained target on a message hash when the caller sends no session id.
+        if self.message_hash_fallback && self.classify_trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires classify_trigger = new_session"
-                    .to_string(),
+                message:
+                    "message_hash_fallback requires classify_trigger = new_session or user_turn"
+                        .to_string(),
             });
         }
         Ok(())
@@ -713,10 +717,13 @@ impl LlmTaskClassifier {
         inner: Arc<dyn Classifier<State>>,
         config: ClassifierRouteConfig,
     ) -> Result<Self> {
-        if config.message_hash_fallback && config.classify_trigger != ClassifyTrigger::NewSession {
+        // Only `every_request` is rejected: it retains no target, so a fallback identity has nothing to key on. Both retaining triggers can key the retained target on a message hash when the caller sends no session id.
+        if config.message_hash_fallback && config.classify_trigger == ClassifyTrigger::EveryRequest
+        {
             return Err(LibsyError::AlgorithmError {
-                message: "message_hash_fallback requires classify_trigger = new_session"
-                    .to_string(),
+                message:
+                    "message_hash_fallback requires classify_trigger = new_session or user_turn"
+                        .to_string(),
             });
         }
         // Affinity comes first so a retained assignment short-circuits the judge call.
@@ -1274,6 +1281,40 @@ mod tests {
                 config: test_config(base_threshold),
             })?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn message_hash_fallback_accepts_retaining_triggers() -> Result<()> {
+        // Only `every_request` is rejected: it retains no target, so a fallback
+        // identity has nothing to key on. Both retaining triggers may key the
+        // retained target on a message hash when the caller sends no session id.
+        for trigger in [ClassifyTrigger::NewSession, ClassifyTrigger::UserTurn] {
+            let config = TaskClassifierConfig {
+                base_threshold: 0.5,
+                classify_trigger: trigger,
+                message_hash_fallback: true,
+                ..TaskClassifierConfig::default()
+            };
+            LlmTaskClassifier::new(LlmClassifierConfig::Capability { config }).map_err(
+                |error| LibsyError::AlgorithmError {
+                    message: format!("{trigger:?} with message_hash_fallback rejected: {error}"),
+                },
+            )?;
+        }
+        let every_request = TaskClassifierConfig {
+            base_threshold: 0.5,
+            classify_trigger: ClassifyTrigger::EveryRequest,
+            message_hash_fallback: true,
+            ..TaskClassifierConfig::default()
+        };
+        assert!(
+            LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                config: every_request
+            })
+            .is_err(),
+            "every_request with message_hash_fallback should stay rejected"
+        );
         Ok(())
     }
 

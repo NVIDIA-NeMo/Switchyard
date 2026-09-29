@@ -34,7 +34,7 @@ The scenario catalog covers these distinct pressure angles:
 | `stage-transitions` | One growing history across exploration, critical failure, and productive work | Stage-router tier changes and scorer output |
 | `classifier-mix` | Deterministic 80/20 then 50/50 easy/hard requests | Target share, classifier calls/errors, and classifier latency |
 | `context-overflow` | One target rejects a near-window request | Fallback to another eligible target |
-| `failure-pressure` | Bounded 429, 500, malformed verdict, and truncated stream | Retry recovery, explicit terminal errors, and connection health |
+| `failure-pressure` | Transient 429, persistent 500, malformed verdict, and truncated stream | Retry recovery, explicit terminal errors, and connection health |
 | `client-cancellation` | A client timeout during a delayed response | Teardown and recovery of later traffic |
 
 `standard` includes the core and agentic rows. Run `resilience` separately because expected
@@ -239,7 +239,7 @@ python3.12 scripts/benchmark_routing_algorithms.py \
   --profile-runs 1
 ```
 
-`context-overflow` checks target fallback, `failure-pressure` injects bounded 429, 500, malformed
+`context-overflow` checks target fallback, `failure-pressure` injects transient 429, persistent 500, malformed
 classifier, and truncated-stream cases, and `client-cancellation` uses a one-second client timeout
 against a delayed response. Their expected error-rate ranges appear in the report's Resilience
 section, and the command fails after writing the report when any row misses its range. The local

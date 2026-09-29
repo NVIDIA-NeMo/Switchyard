@@ -8,13 +8,125 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy,
-    WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationError,
+    TranslationPolicy, WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn responses_allowed_tools_is_translated_or_rejected() -> TestResult {
+    let engine = TranslationEngine::default();
+    for mode in ["auto", "required"] {
+        let body = json!({
+            "model": "route",
+            "input": "Only inspect tool policy.",
+            "tools": [
+                {"type": "function", "name": "safe_lookup", "description": "Read a record", "parameters": {"type": "object"}},
+                {"type": "function", "name": "delete_all_records", "description": "Excluded tool", "parameters": {"type": "object"}}
+            ],
+            "tool_choice": {
+                "type": "allowed_tools", "mode": mode,
+                "tools": [{"type": "function", "name": "safe_lookup"}]
+            }
+        });
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+                let output = engine.translate_request(
+                    WireFormat::OpenAiResponses,
+                    target,
+                    &body,
+                    &policy,
+                )?;
+                let expected_tool = match target {
+                    WireFormat::OpenAiChat => json!({
+                        "type": "function", "function": {
+                            "name": "safe_lookup", "description": "Read a record",
+                            "parameters": {"type": "object"}
+                        }
+                    }),
+                    _ => json!({
+                        "name": "safe_lookup", "description": "Read a record",
+                        "input_schema": {"type": "object"}
+                    }),
+                };
+                assert_eq!(output.body["tools"], json!([expected_tool]));
+                let expected_choice = match target {
+                    WireFormat::OpenAiChat => json!(mode),
+                    _ => json!({"type": if mode == "required" { "any" } else { "auto" }}),
+                };
+                assert_eq!(output.body["tool_choice"], expected_choice);
+
+                for allowed in [
+                    json!([]),
+                    json!([{"type": "web_search"}]),
+                    json!([{"type": "function", "name": "unknown"}]),
+                ] {
+                    let mut unsupported = body.clone();
+                    unsupported["tool_choice"]["tools"] = allowed;
+                    let error = engine
+                        .translate_request(
+                            WireFormat::OpenAiResponses,
+                            target,
+                            &unsupported,
+                            &policy,
+                        )
+                        .expect_err("unrepresentable restrictions must be rejected");
+                    assert!(matches!(
+                        error,
+                        switchyard_translation::TranslationError::LossyConversion(_)
+                    ));
+                }
+            }
+            let output = engine.translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiResponses,
+                &body,
+                &policy,
+            )?;
+            assert_eq!(output.body["tool_choice"], body["tool_choice"]);
+            assert_eq!(output.body["tools"], body["tools"]);
+
+            let chat = json!({
+                "model": "route",
+                "messages": [{"role": "user", "content": "Inspect tool policy."}],
+                "tools": [
+                    {"type": "function", "function": {"name": "safe_lookup", "parameters": {"type": "object"}}},
+                    {"type": "function", "function": {"name": "delete_all_records", "parameters": {"type": "object"}}}
+                ],
+                "tool_choice": {
+                    "type": "allowed_tools",
+                    "allowed_tools": {
+                        "mode": mode,
+                        "tools": [{"type": "function", "function": {"name": "safe_lookup"}}]
+                    }
+                }
+            });
+            let output = engine.translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::OpenAiChat,
+                &chat,
+                &policy,
+            )?;
+            assert_eq!(output.body["tool_choice"], chat["tool_choice"]);
+            let output = engine.translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &chat,
+                &policy,
+            )?;
+            assert_eq!(output.body["tools"].as_array().map(Vec::len), Some(1));
+            assert_eq!(output.body["tools"][0]["name"], "safe_lookup");
+            assert_eq!(
+                output.body["tool_choice"],
+                json!({"type": if mode == "required" { "any" } else { "auto" }})
+            );
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
@@ -37,7 +149,7 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
     let image = json!({"type": "input_image", "file_id": "file_image", "detail": "auto"});
     let audio =
         json!({"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}});
-    let file = json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"});
+    let file = json!({"type": "input_file", "file_url": "https://example.com/report.pdf"});
     let document = json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}, "title": "report.pdf"});
     let text_file = json!({"type": "input_file", "file_data": "aGVsbG8=", "filename": "notes.txt"});
     let text_document = json!({"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "hello"}, "title": "notes.txt"});
@@ -72,7 +184,26 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
         (Responses, Anthropic, audio, None),
         (Responses, Responses, file.clone(), Some(file.clone())),
         (Responses, Chat, file.clone(), None),
-        (Responses, Anthropic, file.clone(), Some(document.clone())),
+        (
+            Responses,
+            Responses,
+            json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"}),
+            Some(file.clone()),
+        ),
+        (
+            Responses,
+            Anthropic,
+            file.clone(),
+            Some(
+                json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}}),
+            ),
+        ),
+        (
+            Responses,
+            Anthropic,
+            json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"}),
+            Some(document.clone()),
+        ),
         (Anthropic, Chat, document.clone(), None),
         (Anthropic, Responses, document, Some(file)),
         (
@@ -127,7 +258,7 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
 }
 
 #[test]
-fn abuse_identity_survives_request_translation() -> TestResult {
+fn native_abuse_identity_is_preserved_but_not_mapped() -> TestResult {
     let engine = TranslationEngine::default();
     let formats = [
         WireFormat::OpenAiChat,
@@ -136,7 +267,12 @@ fn abuse_identity_survives_request_translation() -> TestResult {
     ];
     for policy in [TranslationPolicy::default(), normalized_policy()] {
         for source in formats {
-            for identity in [Some("opaque-user-6cc3d8d5"), None] {
+            let long_identity = "u".repeat(150);
+            for identity in [
+                Some("opaque-user-6cc3d8d5"),
+                Some(long_identity.as_str()),
+                None,
+            ] {
                 let mut body = match source {
                     WireFormat::OpenAiChat => json!({
                         "messages": [{"role": "user", "content": "hi"}]
@@ -162,11 +298,20 @@ fn abuse_identity_survives_request_translation() -> TestResult {
                 for target in formats {
                     let output = engine.encode_request(target, &request, &policy)?.body;
                     let actual = if target == WireFormat::AnthropicMessages {
-                        &output["metadata"]["user_id"]
+                        output
+                            .get("metadata")
+                            .and_then(|metadata| metadata.get("user_id"))
                     } else {
-                        &output["safety_identifier"]
+                        output.get("safety_identifier")
                     };
-                    assert_eq!(actual, &json!(identity), "{source:?} -> {target:?}");
+                    let crosses_anthropic = (source == WireFormat::AnthropicMessages)
+                        != (target == WireFormat::AnthropicMessages);
+                    let expected = if crosses_anthropic { None } else { identity };
+                    assert_eq!(
+                        actual,
+                        expected.map(|value| json!(value)).as_ref(),
+                        "{source:?} -> {target:?}"
+                    );
                     if source != WireFormat::AnthropicMessages
                         && target != WireFormat::AnthropicMessages
                     {
@@ -295,6 +440,47 @@ fn responses_reasoning_survives_rebuild() -> TestResult {
         json!({"effort": "max", "summary": "auto"})
     );
     assert_eq!(output["include"], json!(["reasoning.encrypted_content"]));
+    Ok(())
+}
+
+#[test]
+fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for (thinking, effort, expected) in [
+        (
+            json!({"type": "adaptive"}),
+            Some("low"),
+            Some(json!({"effort": "low"})),
+        ),
+        (
+            json!({"type": "enabled", "budget_tokens": 2048}),
+            None,
+            None,
+        ),
+        (
+            json!({"type": "disabled"}),
+            None,
+            Some(json!({"effort": "none"})),
+        ),
+    ] {
+        let mut body = json!({
+            "model": "route",
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": thinking
+        });
+        if let Some(effort) = effort {
+            body["output_config"] = json!({"effort": effort});
+        }
+        let output = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?;
+        assert_eq!(output.body.get("reasoning"), expected.as_ref());
+    }
     Ok(())
 }
 
@@ -759,6 +945,148 @@ fn anthropic_thinking_blocks_do_not_leak_into_openai_chat_messages() -> TestResu
     Ok(())
 }
 
+#[test]
+fn anthropic_visible_text_survives_tool_history_to_responses() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-opus-4-20250514",
+        "messages": [
+            {"role": "user", "content": "inspect"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "visible preface"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_status",
+                        "name": "lookup",
+                        "input": {"key": "status"}
+                    }
+                ]
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_status",
+                    "content": "ready"
+                }]
+            }
+        ],
+        "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+        "max_tokens": 64
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(
+        output["input"],
+        json!([
+            {"type": "message", "role": "user", "content": "inspect"},
+            {"type": "message", "role": "assistant", "content": "visible preface"},
+            {
+                "type": "function_call",
+                "call_id": "toolu_status",
+                "name": "lookup",
+                "arguments": "{\"key\":\"status\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "toolu_status",
+                "name": "lookup",
+                "output": "ready"
+            }
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn anthropic_visible_text_around_tool_call_survives_when_thinking_is_filtered() -> TestResult {
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({
+                "model": "claude-opus-4-20250514",
+                "messages": [
+                    {"role": "user", "content": "inspect"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "private", "signature": "sig"},
+                            {"type": "text", "text": "before"},
+                            {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}},
+                            {"type": "text", "text": "after"}
+                        ]
+                    }
+                ],
+                "max_tokens": 64
+            }),
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input is not an array")?;
+    assert!(input.iter().any(|item| item["content"] == "before"));
+    assert!(input.iter().any(|item| item["content"] == "after"));
+    assert!(input.iter().any(|item| item["type"] == "function_call"));
+    assert!(!input.iter().any(|item| item["type"] == "reasoning"));
+    Ok(())
+}
+
+#[test]
+fn responses_pairing_does_not_move_tool_output_across_user_text() -> TestResult {
+    let output = TranslationEngine::default()
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &json!({
+                "model": "claude-opus-4-20250514",
+                "messages": [
+                    {"role": "user", "content": "inspect"},
+                    {"role": "assistant", "content": [{
+                        "type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}
+                    }]},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "context before result"},
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ready"}
+                    ]}
+                ],
+                "max_tokens": 64
+            }),
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    let input = output["input"]
+        .as_array()
+        .ok_or("Responses input is not an array")?;
+    let call = input
+        .iter()
+        .position(|item| item["type"] == "function_call")
+        .ok_or("missing function call")?;
+    let text = input
+        .iter()
+        .position(|item| item["content"] == "context before result")
+        .ok_or("missing user text")?;
+    let result = input
+        .iter()
+        .position(|item| item["type"] == "function_call_output")
+        .ok_or("missing function output")?;
+    assert!(call < text && text < result);
+    Ok(())
+}
+
 // Verifies unsigned OpenAI-compatible reasoning is not forged as Anthropic thinking.
 #[test]
 fn openai_reasoning_content_does_not_forge_anthropic_thinking_block() -> TestResult {
@@ -1092,7 +1420,7 @@ fn anthropic_parallel_multimodal_tool_results_preserve_order_and_policy() -> Tes
                     },
                     {
                         "type": "file",
-                        "file": {"file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+                        "file": {"file_data": "data:application/pdf;base64,ZG9jdW1lbnQ=", "filename": "report.pdf"}
                     }
                 ]
             }
@@ -1316,6 +1644,41 @@ fn responses_request_translates_codex_tool_shape_to_openai_chat() -> TestResult 
     assert_eq!(
         output["tools"][0]["function"]["parameters"]["required"],
         json!(["cmd"])
+    );
+    Ok(())
+}
+
+#[test]
+fn responses_prompt_injection_preserves_namespace_description() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "switchyard",
+        "input": "Fix the parser",
+        "tools": [{
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for managing sub-agents.",
+            "tools": [{
+                "type": "function",
+                "name": "spawn_agent",
+                "description": "Start one agent.",
+                "parameters": {"type": "object"}
+            }]
+        }]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+
+    prepare_request_for_target(&mut request, &"gpt-5.6-sol".into(), Some("Plan first."));
+    let output = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+
+    assert_eq!(
+        output["tools"][0]["description"],
+        "Tools for managing sub-agents."
     );
     Ok(())
 }
@@ -1657,6 +2020,84 @@ fn responses_deferred_message_stays_after_matching_tool_result_for_openai_chat()
         output["messages"][3]["content"],
         "I will summarize after the tool."
     );
+    Ok(())
+}
+
+#[test]
+fn parallel_tool_policy_survives_anthropic_translations() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    for format in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        for choice in [Some("any"), Some("auto"), Some("tool"), None] {
+            for disabled in [Some(true), Some(false), None] {
+                let mut body = json!({
+                    "model": "test-model",
+                    "max_tokens": 256,
+                    "messages": [{"role": "user", "content": "Use the marker tool."}],
+                    "tools": [{
+                        "name": "marker",
+                        "input_schema": {"type": "object", "properties": {}}
+                    }]
+                });
+                if let Some(choice) = choice {
+                    body["tool_choice"] = json!({"type": choice});
+                    if choice == "tool" {
+                        body["tool_choice"]["name"] = json!("marker");
+                    }
+                    if let Some(disabled) = disabled {
+                        body["tool_choice"]["disable_parallel_tool_use"] = json!(disabled);
+                    }
+                }
+                let mut openai = engine
+                    .translate_request(WireFormat::AnthropicMessages, format, &body, &policy)?
+                    .body;
+                if choice.is_some() {
+                    assert_eq!(
+                        openai.get("parallel_tool_calls"),
+                        disabled.map(|value| json!(!value)).as_ref(),
+                        "{format:?}, {choice:?}, {disabled:?}"
+                    );
+                } else if let Some(disabled) = disabled {
+                    // OpenAI allows this policy without an explicit tool choice.
+                    openai["parallel_tool_calls"] = json!(!disabled);
+                }
+                let anthropic = engine
+                    .translate_request(format, WireFormat::AnthropicMessages, &openai, &policy)?
+                    .body;
+                assert_eq!(
+                    anthropic["tool_choice"].get("disable_parallel_tool_use"),
+                    disabled.map(|value| json!(value)).as_ref(),
+                    "{format:?}, {choice:?}, {disabled:?}"
+                );
+                if choice.is_some() || disabled.is_some() {
+                    assert_eq!(anthropic["tool_choice"]["type"], choice.unwrap_or("auto"));
+                    if choice == Some("tool") {
+                        assert_eq!(anthropic["tool_choice"]["name"], "marker");
+                    }
+                } else {
+                    assert!(anthropic.get("tool_choice").is_none());
+                }
+                if choice.is_none() {
+                    for tools in [None, Some(json!([]))] {
+                        openai.as_object_mut().unwrap().remove("tools");
+                        if let Some(tools) = tools {
+                            openai["tools"] = tools;
+                        }
+                        let anthropic = engine
+                            .translate_request(
+                                format,
+                                WireFormat::AnthropicMessages,
+                                &openai,
+                                &policy,
+                            )?
+                            .body;
+                        assert!(anthropic.get("tools").is_none());
+                        assert!(anthropic.get("tool_choice").is_none());
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3066,6 +3507,150 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn openai_invalid_text_file_data_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    for (file_data, expected_message) in [
+        ("%%%", "invalid base64 text document"),
+        ("/w==", "text document must be UTF-8"),
+    ] {
+        let cases = [
+            (
+                WireFormat::OpenAiChat,
+                json!({
+                    "model": "route",
+                    "messages": [{
+                        "role": "user",
+                        "content": [{
+                            "type": "file",
+                            "file": {"file_data": file_data, "filename": "notes.txt"}
+                        }]
+                    }]
+                }),
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                json!({
+                    "model": "route",
+                    "input": [{
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_file",
+                            "file_data": file_data,
+                            "filename": "notes.txt"
+                        }]
+                    }]
+                }),
+            ),
+        ];
+
+        for (source, body) in cases {
+            let error = engine
+                .translate_request(
+                    source,
+                    WireFormat::AnthropicMessages,
+                    &body,
+                    &TranslationPolicy::default(),
+                )
+                .expect_err("invalid text file data must be rejected");
+            match error {
+                TranslationError::InvalidValue { path, message } => {
+                    assert_eq!(path, "file_data", "{source:?}");
+                    assert_eq!(message, expected_message, "{source:?}");
+                }
+                other => {
+                    panic!("expected InvalidValue for {source:?} {file_data:?}, got {other:?}")
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn openai_unsupported_file_media_type_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    let file_data = "data:image/png;base64,aGVsbG8=";
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "route",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "file",
+                        "file": {"file_data": file_data, "filename": "image.png"}
+                    }]
+                }]
+            }),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({
+                "model": "route",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_file",
+                        "file_data": file_data,
+                        "filename": "image.png"
+                    }]
+                }]
+            }),
+        ),
+    ];
+
+    for (source, body) in cases {
+        let error = engine
+            .translate_request(
+                source,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )
+            .expect_err("unsupported document media type must be rejected");
+        match error {
+            TranslationError::LossyConversion(message) => {
+                assert_eq!(
+                    message, "Anthropic requires PDF or plain-text documents",
+                    "{source:?}"
+                );
+            }
+            other => panic!("expected LossyConversion for {source:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn responses_file_without_source_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_file", "filename": "notes.txt"}]
+        }]
+    });
+
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("file without data, ID, or URL must be rejected");
+    match error {
+        TranslationError::LossyConversion(message) => {
+            assert_eq!(message, "unsupported Anthropic document source");
+        }
+        other => panic!("expected LossyConversion, got {other:?}"),
+    }
+}
+
 // Verifies parallel tool calls serialize as adjacent call/output pairs so
 // upstreams that resolve tool outputs by adjacency match the right call.
 #[test]
@@ -3478,9 +4063,9 @@ fn openai_chat_image_and_file_parts_translate_to_valid_responses_input() -> Test
     Ok(())
 }
 
-// Verifies Anthropic base64 media becomes valid Responses image and file parts.
+// Verifies Anthropic base64 media becomes valid OpenAI image and file parts.
 #[test]
-fn anthropic_base64_media_translates_to_responses() -> TestResult {
+fn anthropic_base64_media_translates_to_openai_formats() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "claude-sonnet-4-20250514",
@@ -3510,27 +4095,57 @@ fn anthropic_base64_media_translates_to_responses() -> TestResult {
         }]
     });
 
-    let output = engine
-        .translate_request(
-            WireFormat::AnthropicMessages,
-            WireFormat::OpenAiResponses,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-
-    assert_eq!(
-        output["input"][0]["content"],
-        json!([
-            {"type": "input_text", "text": "What is this?"},
-            {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
-            {
-                "type": "input_file",
-                "file_data": "ZG9jdW1lbnQ=",
-                "filename": "report.pdf"
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        let mut files = Vec::new();
+        for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+            let output = engine
+                .translate_request(WireFormat::AnthropicMessages, target, &body, &policy)?
+                .body;
+            let content = if target == WireFormat::OpenAiChat {
+                &output["messages"][0]["content"]
+            } else {
+                &output["input"][0]["content"]
+            };
+            if target == WireFormat::OpenAiChat {
+                assert_eq!(content[0], json!({"type": "text", "text": "What is this?"}));
+                assert_eq!(
+                    content[1]["image_url"]["url"],
+                    "data:image/png;base64,aW1hZ2U="
+                );
+                assert_eq!(content[2]["type"], "file");
+                files.push(content[2]["file"].clone());
+            } else {
+                assert_eq!(
+                    content[0],
+                    json!({"type": "input_text", "text": "What is this?"})
+                );
+                assert_eq!(content[1]["image_url"], "data:image/png;base64,aW1hZ2U=");
+                assert_eq!(content[2]["type"], "input_file");
+                let mut file = content[2].clone();
+                file.as_object_mut()
+                    .ok_or("file must be an object")?
+                    .remove("type");
+                files.push(file);
             }
-        ])
-    );
+            let restored = engine
+                .translate_request(
+                    target,
+                    WireFormat::AnthropicMessages,
+                    &output,
+                    &normalized_policy(),
+                )?
+                .body;
+            assert_eq!(
+                restored["messages"][0]["content"],
+                body["messages"][0]["content"]
+            );
+        }
+        let expected_file = json!({
+            "file_data": "data:application/pdf;base64,ZG9jdW1lbnQ=",
+            "filename": "report.pdf"
+        });
+        assert_eq!(files, vec![expected_file.clone(), expected_file]);
+    }
     Ok(())
 }
 
@@ -3584,7 +4199,7 @@ fn tool_result_media_survives_anthropic_and_responses_translation() -> TestResul
         json!([
             {"type": "input_text", "text": "media attached"},
             {"type": "input_image", "image_url": "data:image/png;base64,aW1hZ2U="},
-            {"type": "input_file", "file_data": "ZG9jdW1lbnQ=", "filename": "report.pdf"}
+            {"type": "input_file", "file_data": "data:application/pdf;base64,ZG9jdW1lbnQ=", "filename": "report.pdf"}
         ])
     );
     assert_eq!(

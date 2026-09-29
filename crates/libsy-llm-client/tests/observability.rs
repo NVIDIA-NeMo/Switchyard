@@ -764,6 +764,8 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
 async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
 -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    let before = flushed_metrics(exporter, provider);
     let client = Arc::new(AffinityFallbackClient {
         calls: Mutex::new(Vec::new()),
         efficient_available: AtomicBool::new(false),
@@ -794,6 +796,50 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
         first_response.served_model().map(ModelId::as_str),
         Some("affinity-fallback-strong")
     );
+
+    // One client request makes two routed calls: a weak failure and a strong success.
+    let after = flushed_metrics(exporter, provider);
+    for (metric, model, expected) in [
+        ("switchyard.errors", "affinity-fallback-weak", 1),
+        ("switchyard.requests", "affinity-fallback-weak", 0),
+        ("switchyard.requests", "affinity-fallback-strong", 1),
+    ] {
+        let attrs = [("model", model)];
+        assert_eq!(
+            u64_counter_value(&after, metric, &attrs).unwrap_or_default()
+                - u64_counter_value(&before, metric, &attrs).unwrap_or_default(),
+            expected,
+            "{metric} for {model}"
+        );
+    }
+    for (metric, expected) in [
+        ("switchyard.total_requests", 2),
+        ("switchyard.total_errors", 1),
+    ] {
+        assert_eq!(
+            u64_gauge_value(&after, metric).unwrap_or_default()
+                - u64_gauge_value(&before, metric).unwrap_or_default(),
+            expected,
+            "{metric}"
+        );
+    }
+    for (model, outcome) in [
+        ("affinity-fallback-weak", "error"),
+        ("affinity-fallback-strong", "ok"),
+    ] {
+        assert_eq!(
+            u64_counter_value(
+                &after,
+                "switchyard.llm_calls",
+                &[
+                    ("algorithm", "llm_task_classifier"),
+                    ("selected_model", model),
+                    ("outcome", outcome)
+                ]
+            ),
+            Some(1)
+        );
+    }
 
     client.efficient_available.store(true, Ordering::Relaxed);
     let (selected, second_response) = switchyard_llm_client::run(
@@ -1243,22 +1289,21 @@ struct StreamingUsageClient;
 #[async_trait]
 impl RoutedLlmClient for StreamingUsageClient {
     async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
-        let usage = Usage {
-            input_tokens: Some(13),
-            output_tokens: Some(5),
-            cache: Usage::cache_details(Some(8), None),
-            ..Usage::default()
-        };
-        let chunks = vec![Ok(LlmResponseStreamEvent::new(vec![
-            LlmResponseChunk::MessageStart {
-                id: Some("obs-stream-response".to_string()),
-                model: request.model_id().map(|s| s.to_string()),
-            },
-            LlmResponseChunk::Usage(usage),
-            LlmResponseChunk::MessageStop {
-                reason: Some("end_turn".to_string()),
-            },
-        ]))];
+        let engine = switchyard_translation::TranslationEngine::default();
+        let mut state = switchyard_translation::StreamTranslationState::new(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiChat,
+        );
+        let chunks = [
+            json!({"id": "", "model": request.model_id(), "choices": []}),
+            json!({"id": "", "choices": [{"index": 0, "delta": {"content": "hello"}}]}),
+            json!({"id": "obs-stream-response", "choices": []}),
+            json!({"id": "obs-stream-response", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 21, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 8}}}),
+        ].into_iter().map(|event| {
+            Ok(engine.decode_stream_event(&mut state, WireFormat::OpenAiChat, event)
+                .expect("valid Chat fixture"))
+        }).collect::<Vec<_>>();
         Ok(Response {
             llm_response: LlmResponse::Stream(Box::pin(futures::stream::iter(chunks))),
             metadata: None,
@@ -1291,11 +1336,41 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
     let LlmResponse::Stream(mut stream) = response.llm_response else {
         return Err(test_error("expected a streamed response"));
     };
+    let engine = switchyard_translation::TranslationEngine::default();
+    let mut translated = switchyard_translation::StreamTranslationState::new(
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+    );
+    let mut events = Vec::new();
     while let Some(item) = stream.next().await {
-        if let Err(error) = item {
-            panic!("unexpected stream error: {error}");
-        }
+        events.extend(
+            engine
+                .encode_stream_event(
+                    &mut translated,
+                    WireFormat::OpenAiResponses,
+                    item.expect("valid stream"),
+                )
+                .expect("valid translation"),
+        );
     }
+    events.extend(
+        engine
+            .finish_stream(&mut translated, WireFormat::OpenAiResponses)
+            .expect("valid finish"),
+    );
+    let created = events
+        .iter()
+        .find(|e| e["type"] == "response.created")
+        .expect("created");
+    let completed = events
+        .iter()
+        .find(|e| e["type"] == "response.completed")
+        .expect("completed");
+    assert_eq!(created["response"]["id"], completed["response"]["id"]);
+    assert_eq!(
+        completed["response"]["output"][0]["content"][0]["text"],
+        "hello"
+    );
 
     let spans = store.spans();
     let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
@@ -1318,7 +1393,7 @@ async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Resu
     assert!(matches!(
         otel_attribute(&otel_span, "gen_ai.response.finish_reasons"),
         Some(OtelValue::Array(OtelArray::String(reasons)))
-            if reasons.len() == 1 && reasons[0].as_str() == "end_turn"
+            if reasons.len() == 1 && reasons[0].as_str() == "stop"
     ));
     Ok(())
 }
@@ -1643,6 +1718,23 @@ async fn classifier_stops_on_client_errors_and_records_verdict_fallback()
         }
 
         let snapshots = flushed_metrics(exporter, provider);
+        let outcome = match client.outcome {
+            JudgeOutcome::CallFailure | JudgeOutcome::StreamDecodeFailure => "error",
+            JudgeOutcome::Reply(_) => "ok",
+        };
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.llm_calls",
+                &[
+                    ("algorithm", "llm_task_classifier"),
+                    ("selected_model", judge_model),
+                    ("outcome", outcome),
+                ],
+            ),
+            Some(1),
+            "logical call accounting for {judge_model}"
+        );
         match expected_reason {
             Some(reason) => assert_eq!(
                 u64_counter_value(

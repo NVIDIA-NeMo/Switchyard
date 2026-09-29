@@ -62,12 +62,15 @@ publish anything to PyPI.
 
 Create a root `vMAJOR.MINOR.PATCH` tag only when a real release has been approved. Tag pushes run:
 
-- Python release checks on Python 3.10 through 3.14;
+- Python release checks on Python 3.12 through 3.14;
 - Rust fmt, clippy, and workspace tests;
 - source distribution build;
 - full abi3 wheel matrix for Linux x86_64, Linux aarch64, macOS x86_64, macOS arm64,
   Windows x86_64, and Windows arm64;
 - native wheel smoke installs where the runner can execute the artifact.
+
+CI and distribution builds use Python 3.12 or newer. Package metadata and the wheel's stable ABI
+still target Python 3.10 or newer, but CI no longer tests Python 3.10 or 3.11.
 
 The workflow rejects release tags that do not exactly match `pyproject.toml`'s package version. For
 example, package version `0.2.0` must be released with the `v0.2.0` tag. The Rust workspace and

@@ -53,7 +53,14 @@ pub struct StreamTranslationState {
     pub(crate) emitted_content_block: bool,
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
     #[serde(default)]
+    pub(crate) pending_chat_tool_names: BTreeMap<usize, String>,
+    #[serde(default)]
+    pub(crate) active_anthropic_tool: Option<usize>,
+    #[serde(default)]
     pub(crate) deferred_anthropic_tools: Vec<usize>,
+    /// Empty initial inputs remain placeholders until their blocks close without arguments.
+    #[serde(default)]
+    pub(crate) empty_anthropic_tool_inputs: std::collections::BTreeSet<usize>,
     /// Reasoning text observed while DECODING, per output index, so a completed item
     /// that repeats already-streamed text is not decoded twice.
     pub(crate) decoded_reasoning: BTreeMap<usize, String>,
@@ -62,6 +69,9 @@ pub struct StreamTranslationState {
     /// Set once a tool call was observed while DECODING, so a terminal event that names no
     /// stop reason can still report tool use.
     pub(crate) decoded_tool_call: bool,
+    /// Text decoded from Responses, keyed by output index and then content index.
+    #[serde(default)]
+    pub(crate) decoded_response_text: BTreeMap<usize, BTreeMap<usize, String>>,
 
     pub(crate) response_created: bool,
     pub(crate) response_text_started: bool,
@@ -97,6 +107,8 @@ pub(crate) struct ResponseReasoningState {
     /// Opaque `encrypted_content` carried by a Responses reasoning item. Kept verbatim so
     /// the emitted item stays replayable by the client even when no plaintext streamed.
     pub(crate) encrypted: Option<String>,
+    #[serde(default)]
+    pub(crate) anthropic_signature: Option<String>,
 }
 
 // Tracks an in-progress streamed tool call across provider-specific deltas.
@@ -113,6 +125,8 @@ pub(crate) struct StreamToolState {
     /// own state and encodes later, the field is empty and the duplicate is
     /// emitted.
     pub(crate) decoded_arguments: String,
+    #[serde(default)]
+    pub(crate) has_decoded_identity: bool,
     pub(crate) pending_arguments: String,
     pub(crate) started: bool,
     pub(crate) content_index: Option<usize>,
@@ -302,6 +316,14 @@ pub(crate) fn encode_response_stream_event(
     let (preservation, normalized) = event.into_parts();
     if let Some(preservation) = preservation {
         let (source, raw) = preservation.into_parts();
+        if let Err(error) = super::responses::validate_stream_output(&source, target, &raw) {
+            return target_codec.encode_event(
+                state,
+                LlmResponseChunk::DecodeError {
+                    message: error.to_string(),
+                },
+            );
+        }
         // Invalid protocol data must become an error frame, not be replayed as ordinary data.
         let has_decode_error = normalized
             .iter()

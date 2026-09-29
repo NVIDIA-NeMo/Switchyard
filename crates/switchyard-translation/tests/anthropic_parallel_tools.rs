@@ -55,10 +55,8 @@ fn parallel_chat_tools_stream_as_ordered_nonoverlapping_anthropic_blocks() -> Te
             ]}),
         )?;
         assert!(
-            first_fragments
-                .iter()
-                .any(|event| { event["delta"]["partial_json"] == "{\"city\":\"Pa" }),
-            "the first tool should still stream its arguments before EOF"
+            first_fragments.is_empty(),
+            "tool names are not complete yet"
         );
         events.extend(first_fragments);
         events.extend(translate(
