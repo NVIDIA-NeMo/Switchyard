@@ -2260,7 +2260,7 @@ dependencies available in the active virtual environment.</p>
 <td><code>escalation.confirmations</code></td>
 <td style="text-align: center;">No</td>
 <td><code>2</code></td>
-<td>Consecutive escalate verdicts required to latch. Above <code>1</code> needs a session ID.</td>
+<td>Consecutive escalate verdicts required to latch. Above <code>1</code> needs a stable session ID.</td>
 </tr>
 <tr>
 <td><code>escalation.recent_turn_window</code></td>
@@ -2273,6 +2273,36 @@ dependencies available in the active virtual environment.</p>
 <td style="text-align: center;">No</td>
 <td><code>500</code></td>
 <td>Per-message cap inside that window.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Enables phase-aware de-escalation. Requires a stable session ID.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.strong_min_calls</code></td>
+<td style="text-align: center;">With de-escalation</td>
+<td>—</td>
+<td>Strong-tier turns before release is allowed. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.confirmations</code></td>
+<td style="text-align: center;">With de-escalation</td>
+<td>—</td>
+<td>Consecutive judge declines required to return to weak. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.strong_max_calls</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Hard limit on strong-tier turns before forced de-escalation. Must be at least <code>strong_min_calls</code>.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.weak_cooldown_calls</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0</code></td>
+<td>Weak calls served without judging after a hard-limit return.</td>
 </tr>
 </tbody>
 </table>

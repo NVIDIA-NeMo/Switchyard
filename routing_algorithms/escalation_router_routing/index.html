@@ -1530,7 +1530,8 @@
 <h1 id="escalation-router-routing">Escalation-Router Routing<a class="headerlink" href="#escalation-router-routing" title="Permanent link">&para;</a></h1>
 <p>Escalation routing starts each conversation on a cheaper weak model. An LLM judge
 reads how the work is going and latches the session to a strong model when it
-detects sustained trouble.</p>
+detects sustained trouble. An optional de-escalation policy can later return the
+session to the weak model.</p>
 <p>Use it for multi-turn agent workloads where a weak model handles routine work but
 may need rescue after repeated errors, loops, or drift. Unlike plain
 <a href="../llm_classifier_routing/">LLM Classifier Routing</a>, which predicts how difficult
@@ -1568,11 +1569,21 @@ going well.</p>
 </span></code></pre></div>
 <p><code>classifier_target</code> is the judge. The route's <code>id</code>, <code>agent</code>, is the model name
 clients send; the judge is not exposed as a client-selectable model.</p>
+<p>The route <code>id</code> also reaches the client's own model handling. Agent harnesses
+such as Codex pick their tool surface, base instructions, and context limits
+from the model name they are configured with before the request leaves the
+client, and Switchyard sees the request only afterwards. A route id that
+matches a client's known model slug runs that client on the model-specific
+surface; an id that matches none runs it on the client's generic surface.
+Choose the route id deliberately for the surface you want the efficient tier
+to work on, and keep it stable across runs you intend to compare, because
+Switchyard cannot change the client's choice from the server side.</p>
 <p>The route-level <code>prompt</code> key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
 Switchyard supplies that schema according to the route's <code>response_format_type</code>:
 through the structured-output request in the default <code>json_schema</code> mode, or in
-the prompt in <code>json_object</code> mode.</p>
+the prompt in <code>json_object</code> mode. When de-escalation is enabled, Switchyard
+appends the phase-specific verdict contract to packaged and custom prompts.</p>
 <h2 id="how-the-decision-works">How the decision works<a class="headerlink" href="#how-the-decision-works" title="Permanent link">&para;</a></h2>
 <p>For each turn on an unlatched session, Switchyard:</p>
 <ol>
@@ -1589,7 +1600,8 @@ the prompt in <code>json_object</code> mode.</p>
    streak reaches <code>confirmations</code>. That turn is billed for a weak call, a judge
    call, and a strong call.</li>
 </ol>
-<p>A latched session routes straight to the strong target with no judge call:</p>
+<p>By default, a latched session routes straight to the strong target with no
+judge call:</p>
 <pre class="mermaid"><code>%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
 flowchart LR
     t["turn"] --&gt; p{"streak &gt;= confirmations?"}
@@ -1613,7 +1625,7 @@ calling another target or selecting the strong tier for subsequent session turns
 compatibility guidance as the LLM classifier judge. See
 <a href="../llm_classifier_routing/#judge-model-compatibility">Judge model compatibility</a>.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
-<p>The judge exposes three settings. Their defaults are the benchmarked
+<p>The judge exposes three base settings. Their defaults are the benchmarked
 configuration, so a bare <code>escalation = {}</code> is a valid, tuned route:</p>
 <table>
 <thead>
@@ -1641,10 +1653,81 @@ configuration, so a bare <code>escalation = {}</code> is a valid, tuned route:</
 </tr>
 </tbody>
 </table>
+<p>Replace the inline <code>escalation</code> value in the example with nested tables to make
+escalation reversible:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[routes.agent.escalation]</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">confirmations</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">[routes.agent.escalation.deescalation]</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">strong_min_calls</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">confirmations</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">strong_max_calls</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">weak_cooldown_calls</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">8</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>De-escalation key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>strong_min_calls</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Strong-tier turns before release is allowed. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>confirmations</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Consecutive judge declines required to return to weak. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>strong_max_calls</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Hard limit on strong-tier turns before forced de-escalation. Must be at least <code>strong_min_calls</code>.</td>
+</tr>
+<tr>
+<td><code>weak_cooldown_calls</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0</code></td>
+<td>Weak calls served without judging after a hard-limit return.</td>
+</tr>
+</tbody>
+</table>
+<p>With this table present, Switchyard marks judge input as either
+<code>EFFICIENT_EVALUATION</code> or <code>STRONG_EVALUATION</code>. In the strong phase,
+<code>escalate: true</code> keeps the strong tier. An <code>escalate: false</code> verdict can release
+the next request only after <code>strong_min_calls</code> is reached and the configured
+confirmation streak is complete. A timeout, error, or unparseable verdict
+retains the strong tier. Omitting the table preserves the permanent latch and
+does not add phase markers to judge input.</p>
+<p>The strong-phase verdict is judged against the trouble that caused the
+escalation: the packaged rules release only once the failure that triggered the
+latch no longer shows in the recent results and the strong tier has verified its
+fix, and they retain while it is still diagnosing, editing, or has not yet run
+the confirming check.</p>
+<p>When <code>strong_max_calls</code> is set, the request after that many strong-tier turns returns
+to weak even if the judge has not released it. <code>weak_cooldown_calls</code> then
+prevents immediate re-escalation and avoids turn-by-turn bouncing.</p>
+<p>If the strong target is unavailable during a review, the normal candidate
+fallback may serve the weak target. Switchyard does not judge that fallback as a
+strong answer, clears any partial release streak, and retries the strong phase
+on the next turn.</p>
 <p><code>confirmations</code> is the main cost dial. <code>1</code> latches sooner and spends more on the
 strong tier. <code>2</code> or higher requires a session identity, because the streak is
 retained per session — without one, every turn starts from zero and the route
-never latches. Clients supply it with <code>x-switchyard-session-id</code>.</p>
+never latches. De-escalation also requires a session identity to retain its
+phase and confirmation counts. Clients supply it with
+<code>x-switchyard-session-id</code>.</p>
+<p>When stateful escalation receives no session ID, Switchyard logs one warning per
+route. The request still succeeds, but its temporary state cannot carry into the
+next request.</p>
 <p>Anchor and transcript caps remain fixed. Set the route-level
 <code>max_output_tokens</code> key to change the judge's reply budget. Any decline still
 resets the streak to zero.</p>
@@ -1652,23 +1735,23 @@ resets the streak to zero.</p>
 <p>After installing the Rust server, as described in
 <a href="../../getting_started/#install-the-server">Getting Started</a>, export the provider
 credential, validate the configuration, and start the binary:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
 <p>Send a request using the route ID, supplying a session identity so the streak
 persists across turns:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;x-switchyard-session-id: demo-session&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;agent&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;x-switchyard-session-id: demo-session&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;agent&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
 </span></code></pre></div>
 <p>Invalid settings are rejected when the configuration loads rather than on the
 first request, so <code>--dry-run</code> catches them.</p>
 <h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
 <p>Read the standard stats endpoint:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats
 </span></code></pre></div>
 <p>The snapshot reports per-model calls, token usage, and latency for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
