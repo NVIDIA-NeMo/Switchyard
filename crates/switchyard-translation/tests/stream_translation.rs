@@ -7,11 +7,14 @@ pub mod common;
 
 use std::collections::HashMap;
 
+use futures::{StreamExt, executor::block_on, stream};
+
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
 use switchyard_translation::{
-    LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
+    LlmResponseChunk, StreamTranslationState, TranslationEngine, TranslationPolicy, WireFormat,
+    decode_stream_event,
 };
 
 use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
@@ -3201,4 +3204,107 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
         );
     }
     Ok(())
+}
+
+// A single response can already repeat a tool-call ID (parallel calls from a
+// careless backend). The Anthropic stream encoder must give each emitted
+// tool_use block a distinct ID while leaving first-seen IDs untouched.
+#[test]
+fn anthropic_stream_rewrites_repeated_tool_call_ids() -> TestResult {
+    let call = |index: usize, id: &str| {
+        LlmResponseChunk::ToolCallDelta {
+            index,
+            id: Some(id.to_string()),
+            name: Some("read_file".to_string()),
+            arguments_delta: Some("{}".to_string()),
+        }
+        .into()
+    };
+    let chunks: switchyard_translation::LlmResponseStream = stream::iter(vec![
+        Ok(call(0, "call_0")),
+        Ok(call(1, "call_1")),
+        Ok(call(2, "call_0")),
+        Ok(LlmResponseChunk::MessageStop {
+            reason: Some("tool_calls".to_string()),
+        }
+        .into()),
+    ])
+    .boxed();
+
+    let events = block_on(
+        switchyard_translation::encode_stream(chunks, WireFormat::AnthropicMessages, None)?
+            .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .collect::<Result<Vec<Value>, switchyard_translation::LlmStreamError>>()?;
+
+    assert_eq!(
+        streamed_tool_use_ids(&events),
+        ["call_0", "call_1", "sydup2_call_0"]
+    );
+    Ok(())
+}
+
+// When the conversation history already used call_0, the request's seen IDs seed
+// the stream encoder so a backend repeating that ID gets a fresh one.
+#[test]
+fn anthropic_stream_rewrites_tool_ids_reused_from_request_history() -> TestResult {
+    let engine = TranslationEngine::default();
+    let request = json!({
+        "model": "route",
+        "max_tokens": 64,
+        "messages": [
+            {"role": "user", "content": "Read src/lib.rs"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_0", "name": "read_file", "input": {}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_0", "content": "fn main() {}"}
+            ]}
+        ]
+    });
+    let extensions = engine
+        .decode_request(
+            WireFormat::AnthropicMessages,
+            &request,
+            &TranslationPolicy::default(),
+        )?
+        .request
+        .extensions;
+
+    let chunks: switchyard_translation::LlmResponseStream =
+        stream::iter(vec![Ok(LlmResponseChunk::ToolCallDelta {
+            index: 0,
+            id: Some("call_0".to_string()),
+            name: Some("read_file".to_string()),
+            arguments_delta: Some("{}".to_string()),
+        }
+        .into())])
+        .boxed();
+
+    let events = block_on(
+        switchyard_translation::encode_stream_with_extensions(
+            chunks,
+            WireFormat::AnthropicMessages,
+            None,
+            &extensions,
+        )?
+        .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .collect::<Result<Vec<Value>, switchyard_translation::LlmStreamError>>()?;
+
+    assert_eq!(streamed_tool_use_ids(&events), ["sydup2_call_0"]);
+    Ok(())
+}
+
+// Collects the tool_use IDs from content_block_start events in order.
+fn streamed_tool_use_ids(events: &[Value]) -> Vec<&str> {
+    events
+        .iter()
+        .filter(|event| {
+            event["type"] == "content_block_start" && event["content_block"]["type"] == "tool_use"
+        })
+        .map(|event| event["content_block"]["id"].as_str().expect("tool_use id"))
+        .collect()
 }

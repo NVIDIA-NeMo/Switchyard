@@ -1261,3 +1261,84 @@ fn responses_custom_tool_call_output_round_trips_with_request_extensions() -> Te
     assert_eq!(call["function"]["arguments"], "{\"input\":\"ls -la\"}");
     Ok(())
 }
+
+// Anthropic rejects tool_use IDs that repeat across a conversation. When the
+// request history already used call_0 and the backend emits call_0 again, the
+// encoded tool_use blocks must get fresh IDs; IDs the conversation has never
+// seen pass through unchanged.
+#[test]
+fn anthropic_response_rewrites_tool_ids_reused_from_request_history() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    };
+    let request = json!({
+        "model": "route",
+        "max_tokens": 64,
+        "messages": [
+            {"role": "user", "content": "Read src/lib.rs"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "call_0", "name": "read_file", "input": {}}
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call_0", "content": "fn main() {}"}
+            ]}
+        ]
+    });
+    let response = json!({
+        "id": "chatcmpl-reuse",
+        "model": "grok",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_0", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "call_9", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "call_0", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}}
+            ]},
+            "finish_reason": "tool_calls"
+        }],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}
+    });
+
+    let extensions = engine
+        .decode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .request
+        .extensions;
+    let agg = engine
+        .decode_response(WireFormat::OpenAiChat, &response, &policy)?
+        .response;
+
+    let output = engine
+        .encode_response_with_extensions(WireFormat::AnthropicMessages, &agg, &extensions, &policy)?
+        .body;
+    let call_ids = tool_use_ids(&output);
+    assert_eq!(call_ids, ["sydup2_call_0", "call_9", "sydup3_call_0"]);
+
+    // An empty history leaves the first occurrence of every ID untouched; only
+    // the repeat inside the same response is rewritten.
+    let plain = engine
+        .encode_response_with_extensions(
+            WireFormat::AnthropicMessages,
+            &agg,
+            &switchyard_translation::ProviderExtensions::default(),
+            &policy,
+        )?
+        .body;
+    assert_eq!(tool_use_ids(&plain), ["call_0", "call_9", "sydup2_call_0"]);
+    Ok(())
+}
+
+// Collects the tool_use IDs of an encoded Anthropic message body in order.
+fn tool_use_ids(body: &serde_json::Value) -> Vec<&str> {
+    body["content"]
+        .as_array()
+        .expect("anthropic content array")
+        .iter()
+        .filter(|block| block["type"] == "tool_use")
+        .map(|block| block["id"].as_str().expect("tool_use id"))
+        .collect()
+}

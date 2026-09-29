@@ -4301,3 +4301,68 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
     assert_eq!(output["input"], outputs);
     Ok(())
 }
+
+// Anthropic rejects a conversation whose tool_use IDs are not unique, and clients
+// pair results to calls by ID alone. When a backend repeats a tool-call ID across
+// turns (call_0, call_1, call_0), encoding the conversation to Anthropic must mint
+// a distinct ID for the repeat while keeping each result paired with its own call.
+#[test]
+fn anthropic_request_rewrites_repeated_tool_call_ids() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "messages": [
+            {"role": "user", "content": "Read src/lib.rs"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_0", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\":\"src/lib.rs\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_0", "content": "fn main() {}"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\":\"src/main.rs\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "fn main() {}"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "call_0", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\":\"src/lib.rs\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_0", "content": "fn main() {}"}
+        ]
+    });
+
+    let request = engine
+        .decode_request(
+            WireFormat::OpenAiChat,
+            &body,
+            &switchyard_translation::TranslationPolicy::default(),
+        )?
+        .request;
+    let output = engine
+        .encode_request(
+            WireFormat::AnthropicMessages,
+            &request,
+            &switchyard_translation::TranslationPolicy::default(),
+        )?
+        .body;
+
+    let mut call_ids = Vec::new();
+    let mut result_ids = Vec::new();
+    for message in output["messages"].as_array().ok_or("messages")? {
+        let Some(blocks) = message["content"].as_array() else {
+            continue;
+        };
+        for block in blocks {
+            match block["type"].as_str() {
+                Some("tool_use") => call_ids.push(block["id"].as_str().ok_or("id")?),
+                Some("tool_result") => {
+                    result_ids.push(block["tool_use_id"].as_str().ok_or("tool_use_id")?)
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(call_ids, ["call_0", "call_1", "sydup2_call_0"]);
+    assert_eq!(result_ids, ["call_0", "call_1", "sydup2_call_0"]);
+    Ok(())
+}
