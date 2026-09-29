@@ -1,26 +1,25 @@
-# Coding agents with your existing login
+# Interactive coding agents with single-provider auth
 
-Run Codex or Claude Code through Switchyard using the login already saved by your
-CLI. Switchyard forwards that credential to the same provider, including classifier
-calls. You do not need to put a key in the server config.
+Route Codex or Claude Code between models from one provider using your saved CLI
+login. Every target, including the classifier, must use that provider.
 
-Both recipes use [composite routing](../routing_algorithms/composite_routing.md).
-A classifier chooses the default tier for each user turn. The stage router uses
-tool results to adjust that choice during the turn. Keep every target, including
-the classifier, with the same provider when using
-[`forward_auth`](../reference/toml_schema.md#llm_clientsname).
+These [composite routing](../routing_algorithms/composite_routing.md) recipes use a
+classifier to choose the starting tier for each user turn. Stage adjusts routing
+during tool calls. [`forward_auth`](../reference/toml_schema.md#llm_clientsname)
+passes your login through to the models.
 
-From a checkout of current `main`, install the server, then choose one recipe.
-Each uses local port `4123`.
+Choose one recipe. Each uses local port `4123`.
+
+## Codex with OpenAI
+
+Sign in with `codex login`. Terra classifies, and Stage routes between Sol and Luna.
+
+This recipe needs Codex classifier support added after v0.3.0. Install from a
+checkout of current `main`:
 
 ```bash
 cargo install --locked --path crates/switchyard-server
 ```
-
-## Codex with OpenAI
-
-Sign in with `codex login`. This example uses Terra to classify and routes between
-Sol and Luna. Use model IDs available to your ChatGPT account.
 
 Save as `codex-routing.toml`:
 
@@ -61,11 +60,6 @@ efficient_target = "efficient"
 confidence_threshold = 0.5
 ```
 
-The ChatGPT backend requires `store = false` and `stream = true`, and rejects
-`max_output_tokens`. The judge settings above adapt its generated request.
-`omit_body_fields` requires a build newer than v0.3.0. Codex already supplies the
-right fields for the answer requests.
-
 Start the server:
 
 ```bash
@@ -93,15 +87,16 @@ In another terminal, launch Codex:
 codex --profile switchyard
 ```
 
-`requires_openai_auth` makes Codex send its saved OpenAI login. Switchyard forwards
-it and the account headers to the ChatGPT backend. See the
-[Codex configuration reference](https://developers.openai.com/codex/config-reference/)
-for profile and provider settings.
-
 ## Claude Code with Anthropic
 
-Sign in to Claude Code with your Claude account first. This example uses Haiku to
-classify and routes between Opus and Sonnet. Use model IDs available to your account.
+Sign in to Claude Code with your Claude account. Haiku classifies, and Stage routes
+between Opus and Sonnet.
+
+Install the released server:
+
+```bash
+cargo install --locked --version 0.3.0 switchyard-server
+```
 
 Save as `claude-routing.toml`:
 
@@ -158,23 +153,13 @@ env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
   claude --model switchyard
 ```
 
-Do not append `/v1` to Claude Code's base URL. The CLI adds it. The model overrides
-keep its Opus, Sonnet, and Haiku aliases pointed at the configured route.
-
-Leave gateway credentials and `apiKeyHelper` unset when using your saved login.
-A placeholder `ANTHROPIC_AUTH_TOKEN` would replace the real credential. Switchyard
-forwards Anthropic's credential and the `oauth-*` beta marker required for OAuth.
-See [Anthropic's gateway authentication docs](https://code.claude.com/docs/en/llm-gateway#subscriptions-and-gateways).
+Use your saved Claude login, without an `apiKeyHelper` or gateway token.
 
 ## Check the routing
 
-Send a short prompt, then inspect the server's counters:
+Send a prompt, then check which models handled the answer and classification:
 
 ```bash
 curl -s http://127.0.0.1:4123/v1/stats \
   | jq '{answers: .models, classifier: .classifier.models}'
 ```
-
-The answer appears under the selected model. The classifier has separate counters.
-Both CLIs send session headers that Switchyard uses to retain the classifier's
-choice between user turns. Stop the local server with `Ctrl-C`.
