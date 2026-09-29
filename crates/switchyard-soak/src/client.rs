@@ -201,7 +201,7 @@ impl StreamValidator {
         let event_type = payload.get("type").and_then(Value::as_str);
         if self.event_name.as_deref() == Some("error")
             || event_type == Some("error")
-            || payload.get("error").is_some()
+            || payload.get("error").is_some_and(|error| !error.is_null())
         {
             let detail = payload
                 .pointer("/error/message")
@@ -346,7 +346,7 @@ pub async fn send_request(
         Ok(payload) => payload,
         Err(error) => return Err(RequestError::new("invalid_json", error.to_string())),
     };
-    if !payload.is_object() || payload.get("error").is_some() {
+    if !payload.is_object() || payload.get("error").is_some_and(|error| !error.is_null()) {
         return Err(RequestError::new("invalid_response", truncate(&text, 500)));
     }
     let field = endpoint.required_field();
@@ -456,6 +456,45 @@ pub async fn read_server_state(client: &Client, base_url: &str) -> ServerState {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn buffered_responses_accept_only_absent_or_null_errors() {
+        let client = Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        for (payload, should_pass) in [
+            (json!({"output": [], "status": "completed"}), true),
+            (
+                json!({"output": [], "status": "completed", "error": null}),
+                true,
+            ),
+            (json!({"output": [], "error": {"message": "boom"}}), false),
+        ] {
+            let app = axum::Router::new().route(
+                "/v1/responses",
+                axum::routing::post(async move || axum::Json(payload)),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await });
+            let result = send_request(
+                &client,
+                &base_url,
+                Endpoint::Responses,
+                "nullable-error",
+                &request_body(Endpoint::Responses, "route", "hello", 8, false),
+            )
+            .await;
+            server.abort();
+            if should_pass {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert_eq!(result.unwrap_err().kind, "invalid_response");
+            }
+        }
+    }
+
     #[test]
     fn request_bodies_match_public_endpoints() {
         let chat = request_body(Endpoint::Chat, "route", "hello", 8, true);
@@ -488,7 +527,10 @@ mod tests {
     #[test]
     fn stream_validator_accepts_each_public_terminal_event() -> Result<(), RequestError> {
         for (endpoint, stream) in [
-            (Endpoint::Chat, "data: {\"choices\":[]}\n\ndata: [DONE]\n\n"),
+            (
+                Endpoint::Chat,
+                "data: {\"choices\":[],\"error\":null}\n\ndata: [DONE]\n\n",
+            ),
             (
                 Endpoint::Messages,
                 "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
@@ -496,6 +538,10 @@ mod tests {
             (
                 Endpoint::Responses,
                 "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+            ),
+            (
+                Endpoint::Responses,
+                "event: response.incomplete\ndata: {\"type\":\"response.incomplete\"}\n\n",
             ),
         ] {
             let mut validator = StreamValidator::new(endpoint);
@@ -512,6 +558,24 @@ mod tests {
         let mut error = StreamValidator::new(Endpoint::Chat);
         let result = error.read_line(b"data: {\"error\":{\"message\":\"boom\"}}");
         assert_eq!(result.unwrap_err().kind, "stream_error");
+
+        let mut named_error = StreamValidator::new(Endpoint::Chat);
+        named_error.read_line(b"event: error").unwrap();
+        assert_eq!(
+            named_error
+                .read_line(b"data: {\"error\":null}")
+                .unwrap_err()
+                .kind,
+            "stream_error"
+        );
+        let mut typed_error = StreamValidator::new(Endpoint::Chat);
+        assert_eq!(
+            typed_error
+                .read_line(b"data: {\"type\":\"error\",\"error\":null}")
+                .unwrap_err()
+                .kind,
+            "stream_error"
+        );
 
         let mut incomplete = StreamValidator::new(Endpoint::Responses);
         incomplete

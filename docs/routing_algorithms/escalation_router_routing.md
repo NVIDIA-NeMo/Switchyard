@@ -2,7 +2,8 @@
 
 Escalation routing starts each conversation on a cheaper weak model. An LLM judge
 reads how the work is going and latches the session to a strong model when it
-detects sustained trouble.
+detects sustained trouble. An optional de-escalation policy can later return the
+session to the weak model.
 
 Use it for multi-turn agent workloads where a weak model handles routine work but
 may need rescue after repeated errors, loops, or drift. Unlike plain
@@ -46,13 +47,24 @@ escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars 
 `classifier_target` is the judge. The route's `id`, `agent`, is the model name
 clients send; the judge is not exposed as a client-selectable model.
 
+The route `id` also reaches the client's own model handling. Agent harnesses
+such as Codex pick their tool surface, base instructions, and context limits
+from the model name they are configured with before the request leaves the
+client, and Switchyard sees the request only afterwards. A route id that
+matches a client's known model slug runs that client on the model-specific
+surface; an id that matches none runs it on the client's generic surface.
+Choose the route id deliberately for the surface you want the efficient tier
+to work on, and keep it stable across runs you intend to compare, because
+Switchyard cannot change the client's choice from the server side.
+
 The route-level `prompt` key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
 Switchyard supplies that schema according to the route's `response_format_type`:
 through the structured-output request in the default `json_schema` mode, or in
 the prompt in `json_object` mode. The verdict includes an `escalate` decision, a
 bounded failure `category`, whether the newest turn adds `new_evidence`, and a
-short `reason`.
+short `reason`. When de-escalation is enabled, Switchyard appends the
+phase-specific verdict contract to packaged and custom prompts.
 
 ## How the decision works
 
@@ -73,7 +85,8 @@ For each turn on an unlatched session, Switchyard:
    streak reaches `confirmations`. That turn is billed for a weak call, a judge
    call, and a strong call.
 
-A latched session routes straight to the strong target with no judge call:
+By default, a latched session routes straight to the strong target with no
+judge call:
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 26}}}%%
@@ -105,7 +118,7 @@ compatibility guidance as the LLM classifier judge. See
 
 ## Tuning options
 
-The judge exposes three settings. Their defaults are the benchmarked
+The judge exposes three base settings. Their defaults are the benchmarked
 configuration, so a bare `escalation = {}` is a valid, tuned route:
 
 | Key | Default | Meaning |
@@ -114,10 +127,62 @@ configuration, so a bare `escalation = {}` is a valid, tuned route:
 | `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
 | `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
 
+Replace the inline `escalation` value in the example with nested tables to make
+escalation reversible:
+
+```toml
+[routes.agent.escalation]
+confirmations = 2
+
+[routes.agent.escalation.deescalation]
+strong_min_calls = 3
+confirmations = 2
+strong_max_calls = 6
+weak_cooldown_calls = 8
+```
+
+| De-escalation key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `strong_min_calls` | Yes | — | Strong-tier turns before release is allowed. Must be at least `1`. |
+| `confirmations` | Yes | — | Consecutive judge declines required to return to weak. Must be at least `1`. |
+| `strong_max_calls` | No | unset | Hard limit on strong-tier turns before forced de-escalation. Must be at least `strong_min_calls`. |
+| `weak_cooldown_calls` | No | `0` | Weak calls served without judging after a hard-limit return. |
+
+With this table present, Switchyard marks judge input as either
+`EFFICIENT_EVALUATION` or `STRONG_EVALUATION`. In the strong phase,
+`escalate: true` keeps the strong tier; the router reads only `escalate` there,
+so `category` and `new_evidence` are reported but do not affect release. An
+`escalate: false` verdict can release the next request only after
+`strong_min_calls` is reached and the configured confirmation streak is
+complete. A timeout, error, or unparseable verdict retains the strong tier.
+Omitting the table preserves the permanent latch and does not add phase markers
+to judge input.
+
+The strong-phase verdict is judged against the trouble that caused the
+escalation: the packaged rules release only once the failure that triggered the
+latch no longer shows in the recent results and the strong tier has verified its
+fix, and they retain while it is still diagnosing, editing, or has not yet run
+the confirming check.
+
+When `strong_max_calls` is set, the request after that many strong-tier turns returns
+to weak even if the judge has not released it. `weak_cooldown_calls` then
+prevents immediate re-escalation and avoids turn-by-turn bouncing.
+
+If the strong target is unavailable during a review, the normal candidate
+fallback may serve the weak target. Switchyard does not judge that fallback as a
+strong answer, clears any partial release streak, and retries the strong phase
+on the next turn.
+
 `confirmations` is the main cost dial. `1` latches sooner and spends more on the
 strong tier. `2` or higher requires a session identity, because the streak is
 retained per session — without one, every turn starts from zero and the route
-never latches. Clients supply it with `x-switchyard-session-id`.
+never latches. De-escalation also requires a session identity to retain its
+phase and confirmation counts. Clients supply it with
+`x-switchyard-session-id`.
+
+When stateful escalation receives no session ID, Switchyard logs one warning per
+route. The request still succeeds, but its temporary state cannot carry into the
+next request.
 
 Anchor and transcript caps remain fixed. Set the route-level
 `max_output_tokens` key to change the judge's reply budget. Any decline or
