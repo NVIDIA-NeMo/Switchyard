@@ -13,6 +13,7 @@ mod runner;
 pub use algorithm::{
     AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, CategoryModelConfig, ClassifierMode,
     ClassifierPolicyConfig, LlmClassifierRouteConfig, StageClassifierConfig, SubagentRouteConfig,
+    VgrModeConfig, VgrRouteConfig,
 };
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.

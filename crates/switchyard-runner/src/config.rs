@@ -19,6 +19,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
 
+use crate::runner::ModelPropertiesProbe;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
     Runner, RunnerError,
@@ -214,6 +215,7 @@ impl DeploymentConfig {
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
+        let mut model_properties_probes = BTreeMap::new();
         for (route_name, config) in &self.routes {
             for target_name in config.callable_target_names() {
                 self.targets.get(target_name).ok_or_else(|| {
@@ -232,6 +234,11 @@ impl DeploymentConfig {
                 .algorithm
                 .build(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if matches!(&config.algorithm, AlgorithmSpec::Vgr { .. })
+                && let Some(probe) = self.build_model_properties_probe(config, &clients)
+            {
+                model_properties_probes.insert(config.id.clone(), probe);
+            }
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients)?;
             let anthropic_auxiliary_target =
@@ -265,7 +272,8 @@ impl DeploymentConfig {
         }
         let runner = Runner::new(routes)
             .with_fallback_url(fallback_base_url)
-            .with_provider_api_keys(provider_api_keys);
+            .with_provider_api_keys(provider_api_keys)
+            .with_model_properties_probes(model_properties_probes);
         Ok(runner)
     }
 
@@ -474,6 +482,22 @@ impl DeploymentConfig {
             ))
         })?;
         Ok(Some(config.base_url.as_str().to_string()))
+    }
+
+    fn build_model_properties_probe(
+        &self,
+        route: &RouteConfig,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<ModelPropertiesProbe> {
+        let local_target_name = route.routing_target_names().into_iter().next()?;
+        let local_target = self.targets.get(local_target_name)?;
+        let client_config = self.llm_clients.get(&local_target.llm_client)?;
+        let client = clients.get(&local_target.llm_client)?;
+        Some(ModelPropertiesProbe::new(
+            local_target.id.clone(),
+            client_config.format.wire_format(),
+            Arc::clone(client),
+        ))
     }
 
     fn build_anthropic_auxiliary_target(
@@ -906,6 +930,38 @@ target = "strong"
             Ok(_) => "configuration unexpectedly succeeded".to_string(),
             Err(error) => error.to_string(),
         }
+    }
+
+    fn vgr_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "weak"
+cloud_target = "strong"
+judge_target = "classifier"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#
+        )
+    }
+
+    #[test]
+    fn vgr_route_builds_and_rejects_unsafe_configuration() -> RunnerResult<()> {
+        let runner = runner_from_toml(&vgr_config())?;
+        assert!(runner.route("switchyard/vgr").is_some());
+
+        let bad_approval =
+            vgr_config().replace("prospective-validation-and-canary-approved", "approved");
+        assert!(error_message(&bad_approval).contains("approval attestation"));
+
+        let missing_target =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
+        assert!(error_message(&missing_target).contains("unknown target missing"));
+        Ok(())
     }
 
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
