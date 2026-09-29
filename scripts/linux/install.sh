@@ -180,10 +180,9 @@ fi
 
 step "Adding the sy Codex profile"
 # `codex --profile sy` reads ~/.codex/sy.config.toml. A [profiles.sy] table in
-# config.toml is legacy config that Codex now refuses to start with, so an
-# earlier install of this script has to be cleaned up first.
-strip_block "$CODEX_CONFIG" "$PROFILE_START" "$PROFILE_END" "the legacy sy profile" || true
-
+# config.toml is legacy config that Codex refuses to start with, so the
+# profile lives in its own file instead.
+#
 # This profile only changes which router answers. Approval and sandbox
 # settings are deliberately left out, so the profile cannot loosen how Codex
 # asks before it acts. Set those yourself if you want them.

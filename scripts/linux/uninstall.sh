@@ -44,9 +44,6 @@ fi
 
 step "Removing the sy Codex profile"
 remove_file "$CODEX_PROFILE_CONFIG"
-# Older installs of this script put the profile in config.toml instead.
-strip_block "$CODEX_CONFIG" "$PROFILE_START" "$PROFILE_END" "the legacy sy profile" ||
-  say "  no legacy profile in $CODEX_CONFIG"
 
 step "Removing the codex alias"
 for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do

@@ -9,14 +9,11 @@ SY_PORT="${SY_PORT:-4123}"
 SERVICE_NAME="switchyard.service"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
-CODEX_CONFIG="$CODEX_DIR/config.toml"
 # Codex reads `--profile sy` from its own file next to config.toml. A
 # [profiles.sy] table in config.toml is rejected outright as legacy config.
 CODEX_PROFILE_CONFIG="$CODEX_DIR/sy.config.toml"
 ALIAS_START="# >>> switchyard codex alias >>>"
 ALIAS_END="# <<< switchyard codex alias <<<"
-PROFILE_START="# >>> switchyard sy profile >>>"
-PROFILE_END="# <<< switchyard sy profile <<<"
 
 say() { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
