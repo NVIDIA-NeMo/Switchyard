@@ -92,10 +92,10 @@ codex --profile switchyard
 Sign in to Claude Code with your Claude account. Haiku classifies, and Stage routes
 between Opus and Sonnet.
 
-Install the released server:
+Install the latest release:
 
 ```bash
-cargo install --locked --version 0.3.0 switchyard-server
+cargo install --locked switchyard-server
 ```
 
 Save as `claude-routing.toml`:
