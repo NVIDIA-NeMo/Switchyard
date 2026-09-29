@@ -1148,14 +1148,9 @@ fn fnv1a_64(text: &str) -> u64 {
     })
 }
 
-// Converts any upstream message ID into a Responses-looking response ID.
+// Keep the response ID aligned with buffered responses and stored conversation history.
 fn responses_id(state: &StreamTranslationState) -> String {
-    let Some(id) = target_message_id_or_source_message_id(state) else {
-        return "resp_switchyard".to_string();
-    };
-    if id.starts_with("resp_") {
-        id.to_string()
-    } else {
-        format!("resp_{id}")
-    }
+    target_message_id_or_source_message_id(state)
+        .unwrap_or("resp_switchyard")
+        .to_string()
 }

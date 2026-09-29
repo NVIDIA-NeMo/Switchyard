@@ -828,6 +828,22 @@ fn openai_chat_to_responses_uses_served_model_without_losing_source_model() -> T
     Ok(())
 }
 
+// Stored conversation history is keyed by the upstream ID, so clients must see it unchanged.
+#[test]
+fn openai_chat_to_responses_keeps_the_upstream_id() -> TestResult {
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let events = TranslationEngine::default().translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &json!({"id": "chatcmpl-test", "choices": [{"index": 0, "delta": {"content": "hi"}}]}),
+    )?;
+
+    assert_eq!(events[0]["response"]["id"], "chatcmpl-test");
+    Ok(())
+}
+
 // Verifies OpenAI Chat finish emits a terminal chunk when the source closes without one.
 #[test]
 fn openai_chat_finish_synthesizes_terminal_chunk_after_incomplete_source() -> TestResult {
