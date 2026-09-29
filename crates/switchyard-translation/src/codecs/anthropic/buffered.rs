@@ -23,9 +23,9 @@ use crate::llm::{
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, desanitize_anthropic_tool_use_id,
-    embed_preservation, exact_preserved_request, exact_preserved_response,
-    sanitize_anthropic_tool_use_id,
+    AnthropicToolIdRewriter, attach_seen_tool_ids, capture_request_preservation,
+    capture_response_preservation, desanitize_anthropic_tool_use_id, embed_preservation,
+    exact_preserved_request, exact_preserved_response, sanitize_anthropic_tool_use_id,
 };
 use crate::util::{
     json_string, push_lossy, reject_responses_builtin_tool_item, stable_id, string_value,
@@ -178,6 +178,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             .extensions
             .fields
             .insert(ANTHROPIC_REQUEST_KEY.to_string(), Value::Bool(true));
+        attach_seen_tool_ids(&mut request.extensions.fields, &request.messages);
 
         Ok(DecodedRequest {
             request,
@@ -311,7 +312,12 @@ impl FormatCodec for AnthropicMessagesCodec {
             output_config.insert("format".to_string(), format);
         }
 
-        let body = embed_preservation(Value::Object(body), &request.preservation, policy);
+        // Anthropic rejects repeated tool IDs, so a conversation that already
+        // carries a repeat (for example from a backend that reuses IDs) must
+        // reach the provider with one distinct ID per call and its result.
+        let mut body = Value::Object(body);
+        AnthropicToolIdRewriter::default().rewrite_body(&mut body);
+        let body = embed_preservation(body, &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })
     }
 

@@ -127,6 +127,10 @@ pub fn encode_stream_with_extensions(
     let origins = crate::codex_namespaces::qualified_tool_origins(request_extensions);
     let custom_tools = crate::codex_custom_tools::custom_tool_names(request_extensions);
     let mut custom_state = crate::codex_custom_tools::CustomToolCallStreamState::default();
+    // One response knows nothing about earlier turns, so the IDs the conversation
+    // already used seed the rewrite of tool IDs across all of this stream's events.
+    let mut tool_ids =
+        crate::util::AnthropicToolIdRewriter::new(crate::util::seen_tool_ids(request_extensions));
     let target_format: FormatId = target.into();
     // The target is always a built-in wire format, so this lookup cannot fail; a
     // failure returns as an `Err` rather than a panic.
@@ -153,6 +157,7 @@ pub fn encode_stream_with_extensions(
             for value in &mut encoded {
                 stamp_streamed_response_model(value, target, served_model_for_events.as_deref());
                 crate::codex_namespaces::restore_qualified_tool_names(value, &origins);
+                tool_ids.rewrite_body(value);
             }
             // Argument deltas for a freeform tool cannot be expressed on the wire; the
             // rewritten completed item carries the input instead.
@@ -187,6 +192,7 @@ pub fn encode_stream_with_extensions(
                 served_model_for_events.as_deref(),
             );
             crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
+            tool_ids.rewrite_body(&mut value);
             if crate::codex_custom_tools::restore_custom_tool_calls_in_event(
                 &mut value,
                 &custom_tools,

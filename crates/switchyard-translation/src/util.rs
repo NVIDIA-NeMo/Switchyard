@@ -3,7 +3,7 @@
 
 //! Shared helpers for codec validation, diagnostics, and preservation metadata.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Map, Value, json};
@@ -12,7 +12,10 @@ use switchyard_protocol::ModelId;
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
-use crate::llm::{ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, Role};
+use crate::llm::{
+    ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, ProviderExtensions,
+    Role,
+};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -476,20 +479,156 @@ pub fn extract_preservation(body: &Value) -> PreservationMetadata {
         .unwrap_or_default()
 }
 
-/// Normalizes Anthropic tool-use IDs while keeping tool_use/tool_result pairs aligned.
-pub fn normalize_anthropic_tool_use_ids(value: Value) -> Value {
-    match value {
-        Value::Array(messages) => {
-            let mut id_map = BTreeMap::new();
-            let mut used_ids = BTreeMap::new();
-            Value::Array(
-                messages
-                    .into_iter()
-                    .map(|message| normalize_message_tool_ids(message, &mut id_map, &mut used_ids))
-                    .collect(),
-            )
+/// Metadata key holding the tool IDs an inbound conversation already uses.
+pub const SEEN_TOOL_IDS_KEY: &str = "switchyard_seen_tool_ids";
+
+/// Prefix for rewritten repeats of an already-used Anthropic tool ID.
+const ANTHROPIC_TOOL_ID_COLLISION_PREFIX: &str = "sydup";
+
+/// Rewrites tool IDs that repeat within one Anthropic-facing conversation.
+///
+/// Anthropic rejects a conversation whose `tool_use` IDs are not unique, and
+/// clients pair `tool_result` blocks to calls by ID alone, so a backend that
+/// repeats an ID (`call_0`, `call_1`, `call_0`) would leave the conversation
+/// unusable. An ID seen for the first time passes through unchanged; a repeat
+/// mints `sydup{N}_{raw}` (N counts the occurrences, starting at 2), which
+/// stays within Anthropic's allowed characters and keeps the original ID
+/// readable after stripping `sydup{N}_`. The prefix is distinct from the
+/// `sy64_` encoding scheme so the two never alias.
+///
+/// The rewriter walks encoded Anthropic JSON, so the same pass serves request
+/// bodies (`messages[].content[]`), response bodies (`content[]`), and stream
+/// events (`content_block_start`).
+#[derive(Default)]
+pub struct AnthropicToolIdRewriter {
+    /// Maps a raw ID to the ID its most recent occurrence was given, so a
+    /// tool result resolves to the call it answers.
+    assigned: BTreeMap<String, String>,
+    /// Every ID reserved so far: seeds, first occurrences, and minted IDs.
+    used: HashSet<String>,
+}
+
+impl AnthropicToolIdRewriter {
+    /// Creates a rewriter that treats `seen` as already-used conversation IDs.
+    pub fn new<I>(seen: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<String>,
+    {
+        let mut rewriter = Self::default();
+        for id in seen {
+            let id = id.into();
+            rewriter.used.insert(id.clone());
+            rewriter.assigned.insert(id.clone(), id);
         }
-        other => other,
+        rewriter
+    }
+
+    /// Rewrites every `tool_use` and `tool_result` ID in `body` in place.
+    pub fn rewrite_body(&mut self, body: &mut Value) {
+        match body {
+            Value::Array(items) => {
+                for item in items {
+                    self.rewrite_body(item);
+                }
+            }
+            Value::Object(object) => {
+                // Only a block's own ID field is rewritten; everything else is
+                // walked so nested blocks are still found.
+                let id_field = match object.get("type").and_then(Value::as_str) {
+                    Some("tool_use") => Some("id"),
+                    Some("tool_result") => Some("tool_use_id"),
+                    _ => None,
+                };
+                match id_field {
+                    Some(field) => {
+                        if let Some(raw) = object.get(field).and_then(Value::as_str) {
+                            let raw = raw.to_owned();
+                            let rewritten = if field == "id" {
+                                self.rewrite_call(&raw)
+                            } else {
+                                self.resolve_result(&raw)
+                            };
+                            object.insert(field.to_string(), Value::String(rewritten));
+                        }
+                    }
+                    None => {
+                        for value in object.values_mut() {
+                            self.rewrite_body(value);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Gives the next occurrence of a call ID an unused Anthropic-facing ID.
+    fn rewrite_call(&mut self, raw: &str) -> String {
+        if self.used.insert(raw.to_string()) {
+            self.assigned.insert(raw.to_string(), raw.to_string());
+            return raw.to_string();
+        }
+        // Occurrence 2 and later: mint sydup{N}_{raw} until it is unused. A
+        // backend id that literally spells a minted candidate bumps N instead.
+        let mut occurrence = 2;
+        let mut candidate = self.mint(raw, occurrence);
+        while self.used.contains(&candidate) {
+            occurrence += 1;
+            candidate = self.mint(raw, occurrence);
+        }
+        self.used.insert(candidate.clone());
+        self.assigned.insert(raw.to_string(), candidate.clone());
+        candidate
+    }
+
+    // Pairs a result with the ID its call was given; an unseen result ID is
+    // dangling history and passes through unchanged.
+    fn resolve_result(&mut self, raw: &str) -> String {
+        match self.assigned.get(raw) {
+            Some(assigned) => assigned.clone(),
+            None => self.rewrite_call(raw),
+        }
+    }
+
+    fn mint(&self, raw: &str, occurrence: u32) -> String {
+        format!("{ANTHROPIC_TOOL_ID_COLLISION_PREFIX}{occurrence}_{raw}")
+    }
+}
+
+/// Reads the tool IDs a request's extensions recorded for this conversation.
+pub(crate) fn seen_tool_ids(extensions: &ProviderExtensions) -> Vec<String> {
+    extensions
+        .fields
+        .get(SEEN_TOOL_IDS_KEY)
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Records the tool IDs an inbound conversation already uses, so response
+/// encoders can give backend repeats of those IDs distinct replacements.
+pub(crate) fn attach_seen_tool_ids(fields: &mut Map<String, Value>, messages: &[Message]) {
+    let mut ids = Vec::new();
+    for message in messages {
+        for block in &message.content {
+            match block {
+                ContentBlock::ToolCall(call) => ids.push(call.id.clone()),
+                ContentBlock::ToolResult(result) => ids.push(result.tool_call_id.clone()),
+                _ => {}
+            }
+        }
+    }
+    if !ids.is_empty() {
+        fields.insert(
+            SEEN_TOOL_IDS_KEY.to_string(),
+            Value::Array(ids.into_iter().map(Value::String).collect()),
+        );
     }
 }
 
@@ -522,105 +661,12 @@ pub(crate) fn desanitize_anthropic_tool_use_id(encoded: &str) -> String {
         .unwrap_or_else(|| encoded.to_string())
 }
 
-// Normalizes every content block in one Anthropic message.
-fn normalize_message_tool_ids(
-    message: Value,
-    id_map: &mut BTreeMap<String, String>,
-    used_ids: &mut BTreeMap<String, String>,
-) -> Value {
-    let Value::Object(mut message) = message else {
-        return message;
-    };
-    let Some(content_value) = message.remove("content") else {
-        return Value::Object(message);
-    };
-    let Value::Array(content) = content_value else {
-        message.insert("content".to_string(), content_value);
-        return Value::Object(message);
-    };
-    let normalized = content
-        .into_iter()
-        .map(|block| normalize_tool_block(block, id_map, used_ids).unwrap_or_else(|block| block))
-        .collect::<Vec<_>>();
-    message.insert("content".to_string(), Value::Array(normalized));
-    Value::Object(message)
-}
-
-// Rewrites tool_use/tool_result IDs and leaves unrelated blocks untouched.
-fn normalize_tool_block(
-    block: Value,
-    id_map: &mut BTreeMap<String, String>,
-    used_ids: &mut BTreeMap<String, String>,
-) -> std::result::Result<Value, Value> {
-    let Value::Object(mut block_map) = block else {
-        return Err(block);
-    };
-    match block_map.get("type").and_then(Value::as_str) {
-        Some("tool_use") => {
-            let raw = block_map
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let normalized = mapped_tool_id(&raw, id_map, used_ids);
-            if normalized != raw {
-                block_map.insert("id".to_string(), Value::String(normalized));
-                Ok(Value::Object(block_map))
-            } else {
-                Err(Value::Object(block_map))
-            }
-        }
-        Some("tool_result") => {
-            let raw = block_map
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let normalized = mapped_tool_id(&raw, id_map, used_ids);
-            if normalized != raw {
-                block_map.insert("tool_use_id".to_string(), Value::String(normalized));
-                Ok(Value::Object(block_map))
-            } else {
-                Err(Value::Object(block_map))
-            }
-        }
-        _ => Err(Value::Object(block_map)),
-    }
-}
-
-// Gives colliding raw IDs stable, deterministic suffixes.
-fn mapped_tool_id(
-    raw: &str,
-    id_map: &mut BTreeMap<String, String>,
-    used_ids: &mut BTreeMap<String, String>,
-) -> String {
-    if let Some(existing) = id_map.get(raw) {
-        return existing.clone();
-    }
-    let mut candidate = sanitize_anthropic_tool_use_id(raw);
-    if let Some(owner) = used_ids.get(&candidate)
-        && owner != raw
-    {
-        candidate = format!("{}_{}", candidate, stable_suffix(raw));
-    }
-    id_map.insert(raw.to_string(), candidate.clone());
-    used_ids.insert(candidate.clone(), raw.to_string());
-    candidate
-}
-
-// Stable FNV-1a suffix for collision disambiguation.
-fn stable_suffix(raw: &str) -> String {
-    let mut hash: u64 = 1469598103934665603;
-    for byte in raw.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(1099511628211);
-    }
-    format!("{hash:08x}")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{desanitize_anthropic_tool_use_id, sanitize_anthropic_tool_use_id};
+    use super::{
+        AnthropicToolIdRewriter, desanitize_anthropic_tool_use_id, sanitize_anthropic_tool_use_id,
+    };
+    use serde_json::json;
 
     // Keeps ordinary provider IDs unchanged while making unsafe IDs reversible.
     #[test]
@@ -649,5 +695,47 @@ mod tests {
         assert_ne!(encoded, raw);
         assert_eq!(desanitize_anthropic_tool_use_id(&encoded), raw);
         assert_eq!(desanitize_anthropic_tool_use_id("sy64_%%%"), "sy64_%%%");
+    }
+
+    // First occurrences and their results pass through; repeats get occurrence
+    // numbered IDs and each result still pairs with its own call.
+    #[test]
+    fn tool_id_rewriter_passes_unique_ids_and_mints_repeats() {
+        let mut body = json!([
+            {"type": "tool_use", "id": "call_0"},
+            {"type": "tool_result", "tool_use_id": "call_0"},
+            {"type": "tool_use", "id": "call_9"},
+            {"type": "tool_use", "id": "call_0"},
+            {"type": "tool_result", "tool_use_id": "call_0"},
+            {"type": "text", "text": "untouched"}
+        ]);
+        AnthropicToolIdRewriter::default().rewrite_body(&mut body);
+
+        let string_field = |index: usize, field: &str| body[index][field].as_str().unwrap();
+        assert_eq!(string_field(0, "id"), "call_0");
+        assert_eq!(string_field(1, "tool_use_id"), "call_0");
+        assert_eq!(string_field(2, "id"), "call_9");
+        assert_eq!(string_field(3, "id"), "sydup2_call_0");
+        assert_eq!(string_field(4, "tool_use_id"), "sydup2_call_0");
+        assert_eq!(body[5]["text"], "untouched");
+    }
+
+    // IDs recorded from earlier turns collide on the first occurrence here, and
+    // a minted ID never aliases an ID the backend spelled literally.
+    #[test]
+    fn tool_id_rewriter_treats_seen_ids_as_used() {
+        let mut body = json!([
+            {"type": "tool_use", "id": "call_0"},
+            {"type": "tool_use", "id": "call_0"}
+        ]);
+        AnthropicToolIdRewriter::new(["call_0", "sydup2_call_0"]).rewrite_body(&mut body);
+
+        assert_eq!(body[0]["id"], "sydup3_call_0");
+        assert_eq!(body[1]["id"], "sydup4_call_0");
+        // The original ID stays readable in the minted one.
+        assert_eq!(
+            body[1]["id"].as_str().unwrap().strip_prefix("sydup4_"),
+            Some("call_0")
+        );
     }
 }

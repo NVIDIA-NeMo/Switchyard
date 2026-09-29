@@ -21,6 +21,7 @@ use crate::error::{Result, TranslationError};
 use crate::format::FormatId;
 use crate::llm::{AggLlmResponse, LlmRequest, ProviderExtensions};
 use crate::policy::TranslationPolicy;
+use crate::util::{AnthropicToolIdRewriter, seen_tool_ids};
 
 /// Encoded translation result with any diagnostics emitted along the way.
 #[derive(Debug)]
@@ -221,6 +222,10 @@ impl TranslationEngine {
             &mut output.body,
             &crate::codex_custom_tools::custom_tool_names(request_extensions),
         );
+        // A single response knows nothing about earlier turns, so the IDs the
+        // conversation already used seed the rewrite of this turn's calls.
+        let mut tool_ids = AnthropicToolIdRewriter::new(seen_tool_ids(request_extensions));
+        tool_ids.rewrite_body(&mut output.body);
         Ok(output)
     }
 
