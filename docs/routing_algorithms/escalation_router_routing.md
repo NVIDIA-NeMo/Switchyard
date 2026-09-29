@@ -142,6 +142,12 @@ confirmation streak is complete. A timeout, error, or unparseable verdict
 retains the strong tier. Omitting the table preserves the permanent latch and
 does not add phase markers to judge input.
 
+The strong-phase verdict is judged against the trouble that caused the
+escalation: the packaged rules release only once the failure that triggered the
+latch no longer shows in the recent results and the strong tier has verified its
+fix, and they retain while it is still diagnosing, editing, or has not yet run
+the confirming check.
+
 When `strong_max_calls` is set, the request after that many strong-tier turns returns
 to weak even if the judge has not released it. `weak_cooldown_calls` then
 prevents immediate re-escalation and avoids turn-by-turn bouncing.
