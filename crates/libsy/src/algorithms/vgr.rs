@@ -15,7 +15,10 @@ use switchyard_protocol::Request;
 
 use self::text::ToolRecord;
 
+mod decide;
+mod readout;
 mod render;
+mod rungs;
 mod text;
 
 #[cfg(test)]
