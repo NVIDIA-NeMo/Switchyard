@@ -213,3 +213,74 @@ fn agentic_rendering_preserves_long_user_updates_and_clips_redacted_attempts() {
     assert!(view.ends_with("CURRENT ATTEMPT:\n[REDACTED]"));
     assert!(!view.contains("chars omitted"));
 }
+
+mod decide {
+    use super::super::decide::{AgenticRun, Route, Signals, Tri, agentic_run, decide};
+    use super::super::text::ToolRecord;
+    use super::super::{Branch, Capabilities};
+
+    fn agentic(errors: i32, results: i32, clean_tail: i32) -> Capabilities {
+        Capabilities {
+            branch: Branch::Agentic,
+            transcript: Some("view".into()),
+            tools: Some(ToolRecord {
+                errors,
+                results,
+                clean_tail,
+            }),
+        }
+    }
+
+    fn readout(score: f64) -> Signals {
+        Signals {
+            readout: Some(score),
+            ..Signals::default()
+        }
+    }
+
+    #[test]
+    fn agentic_runs_commit_only_on_a_clean_or_recovered_record() {
+        assert_eq!(decide(&agentic(0, 3, 3), &readout(0.2), None), Route::Local);
+        assert_eq!(
+            decide(&agentic(0, 3, 3), &readout(0.19), None),
+            Route::Cloud
+        );
+
+        let short = agentic(2, 100, 1);
+        assert_eq!(agentic_run(&short, None), AgenticRun::ShortRecovered);
+        assert_eq!(decide(&short, &readout(0.9), None), Route::Local);
+        let unrecovered = agentic(2, 100, 0);
+        assert_eq!(decide(&unrecovered, &readout(1.0), Some(1)), Route::Cloud);
+
+        let long = agentic(2, 101, 1);
+        assert_eq!(agentic_run(&long, None), AgenticRun::Vetoed);
+        assert_eq!(agentic_run(&long, Some(1)), AgenticRun::ConfirmedRecovery);
+        let mut confirmed = readout(0.9);
+        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Cloud);
+        confirmed.cloud_judge = Some(Tri::Yes);
+        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Local);
+    }
+
+    #[test]
+    fn indeterminate_or_unconsulted_evidence_never_commits() {
+        let mut chat = agentic(0, 0, 0);
+        chat.branch = Branch::Chat;
+        let mut signals = Signals {
+            cloud_judge: Some(Tri::Yes),
+            ..Signals::default()
+        };
+        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        signals.evidence_confirm = Some(Tri::Unknown);
+        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        signals.evidence_confirm = Some(Tri::Yes);
+        assert_eq!(decide(&chat, &signals, None), Route::Local);
+
+        chat.tools = Some(ToolRecord {
+            errors: 1,
+            ..ToolRecord::default()
+        });
+        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        chat.branch = Branch::Coding;
+        assert_eq!(decide(&chat, &readout(1.0), None), Route::Cloud);
+    }
+}
