@@ -37,6 +37,9 @@ pub use algorithms::util::escalation::EscalationJudgeConfig;
 pub use algorithms::util::prompts::append_note;
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
+pub use algorithms::vgr::{
+    ACTIVE_APPROVAL, BreakerConfig, KillSwitch, ServingMode, Targets as VgrTargets, Vgr, VgrConfig,
+};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).

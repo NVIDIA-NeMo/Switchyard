@@ -11,18 +11,87 @@
 
 #![allow(dead_code)]
 
-use switchyard_protocol::Request;
+use std::sync::Arc;
+
+use switchyard_protocol::{ModelId, Request};
 
 use self::text::ToolRecord;
+use crate::Result;
+use crate::algorithms::fall_through::FallThrough;
+use crate::algorithms::util::affinity::AffinityRouter;
+use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
+use crate::core::state::State;
 
+mod config;
 mod decide;
 mod readout;
 mod render;
 mod rungs;
+mod runtime;
+mod safety;
 mod text;
+
+pub use config::{ACTIVE_APPROVAL, ServingMode, Targets, VgrConfig};
+pub use safety::{BreakerConfig, KillSwitch};
 
 #[cfg(test)]
 mod tests;
+
+/// A verification-gated route between a local and a capable tier.
+pub struct Vgr {
+    route: FallThrough<State>,
+    local: ModelId,
+    cloud: ModelId,
+}
+
+impl Vgr {
+    /// Validates and constructs a verification-gated route.
+    pub fn new(config: VgrConfig) -> Result<Self> {
+        config.validate()?;
+        let local = config.targets.local.clone();
+        let cloud = config.targets.cloud.clone();
+        // Every local turn re-enters verification; an escalation holds until the
+        // next user turn.
+        let turn_affinity = Arc::new(
+            AffinityRouter::new()
+                .with_release_on_user_turn()
+                .with_latch_only([cloud.clone()]),
+        );
+        let classifier = Arc::new(runtime::VgrClassifier {
+            breaker: safety::CircuitBreaker::new(config.breaker),
+            config,
+        });
+        let route = FallThrough::new_with_state()
+            .with_name("vgr")
+            .with_processor(turn_affinity.clone())
+            .with_classifier(turn_affinity)
+            .with_classifier(classifier);
+        Ok(Self {
+            route,
+            local,
+            cloud,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl Algorithm for Vgr {
+    fn name(&self) -> &str {
+        "vgr"
+    }
+
+    async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
+        let mut outcome = self.route.execute(driver, request).await?;
+        let selected = outcome.selected_model_id()?.clone();
+        if selected == self.cloud {
+            // Falling back to local would bypass the decision that selected cloud.
+            outcome.selected_model_ids.truncate(1);
+        } else if selected == self.local && outcome.response.is_none() {
+            outcome.selected_model_ids = vec![self.local.clone(), self.cloud.clone()];
+        }
+        Ok(outcome)
+    }
+}
 
 /// The verification regime a request's capabilities license.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
