@@ -24,6 +24,7 @@ nav:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md
   - Integrations:
+      - Coding Agents: integrations/coding_agents.md
       - NeMo Relay: integrations/nemo_relay.md
       - pi: integrations/pi.md
       - Oh My Pi: integrations/oh_my_pi.md
