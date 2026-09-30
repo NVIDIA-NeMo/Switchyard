@@ -4,10 +4,14 @@
 """Shared ATIF conversion preserves evidence while isolating task-routing input."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
+import switchyard
 from switchyard.sim import Dataset, HarborRun, Run, Trajectory, load_harbor
 from tests.sim.test_harbor import update, write_trial
 
@@ -131,6 +135,51 @@ def test_custom_converter_feeds_the_same_dataset_and_repeat_accounting() -> None
     assert dataset.tasks[0].outcomes["custom"].trials == 2
     assert isinstance(custom, HarborRun)
     assert HarborRun is Run
+
+
+def test_data_preparation_does_not_require_native_or_harbor_packages(tmp_path: Path) -> None:
+    write_trial(tmp_path)
+    script = dedent("""
+        import json
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, sys.argv[1])
+        sys.modules.update(dict.fromkeys(("switchyard_rust", "switchyard.runner", "harbor")))
+        from switchyard.sim import Dataset, Report, Result, Run, Trajectory, load_harbor
+
+        run = load_harbor(sys.argv[2], target="recorded")
+        source = Path(sys.argv[2]) / "trial-a" / "agent" / "trajectory.json"
+        custom = Trajectory.from_dict(json.loads(source.read_text())).to_trial(
+            task_id=run.trials[0].task_id, trial_id="custom", target="custom", reward=1,
+        )
+        dataset = Dataset.from_runs(
+            {"recorded": run, "custom": Run((custom,))}, input_target="custom",
+        )
+        task = dataset.tasks[0]
+        report = Report(1, dataset.targets, run_id="offline", concurrency=1)
+        report.add(Result(
+            task.task_id, task.outcomes, target="custom", outcome=task.outcomes["custom"],
+        ))
+        assert report.complete
+        assert report.to_dict()["comparison"]["targets"] == {"recorded": 0.75, "custom": 1}
+        """)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(Path(switchyard.__file__).resolve().parent.parent),
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.parametrize("checksum", [" \t\n", 1])
