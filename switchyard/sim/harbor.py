@@ -11,7 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from .models import HarborRun, LoadIssue, Trial
+from .models import LoadIssue, Run, Trial
+from .trajectory import _initial_messages, _task_messages
 
 
 def load_harbor(
@@ -23,7 +24,7 @@ def load_harbor(
     on_error: Literal["raise", "record"] = "raise",
     task_inputs: Mapping[str, str] | None = None,
     cost_source: Literal["result", "trajectory"] = "result",
-) -> HarborRun:
+) -> Run:
     """Load a trial, a Harbor job, or a downloaded run containing ``jobs/``.
 
     ``target`` names the recorded model/agent configuration. An explicit dataset
@@ -41,7 +42,7 @@ def load_harbor(
 
     By default any invalid trial raises. ``on_error='record'`` keeps rejected
     trial paths and reasons in ``issues`` so callers can account for exclusions.
-    Only one full trajectory is held in memory at a time.
+    Processes one trajectory file at a time.
     """
     if not isinstance(target, str) or not target.strip():
         raise ValueError("target must be a non-empty string")
@@ -82,7 +83,7 @@ def load_harbor(
             if on_error == "raise":
                 raise ValueError(f"{result_path}: {message}") from None
             issues.append(LoadIssue(source=str(result_path), message=message, task_id=task_id))
-    return HarborRun(tuple(trials), tuple(issues))
+    return Run(tuple(trials), tuple(issues))
 
 
 def _trial_paths(root: Path) -> list[Path]:
@@ -150,13 +151,19 @@ def _trial(
     cost_source: str,
 ) -> Trial:
     trajectory_path = path.parent / "agent" / "trajectory.json"
-    trajectory = _read_object(trajectory_path) if trajectory_path.is_file() else {}
+    trajectory = _read_object(trajectory_path) if trajectory_path.is_file() else None
     fallback = None
     if task_inputs is not None:
         fallback = task_inputs.get(task_id, task_inputs.get(result["task_name"]))
-    messages = _messages(trajectory, fallback)
+    messages = (
+        _initial_messages(trajectory, fallback)
+        if trajectory is not None
+        else _task_messages(fallback)
+    )
     agent_result = _optional_object(result.get("agent_result"), "agent_result")
-    metrics = _optional_object(trajectory.get("final_metrics"), "final_metrics")
+    metrics = _optional_object(
+        trajectory.get("final_metrics") if trajectory is not None else None, "final_metrics"
+    )
     verifier = _optional_object(result.get("verifier_result"), "verifier_result")
     rewards = _optional_object(verifier.get("rewards"), "rewards")
     agent = _optional_object(result.get("agent_info"), "agent_info")
@@ -215,49 +222,6 @@ def _trial(
         if error.get("exception_type")
         else None,
     )
-
-
-def _messages(trajectory: dict[str, Any], fallback: str | None) -> tuple[dict[str, object], ...]:
-    messages: list[dict[str, object]] = []
-    has_user_input = False
-    if trajectory:
-        version = trajectory.get("schema_version")
-        if not isinstance(version, str) or version not in {
-            f"ATIF-v1.{minor}" for minor in range(8)
-        }:
-            raise ValueError("unsupported or missing ATIF schema_version")
-        steps = trajectory.get("steps")
-        if not isinstance(steps, list):
-            raise ValueError("ATIF steps must be an array")
-        for raw_step in steps:
-            step = _object(raw_step, "ATIF step")
-            role = step.get("source")
-            if role == "agent":
-                break
-            if role not in ("system", "user"):
-                raise ValueError("unsupported ATIF input source")
-            content = step.get("message")
-            if isinstance(content, str):
-                content = [{"type": "text", "text": content}]
-            elif isinstance(content, list):
-                blocks = []
-                for raw_block in content:
-                    block = _object(raw_block, "ATIF message content")
-                    if block.get("type") != "text" or not isinstance(block.get("text"), str):
-                        raise ValueError("only text ATIF input is supported")
-                    blocks.append({"type": "text", "text": block["text"]})
-                content = blocks
-            else:
-                raise ValueError("ATIF input message must contain text")
-            if content:
-                messages.append({"role": role, "content": content})
-                has_user_input |= role == "user" and any(block["text"].strip() for block in content)
-    if has_user_input:
-        return tuple(messages)
-    if fallback is not None:
-        text = _string(fallback, "task_inputs value")
-        return ({"role": "user", "content": [{"type": "text", "text": text}]},)
-    raise ValueError("missing initial task input; provide task_inputs explicitly")
 
 
 def _duration(result: dict[str, Any]) -> float | None:

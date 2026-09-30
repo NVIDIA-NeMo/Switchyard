@@ -1,7 +1,8 @@
 # Evaluate task routing
 
-`switchyard.sim` evaluates a routing policy against completed Harbor runs. It
-loads the input available before an agent starts, asks Switchyard to select a
+`switchyard.sim` evaluates a routing policy against completed agent runs. It
+accepts ATIF trajectories, custom recordings converted to ATIF, and Harbor runs.
+It loads the input available before an agent starts, asks Switchyard to select a
 target, and scores that choice using the target's recorded task outcomes.
 
 The simulator is a Python library included in `nemo-switchyard`. It uses the
@@ -15,6 +16,35 @@ Each target names a complete recorded model and agent configuration. Its name
 must match a target in your Switchyard deployment. Use comparable task versions,
 agent settings, reasoning budgets, and verifier settings across runs. A matching
 task name or model name alone does not establish that the experiments are comparable.
+
+Start with this `routes.toml` to check the pipeline without provider calls. Replace
+`fast-model` and `strong-model` with the model IDs in your recordings:
+
+```toml
+schema_version = 1
+
+[llm_clients.unused]
+format = "openai_chat"
+base_url = "http://127.0.0.1:9/v1"
+
+[targets.fast]
+id = "fast-model"
+llm_client = "unused"
+
+[targets.strong]
+id = "strong-model"
+llm_client = "unused"
+
+[routes.fixed]
+id = "auto"
+type = "passthrough"
+target = "fast"
+```
+
+This route always selects `fast`; the unused client is never called. `auto` is the
+route ID passed to `evaluate` or `--route`. `fast` and `strong` are target keys used
+by the dataset and `--run`; their `id` fields name the actual models. For a live
+classifier, use the [Task routing configuration](routing_algorithms/llm_classifier_routing.md).
 
 ```python
 import asyncio
@@ -56,6 +86,88 @@ explicit `model_aliases={"recorded/provider/model": "configured/model"}` argumen
 to `evaluate` or `score` when the two systems name the same model differently. Aliases are a caller assertion;
 the library does not guess equivalence by trimming model names. Missing model
 metadata remains visible as unverified coverage.
+
+## Use ATIF or custom recordings
+
+`Trajectory.from_dict(data)` takes an owned copy of an ATIF document.
+`trajectory.to_dict()` returns an independent copy with all recorded steps,
+metrics, and extension fields preserved. You can load JSON with
+`Trajectory.from_dict(json.loads(path.read_text(encoding="utf-8")))`.
+Construction checks the ATIF version and steps container. `initial_messages()`
+validates the fields it reads to extract text input; neither method performs full
+ATIF schema validation.
+
+A custom converter is a plain function returning `Trajectory`. For example,
+suppose each line of `fast.jsonl` or `strong.jsonl` contains a harness record:
+
+```json
+{"task_id": "sum-1", "trial_id": "attempt-1", "model": "fast-model", "prompt": "What is 2 + 2?", "agent_steps": ["4"], "reward": 1.0, "cost_usd": 0.02}
+```
+
+Convert each record, then project it into a trial with explicit outcome metadata:
+
+```python
+import json
+
+from switchyard.sim import Dataset, Run, Trajectory
+
+def custom_to_atif(record):
+    steps = [
+        {"source": "user", "message": record["prompt"]},
+        *({"source": "agent", "message": text} for text in record["agent_steps"]),
+    ]
+    return Trajectory.from_dict({
+        "schema_version": "ATIF-v1.7",
+        "session_id": record["trial_id"],
+        "agent": {"name": "custom-agent", "version": "1"},
+        "steps": [dict(step_id=i, **step) for i, step in enumerate(steps, start=1)],
+    })
+
+def trials_from_jsonl(path, target):
+    with open(path, encoding="utf-8") as stream:
+        for line in stream:
+            record = json.loads(line)
+            yield custom_to_atif(record).to_trial(
+                task_id=record["task_id"],
+                trial_id=record["trial_id"],
+                target=target,
+                reward=record.get("reward"),
+                model=record.get("model"),
+                cost_usd=record.get("cost_usd"),
+                cost_source="harness" if record.get("cost_usd") is not None else None,
+            )
+
+runs = {
+    target: Run(tuple(trials_from_jsonl(f"{target}.jsonl", target)))
+    for target in ("fast", "strong")
+}
+dataset = Dataset.from_runs(runs, input_target="fast")
+```
+
+Use the same `evaluate` call shown above. Each file must contain its own recorded
+outcomes and model identity for comparable tasks. The converter owns the source
+format; `to_trial` owns the ATIF input projection. It does not infer task IDs,
+rewards, costs, or the recorded model from ATIF. Per-step models can override an
+ATIF agent default, so choose and verify that metadata explicitly. Omitted
+measurements and model IDs remain unknown. You can also supply `task_checksum`,
+`duration_seconds`, `usage`, `source`, and `error` to `to_trial`.
+This example stops on invalid records. If your importer tolerates errors, retain
+each rejection as a `LoadIssue(source, message, task_id)` in `Run.issues`; silently
+dropping failed repeats can bias the reported score.
+
+`to_trial` keeps the initial input and supplied metadata without retaining the
+full history. The generator above therefore releases each full trajectory before
+reading the next record; `Run` retains only the trials. `HarborRun` is a
+compatibility alias for `Run`. Neither path requires Harbor to be installed.
+
+Copied continuation context can contain earlier answers or progress summaries.
+If an initial step has `is_copied_context=true`, projection rejects it unless you
+provide the original task text with `to_trial(task_input=...)` or
+`initial_messages(task_input=...)`. That text replaces the initial conversation.
+Choose root task recordings and have converters supply the original input before
+execution. The library cannot reliably recognize unmarked subagent logs or summaries.
+The full ATIF document remains available through `to_dict()`. Storing full history
+does not implement trajectory replay or validate outcomes after model switching.
 
 ## Import rules and coverage
 
@@ -99,9 +211,11 @@ The intersection excludes a task from every target if any target is missing or
 has an invalid trial for it. Issues and excluded task IDs remain in the report.
 An invalid result with no recoverable task identity must be repaired before
 pairing; otherwise a failed repeat could silently disappear from a task's mean.
-For a missing trajectory, callers can supply `task_inputs={task_id: instruction}`.
-Malformed existing trajectories still fail validation. Raw agent logs and
-multimodal ATIF inputs are outside this initial importer.
+For a missing trajectory or copied continuation context, callers can supply
+`task_inputs={task_id: original_instruction}` to `load_harbor`.
+Invalid JSON, unsupported ATIF versions, and invalid fields read during input
+projection still fail validation. Unused history fields are not fully validated.
+Raw agent logs and multimodal ATIF inputs are outside this importer.
 
 ## Interpret the report
 
@@ -111,6 +225,12 @@ routing latency, call counts, usage, and routing cost coverage. Unknown totals
 and means are `null`; `observed_total` retains the known portion. `complete`
 means every expected task has a scored reward and no evaluation error. Inspect
 each cost and usage field's coverage separately.
+
+Native routing failures retain `routing_error_kind`, `routing_error_status`, and
+`routing_error_target` on each result row. The status is an upstream HTTP code
+when available; the target identifies the failing model, such as the classifier.
+These fields distinguish failures such as HTTP 401 and 503 without storing
+provider response bodies. Other exception details remain suppressed.
 
 Reward comparisons use one common cohort where the routed outcome and every
 fixed-target reward are observed. The empirical recorded-outcome oracle selects
@@ -144,13 +264,16 @@ python -m switchyard.sim \
   --input-target fast --output evaluation-output
 ```
 
-The output directory must be new. It contains flushed `results.jsonl` rows, a
-`report.json` summary, and a `manifest.json` with configuration hash, inputs,
-versions, and coverage. The deployment source and credentials are not copied.
+This CLI imports Harbor layouts. Use the Python API for custom formats.
+The output directory must be new. The CLI writes a `manifest.json` with the
+configuration hash, inputs, package version, and coverage, then flushes each
+completed row to `results.jsonl`. It writes `report.json` after evaluation returns.
+The deployment source and credentials are not copied.
 Use `--skip-invalid --intersection` to retain import issues and explicitly
 evaluate the common valid subset. Exit status is 0 for complete reward coverage,
 1 for an incomplete evaluation, and 2 for invalid inputs or configuration.
-Completed rows survive interruption; automatic resume is not implemented.
+An interruption exits 130 and preserves the manifest and completed result rows
+once those files exist; there may be no final report. Automatic resume is not implemented.
 Use `--model-alias RECORDED=CONFIGURED` for an explicit model-ID equivalence.
 
 The Python `on_result` callback runs after each completed task. It can update a
@@ -162,11 +285,12 @@ make multiple provider calls inside a decision.
 
 ## Library boundaries
 
-`Trial` and `HarborRun` represent imported evidence. `Dataset.from_runs` validates
-and pairs it. `score(task, decision)` is a pure scorer for a saved native decision.
+`Trajectory` preserves ATIF documents. `Trial` and `Run` represent projected
+task evidence. `Dataset.from_runs` validates and pairs it.
+`score(task, decision)` is a pure scorer for a saved native decision.
 `evaluate` owns bounded scheduling and calls that scorer. `Report.add` accumulates
-results without retaining full trajectories or result rows. Import holds only
-one full trajectory at a time; paired task inputs and small outcome records stay
+results without retaining full trajectories or result rows. Import processes
+one trajectory file at a time; paired task inputs and small outcome records stay
 in memory.
 
 Native `Runner.load` and `Runner.from_toml` use Switchyard's configuration parser.

@@ -62,7 +62,9 @@ def write_trial(
     )
     trajectory = {
         "schema_version": version,
-        "steps": steps,
+        "session_id": name,
+        "agent": {"name": "codex" if codex else "claude-code", "version": "fixture"},
+        "steps": [dict(step_id=i, **step) for i, step in enumerate(steps, start=1)],
         "final_metrics": {
             "total_prompt_tokens": 100,
             "total_completion_tokens": 20,

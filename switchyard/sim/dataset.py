@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .models import HarborRun, Outcome, Task, Trial
+from .models import Outcome, Run, Task, Trial
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class Dataset:
     @classmethod
     def from_runs(
         cls,
-        runs: Mapping[str, HarborRun],
+        runs: Mapping[str, Run],
         *,
         input_target: str,
         intersection: bool = False,
@@ -126,7 +126,7 @@ class Dataset:
 
 
 def _instruction(trial: Trial) -> str:
-    """Require the same user input when a Harbor checksum is unavailable."""
+    """Require the same user input when a task checksum is unavailable."""
     contents = [
         message.get("content") for message in trial.messages if message.get("role") == "user"
     ]

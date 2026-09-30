@@ -63,11 +63,14 @@ class LoadIssue:
 
 
 @dataclass(frozen=True)
-class HarborRun:
-    """Imported trials and every rejected input, without retaining full trajectories."""
+class Run:
+    """Imported evidence from any producer, including every rejected input."""
 
     trials: tuple[Trial, ...]
     issues: tuple[LoadIssue, ...] = ()
+
+
+HarborRun = Run
 
 
 @dataclass(frozen=True)
