@@ -43,6 +43,7 @@ nav:
   - Evaluate and Tune:
       - Benchmarks: benchmarks.md
       - Task routing evaluation: simulation.md
+      - Simulator architecture: simulation-architecture.md
       - Tuning:
           - tuning/index.md
           - Foundations: tuning/foundations.md
