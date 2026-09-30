@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../random_routing/">
+        <link rel="prev" href="../overview/">
       
       
         <link rel="next" href="../stage_router_routing/">
@@ -25,7 +25,7 @@
     
     
       
-        <title>LLM Classifier Routing - Switchyard</title>
+        <title>Task (LLM Classifier) - Switchyard</title>
       
     
     
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              LLM Classifier Routing
+              Task (LLM Classifier)
             
           </span>
         </div>
@@ -592,6 +592,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -685,62 +741,6 @@
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../subagent_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Sub-Agent-Aware Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../random_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Random Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
     
   
   
@@ -760,7 +760,7 @@
   <span class="md-ellipsis">
     
   
-    LLM Classifier Routing
+    Task (LLM Classifier)
   
 
     
@@ -778,7 +778,7 @@
   <span class="md-ellipsis">
     
   
-    LLM Classifier Routing
+    Task (LLM Classifier)
   
 
     
@@ -903,6 +903,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="When the judge runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#responses-continuations-by-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Responses continuations by ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -939,7 +956,91 @@
   <span class="md-ellipsis">
     
   
-    Stage-Router Routing
+    Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../random_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Random Routing
   
 
     
@@ -1456,6 +1557,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="When the judge runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#responses-continuations-by-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Responses continuations by ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1490,8 +1608,11 @@
 
 
 <h1 id="llm-classifier-routing">LLM Classifier Routing<a class="headerlink" href="#llm-classifier-routing" title="Permanent link">&para;</a></h1>
-<p>LLM classifier routing supports capability classification, trajectory escalation,
-and custom schema-driven routing across two or more targets.</p>
+<p><strong>Task</strong> routing uses the LLM classifier's <code>capability</code> mode to judge whether
+an efficient model can handle the task or a capable model is needed. Configure
+it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code>.</p>
+<p>The same classifier also supports <a href="../escalation_router_routing/">escalation</a>
+and <a href="#custom-multi-target-routing">custom routing</a> across two or more targets.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
@@ -1549,8 +1670,17 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 <li><code>uncertain</code> and <code>unmatched</code> use <code>base_threshold + threshold_step</code>.</li>
 <li><code>unsupported</code> uses <code>base_threshold + 2 * threshold_step</code>.</li>
 </ul>
-<p>An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
+<p>An invalid, inconsistent, or unparseable verdict routes to
 <code>strong_target</code>. Raising either knob sends more traffic to the strong model.</p>
+<p>To stop waiting for a judge that accepts the request but never finishes its
+response, set <code>timeout_ms</code> on the judge's <code>[llm_clients]</code> entry
+(see the <a href="../../reference/toml_schema/">TOML schema</a>); it covers the judge's
+retries and the complete verdict body. When the deadline expires, the Rust server returns
+<code>504</code> without calling <code>strong_target</code> or <code>weak_target</code>. Other HTTP client failures
+also stop routing after retries. The deadline applies to every call
+through that client. Give the judge its own entry if the answering models need a
+different deadline, even when they use the same provider. Without a deadline,
+the request can wait indefinitely for the judge.</p>
 <h2 id="judge-model-compatibility">Judge model compatibility<a class="headerlink" href="#judge-model-compatibility" title="Permanent link">&para;</a></h2>
 <p>The judge must return complete, schema-valid JSON in normal assistant <code>content</code>.
 Switchyard does not parse provider-specific reasoning fields such as
@@ -1571,7 +1701,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00fce77cd47c29aa2071db97eace07a5e9129091/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3905e8fee86f6d75049013c05a307b400b117f3/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1606,7 +1736,7 @@ for the server merge behavior.</p>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td><code>false</code></td>
-<td>When session metadata is absent, keys affinity from the first user-message text. Requires <code>classify_trigger = "new_session"</code>.</td>
+<td>When session metadata is absent, keys affinity from the first user-message text. Requires <code>classify_trigger = "new_session"</code> or <code>"user_turn"</code>.</td>
 </tr>
 <tr>
 <td><code>prompt</code></td>
@@ -1713,8 +1843,10 @@ It produces a probability and capability boundary but does not choose a route.
 The deterministic policy applies <code>base_threshold</code> and <code>threshold_step</code> after
 generation.</p>
 <p>Without affinity, the runtime judges every request. By default, it sends the
-opening task and the latest user follow-up when they differ. Set
-<code>recent_turn_window</code> when intervening conversation context affects the forecast.
+opening task and the latest user follow-up when they differ, excluding tool calls,
+tool results, and reasoning. It keeps ordinary user content from messages that
+also contain tool results. Set <code>recent_turn_window</code> when intervening conversation
+context affects the forecast.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.</p>
@@ -1738,6 +1870,43 @@ verdict. There is no warmup period, and later requests skip the judge entirely.<
 identity are judged every time. Clients can send <code>x-switchyard-session-id</code>, or
 enable <code>message_hash_fallback</code> to key on the first user-message text under
 <code>new_session</code>.</p>
+<h3 id="responses-continuations-by-id">Responses continuations by ID<a class="headerlink" href="#responses-continuations-by-id" title="Permanent link">&para;</a></h3>
+<p>A Responses API client can continue without resending the conversation history.
+Switchyard handles state differently depending on the target API:</p>
+<ul>
+<li><strong>Native Responses targets:</strong> The provider stores the conversation. When answer
+  targets use different <code>[llm_clients]</code> entries, Switchyard records response and
+  conversation IDs with the model that served them, but no transcript. Classifier-only
+  clients do not count. When answer targets share one client, no local record is needed.
+  The provider's <code>store</code> value takes precedence over the request value. If it is
+  <code>false</code>, Switchyard skips the response ID but still records the conversation ID.</li>
+<li><strong>Chat Completions or Anthropic Messages targets:</strong> For incoming Responses
+  requests, Switchyard retains request and reply messages in memory under the
+  response ID. It restores that history on a later <code>previous_response_id</code> request.
+  This also applies when answer targets share one client. Request <code>store: false</code>
+  prevents retaining the new response and history, but does not delete earlier
+  records. This path supports <code>previous_response_id</code>, not provider conversation IDs.</li>
+</ul>
+<p>A request with a recorded ID returns to the model that served it without a judge
+call or fallback to another provider. This applies to every <code>classify_trigger</code>
+and to <code>stage_router</code> and <code>composite</code> routes. Tracking covers buffered replies and
+completed streams, including answers returned by <code>/v1/decision</code>. Ordinary Chat
+Completions and Anthropic Messages requests do not create Responses history.</p>
+<p>Each route keeps up to 65,536 distinct ID-to-model records per process. This
+limit counts response and conversation IDs recorded over the process's lifetime,
+not tokens or simultaneous requests. Records do not expire, and Switchyard does
+not remove older records to make room. Cross-format records also retain message
+history, so this ID limit is not a memory limit. Memory use depends on the retained
+messages as well as the number of IDs.</p>
+<p>At capacity, Switchyard logs a warning and returns the reply without retaining
+new IDs or history. Existing records remain usable, but a later continuation from
+an unrecorded ID may fail. Conflicting native Responses IDs return HTTP 409 with
+code <code>response_state_conflict</code>. If streaming headers have already been sent, the
+stream emits an error instead of changing the HTTP status.</p>
+<p>A restart removes all local records and history, and each replica has its own
+state. Unknown IDs use normal routing and can still fail at the selected provider.
+Send the full history instead of an ID to avoid relying on local continuation
+state and to keep dynamic routing across turns.</p>
 <h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
 <p>After <a href="../../getting_started/#install-the-server">installing the Rust server</a>, export
 the provider credential, validate the configuration, and start the release
