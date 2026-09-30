@@ -109,8 +109,8 @@ was read from the cache on `/v1/chat/completions` and `/v1/messages`, but never 
 `/v1/responses`. Every request to `/v1/responses` paid for the whole prompt again. Use
 `format = "openai_chat"` or `"anthropic_messages"` for Claude targets. To check your
 gateway, start the server with `--routing-log-file PATH` and send the same long prompt
-twice. Claude does not cache short prompts, so use one of at least 5,000 tokens. Then
-read the records:
+twice. Claude does not cache short prompts. A prompt of at least 5,000 tokens is a safe
+size; it is not Claude's exact minimum. Then read the records:
 
 ```bash
 jq -c '{route_id, prompt_tokens, cached_tokens, cache_creation_tokens}' PATH
@@ -150,8 +150,16 @@ With `reasoning: true`, pi sends `reasoning_effort`, and Switchyard passes it to
 **Forwarded keys.** Every LLM client in one route that sets `forward_auth = true` must
 use the same API family: `openai_chat` and `openai_responses`, or `anthropic_messages`.
 Otherwise the server does not start and prints
-`route <name> cannot forward both Anthropic and OpenAI caller credentials`. A route that
+`route <name> cannot forward both Anthropic and OpenAI caller credentials`, where
+`<name>` is the route's `[routes.<name>]` table key, not its `id`. A route that
 forwards the caller's key to an `anthropic_messages` client also accepts requests only
-on `/v1/messages`, and pi should not use that API. So when Switchyard forwards pi's key,
-use `openai_chat` Claude targets with `omit_body_fields`. If the server holds the key
-through `api_key_env`, an `anthropic_messages` target works with every request API.
+on `/v1/messages`, and pi should not use that API. So when Switchyard forwards pi's key
+to the Claude targets, use `openai_chat` Claude targets with `omit_body_fields`.
+
+An `anthropic_messages` client that reads the key from `api_key_env` works with every
+request API, as long as no other LLM client in the route sets `forward_auth = true`. If
+one does, the forwarded client limits the route's endpoints. For example, a route with a
+forwarded `openai_responses` client accepts only `/v1/chat/completions` and
+`/v1/responses`, and returns HTTP 400 on `/v1/messages`. pi uses those APIs, so such a
+route can forward pi's key to a GPT judge on `openai_responses` while its Claude targets
+use `anthropic_messages` with a key that the server holds.

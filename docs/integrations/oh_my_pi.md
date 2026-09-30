@@ -98,21 +98,31 @@ cost.
 ### Claude targets behind an OpenAI-compatible gateway
 
 The [pi guide's notes on Claude targets behind a gateway](pi.md#claude-targets-behind-an-openai-compatible-gateway)
-apply to `omp` too. The target's LLM client `format` decides prompt caching and
-thinking, not the `api` that `omp` uses. Prefer `format = "openai_chat"` or
-`"anthropic_messages"` for Claude targets, because a gateway may not cache Claude
-prompts on `/v1/responses`.
+apply to `omp` too. The target's LLM client `format`, not the `api` that `omp` uses,
+decides which gateway endpoint Switchyard calls and so whether the gateway caches the
+prompt. Prefer `format = "openai_chat"` or `"anthropic_messages"` for Claude targets,
+because a gateway may not cache Claude prompts on `/v1/responses`. Thinking depends on
+both the `format` and the `api`, as the next paragraph explains.
 
 With thinking on, `omp` sends a reasoning effort on `openai-completions` and
 `openai-responses`. Switchyard passes it to an `openai_chat` target as
-`reasoning_effort`, which some gateways reject for Claude Opus 5.5 and Sonnet 5 with
-HTTP 400. Switchyard turns the effort into adaptive thinking only when it translates a
-Chat Completions or Responses request for an `anthropic_messages` target. It forwards an
-`anthropic-messages` request to that target with `omp`'s own `thinking` settings.
+`reasoning_effort`. Some gateways turn that field into a thinking setting that Claude
+Opus 5.5 and Sonnet 5 reject with HTTP 400. Switchyard turns the effort into adaptive
+thinking only when it translates a Chat Completions or Responses request for an
+`anthropic_messages` target. When `omp` uses `anthropic-messages`, Switchyard forwards
+the request to that target with `omp`'s own `thinking` settings unchanged.
 
 A route that forwards the caller's key to an `anthropic_messages` client accepts
 requests only on `/v1/messages`, and it cannot also forward the key to an
-`openai_chat` or `openai_responses` client. If such a route also needs an OpenAI-format
-target, such as a GPT judge on `openai_responses`, keep the Claude targets on
-`openai_chat` with `omit_body_fields = ["reasoning_effort"]`. The models then think at
-their default effort, and `--thinking` has no effect on them.
+`openai_chat` or `openai_responses` client. So a route with an OpenAI-format target,
+such as a GPT judge on `openai_responses`, cannot forward the caller's key to
+both the judge and Claude targets on `anthropic_messages`. Choose one of two setups:
+
+- Forward the key to every client, and keep the Claude targets on `openai_chat` with
+  `omit_body_fields = ["reasoning_effort"]`. The Claude models then think at their
+  default effort, and `--thinking` has no effect on them.
+- Forward the key only to the GPT judge, and put the Claude targets on an
+  `anthropic_messages` client that reads a key held by the server from `api_key_env`.
+  Switchyard then turns the effort into adaptive thinking. The route accepts only
+  `/v1/chat/completions` and `/v1/responses`, so use `openai-completions` or
+  `openai-responses`.
