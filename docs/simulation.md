@@ -355,7 +355,11 @@ python -m switchyard.sim \
 ```
 
 This CLI imports Harbor layouts. Use the Python API for custom formats.
-The output directory must be new. The CLI writes a `manifest.json` with the
+The output directory must be new and outside every supplied recording directory.
+Paths are resolved before this check, including symlink aliases and `..` components.
+This prevents output folders from changing Harbor's trial discovery on later imports.
+Existing output entries, including dangling symlinks, are rejected.
+The CLI writes a `manifest.json` with the
 configuration hash, inputs, package version, and coverage, then flushes each
 completed row to `results.jsonl`. It writes `report.json` after evaluation returns.
 The hash covers the exact TOML bytes loaded. Invalid routes and recorded-model
