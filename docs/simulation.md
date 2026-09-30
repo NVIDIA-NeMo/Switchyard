@@ -335,9 +335,13 @@ If an output write fails, the last JSONL line may be incomplete. Earlier complet
 lines remain usable; check the exit status and final report before treating a run as complete.
 Use `--model-alias RECORDED=CONFIGURED` for an explicit model-ID equivalence.
 
-The Python `on_result` callback runs after each completed task. It can update a
-dashboard or write an application-owned result stream. Keep it short; a callback
-failure stops evaluation and drains pending work. Each decision has a deadline.
+The Python `on_result` callback runs synchronously on the event loop after each
+completed task. Supply a regular function; asynchronous callbacks are not awaited.
+It can update a dashboard or write an application-owned result stream. Keep it
+short; an exception from the callback stops evaluation and drains pending work.
+If the callback queues background writes, wait for them and handle their failures
+before treating the records as saved.
+Each decision has a deadline.
 Cancellation stops local workers, but cannot revoke requests already received
 by a provider. Task concurrency bounds simultaneous decisions; an algorithm may
 make multiple provider calls inside a decision.
