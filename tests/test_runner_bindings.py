@@ -31,6 +31,7 @@ class JudgeStub:
     response_text: str | None = None
     response_payload: dict[str, Any] | None = None
     status: int = 200
+    status_by_model: dict[str, int] = field(default_factory=dict)
     started: Event = field(default_factory=Event)
     release: Event | None = None
     completed: Event = field(default_factory=Event)
@@ -46,6 +47,7 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            status = stub.status_by_model.get(body["model"], stub.status)
             stub.calls.append(body)
             stub.request_headers.append(
                 {name.lower(): value for name, value in self.headers.items()}
@@ -71,7 +73,7 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
             }
             if stub.response_payload is not None:
                 payload = stub.response_payload
-            elif stub.status == 200:
+            elif status == 200:
                 payload = {
                     "id": "judge-response",
                     "model": body["model"],
@@ -100,7 +102,7 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
                     }
                 }
             encoded = json.dumps(payload).encode()
-            self.send_response(stub.status)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
@@ -513,6 +515,35 @@ async def test_provider_failure_keeps_observations_and_safe_diagnostics(judge: J
     assert not call.is_success
     assert call.usage is None
     assert error.duration_seconds >= call.duration_seconds >= 0
+
+
+async def test_later_call_failure_preserves_earlier_call_usage(judge: JudgeStub) -> None:
+    judge.status_by_model["judge/model"] = 503
+    source = (
+        deployment(judge.url).split("[routes.classifier]")[0]
+        + """
+[routes.advisor]
+id = "auto"
+type = "advisor"
+executor_target = "weak"
+advisor_target = "judge"
+"""
+    )
+    with pytest.raises(DecisionError) as caught:
+        await Runner.from_toml(source).decide(request(), allow_response=True)
+    error = caught.value
+    assert (error.kind, error.upstream_status, error.target) == (
+        "upstream_http",
+        503,
+        "judge/model",
+    )
+    assert [call["model"] for call in judge.calls] == ["weak/model", "judge/model"]
+    first, failed = error.calls
+    assert (first.model, failed.model) == ("weak/model", "judge/model")
+    assert first.is_success and first.usage["input_tokens"] == 12
+    assert not failed.is_success and failed.usage is None
+    assert "provider-secret" not in str(error)
+    assert "private prompt" not in str(error)
 
 
 async def test_bad_request_and_configuration_fail_before_calls(
