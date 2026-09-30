@@ -76,7 +76,8 @@ summary = asyncio.run(main())
 
 Create a fresh `Runner` for each independent experiment. It owns routing state,
 including affinity and random-number generators. The evaluator creates a distinct
-session ID for each task. Use `concurrency=1` with a seeded random route when task
+session ID for each task and marks its decision as the final turn so native
+per-session state can be released. Use `concurrency=1` with a seeded random route when task
 order must be reproducible. Concurrent scheduling can change which task receives
 each random draw.
 

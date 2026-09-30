@@ -247,7 +247,10 @@ async def evaluate(
             decision = await asyncio.wait_for(
                 runner.decide(
                     {"model": route, "messages": copy.deepcopy(list(task.messages))},
-                    headers={"x-switchyard-session-id": f"sim-{run_id}-{index}"},
+                    headers={
+                        "x-switchyard-session-id": f"sim-{run_id}-{index}",
+                        "x-switchyard-session-final": "true",
+                    },
                     allow_response=False,
                 ),
                 timeout=timeout,

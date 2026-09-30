@@ -40,6 +40,18 @@ struct SessionState<S> {
 
 type SessionStates<S> = Mutex<HashMap<String, SessionState<S>>>;
 
+/// Releases completed-session state even when the routing future is cancelled.
+struct FinalSession<'a, S> {
+    states: &'a SessionStates<S>,
+    session: String,
+}
+
+impl<S> Drop for FinalSession<'_, S> {
+    fn drop(&mut self) {
+        self.states.lock().remove(&self.session);
+    }
+}
+
 /// Delete sessions that have been inactive this long. Catches sessions that did not terminate
 /// cleanly.
 /// A user resuming a deleted session is not fatal. Algorithms will be missing some context
@@ -108,17 +120,20 @@ where
     /// Executes the processor and classifier sequence for wrappers and the trait entrypoint.
     pub(crate) async fn execute(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         self.start_cleanup_task();
-        let session = session_id(&request);
         let session_final = request
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.session_final)
             == Some(true);
-        let result = self.execute_session(driver, request).await;
-        if session_final && let Some(session) = session.as_deref() {
-            self.remove_session(session);
-        }
-        result
+        let _final_session = if session_final {
+            self.session_states
+                .as_deref()
+                .zip(session_id(&request))
+                .map(|(states, session)| FinalSession { states, session })
+        } else {
+            None
+        };
+        self.execute_session(driver, request).await
     }
 
     /// Starts one cleanup task on the first request handled by a stateful router.
@@ -170,13 +185,6 @@ where
                 }
                 Ok(RoutingOutcome::route_to(target, fallback_models, request))
             }
-        }
-    }
-
-    /// Drops retained routing state once the host marks a session complete.
-    fn remove_session(&self, session: &str) {
-        if let Some(states) = &self.session_states {
-            states.lock().remove(session);
         }
     }
 
@@ -297,6 +305,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use tokio::sync::Notify;
+
     use crate::Classification;
     use crate::algorithms::llm_class::DefaultCategoryClassifier;
     use crate::algorithms::util::prompts;
@@ -738,6 +749,7 @@ mod tests {
             ..request()
         };
         let (final_turn, _) = run_request(&router, final_request, echo()).await?;
+        assert!(router.session_states.as_ref().unwrap().lock().is_empty());
         let (restarted_session, _) = run_turn(&router, echo()).await?;
         let (second_session, _) = run_request(
             &router,
@@ -795,6 +807,86 @@ mod tests {
             .expect("stateful router has a session registry")
             .lock();
         assert!(!states.contains_key("session-1"));
+    }
+
+    #[tokio::test]
+    async fn final_sessions_are_removed_when_model_calls_are_cancelled_or_fail() -> Result<()> {
+        struct DropSignal(Arc<Notify>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                self.0.notify_one();
+            }
+        }
+
+        struct CallingClassifier(Arc<Notify>);
+
+        #[async_trait]
+        impl Classifier<u32> for CallingClassifier {
+            async fn score(
+                &self,
+                _state: &mut u32,
+                request: &mut Request,
+                driver: &Driver,
+            ) -> Result<(Classification, Option<Response>)> {
+                let _dropped = DropSignal(Arc::clone(&self.0));
+                driver
+                    .call_model(request.clone(), vec!["strong".into()])
+                    .await?;
+                Ok((Classification::Scores(vec![score("strong", 1.0)]), None))
+            }
+        }
+
+        for final_session in [false, true] {
+            for failed_call in [false, true] {
+                let stopped = Arc::new(Notify::new());
+                let router = Arc::new(
+                    FallThrough::<u32>::new_with_state()
+                        .with_classifier(Arc::new(CallingClassifier(Arc::clone(&stopped)))),
+                );
+                let models = Arc::new(crate::RuntimeModels::from(category_models(
+                    Category::Any,
+                    &["strong"],
+                )));
+                for index in 0..8 {
+                    let request = Request {
+                        metadata: Some(Metadata {
+                            session_id: Some(format!("session-{index}")),
+                            session_final: Some(final_session),
+                            ..Metadata::default()
+                        }),
+                        ..request()
+                    };
+                    let outstanding_call = if failed_call {
+                        let result = crate::drive(
+                            router.clone(),
+                            request,
+                            Arc::clone(&models),
+                            |call| async move { call.fail(test_error("provider failure")) },
+                        )
+                        .await;
+                        assert!(result.is_err());
+                        None
+                    } else {
+                        let mut stream = router.clone().run_stream(request, Arc::clone(&models));
+                        let Some(Ok(crate::Step::CallModel(call))) = stream.next().await else {
+                            panic!("classifier must request a model call");
+                        };
+                        // Keep the reply sender alive so only stream cancellation can
+                        // interrupt the algorithm's wait for this response.
+                        drop(stream);
+                        Some(call)
+                    };
+                    tokio::time::timeout(Duration::from_secs(1), stopped.notified())
+                        .await
+                        .expect("algorithm task must release the cancelled classifier");
+                    drop(outstanding_call);
+                    let retained = router.session_states.as_ref().unwrap().lock().len();
+                    assert_eq!(retained, if final_session { 0 } else { index + 1 });
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]
