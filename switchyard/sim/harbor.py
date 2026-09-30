@@ -58,12 +58,13 @@ def load_harbor(
     root = Path(path)
     if not root.is_dir():
         raise FileNotFoundError(f"Harbor directory does not exist: {root}")
-    paths = _trial_paths(root)
-    if not paths:
+    paths, issues = _trial_paths(root)
+    if issues and on_error == "raise":
+        raise ValueError(f"{issues[0].source}: {issues[0].message}")
+    if not paths and not issues:
         raise ValueError(f"No Harbor trials found under {root}")
 
     trials: list[Trial] = []
-    issues: list[LoadIssue] = []
     trial_ids: set[str] = set()
     for result_path in paths:
         task_id = None
@@ -86,34 +87,54 @@ def load_harbor(
     return Run(tuple(trials), tuple(issues))
 
 
-def _trial_paths(root: Path) -> list[Path]:
+def _trial_paths(root: Path) -> tuple[list[Path], list[LoadIssue]]:
     """Inspect known Harbor layouts, excluding nested copies of trial metadata."""
     result_path = root / "result.json"
     if (root / "agent").is_dir():
-        return [result_path]
+        return [result_path], []
     unreadable_result = False
+    summary = None
     if result_path.is_file():
         try:
-            if "task_name" in _read_object(result_path):
-                return [result_path]
+            summary = _read_object(result_path)
+            if "task_name" in summary:
+                return [result_path], []
         except (OSError, ValueError):
             unreadable_result = True
     jobs = root / "jobs"
     roots = sorted(p for p in jobs.iterdir() if p.is_dir()) if jobs.is_dir() else [root]
-    paths = [
-        trial / "result.json"
-        for job in roots
-        for trial in sorted(job.iterdir())
-        if trial.is_dir()
-        and (
-            (trial / "result.json").is_file()
-            or (trial / "agent").is_dir()
-            or (trial / "config.json").is_file()
-        )
-    ]
+    paths: list[Path] = []
+    issues: list[LoadIssue] = []
+    for job in roots:
+        candidates = [
+            trial / "result.json"
+            for trial in sorted(job.iterdir())
+            if trial.is_dir()
+            and (
+                (trial / "result.json").is_file()
+                or (trial / "agent").is_dir()
+                or (trial / "config.json").is_file()
+            )
+        ]
+        paths.extend(candidates)
+        job_result = job / "result.json"
+        job_summary = summary if job == root else None
+        if job != root and job_result.is_file():
+            try:
+                job_summary = _read_object(job_result)
+            except (OSError, ValueError):
+                pass
+        expected = job_summary.get("n_total_trials") if job_summary is not None else None
+        if type(expected) is int and expected >= 0 and expected != len(candidates):
+            issues.append(
+                LoadIssue(
+                    str(job_result),
+                    f"job trial count mismatch: expected {expected}, found {len(candidates)}",
+                )
+            )
     # A damaged job summary must not hide valid trial directories. Without
     # children, keep the unreadable artifact visible as a standalone trial issue.
-    return paths or ([result_path] if unreadable_result else [])
+    return paths or ([result_path] if unreadable_result else []), issues
 
 
 def _read_object(path: Path) -> dict[str, Any]:

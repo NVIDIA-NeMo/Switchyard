@@ -221,6 +221,12 @@ print(dataset.coverage)
 
 The intersection excludes a task from every target if any target is missing or
 has an invalid trial for it. Issues and excluded task IDs remain in the report.
+When a job summary supplies a valid `n_total_trials`, it must match the number of
+discovered trial directories, including rejected trials. A mismatch becomes an
+issue with no task identity, so even an entirely missing repeat remains visible.
+Repair incomplete copies or wait for unfinished jobs before pairing. Missing or
+malformed summaries cannot establish directory completeness; check archive integrity
+separately. For an intentional subset, import its trial directories individually.
 An issue with a missing or blank task ID must be repaired before pairing;
 otherwise a failed repeat could silently disappear from a task's mean. Custom
 importers should use `None` when a rejected record's task cannot be identified.
