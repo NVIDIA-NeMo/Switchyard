@@ -82,7 +82,9 @@ order must be reproducible. Concurrent scheduling can change which task receives
 each random draw.
 
 The configured route may select any recorded target, including a fixed-target
-subset. Known recorded model IDs must match the configured model IDs. Use the
+subset. Model validation covers that route's configured completion targets; their
+known recorded model IDs must match the configured model IDs. Verify the model
+and agent settings of other recorded targets before using their fixed baselines. Use the
 explicit `model_aliases={"recorded/provider/model": "configured/model"}` argument
 to `evaluate` or `score` when the two systems name the same model differently. Aliases are a caller assertion;
 the library does not guess equivalence by trimming model names. Missing model
@@ -188,7 +190,9 @@ agent step. This matters for Codex, whose first user message can describe the
 environment and whose second contains the task. Completed agent messages,
 verifier rewards, model names, and trial IDs are not added to classifier input.
 The recorded initial input itself may contain harness or environment details.
-`input_target` explicitly chooses which run supplies that input.
+`input_target` explicitly chooses which run supplies that input. For repeated
+trials, it uses the first trial after sorting `trial_id` as strings. Keep that
+choice fixed when comparing policies; the recorded outcomes still average all repeats.
 
 Task names are matched within the supplied runs. Use `dataset="benchmark-v1"`
 to namespace them. Conflicting task checksums are rejected. Blank strings and
