@@ -291,8 +291,16 @@ impl FormatCodec for AnthropicMessagesCodec {
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
+        // Native thinking controls the mode independently of output effort.
+        // Other codecs store their own provider's reasoning object in `raw`.
+        if is_anthropic_request(request)
+            && let Some(thinking) = &request.reasoning.raw
+        {
+            body.insert("thinking".to_string(), thinking.clone());
+        }
         if let Some(effort) = &request.reasoning.effort {
-            body.insert("thinking".to_string(), json!({"type": "adaptive"}));
+            body.entry("thinking".to_string())
+                .or_insert_with(|| json!({"type": "adaptive"}));
             body.insert("output_config".to_string(), json!({"effort": effort}));
         }
         if let Some(response_format) = &request.output.response_format

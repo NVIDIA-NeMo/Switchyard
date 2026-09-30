@@ -485,6 +485,38 @@ fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
 }
 
 #[test]
+fn anthropic_reconstruction_preserves_thinking() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for (thinking, effort) in [
+        (json!({"type": "disabled"}), Some("high")),
+        (json!({"type": "enabled", "budget_tokens": 2048}), None),
+        (json!({"type": "adaptive"}), Some("high")),
+    ] {
+        let mut body = json!({
+            "model": "caller", "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": thinking
+        });
+        if let Some(effort) = effort {
+            body["output_config"] = json!({"effort": effort});
+        }
+        let mut request = engine
+            .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+            .request;
+        prepare_request_for_target(&mut request, &"target/model".into(), Some("target prompt"));
+        let output = engine
+            .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+            .body;
+
+        body["model"] = json!("target/model");
+        body["system"] = json!("target prompt");
+        assert_eq!(output, body);
+    }
+    Ok(())
+}
+
+#[test]
 fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
