@@ -592,6 +592,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -688,6 +744,90 @@
   
   
     <li class="md-nav__item">
+      <a href="../llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task (LLM Classifier)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../subagent_routing/" class="md-nav__link">
         
   
@@ -724,62 +864,6 @@
     
   
     Random Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../llm_classifier_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../stage_router_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Stage-Router Routing
   
 
     
@@ -1518,9 +1602,12 @@ flowchart LR
 
     classDef box font-family:monospace,fill:none,stroke:#9aa0a6,stroke-width:1px;
     class t,p,s,c,j,w,l box;</code></pre>
-<p>A judge that times out, errors, or returns an unparseable verdict fails open: the
-turn serves the buffered weak reply and the existing streak is held rather than
-cleared. A judge failure never creates a strong-tier latch.</p>
+<p>An unparseable verdict serves the buffered weak reply and holds the existing
+streak. The Rust runner stops the request if an HTTP model call fails after
+retries. To bound both the weak-model response and the judge response, set
+<code>timeout_ms</code> on each <code>[llm_clients]</code> entry they use. The deadline applies separately
+to each call, even when both models share a client. Expiry returns <code>504</code> without
+calling another target or selecting the strong tier for subsequent session turns.</p>
 <h2 id="judge-model-compatibility">Judge model compatibility<a class="headerlink" href="#judge-model-compatibility" title="Permanent link">&para;</a></h2>
 <p>The trajectory judge uses the same response contract and provider/model
 compatibility guidance as the LLM classifier judge. See
@@ -1583,9 +1670,10 @@ first request, so <code>--dry-run</code> catches them.</p>
 <p>Read the standard stats endpoint:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats
 </span></code></pre></div>
-<p>The snapshot reports per-model calls, tokens, latency, and cost for the strong
+<p>The snapshot reports per-model calls, token usage, and latency for the strong
 and weak tiers. Judge calls are recorded in the classifier stats bucket, so their
-token cost and latency remain visible as routing overhead.</p>
+token usage and latency remain visible as routing overhead. Dollar costs are not
+included. Calculate them separately using the recorded usage and model pricing.</p>
 <p>When the server runs with a routing log, successful judge calls also appear in
 per-session routing stats under the judge's model id, tagged with the
 <code>classifier</code> tier — so per-session token accounting includes judge overhead
