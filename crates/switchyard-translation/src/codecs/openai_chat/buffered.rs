@@ -1009,6 +1009,8 @@ fn copy_openai_chat_request_extensions(
         "service_tier",
         "store",
         "stream_options",
+        // `top_logprobs` is only valid alongside `logprobs`.
+        "logprobs",
         "top_logprobs",
         "user",
     ] {
