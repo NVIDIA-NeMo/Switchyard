@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyUnicodeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyMapping};
+use pyo3::types::{PyDict, PyMapping, PyString};
 use pyo3_async_runtimes::TaskLocals;
 use pyo3_async_runtimes::generic::{ContextExt, Runtime};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
@@ -257,7 +257,18 @@ impl PyRunner {
 
     /// Load and validate a native deployment TOML document.
     #[staticmethod]
-    fn from_toml(py: Python<'_>, source: String) -> PyResult<Self> {
+    fn from_toml(py: Python<'_>, source: &Bound<'_, PyString>) -> PyResult<Self> {
+        let source = source
+            .to_cow()
+            .map_err(|error| {
+                if error.is_instance_of::<PyUnicodeError>(py) {
+                    // Unicode errors retain the complete configuration in their args.
+                    PyValueError::new_err("deployment TOML must be valid UTF-8")
+                } else {
+                    error
+                }
+            })?
+            .into_owned();
         py.detach(move || {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
             Runner::from_toml(&source)
