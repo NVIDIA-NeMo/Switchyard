@@ -171,6 +171,52 @@ def test_repeated_tasks_are_preserved_as_distinct_trials(tmp_path: Path) -> None
     assert trials[0].trial_id != trials[1].trial_id
 
 
+def test_distinct_trial_directories_can_share_result_metadata(tmp_path: Path) -> None:
+    first = write_trial(tmp_path, "first")
+    second = write_trial(tmp_path, "second")
+    update(first / "result.json", id=None)
+    (second / "result.json").unlink()
+    (second / "result.json").symlink_to(first / "result.json")
+    run = load_harbor(tmp_path, target="baseline")
+    assert run.issues == ()
+    assert [trial.trial_id for trial in run.trials] == ["first", "second"]
+
+
+@pytest.mark.parametrize("layout", ["job", "download"])
+@pytest.mark.parametrize("id_mode", ["absent", "null"])
+def test_trial_directory_alias_cannot_bias_repeat_outcomes(
+    tmp_path: Path, layout: str, id_mode: str
+) -> None:
+    job = tmp_path / "jobs" / "run" if layout == "download" else tmp_path
+    for name, reward in (("repeat-1", 1), ("repeat-2", 0)):
+        path = write_trial(job, name) / "result.json"
+        result = json.loads(path.read_text())
+        result.pop("id")
+        if id_mode == "null":
+            result["id"] = None
+        result["verifier_result"]["rewards"]["reward"] = reward
+        path.write_text(json.dumps(result))
+    write_trial(job, "clean", task="unaffected")
+    run = load_harbor(tmp_path, target="baseline", dataset="suite")
+    dataset = Dataset.from_runs({"baseline": run}, input_target="baseline")
+    assert dataset.tasks[0].outcomes["baseline"].reward == 0.5
+    alias = job / "repeat-1-alias"
+    alias.symlink_to(job / "repeat-1", target_is_directory=True)
+
+    with pytest.raises(ValueError, match="duplicate trial directory"):
+        load_harbor(tmp_path, target="baseline", dataset="suite")
+    run = load_harbor(tmp_path, target="baseline", dataset="suite", on_error="record")
+    assert len(run.trials) == 3
+    (issue,) = run.issues
+    assert issue.source == str(alias / "result.json")
+    assert issue.task_id == "suite/benchmark/task-a"
+    with pytest.raises(ValueError, match="incomplete cohort"):
+        Dataset.from_runs({"baseline": run}, input_target="baseline")
+    dataset = Dataset.from_runs({"baseline": run}, input_target="baseline", intersection=True)
+    assert [task.task_id for task in dataset.tasks] == ["suite/unaffected"]
+    assert dataset.coverage["excluded_task_ids"] == [issue.task_id]
+
+
 @pytest.mark.parametrize("layout", ["job", "download"])
 @pytest.mark.parametrize("remaining", [0, 1])
 def test_missing_repeat_directory_is_not_silently_dropped(
