@@ -3762,6 +3762,68 @@ selector = "/decision/target"
     Ok(())
 }
 
+// An llm_classifier parent sends delegated work to its sub-agent route without calling
+// its own judge, and keeps judging its own traffic.
+#[tokio::test]
+async fn llm_classifier_parent_sends_subagent_work_to_the_child_route() -> TestResult {
+    for mode in [
+        "base_threshold = 0.5",
+        "mode = \"escalation\"\nescalation = { confirmations = 1 }",
+    ] {
+        let upstream = MockUpstream::start().await?;
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets]
+classifier = {{ id = "model/classifier", llm_client = "upstream" }}
+strong = {{ id = "model/strong", llm_client = "upstream" }}
+weak = {{ id = "model/weak", llm_client = "upstream" }}
+worker = {{ id = "model/worker", llm_client = "upstream" }}
+[routes.agent]
+id = "agent"
+type = "llm_classifier"
+classifier_target = "classifier"
+strong_target = "strong"
+weak_target = "weak"
+{mode}
+[routes.agent.subagents]
+type = "passthrough"
+target = "worker"
+"#,
+            base_url = upstream.base_url
+        ))?);
+        let body = json!({"model":"agent","messages":[{"role":"user","content":"bounded task"}]});
+
+        let child = [
+            ("x-claude-code-session-id", "root-session"),
+            ("x-claude-code-agent-id", "child-agent"),
+        ];
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(body.clone()),
+            &child,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{mode}");
+        assert_eq!(upstream.models().await, ["model/worker"], "{mode}");
+
+        upstream.calls.lock().await.clear();
+        let parent = [("x-claude-code-session-id", "root-session")];
+        let response =
+            send_with_headers(&app, "POST", "/v1/chat/completions", Some(body), &parent).await?;
+        assert_eq!(response.status, StatusCode::OK, "{mode}");
+        let mut models = upstream.models().await;
+        models.sort();
+        assert_eq!(models, ["model/classifier", "model/weak"], "{mode}");
+    }
+    Ok(())
+}
+
 // Codex's structured kind takes precedence over the flat `collab_spawn` header:
 // maintenance uses the parent classifier; delegated work uses the subagent route.
 #[tokio::test]
