@@ -290,14 +290,17 @@ from switchyard.sim import evaluate
 
 async def compare(dataset):
     summaries = {}
+    rows = {}
     for name, path in {"fixed": "routes.toml", "candidate": "candidate.toml"}.items():
+        rows[name] = []
         report = await evaluate(
             dataset, Runner.load(path), route="auto", concurrency=1,
+            on_result=rows[name].append,
         )
         summaries[name] = report.to_dict()
-    return summaries
+    return summaries, rows
 
-summaries = asyncio.run(compare(dataset))
+summaries, rows = asyncio.run(compare(dataset))
 for name, summary in summaries.items():
     print(json.dumps({
         "policy": name,
@@ -315,6 +318,23 @@ also require full cost-comparison coverage. Unknown routing cost stays `null`;
 supply the same `price_call` function to each evaluation to include classifier
 cost estimates. If coverage is partial, use `on_result` rows to compare the same
 task IDs across policies; matching counts alone do not establish a common cohort.
+
+The example retains each policy's `Result` objects in `rows[name]`. For a partial
+reward comparison, keep successful rows whose selected reward and every fixed-target
+reward are known. Intersect those task IDs across policies, then recompute every
+policy, fixed-target, and oracle mean on that intersection. Record the included and
+excluded task IDs. Repeat this process separately for cost, requiring known routing
+cost when comparing totals that include classifier calls. The saved rows contain
+the recorded outcomes needed for these comparisons; no new routing calls are needed.
+For large evaluations, use a synchronous callback to stream policy-tagged rows to
+storage instead of retaining them in memory.
+
+Keep the original recordings or their immutable content identities, converter code
+version, task splits, `input_target`, configuration snapshots, Switchyard revision,
+evaluation options, and pricing rules alongside those rows. The report's `run_id`
+identifies an evaluation; it does not fingerprint its inputs or policy. Python API
+calls leave artifact storage to the caller. The Harbor CLI records configuration
+hashes and input paths, so retain the referenced content as well.
 
 Split recordings by task ID before tuning, keeping every repeat of a task in the
 same split. Use the development split to choose prompts, thresholds, or routing
