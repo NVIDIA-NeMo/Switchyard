@@ -511,7 +511,8 @@ impl CustomClassifierPolicy {
 pub struct CustomClassifierConfig {
     /// System prompt sent to the classifier judge.
     pub prompt: String,
-    /// Inner JSON Schema placed inside the provider's structured-output wrapper.
+    /// Inner JSON Schema for the verdict. Sent in the provider's structured-output wrapper in
+    /// JSON Schema mode, or appended to the prompt in JSON Object mode.
     pub response_schema: Value,
     /// Deterministic policy applied after the verdict passes schema validation.
     pub policy: CustomClassifierPolicy,
@@ -523,6 +524,8 @@ pub struct CustomClassifierConfig {
     pub recent_turn_window: Option<usize>,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+    /// Structured-output mode requested from the classifier judge.
+    pub response_format_type: ClassifierResponseFormat,
 }
 
 impl CustomClassifierConfig {
@@ -540,6 +543,7 @@ impl CustomClassifierConfig {
             message_hash_fallback: false,
             recent_turn_window: None,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            response_format_type: ClassifierResponseFormat::default(),
         }
     }
 
@@ -736,8 +740,11 @@ impl LlmTaskClassifier {
         fail_open: bool,
     ) -> Result<Arc<dyn Classifier>> {
         config.validate()?;
-        let contract =
-            ClassifierContract::from_inner_schema(&config.prompt, config.response_schema.clone())?;
+        let contract = ClassifierContract::from_inner_schema(
+            &config.prompt,
+            config.response_schema.clone(),
+            config.response_format_type,
+        )?;
         let policy = match &config.policy {
             CustomClassifierPolicy::TargetSelector { selector } => {
                 CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector)?)

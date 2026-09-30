@@ -183,6 +183,7 @@ struct CustomClassifierRouteConfig {
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     max_output_tokens: u64,
+    response_format_type: ClassifierResponseFormat,
 }
 
 /// Runtime model groups for a custom classifier, keyed by group name.
@@ -1335,10 +1336,9 @@ impl LlmClassifierRouteConfig {
                     || base_threshold.is_some()
                     || threshold_step.is_some()
                     || escalation.is_some()
-                    || *response_format_type != ClassifierResponseFormat::JsonSchema
                 {
                     return Err(AlgorithmConfigError::new(format!(
-                        "llm_classifier route {route_name} mode custom cannot use capability or escalation fields and response_format_type must be 'json_schema'"
+                        "llm_classifier route {route_name} mode custom cannot use capability or escalation fields"
                     )));
                 }
                 let models = required_classifier_field(route_name, "models", models)?;
@@ -1374,6 +1374,7 @@ impl LlmClassifierRouteConfig {
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         max_output_tokens: *max_output_tokens,
+                        response_format_type: *response_format_type,
                     },
                 ))
             }
@@ -1460,6 +1461,7 @@ fn build_subagent_router_config(
             );
             classifier_config.recent_turn_window = config.recent_turn_window;
             classifier_config.max_output_tokens = config.max_output_tokens;
+            classifier_config.response_format_type = config.response_format_type;
             let classifier = Arc::new(
                 LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                     default_target: config.default_target.clone(),
@@ -1606,6 +1608,7 @@ fn build_algorithm(
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
                     classifier_config.max_output_tokens = config.max_output_tokens;
+                    classifier_config.response_format_type = config.response_format_type;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                         default_target: config.default_target,
                         config: classifier_config,
