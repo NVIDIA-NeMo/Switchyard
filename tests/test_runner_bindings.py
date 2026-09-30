@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,7 @@ import pytest
 
 from switchyard.libsy import RoutingOutcome
 from switchyard.runner import DecisionError, Runner
+from switchyard_rust.runner import _decide
 
 
 @dataclass
@@ -31,6 +33,8 @@ class JudgeStub:
     started: Event = field(default_factory=Event)
     release: Event | None = None
     completed: Event = field(default_factory=Event)
+    wait_for_disconnect: bool = False
+    disconnected: Event = field(default_factory=Event)
 
 
 @pytest.fixture
@@ -46,6 +50,16 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
                 {name.lower(): value for name, value in self.headers.items()}
             )
             stub.started.set()
+            if stub.wait_for_disconnect:
+                self.connection.settimeout(5)
+                try:
+                    if self.rfile.read(1) == b"":
+                        stub.disconnected.set()
+                except ConnectionResetError:
+                    stub.disconnected.set()
+                finally:
+                    stub.completed.set()
+                return
             if stub.release is not None:
                 stub.release.wait(timeout=5)
             verdict = {
@@ -448,3 +462,255 @@ async def test_cancellation_does_not_complete_or_retain_a_decision(judge: JudgeS
     assert decision.selected.target == "strong"
     assert len(decision.calls) == 1
     assert [call["model"] for call in judge.calls] == ["judge/model", "judge/model"]
+
+
+async def test_cancellation_before_first_step_does_not_start_native_work(judge: JudgeStub) -> None:
+    runner = Runner.from_toml(deployment(judge.url))
+    task = asyncio.create_task(runner.decide(request(), headers=session("never-started")))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    decision = await runner.decide(request(), headers=session("subsequent"))
+    assert decision.selected.target == "weak"
+    assert [call["model"] for call in judge.calls] == ["judge/model"]
+
+
+@pytest.mark.parametrize("completion_error", [False, True])
+async def test_repeated_cancellation_drains_bridge_before_propagating(
+    completion_error: bool,
+) -> None:
+    bridge: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class PendingRunner:
+        def _start_decision(self, *args: object, **kwargs: object) -> tuple[object, object]:
+            started.set()
+            return bridge, self
+
+        def cancel(self) -> None:
+            cancelled.set()
+
+        def wait(self) -> None:
+            assert bridge.done()
+
+        def is_finished(self) -> bool:
+            return False
+
+    task = asyncio.create_task(_decide(PendingRunner(), request(), None, False))
+    await started.wait()
+    task.cancel("original cancellation")
+    await cancelled.wait()
+    assert not task.done()
+    assert not bridge.cancelled()
+    task.cancel("repeated cancellation")
+    # Advance the event loop once so the repeated cancellation reaches the drain.
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert not bridge.cancelled()
+    if completion_error:
+        bridge.set_exception(RuntimeError("native failure while cancellation was draining"))
+    else:
+        bridge.set_result(None)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    # Python 3.11 began propagating cancellation messages to task awaiters.
+    if sys.version_info >= (3, 11):
+        assert str(caught.value) == "original cancellation"
+    assert bridge.done()
+    assert not bridge.cancelled()
+
+
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+async def test_decision_waits_for_completion_worker_to_exit(
+    judge: JudgeStub, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    judge.release = Event()
+    if outcome == "error":
+        judge.status = 503
+    runner = Runner.from_toml(deployment(judge.url))
+    task = asyncio.create_task(runner.decide(request()))
+    assert await asyncio.to_thread(judge.started.wait, 5)
+
+    loop = asyncio.get_running_loop()
+    if not hasattr(loop, "_write_to_self"):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        pytest.skip("requires asyncio's socket wakeup implementation")
+    write_to_self = loop._write_to_self
+    entered = Event()
+    release = Event()
+    returned = Event()
+    finished_before_worker_exit: list[bool] = []
+
+    def gated_write() -> None:
+        entered.set()
+        write_to_self()
+        assert release.wait(5)
+
+    def observe_completion() -> None:
+        if entered.wait(5):
+            # The future's completion callback can run while its worker is still
+            # inside call_soon_threadsafe. The public task must remain pending.
+            finished_before_worker_exit.append(returned.wait(0.1))
+        # Finishing this custom wakeup tail requires event-loop progress.
+        loop.call_soon_threadsafe(release.set)
+
+    observer = Thread(target=observe_completion)
+    task.add_done_callback(lambda _: returned.set())
+    monkeypatch.setattr(loop, "_write_to_self", gated_write)
+    observer.start()
+    try:
+        if outcome == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            judge.release.set()
+            if outcome == "error":
+                with pytest.raises(DecisionError):
+                    await task
+            else:
+                assert (await task).selected.target == "weak"
+    finally:
+        release.set()
+        monkeypatch.setattr(loop, "_write_to_self", write_to_self)
+        observer.join(timeout=5)
+    assert finished_before_worker_exit == [False]
+
+
+async def test_cancellation_first_arriving_during_bridge_join_is_drained() -> None:
+    bridge: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    bridge.set_result(None)
+    joining = Event()
+    release = Event()
+
+    class CompletedRunner:
+        def _start_decision(self, *args: object, **kwargs: object) -> tuple[object, object]:
+            return bridge, self
+
+        def cancel(self) -> None:
+            pytest.fail("routing was already complete when cancellation arrived")
+
+        def wait(self) -> None:
+            joining.set()
+            assert release.wait(5)
+
+        def is_finished(self) -> bool:
+            return False
+
+    task = asyncio.create_task(_decide(CompletedRunner(), request(), None, False))
+    try:
+        assert await asyncio.to_thread(joining.wait, 5)
+        task.cancel("cancel during join")
+        await asyncio.sleep(0)
+        task.cancel("repeated cancellation")
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    if sys.version_info >= (3, 11):
+        assert str(caught.value) == "cancel during join"
+
+
+def test_asyncio_shutdown_keeps_an_existing_bridge_join_alive() -> None:
+    joining = Event()
+    shutdown_started = Event()
+    release = Event()
+    returned = Event()
+    joined = Event()
+    finished_before_join: list[bool] = []
+
+    async def main() -> None:
+        bridge: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        bridge.set_result(None)
+
+        class CompletedRunner:
+            def _start_decision(self, *args: object, **kwargs: object) -> tuple[object, object]:
+                return bridge, self
+
+            def wait(self) -> None:
+                joining.set()
+                assert release.wait(5)
+                joined.set()
+
+            def is_finished(self) -> bool:
+                return False
+
+        task = asyncio.create_task(_decide(CompletedRunner(), request(), None, False))
+        task.add_done_callback(lambda _: returned.set())
+        assert await asyncio.to_thread(joining.wait, 5)
+        asyncio.get_running_loop().call_soon(shutdown_started.set)
+
+    def observe_shutdown() -> None:
+        if shutdown_started.wait(5):
+            finished_before_join.append(returned.wait(0.1))
+        release.set()
+
+    observer = Thread(target=observe_shutdown)
+    observer.start()
+    try:
+        asyncio.run(main())
+    finally:
+        release.set()
+        observer.join(timeout=5)
+    assert joined.is_set()
+    assert finished_before_join == [False]
+
+
+@pytest.mark.parametrize("shutdown", [False, True], ids=["explicit-cancel", "asyncio-shutdown"])
+async def test_cancellation_finishes_bridge_before_interpreter_shutdown(
+    judge: JudgeStub, tmp_path: Path, shutdown: bool
+) -> None:
+    judge.wait_for_disconnect = True
+    config = tmp_path / "routes.toml"
+    config.write_text(deployment(judge.url))
+    script = """
+import asyncio
+import sys
+from switchyard.runner import Runner
+
+async def main():
+    runner = Runner.load(sys.argv[1])
+    task = asyncio.ensure_future(runner.decide({
+        "model": "auto",
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "task"}]}],
+    }))
+    await asyncio.to_thread(sys.stdin.readline)
+    if sys.argv[2] == "False":
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+asyncio.run(main())
+"""
+    # Repeat immediate process exit to exercise the completion thread scheduling
+    # race, including cancellation performed by asyncio.run itself.
+    for _ in range(5):
+        judge.started.clear()
+        judge.disconnected.clear()
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            script,
+            str(config),
+            str(shutdown),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            assert await asyncio.to_thread(judge.started.wait, 5)
+            stdout, stderr = await asyncio.wait_for(process.communicate(b"\n"), timeout=10)
+            assert process.returncode == 0, stderr.decode()
+            assert not stdout
+            assert not stderr, stderr.decode()
+            assert await asyncio.to_thread(judge.disconnected.wait, 5)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
