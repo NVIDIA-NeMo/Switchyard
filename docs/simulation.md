@@ -489,7 +489,9 @@ for scoring.
 
 `Runner.load` and `Runner.from_toml` use Switchyard's configuration parser.
 Configuration and request validation failures raise `ValueError`; incompatible
-Python argument types can also raise `TypeError`. Execution
+Python argument types can also raise `TypeError`. Native conversion uses a fixed
+nesting limit and rejects cyclic or excessively nested values it consumes with
+`ValueError`. Shared values that do not form a cycle remain supported. Execution
 failures raise `DecisionError` with safe diagnostics and completed observations;
 an application deadline can instead raise `asyncio.TimeoutError`. Cancellation
 waits for local routing and its Python bridge to stop.

@@ -7,6 +7,7 @@ mod errors;
 mod libsy_bindings;
 mod py_serde;
 mod runner_bindings;
+mod serde_depth;
 mod server_bindings;
 
 #[pymodule]

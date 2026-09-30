@@ -848,6 +848,113 @@ async def test_bad_request_and_configuration_fail_before_calls(
     assert judge.calls == []
 
 
+@pytest.mark.parametrize(
+    "case", ["dict", "list", "user-dict", "dataclass", "deep", "tool-result", "schema"]
+)
+async def test_recursive_python_inputs_raise_without_terminating_process(
+    judge: JudgeStub, tmp_path: Path, case: str
+) -> None:
+    config = tmp_path / "routes.toml"
+    config.write_text(deployment(judge.url))
+    script = r"""
+import asyncio
+import sys
+from collections import UserDict
+from dataclasses import dataclass
+
+if sys.platform != "win32":
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+from switchyard.libsy import CustomClassifierConfig
+from switchyard.runner import Runner
+
+runner = Runner.load(sys.argv[1])
+case = sys.argv[2]
+if case == "list":
+    value = []
+    value.append(value)
+elif case == "dataclass":
+    @dataclass
+    class Node:
+        child: object = None
+    value = Node()
+    value.child = value
+elif case == "deep":
+    value = {}
+    for _ in range(4096):
+        value = {"nested": value}
+elif case == "tool-result":
+    value = {"type": "tool_result", "tool_call_id": "call", "content": []}
+    value["content"].append(value)
+else:
+    value = UserDict() if case == "user-dict" else {}
+    value["nested"] = value
+
+async def main():
+    request = {"model": "fixed", "messages": []}
+    if case == "tool-result":
+        request["messages"] = [{"role": "tool", "content": [value]}]
+    else:
+        request["output"] = {"response_format": value}
+    try:
+        if case == "schema":
+            CustomClassifierConfig("Select a target.", value, "/target")
+        else:
+            await runner.decide(request)
+    except ValueError as error:
+        assert "nesting" in str(error)
+        assert error.__cause__ is None and error.__context__ is None
+    else:
+        raise AssertionError("recursive input was accepted")
+    # The same interpreter and runner remain usable after rejecting the input.
+    decision = await runner.decide({"model": "fixed", "messages": []})
+    assert decision.selected.target == "weak" and not decision.calls
+
+asyncio.run(main())
+"""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        script,
+        str(config),
+        case,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+        assert process.returncode == 0, stderr.decode()
+        assert not stdout and not stderr
+        assert judge.calls == []
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+async def test_python_conversion_preserves_shared_values_and_ignored_fields(
+    judge: JudgeStub,
+) -> None:
+    shared: dict[str, object] = {"type": "string"}
+    for _ in range(16):
+        shared = {"nested": shared}
+    ignored: dict[str, object] = {}
+    ignored["self"] = ignored
+    original = {
+        **request(model="fixed"),
+        "output": {"response_format": {"left": shared, "right": shared}},
+        "ignored_field": ignored,
+    }
+    decision = await Runner.from_toml(deployment(judge.url)).decide(original)
+    assert decision.outcome.request["output"]["response_format"] == {
+        "left": shared,
+        "right": shared,
+    }
+    assert "ignored_field" not in decision.outcome.request
+    assert not decision.calls and judge.calls == []
+
+
 def test_configuration_diagnostics_name_missing_target_and_environment(
     judge: JudgeStub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
