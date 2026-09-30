@@ -206,6 +206,8 @@ missing, all initial user messages must match. Full system scaffolding may diffe
 between agents. Repeated trials retain their identities; each target's reward,
 cost, and duration are averaged across all repeats of a task. Tasks then have
 equal weight regardless of their number of repeats.
+Within one import, duplicate trial IDs and directory aliases resolving to the same
+trial directory are rejected, so symlinks cannot count one recorded trial twice.
 
 Missing rewards, cost, duration, and token counts stay unknown. A task measurement
 is unknown if any of its repeats lacks that measurement. Agent errors remain on

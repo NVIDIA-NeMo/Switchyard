@@ -66,6 +66,7 @@ def load_harbor(
 
     trials: list[Trial] = []
     trial_ids: set[str] = set()
+    trial_dirs: set[Path] = set()
     for result_path in paths:
         task_id = None
         try:
@@ -77,7 +78,11 @@ def load_harbor(
             )
             if trial.trial_id in trial_ids:
                 raise ValueError("duplicate trial ID")
+            trial_dir = result_path.parent.resolve()
+            if trial_dir in trial_dirs:
+                raise ValueError("duplicate trial directory")
             trial_ids.add(trial.trial_id)
+            trial_dirs.add(trial_dir)
             trials.append(trial)
         except (OSError, ValueError) as error:
             message = str(error) if isinstance(error, ValueError) else "cannot read trial artifact"
