@@ -75,6 +75,7 @@ async def test_bounded_concurrency_and_progressive_results():
     assert report.to_dict()["counts"]["scored"] == 11
     assert all(row.routing_cost_usd == 0 for row in rows)
     assert len({headers["x-switchyard-session-id"] for headers in runner.headers}) == 11
+    assert all(headers.get("x-switchyard-session-final") == "true" for headers in runner.headers)
 
 
 async def test_sessions_are_isolated_between_evaluations():
