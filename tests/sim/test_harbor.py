@@ -84,6 +84,17 @@ def update(path: Path, **values: object) -> None:
     path.write_text(json.dumps(row))
 
 
+def inject_json_recursion_error(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original_load = json.load
+
+    def load(stream, *args, **kwargs):
+        if Path(stream.name) == path:
+            raise RecursionError("PRIVATE_TRACE")
+        return original_load(stream, *args, **kwargs)
+
+    monkeypatch.setattr(json, "load", load)
+
+
 @pytest.mark.parametrize(
     "version,codex", [("ATIF-v1.7", False), ("ATIF-v1.7", True), ("ATIF-v1.5", True)]
 )
@@ -359,14 +370,13 @@ def test_malformed_trajectory_records_safe_error_and_task_identity(tmp_path: Pat
 
 
 @pytest.mark.parametrize("artifact", ["result.json", "agent/trajectory.json"])
-def test_excessive_json_nesting_records_issue_without_losing_valid_trials(
-    tmp_path: Path, artifact: str
+def test_json_decoder_recursion_error_records_issue_without_losing_valid_trials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact: str
 ) -> None:
     invalid = write_trial(tmp_path, "invalid")
     write_trial(tmp_path, "valid", task="benchmark/task-b")
     path = invalid / artifact
-    nested = "[" * 10_000 + '"PRIVATE_TRACE"' + "]" * 10_000
-    path.write_text(path.read_text()[:-1] + ', "unused":' + nested + "}")
+    inject_json_recursion_error(path, monkeypatch)
 
     with pytest.raises(ValueError, match=f"invalid JSON in {path.name}"):
         load_harbor(tmp_path, target="baseline", dataset="suite")
@@ -387,16 +397,41 @@ def test_excessive_json_nesting_records_issue_without_losing_valid_trials(
 
 
 @pytest.mark.parametrize("layout", ["job", "download"])
-def test_excessive_json_nesting_in_summary_keeps_discoverable_trials(
-    tmp_path: Path, layout: str
+def test_json_decoder_recursion_error_in_summary_keeps_discoverable_trials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
 ) -> None:
     job = tmp_path / "jobs" / "run" if layout == "download" else tmp_path
     write_trial(job)
-    nested = "[" * 10_000 + "0" + "]" * 10_000
-    (job / "result.json").write_text('{"unused":' + nested + "}")
+    path = job / "result.json"
+    path.write_text('{"n_total_trials": 1}')
+    inject_json_recursion_error(path, monkeypatch)
     run = load_harbor(tmp_path, target="baseline", on_error="record")
     assert [trial.task_id for trial in run.trials] == ["benchmark/task-a"]
     assert run.issues == ()
+
+
+def test_json_nesting_follows_the_interpreters_decoder_limit(tmp_path: Path) -> None:
+    trial = write_trial(tmp_path)
+    path = trial / "result.json"
+    nested = "[" * 10_000 + "0" + "]" * 10_000
+    payload = path.read_text()[:-1] + ', "unused":' + nested + "}"
+    path.write_text(payload)
+    try:
+        json.loads(payload)
+    except RecursionError:
+        supported = False
+    else:
+        supported = True
+
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    if supported:
+        assert [trial.task_id for trial in run.trials] == ["benchmark/task-a"]
+        assert run.issues == ()
+    else:
+        assert run.trials == ()
+        assert len(run.issues) == 1
+        assert run.issues[0].message == "invalid JSON in result.json"
+        assert run.issues[0].task_id is None
 
 
 def test_trial_without_result_is_an_issue_not_an_invisible_exclusion(tmp_path: Path) -> None:
