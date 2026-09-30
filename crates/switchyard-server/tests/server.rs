@@ -342,6 +342,22 @@ async fn upstream_chat(
         .into_response();
     }
 
+    // A generation that did not complete (`abort` from vLLM or SGLang, `error` from OpenRouter).
+    if let Some(reason @ ("abort" | "error")) = model.strip_prefix("model/finish-") {
+        return Json(json!({
+            "id": "chatcmpl-finish",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "partial"},
+                "finish_reason": reason
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+        }))
+        .into_response();
+    }
+
     // Buffered tool call, the non-streaming counterpart of the branch above.
     if prompt == "mcp-tool-call" {
         let called = body["tool_choice"]["function"]["name"]
@@ -1131,6 +1147,85 @@ async fn failed_responses_return_errors_and_try_fallback_across_endpoints() -> T
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["models"]["model/failed"]["errors"], requests.len());
     assert_eq!(stats["models"]["model/fallback"]["calls"], requests.len());
+    Ok(())
+}
+
+// A Chat backend that ends a generation with `abort` or `error` did not complete
+// it: every client path gets a 502, and a fallback route moves on.
+#[tokio::test]
+async fn chat_abort_and_error_finish_reasons_return_errors_and_try_fallback() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let requests = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL, "messages": [{"role": "user", "content": "hello"}]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL, "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "hello"}),
+        ),
+    ];
+    for reason in ["abort", "error"] {
+        let model = format!("model/finish-{reason}");
+        let message = format!("provider finished with finish_reason \"{reason}\"");
+        for fallback in [false, true] {
+            let route = if fallback {
+                "type = \"random\"\ntargets = [\"first\", \"second\"]\nweights = [1000, 1]\nseed = 17"
+            } else {
+                "type = \"passthrough\"\ntarget = \"first\""
+            };
+            let app = build_switchyard_router(load_test_config(&format!(
+                r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+[targets]
+first = {{ id = "{model}", llm_client = "mock" }}
+second = {{ id = "model/fallback", llm_client = "mock" }}
+[routes.chat]
+id = "{ROUTE_MODEL}"
+{route}
+"#,
+                base_url = upstream.base_url,
+            ))?);
+            for (path, body) in &requests {
+                let previous_calls = upstream.models().await.len();
+                let response = send(&app, "POST", path, Some(body.clone())).await?;
+                let calls = upstream.models().await[previous_calls..].to_vec();
+                if fallback {
+                    assert_eq!(response.status, StatusCode::OK, "{model}: {path}");
+                    assert_eq!(
+                        response.json()?["model"],
+                        "model/fallback",
+                        "{model}: {path}"
+                    );
+                    assert_eq!(calls, [model.as_str(), "model/fallback"], "{model}: {path}");
+                    continue;
+                }
+                assert_eq!(response.status, StatusCode::BAD_GATEWAY, "{model}: {path}");
+                let expected = if *path == "/v1/messages" {
+                    json!({"type": "error", "error": {"type": "api_error", "message": message}})
+                } else {
+                    json!({"error": {
+                        "type": "upstream_error", "code": "upstream_error", "message": message
+                    }})
+                };
+                assert_eq!(response.json()?, expected, "{model}: {path}");
+                assert_eq!(calls, [model.as_str()], "{model}: {path}");
+            }
+        }
+    }
     Ok(())
 }
 
