@@ -4,12 +4,11 @@
 //! Provider-neutral decision questions and answers, separate from LLM messages.
 //!
 //! Enums use snake-case `type` tags and a `data` payload in serialized form.
-//! Numeric bounds are checked during deserialization. Public fields allow direct
-//! construction; callers are responsible for valid values in that case.
+//! Fields are public; providers and callers are responsible for valid values.
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ModelId, Usage};
@@ -17,43 +16,17 @@ use crate::{ModelId, Usage};
 /// Answer probability on a `[0, 1]` scale.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Probability(#[serde(deserialize_with = "deserialize_probability")] pub f64);
+pub struct Probability(pub f64);
 
 /// Position in the request's rubric, including fractional positions.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ScoreValue(#[serde(deserialize_with = "deserialize_score")] pub f64);
+pub struct ScoreValue(pub f64);
 
 /// Provider confidence; its scale and meaning are provider-specific.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct ProviderConfidence(#[serde(deserialize_with = "deserialize_confidence")] pub f64);
-
-fn deserialize_probability<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
-    let value = f64::deserialize(deserializer)?;
-    if !(0.0..=1.0).contains(&value) {
-        return Err(de::Error::custom(
-            "probability must be finite and in [0, 1]",
-        ));
-    }
-    Ok(value)
-}
-
-fn deserialize_score<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
-    let value = f64::deserialize(deserializer)?;
-    if !value.is_finite() || value < 0.0 {
-        return Err(de::Error::custom("score must be finite and nonnegative"));
-    }
-    Ok(value)
-}
-
-fn deserialize_confidence<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
-    let value = f64::deserialize(deserializer)?;
-    if !value.is_finite() {
-        return Err(de::Error::custom("provider confidence must be finite"));
-    }
-    Ok(value)
-}
+pub struct ProviderConfidence(pub f64);
 
 /// Shared context evaluated against independent, named questions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
