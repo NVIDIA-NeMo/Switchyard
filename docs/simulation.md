@@ -10,6 +10,9 @@ public `switchyard.runner` Python interface. Switchyard's native bindings load
 the existing TOML configuration and execute routing calls. No local server or
 Harbor installation is needed.
 
+See the [simulator architecture](simulation-architecture.md) for the data flow,
+component ownership, and extension boundaries for custom formats and future replay.
+
 In an active Python 3.10+ virtual environment, install from the root of a source
 checkout containing `switchyard/sim`:
 
@@ -484,8 +487,8 @@ explicit `allow_response=True`; task simulation rejects them.
 `Trajectory` preserves ATIF documents. `Trial` and `Run` represent projected
 task evidence. `Dataset.from_runs` validates and pairs it.
 `score(task, decision)` is a pure scorer for a saved native decision.
-`evaluate` owns bounded scheduling and calls that scorer. `Report.add` accumulates
-results without retaining full trajectories or result rows. Harbor import decodes
+`evaluate` owns bounded scheduling and shares the same scoring routines.
+`Report.add` accumulates results without retaining full trajectories or result rows. Harbor import decodes
 one complete trajectory JSON file at a time, then keeps each accepted trial's initial
 input and metadata. A dataset retains those trials for every included task, across
 targets and repeats. `input_target` chooses the routing input without discarding the

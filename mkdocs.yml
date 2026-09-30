@@ -41,6 +41,7 @@ nav:
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
   - Operations:
       - Task routing evaluation: simulation.md
+      - Simulator architecture: simulation-architecture.md
       - Context-Window Handling: operations/context_window.md
       - Soak Testing: operations/soak_test.md
   - Reference:
