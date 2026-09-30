@@ -341,6 +341,69 @@ Cancellation stops local workers, but cannot revoke requests already received
 by a provider. Task concurrency bounds simultaneous decisions; an algorithm may
 make multiple provider calls inside a decision.
 
+## Use the Python decision API
+
+You can call `switchyard.runner` directly when your application owns task
+scheduling and scoring. Use the same `routes.toml` shown above. Requests use
+Switchyard's normalized format: `model` is the route ID, and message content is
+a list of typed blocks.
+
+```python
+import asyncio
+from uuid import uuid4
+
+from switchyard.runner import DecisionError, Runner
+
+async def inspect_decision():
+    runner = Runner.load("routes.toml")
+    request = {
+        "model": "auto",
+        "messages": [{
+            "role": "user",
+            "content": [{"type": "text", "text": "Fix the parser's handling of empty input."}],
+        }],
+    }
+    try:
+        decision = await asyncio.wait_for(
+            runner.decide(request, headers={
+                "x-switchyard-session-id": uuid4().hex,
+                "x-switchyard-session-final": "true",
+            }),
+            timeout=60,
+        )
+    except DecisionError as error:
+        print(error.kind, error.upstream_status, error.target, error.duration_seconds)
+        for call in error.calls:
+            print(call.model, call.is_success, call.duration_seconds, call.usage)
+        raise
+
+    print(decision.selected.target, decision.selected.model)
+    print([target.target for target in decision.fallbacks], decision.duration_seconds)
+    for call in decision.calls:
+        print(call.model, call.is_success, call.duration_seconds, call.usage)
+    return decision
+
+decision = asyncio.run(inspect_decision())
+```
+
+The fixed route selects target key `fast` and model ID `fast-model`, with no model
+calls. Classifier routes may make judge calls. `calls` contains completed logical
+calls; durations include backend retries. `usage` is a mapping or `None`, and
+missing token fields remain unknown. `DecisionError.target` names the failing
+model, while `decision.selected.target` is the configured target key.
+
+`Runner.load` and `Runner.from_toml` use Switchyard's configuration parser.
+Configuration and request validation failures raise `ValueError`. Execution
+failures raise `DecisionError` with safe diagnostics and completed observations;
+an application deadline can instead raise `asyncio.TimeoutError`. Cancellation
+waits for local routing and its Python bridge to stop.
+
+Give independent tasks distinct session IDs. For successive turns of one session,
+reuse its ID, await each decision in order, and mark only the last turn as final.
+Use a fresh runner for independent experiments. `decision.outcome` retains the
+existing `RoutingOutcome`. Algorithms that generate an answer while routing need
+explicit `allow_response=True`; task simulation rejects them.
+
 ## Library boundaries
 
 `Trajectory` preserves ATIF documents. `Trial` and `Run` represent projected
@@ -355,12 +418,6 @@ Treat projected `Trial`, `Task`, and `Dataset` records as read-only. Their froze
 dataclasses still contain mutable nested mappings. If you change recorded input,
 create new trials and rebuild the dataset so pairing is validated again.
 
-Native `Runner.load` and `Runner.from_toml` use Switchyard's configuration parser.
-`await runner.decide(normalized_request, headers=...)` returns configured selected
-and fallback targets, the existing `RoutingOutcome`, completed-call observations,
-and elapsed routing time. Provider failures raise `DecisionError` with completed
-observations and safe error metadata. Algorithms that generate an answer while
-routing require explicit `allow_response=True`; task simulation rejects them.
 The task scorer also rejects answers and material conversation rewrites, because
 recorded outcomes cannot score those changes.
 

@@ -41,7 +41,9 @@ Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 
 ### Embed the library in your harness
 
-[Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application. For Python, see the [embedding example](examples/libsy.py).
+[Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application.
+For Python, use the [configured decision API](docs/simulation.md#use-the-python-decision-api)
+or the [algorithm stream example](examples/libsy.py).
 
 ## Routing algorithms
 

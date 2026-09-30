@@ -7,6 +7,9 @@ Switchyard has two native Rust execution paths:
 - **Library path:** embed the routing algorithms directly in your own Rust
   application with `switchyard-libsy`.
 
+From Python, use the [configured decision API](simulation.md#use-the-python-decision-api)
+or [evaluate task routing against recorded runs](simulation.md).
+
 ## Server Path
 
 Use this path when you want a standalone proxy for API clients or need to
