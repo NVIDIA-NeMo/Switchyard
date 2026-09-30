@@ -108,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         dataset = Dataset.from_runs(
             runs, input_target=args.input_target, intersection=args.intersection
         )
+        del runs  # Dataset owns included trials; release excluded inputs before routing.
         config_bytes = args.config.read_bytes()
         runner = Runner.from_toml(config_bytes.decode("utf-8"))
         _validate_route(dataset, runner, args.route, _aliases(aliases))

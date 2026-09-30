@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import weakref
 from pathlib import Path
 
 import pytest
@@ -215,6 +216,79 @@ def test_cli_writes_flushed_rows_manifest_and_report_without_copying_config(
     original = (output / "report.json").read_text()
     assert main(args) == 2
     assert (output / "report.json").read_text() == original
+
+
+def test_cli_releases_excluded_trials_before_routing(
+    judge: JudgeStub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    for target in ("weak", "strong"):
+        write_trial(tmp_path / target, "shared", f"{target}/model", 1)
+        write_trial(tmp_path / target, "bad", f"{target}/model", 0)
+    write_trial(tmp_path / "weak", "weak-only", "weak/model", 0)
+    write_trial(tmp_path / "weak", "bad-repeat", "weak/model", 0)
+    invalid = tmp_path / "weak" / "bad-repeat__attempt" / "result.json"
+    data = json.loads(invalid.read_text())
+    data.update(task_name="bad", verifier_result={"rewards": {"reward": "invalid"}})
+    invalid.write_text(json.dumps(data))
+    config = tmp_path / "routes.toml"
+    config.write_text(deployment(judge.url))
+    run_refs = []
+    trial_refs = []
+
+    def capture(*args, **kwargs):
+        run = load_harbor(*args, **kwargs)
+        run_refs.append(weakref.ref(run))
+        trial_refs.extend((trial.task_id, weakref.ref(trial)) for trial in run.trials)
+        return run
+
+    async def verify(dataset, *args, **kwargs):
+        assert len(run_refs) == 2 and all(ref() is None for ref in run_refs)
+        assert sum(name != "shared" for name, _ in trial_refs) == 3
+        assert all(ref() is None for name, ref in trial_refs if name != "shared")
+        (task,) = dataset.tasks
+        assert task.task_id == "shared"
+        assert {id(trial) for trials in task.trials.values() for trial in trials} == {
+            id(ref()) for name, ref in trial_refs if name == "shared"
+        }
+        return await evaluate(dataset, *args, **kwargs)
+
+    monkeypatch.setattr("switchyard.sim.__main__.load_harbor", capture)
+    monkeypatch.setattr("switchyard.sim.__main__.evaluate", verify)
+    output = tmp_path / "evaluation"
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--route",
+                "fixed",
+                "--run",
+                f"weak={tmp_path / 'weak'}",
+                "--run",
+                f"strong={tmp_path / 'strong'}",
+                "--input-target",
+                "weak",
+                "--intersection",
+                "--skip-invalid",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    manifest = json.loads((output / "manifest.json").read_text())
+    report = json.loads((output / "report.json").read_text())
+    coverage = manifest["coverage"]
+    assert coverage.items() <= report["coverage"].items()
+    assert coverage["tasks_seen"] == 3 and coverage["tasks_included"] == 1
+    assert coverage["excluded_task_ids"] == ["bad", "weak-only"]
+    assert coverage["cost_sources_by_target"] == {"weak": {"result": 3}, "strong": {"result": 2}}
+    assert coverage["input_issues"][0]["task_id"] == "bad"
+    assert coverage["input_issues"][0]["source"] == str(invalid)
+    (row,) = [json.loads(line) for line in (output / "results.jsonl").read_text().splitlines()]
+    assert row["task_id"] == "shared" and row["target"] == "weak"
+    assert row["outcome"]["reward"] == 1 and report["complete"]
+    assert judge.calls == []
 
 
 @pytest.fixture

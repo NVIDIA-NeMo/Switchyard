@@ -461,6 +461,8 @@ one complete trajectory JSON file at a time, then keeps each accepted trial's in
 input and metadata. A dataset retains those trials for every included task, across
 targets and repeats. `input_target` chooses the routing input without discarding the
 other trial inputs.
+The CLI releases excluded trial inputs after pairing; library callers must release
+their original `Run` objects when they no longer need them.
 Memory therefore depends on both the largest trajectory being decoded and the
 retained trial inputs. Concurrency bounds in-flight decisions, not the loaded dataset size.
 
