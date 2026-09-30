@@ -112,11 +112,13 @@ This includes completion targets and targets used for judging or classification.
 same-model targets on different clients within a route because execution is keyed by model ID.
 Separate routes may use the same model ID on different clients.
 
-Distinct completion target keys within one route must have distinct model IDs.
-Routing decisions identify models, so aliases sharing an ID would make selected
-and fallback target identity ambiguous. The same target key may be reused by the
-parent and subagent routes. Judge-only targets may share a completion model ID
-when the client and prompt rules below permit it.
+The Python decision API and `/v1/decision` require distinct completion target keys
+within the requested route to have distinct model IDs. Routing decisions identify
+models, so aliases sharing an ID make selected and fallback target names ambiguous.
+These APIs reject that route before provider calls. Identical aliases remain valid
+for ordinary serving; other routes in the deployment can still return decisions.
+The same target key may be reused by the parent and subagent routes. Judge-only
+targets may share a completion model ID when the client and prompt rules below permit it.
 
 Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.

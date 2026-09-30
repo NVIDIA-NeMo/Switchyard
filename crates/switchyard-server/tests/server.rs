@@ -1826,6 +1826,118 @@ async fn responses_continuations_preserve_state_ownership() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn identical_completion_aliases_serve_but_cannot_return_named_decisions() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets]
+parent = {{ id = "model/shared", llm_client = "upstream" }}
+delegated = {{ id = "model/shared", llm_client = "upstream" }}
+judge = {{ id = "model/classifier", llm_client = "upstream" }}
+[routes.agent]
+id = "switchyard/aliases"
+type = "passthrough"
+target = "parent"
+[routes.agent.subagents]
+type = "passthrough"
+target = "delegated"
+[routes.classified]
+id = "switchyard/classify-aliases"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "parent"
+weak_target = "delegated"
+base_threshold = 0.5
+[routes.fixed]
+id = "switchyard/fixed"
+type = "passthrough"
+target = "parent"
+"#,
+        base_url = upstream.base_url,
+    ))?);
+
+    let delegated_headers = [
+        ("x-claude-code-session-id", "parent-session"),
+        ("x-claude-code-agent-id", "delegated-agent"),
+    ];
+    for headers in [&[][..], delegated_headers.as_slice()] {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/aliases",
+                "messages": [{"role": "user", "content": "hi"}]
+            })),
+            headers,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.headers["x-model-router-selected-model"],
+            "model/shared"
+        );
+        assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+    }
+    assert_eq!(upstream.models().await, ["model/shared", "model/shared"]);
+    upstream.calls.lock().await.clear();
+
+    for model in ["switchyard/aliases", "switchyard/classify-aliases"] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/decision",
+            Some(json!({
+                "input_format": "openai_chat",
+                "request": {
+                    "model": model,
+                    "messages": [{"role": "user", "content": "hi"}]
+                }
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response.json()?;
+        assert_eq!(body["error"]["type"], "server_error");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("model/shared")
+        );
+        assert!(
+            upstream.calls.lock().await.is_empty(),
+            "ambiguous decisions must fail before judge calls"
+        );
+    }
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/fixed",
+                "messages": [{"role": "user", "content": "hi"}]
+            }
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    let body = response.json()?;
+    assert_eq!(body["selected"]["target"], "parent");
+    assert_eq!(body["selected"]["model"], "model/shared");
+    assert_eq!(body["fallbacks"], json!([]));
+    assert!(upstream.calls.lock().await.is_empty());
+    Ok(())
+}
+
 /// Decision-only routing returns callable metadata and preserves any answer produced while routing.
 #[tokio::test]
 async fn decision_returns_callable_target_and_routing_answer() -> TestResult {

@@ -385,12 +385,27 @@ async def test_caller_headers_are_request_scoped_and_respect_configured_auth(
     assert "private prompt" not in str(caught.value)
 
 
-@pytest.mark.parametrize("kind", ["classifier", "random", "random-zero", "random-reversed"])
-def test_ambiguous_completion_target_aliases_fail_before_calls(
+@pytest.mark.parametrize(
+    "kind", ["classifier", "random", "random-zero", "random-reversed", "subagent"]
+)
+async def test_ambiguous_completion_target_aliases_fail_before_calls(
     judge: JudgeStub, tmp_path: Path, kind: str
 ) -> None:
     source = deployment(judge.url).replace('id = "strong/model"', 'id = "weak/model"')
-    if kind != "classifier":
+    if kind == "subagent":
+        source = (
+            source.split("[routes.classifier]")[0]
+            + """
+[routes.shared]
+id = "auto"
+type = "passthrough"
+target = "weak"
+[routes.shared.subagents]
+type = "passthrough"
+target = "strong"
+"""
+        )
+    elif kind != "classifier":
         targets = '["strong", "weak"]' if kind == "random-reversed" else '["weak", "strong"]'
         weights = "[0, 1]" if kind == "random-zero" else "[1, 99]"
         source = (
@@ -404,11 +419,24 @@ weights = {weights}
 seed = 1
 """
         )
+    if kind != "classifier":
+        source += """
+[routes.fixed]
+id = "fixed"
+type = "passthrough"
+target = "weak"
+"""
     path = tmp_path / "routes.toml"
     path.write_text(source)
     for load in (lambda: Runner.from_toml(source), lambda: Runner.load(path)):
+        runner = load()
         with pytest.raises(ValueError, match="completion targets.*model"):
-            load()
+            runner.validate_decision_route("auto")
+        with pytest.raises(ValueError, match="completion targets.*model"):
+            await runner.decide(request())
+        decision = await runner.decide(request(model="fixed"))
+        assert decision.selected.target == "weak"
+        assert decision.calls == []
     assert judge.calls == []
 
 

@@ -90,11 +90,12 @@ to `evaluate` or `score` when the two systems name the same model differently. A
 the library does not guess equivalence by trimming model names. Missing model
 metadata remains visible as unverified coverage.
 
-Distinct completion targets in one route must have distinct model IDs. Native
+For task evaluation, distinct completion targets in one route must have distinct model IDs. Native
 decisions identify models, so two target keys sharing an ID cannot be scored
-separately; configuration loading rejects that ambiguity. Reuse one target key
+separately; decision validation rejects that route before provider calls. Reuse one target key
 for the same candidate, or configure distinct served model IDs. Separate routes
-can still use different target keys for the same model.
+can still use different target keys for the same model. Identical aliases remain
+valid for ordinary serving and do not prevent evaluating other routes in the deployment.
 
 ## Use ATIF or custom recordings
 

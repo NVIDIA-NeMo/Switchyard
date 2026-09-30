@@ -3,6 +3,7 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 
@@ -164,6 +165,25 @@ impl Route {
     /// Configured completion targets available to routing decisions.
     pub fn decision_targets(&self) -> &[DecisionTarget] {
         &self.decision_targets
+    }
+
+    /// Checks that model IDs identify unambiguous completion target names.
+    ///
+    /// Serving and raw model-ID decisions may use identical aliases. Consumers
+    /// returning named targets must check this before making routing-time calls.
+    pub fn validate_decision_targets(&self) -> Result<(), RunnerError> {
+        let mut names_by_model = HashMap::new();
+        for target in &self.decision_targets {
+            if let Some(first_name) = names_by_model.insert(&target.model, &target.target)
+                && first_name != &target.target
+            {
+                return Err(RunnerError::configuration(format!(
+                    "completion targets {first_name} and {} both use model {}; routing decisions identify models, so reuse one target key, use distinct model ids, or put these targets in separate routes",
+                    target.target, target.model
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Returns model-list capability metadata.

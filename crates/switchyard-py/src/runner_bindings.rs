@@ -435,6 +435,7 @@ fn decision_route<'a>(
     let route = runner
         .route(model)
         .ok_or_else(|| PyValueError::new_err(format!("unknown route model {model:?}")))?;
+    route.validate_decision_targets().map_err(config_error)?;
     if !allow_response && route.routing_answer_target().is_some() {
         return Err(PyValueError::new_err(
             "route can call an answer model while deciding; set allow_response=True to permit it",

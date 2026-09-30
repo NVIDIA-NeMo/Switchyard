@@ -244,17 +244,6 @@ impl DeploymentConfig {
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
-            let mut names_by_model = HashMap::new();
-            for target in &decision_targets {
-                if let Some(first_name) = names_by_model.insert(&target.model, &target.target)
-                    && first_name != &target.target
-                {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name} completion targets {first_name} and {} both use model {}; routing decisions identify models, so use distinct model ids within this route or put these targets in separate routes",
-                        target.target, target.model
-                    )));
-                }
-            }
             let names = config
                 .algorithm
                 .runtime_model_names(route_name)
@@ -1577,7 +1566,7 @@ target = "smart"
     }
 
     #[test]
-    fn completion_target_aliases_in_one_route_are_rejected() {
+    fn completion_target_aliases_load_but_cannot_return_named_decisions() -> RunnerResult<()> {
         const ALIASED_TARGETS: &str = r#"
 schema_version = 1
 [llm_clients.primary]
@@ -1602,15 +1591,21 @@ llm_client = "primary"
             let configured = format!(
                 "{ALIASED_TARGETS}\n[routes.shared]\nid = \"switchyard/shared\"\n{algorithm}"
             );
-            let message = error_message(&configured);
+            let runner = runner_from_toml(&configured)?;
+            let message = runner
+                .route("switchyard/shared")
+                .expect("shared route should load")
+                .validate_decision_targets()
+                .expect_err("aliased completion targets cannot identify a named decision")
+                .to_string();
             assert!(
-                message.contains("route shared")
-                    && message.contains("completion targets first and second")
+                message.contains("completion targets first and second")
                     && message.contains("shared/model")
                     && message.contains("distinct model ids"),
                 "{algorithm}: {message}"
             );
         }
+        Ok(())
     }
 
     #[test]
@@ -1622,6 +1617,7 @@ llm_client = "primary"
         let route = runner
             .route("switchyard/passthrough")
             .expect("passthrough route should exist");
+        route.validate_decision_targets()?;
         assert_eq!(
             route
                 .decision_targets()
@@ -1643,6 +1639,7 @@ llm_client = "primary"
         let route = runner
             .route("switchyard/classifier")
             .expect("classifier route should exist");
+        route.validate_decision_targets()?;
         assert_eq!(
             route.models().models_for(&Category::Judge),
             route.models().models_for(&Category::Efficient)

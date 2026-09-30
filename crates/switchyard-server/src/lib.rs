@@ -734,6 +734,9 @@ async fn decision(
         .map(ModelId::from)
         .unwrap_or_default();
 
+    if let Err(error) = route.validate_decision_targets() {
+        return runner_error(error);
+    }
     let mut outcome = match route.decide(request).await {
         Ok(outcome) => outcome,
         Err(error) => return runner_error(error),
