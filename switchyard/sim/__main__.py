@@ -20,6 +20,14 @@ from . import Dataset, Result, evaluate, load_harbor
 from .evaluate import _aliases, _validate_options, _validate_route
 
 
+def _resolve_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except RuntimeError as error:
+        # Python < 3.13 reports symlink loops as RuntimeError rather than OSError.
+        raise ValueError(f"cannot resolve path: {path}") from error
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate Switchyard task routing on recorded Harbor runs."
@@ -39,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         "--input-target", required=True, help="Target whose initial agent input the router sees"
     )
     parser.add_argument(
-        "--output", required=True, type=Path, help="New output directory (must not already exist)"
+        "--output", required=True, type=Path, help="New output directory outside all recorded runs"
     )
     parser.add_argument("--dataset", help="Optional task namespace")
     parser.add_argument("--reward-key", default="reward")
@@ -71,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         target, separator, path = value.partition("=")
         if not separator or not target or not path or target in paths:
             parser.error("each --run must be a unique TARGET=PATH")
-        paths[target] = Path(path).resolve()
+        paths[target] = Path(path)
     aliases = {}
     for value in args.model_alias:
         recorded, separator, configured = value.partition("=")
@@ -80,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
         aliases[recorded] = configured
     try:
         _validate_options(args.concurrency, args.timeout)
+        paths = {target: _resolve_path(path) for target, path in paths.items()}
+        if args.output.is_symlink():
+            raise FileExistsError(f"output already exists: {args.output}")
+        output = _resolve_path(args.output)
+        if any(output.is_relative_to(path) for path in paths.values()):
+            raise ValueError("output directory must be outside every recorded run directory")
         runs = {
             target: load_harbor(
                 path,
@@ -97,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         config_bytes = args.config.read_bytes()
         runner = Runner.from_toml(config_bytes.decode("utf-8"))
         _validate_route(dataset, runner, args.route, _aliases(aliases))
-        args.output.mkdir(parents=True, exist_ok=False)
+        output.mkdir(parents=True, exist_ok=False)
         manifest = {
             "schema_version": 1,
             "switchyard_version": __version__,
@@ -112,10 +126,10 @@ def main(argv: list[str] | None = None) -> int:
             "timeout_seconds": args.timeout,
             "coverage": dict(dataset.coverage),
         }
-        (args.output / "manifest.json").write_text(
+        (output / "manifest.json").write_text(
             json.dumps(manifest, indent=2, allow_nan=False) + "\n"
         )
-        with (args.output / "results.jsonl").open("x", encoding="utf-8") as stream:
+        with (output / "results.jsonl").open("x", encoding="utf-8") as stream:
 
             def save(result: Result) -> None:
                 stream.write(json.dumps(asdict(result), allow_nan=False) + "\n")
@@ -132,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                     model_aliases=aliases,
                 )
             )
-        (args.output / "report.json").write_text(
+        (output / "report.json").write_text(
             json.dumps(report.to_dict(), indent=2, allow_nan=False) + "\n"
         )
     except (OSError, ValueError) as error:
