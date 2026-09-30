@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -100,10 +101,14 @@ class Outcome:
 
         def measurement(name: str) -> tuple[float | None, int]:
             values = [getattr(trial, name) for trial in trials if getattr(trial, name) is not None]
-            return (
-                math.fsum(values) / len(trials) if len(values) == len(trials) else None,
-                len(values),
-            )
+            if len(values) != len(trials):
+                return None, len(values)
+            try:
+                mean = math.fsum(values) / len(trials)
+            except OverflowError:
+                # A finite mean can have a sum outside the floating-point range.
+                mean = float(statistics.mean(values))
+            return mean, len(values)
 
         reward, reward_count = measurement("reward")
         cost, cost_count = measurement("cost_usd")
