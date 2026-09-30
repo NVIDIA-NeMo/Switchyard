@@ -471,7 +471,8 @@ mapping; use `copy.deepcopy` before editing it if you need to preserve the decis
 for scoring.
 
 `Runner.load` and `Runner.from_toml` use Switchyard's configuration parser.
-Configuration and request validation failures raise `ValueError`. Execution
+Configuration and request validation failures raise `ValueError`; incompatible
+Python argument types can also raise `TypeError`. Execution
 failures raise `DecisionError` with safe diagnostics and completed observations;
 an application deadline can instead raise `asyncio.TimeoutError`. Cancellation
 waits for local routing and its Python bridge to stop.

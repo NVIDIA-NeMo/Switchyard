@@ -772,6 +772,24 @@ advisor_target = "judge"
     assert "private prompt" not in str(error)
 
 
+@pytest.mark.parametrize("component", ["name", "value"])
+def test_invalid_unicode_headers_do_not_expose_caller_data(
+    judge: JudgeStub, component: str
+) -> None:
+    runner = Runner.from_toml(deployment(judge.url))
+    secret = "private-header-value"
+    invalid = secret + "\udcff"
+    headers = {invalid: "value"} if component == "name" else {"authorization": invalid}
+    with pytest.raises(ValueError) as caught:
+        runner.decide(request(), headers=headers)
+    error = caught.value
+    for diagnostic in (str(error), repr(error), repr(error.args)):
+        assert secret not in diagnostic
+    assert error.__cause__ is None and error.__context__ is None
+    assert "valid UTF-8" in str(error)
+    assert judge.calls == []
+
+
 async def test_bad_request_and_configuration_fail_before_calls(
     judge: JudgeStub, tmp_path: Path
 ) -> None:
