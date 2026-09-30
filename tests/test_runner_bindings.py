@@ -358,6 +358,45 @@ advisor_target = "judge"
     assert judge.calls == []
 
 
+@pytest.mark.parametrize("verdict", ["APPROVE", "REDO check the result"])
+async def test_response_opt_in_preserves_answer_or_revision_without_final_completion(
+    judge: JudgeStub, verdict: str
+) -> None:
+    judge.response_text = verdict
+    source = deployment(judge.url).split("[routes.classifier]")[0] + """
+[routes.advisor]
+id = "auto"
+type = "advisor"
+executor_target = "weak"
+advisor_target = "judge"
+redo_feedback_prefix = "Feedback: "
+"""
+    original = request()
+    decision = await Runner.from_toml(source).decide(original, allow_response=True)
+
+    assert original == request()
+    assert (decision.selected.target, decision.selected.model) == ("weak", "weak/model")
+    assert decision.fallbacks == []
+    # Both approval and revision stop after the executor and advisor calls.
+    assert [call["model"] for call in judge.calls] == ["weak/model", "judge/model"]
+    assert [call.model for call in decision.calls] == ["weak/model", "judge/model"]
+    assert all(call.is_success and call.usage["input_tokens"] == 12 for call in decision.calls)
+    if verdict == "APPROVE":
+        assert decision.outcome.response.response["model"] == "weak/model"
+        assert decision.outcome.response.response["outputs"][0]["content"] == [
+            {"type": "text", "text": verdict}
+        ]
+        assert decision.outcome.request["messages"] == original["messages"]
+        assert decision.outcome.metadata.evidence["verdict"] == "approve"
+    else:
+        assert decision.outcome.response is None
+        assert decision.outcome.request["messages"][-2:] == [
+            {"role": "assistant", "content": [{"type": "text", "text": verdict}]},
+            {"role": "user", "content": [{"type": "text", "text": "Feedback: check the result"}]},
+        ]
+        assert decision.outcome.metadata.evidence["verdict"] == "redo"
+
+
 async def test_invalid_verdict_preserves_fail_open_evidence_and_call_cost(judge: JudgeStub) -> None:
     judge.response_text = "not valid routing JSON"
     runner = Runner.from_toml(deployment(judge.url))
