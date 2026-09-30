@@ -461,6 +461,12 @@ calls; durations include backend retries. `usage` is a mapping or `None`, and
 missing token fields remain unknown. `DecisionError.target` names the failing
 model, while `decision.selected.target` is the configured target key.
 
+A decision starts when its coroutine runs. Keep the request and its nested data
+unchanged until the await completes, and use separate request objects for
+concurrent decisions. The returned `decision.outcome.request` is a mutable Python
+mapping; use `copy.deepcopy` before editing it if you need to preserve the decision
+for scoring.
+
 `Runner.load` and `Runner.from_toml` use Switchyard's configuration parser.
 Configuration and request validation failures raise `ValueError`. Execution
 failures raise `DecisionError` with safe diagnostics and completed observations;

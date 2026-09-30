@@ -476,6 +476,53 @@ async def test_mapping_headers_are_copied_before_await(
     assert judge.request_headers[0]["x-request-id"] == "original"
 
 
+async def test_in_flight_decisions_own_nested_requests_and_independent_outcomes(
+    judge: JudgeStub,
+) -> None:
+    judge.release = Event()
+    runner = Runner.from_toml(deployment(judge.url))
+    original = request()
+    tasks = []
+    try:
+        for index, text in enumerate(("easy task", "TASK_REQUIRES_STRONG")):
+            original["messages"][0]["content"][0]["text"] = text
+            judge.started.clear()
+            tasks.append(
+                asyncio.create_task(
+                    runner.decide(
+                        original,
+                        headers={
+                            **session(f"ownership-{index}"),
+                            "x-switchyard-session-final": "true",
+                        },
+                    )
+                )
+            )
+            assert await asyncio.to_thread(judge.started.wait, 5)
+
+        assert all(not task.done() for task in tasks)
+        original["messages"][0]["content"][0]["text"] = "caller changed the input again"
+        judge.release.set()
+        first, second = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+
+        assert first.selected.target == "weak"
+        assert second.selected.target == "strong"
+        assert first.outcome.request["messages"] == request("easy task")["messages"]
+        assert second.outcome.request["messages"] == request("TASK_REQUIRES_STRONG")["messages"]
+        assert len(judge.calls) == 2
+
+        first.outcome.request["messages"][0]["content"][0]["text"] = "changed first outcome"
+        assert first.outcome.request["messages"] == request("changed first outcome")["messages"]
+        assert second.outcome.request["messages"] == request("TASK_REQUIRES_STRONG")["messages"]
+        assert original == request("caller changed the input again")
+    finally:
+        judge.release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @pytest.mark.parametrize("forward_auth", [False, True])
 async def test_caller_headers_are_request_scoped_and_respect_configured_auth(
     judge: JudgeStub, forward_auth: bool
