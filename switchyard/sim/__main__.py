@@ -10,14 +10,20 @@ import asyncio
 import hashlib
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import fields
 from pathlib import Path
 
 from switchyard import __version__
 from switchyard.runner import Runner
 
-from . import Dataset, Result, evaluate, load_harbor
+from . import Dataset, Outcome, Result, evaluate, load_harbor
 from .evaluate import _aliases, _validate_options, _validate_route
+
+
+def _json_record(value: object) -> dict[str, object]:
+    if isinstance(value, (Result, Outcome)):
+        return {field.name: getattr(value, field.name) for field in fields(value)}
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def _resolve_path(path: Path) -> Path:
@@ -135,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         with (output / "results.jsonl").open("x", encoding="utf-8") as stream:
 
             def save(result: Result) -> None:
-                stream.write(json.dumps(asdict(result), allow_nan=False) + "\n")
+                stream.write(json.dumps(result, default=_json_record, allow_nan=False) + "\n")
                 stream.flush()
 
             report = asyncio.run(
