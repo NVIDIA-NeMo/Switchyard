@@ -53,7 +53,7 @@ class Dataset:
                 groups[trial.task_id].append(trial)
             grouped[target] = groups
             for issue in run.issues:
-                if issue.task_id is None:
+                if not isinstance(issue.task_id, str) or not issue.task_id.strip():
                     raise ValueError(
                         f"input issue has no task identity: {issue.source}; "
                         "repair or identify the rejected trial before pairing"
@@ -66,8 +66,7 @@ class Dataset:
                         "message": issue.message,
                     }
                 )
-                if issue.task_id is not None:
-                    invalid.add(issue.task_id)
+                invalid.add(issue.task_id)
         task_sets = [set(groups) for groups in grouped.values()]
         union = set.union(*task_sets) | invalid
         common = set.intersection(*task_sets) - invalid

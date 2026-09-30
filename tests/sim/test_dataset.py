@@ -73,10 +73,12 @@ def test_invalid_repeat_excludes_whole_task_instead_of_improving_its_mean():
     assert len(dataset.coverage["input_issues"]) == 1
 
 
-def test_unidentified_rejected_repeat_cannot_leave_a_favorable_mean():
-    run = HarborRun((trial(reward=1),), (LoadIssue("missing/result.json", "cannot read"),))
+@pytest.mark.parametrize("task_id", [None, "", " \t\n"])
+@pytest.mark.parametrize("intersection", [False, True])
+def test_unidentified_rejected_repeat_cannot_leave_a_favorable_mean(task_id, intersection):
+    run = HarborRun((trial(reward=1),), (LoadIssue("missing/result.json", "cannot read", task_id),))
     with pytest.raises(ValueError, match="no task identity"):
-        Dataset.from_runs({"fast": run}, input_target="fast", intersection=True)
+        Dataset.from_runs({"fast": run}, input_target="fast", intersection=intersection)
 
 
 def test_cost_source_mixture_is_visible_in_coverage():
