@@ -29,6 +29,7 @@ class JudgeStub:
     calls: list[dict[str, Any]] = field(default_factory=list)
     request_headers: list[dict[str, str]] = field(default_factory=list)
     response_text: str | None = None
+    response_payload: dict[str, Any] | None = None
     status: int = 200
     started: Event = field(default_factory=Event)
     release: Event | None = None
@@ -68,7 +69,9 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
                 "capability_boundary": "supported",
                 "p_solve": 0.1 if "TASK_REQUIRES_STRONG" in json.dumps(body) else 0.9,
             }
-            if stub.status == 200:
+            if stub.response_payload is not None:
+                payload = stub.response_payload
+            elif stub.status == 200:
                 payload = {
                     "id": "judge-response",
                     "model": body["model"],
@@ -209,6 +212,85 @@ async def test_native_judge_only_decision_preserves_targets_and_usage(
         "reasoning_tokens": 3,
     }
     assert decision.duration_seconds >= call.duration_seconds >= 0
+
+
+@pytest.mark.parametrize("wire_format", ["anthropic_messages", "openai_responses"])
+@pytest.mark.parametrize("has_usage", [True, False])
+async def test_provider_formats_preserve_decision_identity_and_usage(
+    judge: JudgeStub, wire_format: str, has_usage: bool
+) -> None:
+    verdict = json.dumps(
+        {
+            "crux": "bounded task",
+            "primary_rule": "SUP-1",
+            "capability_boundary": "supported",
+            "p_solve": 0.9,
+        }
+    )
+    payload: dict[str, Any] = {"id": "judge-response", "model": "provider/model-alias"}
+    if wire_format == "anthropic_messages":
+        payload.update(
+            type="message",
+            role="assistant",
+            content=[{"type": "text", "text": verdict}],
+            stop_reason="end_turn",
+        )
+        usage = {
+            "input_tokens": 17,
+            "output_tokens": 8,
+            "cache_read_input_tokens": 5,
+            "cache_creation_input_tokens": 2,
+            "output_tokens_details": {"thinking_tokens": 3},
+        }
+    else:
+        payload.update(
+            object="response",
+            status="completed",
+            output=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": verdict}],
+                }
+            ],
+        )
+        usage = {
+            "input_tokens": 17,
+            "output_tokens": 8,
+            "total_tokens": 25,
+            "input_tokens_details": {"cached_tokens": 5, "cache_write_tokens": 2},
+            "output_tokens_details": {"reasoning_tokens": 3},
+        }
+    if has_usage:
+        payload["usage"] = usage
+    judge.response_payload = payload
+    source = deployment(judge.url).replace('format = "openai_chat"', f'format = "{wire_format}"')
+
+    decision = await Runner.from_toml(source).decide(request())
+
+    assert (decision.selected.target, decision.selected.model) == ("weak", "weak/model")
+    assert [(target.target, target.model) for target in decision.fallbacks] == [
+        ("strong", "strong/model")
+    ]
+    assert decision.outcome.selected_model_ids == ["weak/model", "strong/model"]
+    assert decision.outcome.response is None
+    assert [call["model"] for call in judge.calls] == ["judge/model"]
+    (call,) = decision.calls
+    assert call.model == "judge/model"
+    assert call.is_success
+    expected = {
+        "input_tokens": 17 if wire_format == "anthropic_messages" else 10,
+        "cached_input_tokens": 5,
+        "cache_creation_input_tokens": 2,
+        "output_tokens": 8,
+        "total_tokens": 32 if wire_format == "anthropic_messages" else 25,
+        "reasoning_tokens": 3,
+    }
+    assert call.usage is not None
+    if has_usage:
+        assert call.usage == expected
+    else:
+        assert all(call.usage.get(field) is None for field in expected)
 
 
 async def test_passthrough_decision_never_calls_answer_model(judge: JudgeStub) -> None:
@@ -363,7 +445,9 @@ async def test_response_opt_in_preserves_answer_or_revision_without_final_comple
     judge: JudgeStub, verdict: str
 ) -> None:
     judge.response_text = verdict
-    source = deployment(judge.url).split("[routes.classifier]")[0] + """
+    source = (
+        deployment(judge.url).split("[routes.classifier]")[0]
+        + """
 [routes.advisor]
 id = "auto"
 type = "advisor"
@@ -371,6 +455,7 @@ executor_target = "weak"
 advisor_target = "judge"
 redo_feedback_prefix = "Feedback: "
 """
+    )
     original = request()
     decision = await Runner.from_toml(source).decide(original, allow_response=True)
 
