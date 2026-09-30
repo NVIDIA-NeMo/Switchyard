@@ -280,9 +280,11 @@ mismatches fail before output creation, leaving the path available for a correct
 The deployment source and credentials are not copied.
 Use `--skip-invalid --intersection` to retain import issues and explicitly
 evaluate the common valid subset. Exit status is 0 for complete reward coverage,
-1 for an incomplete evaluation, and 2 for invalid inputs or configuration.
+1 for an incomplete evaluation, and 2 for invalid inputs, configuration, or file errors.
 An interruption exits 130 and preserves the manifest and completed result rows
 once those files exist; there may be no final report. Automatic resume is not implemented.
+If an output write fails, the last JSONL line may be incomplete. Earlier complete
+lines remain usable; check the exit status and final report before treating a run as complete.
 Use `--model-alias RECORDED=CONFIGURED` for an explicit model-ID equivalence.
 
 The Python `on_result` callback runs after each completed task. It can update a
@@ -301,6 +303,10 @@ task evidence. `Dataset.from_runs` validates and pairs it.
 results without retaining full trajectories or result rows. Import processes
 one trajectory file at a time; paired task inputs and small outcome records stay
 in memory.
+
+Treat projected `Trial`, `Task`, and `Dataset` records as read-only. Their frozen
+dataclasses still contain mutable nested mappings. If you change recorded input,
+create new trials and rebuild the dataset so pairing is validated again.
 
 Native `Runner.load` and `Runner.from_toml` use Switchyard's configuration parser.
 `await runner.decide(normalized_request, headers=...)` returns configured selected
