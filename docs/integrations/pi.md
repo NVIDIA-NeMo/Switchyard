@@ -96,3 +96,62 @@ clients keep the local id `switchyard` instead.
 Set `cost` on the model entry if you want pi to show a non-zero cost.
 [`benchmark/run-baseline.sh`](../../benchmark/README.md) runs Terminal-Bench tasks with
 pi through Switchyard when you pass `--agent pi`.
+
+### Claude targets behind an OpenAI-compatible gateway
+
+Some gateways, such as a LiteLLM proxy, serve Claude models on `/v1/chat/completions`,
+`/v1/responses`, and `/v1/messages` with one API key. The target's LLM client `format`
+decides which endpoint Switchyard calls. That choice can change prompt caching and
+thinking for Claude.
+
+**Prompt caching.** On the LiteLLM gateway tested for this page, a repeated Claude prompt
+was read from the cache on `/v1/chat/completions` and `/v1/messages`, but never on
+`/v1/responses`. Every request to `/v1/responses` paid for the whole prompt again. Use
+`format = "openai_chat"` or `"anthropic_messages"` for Claude targets. To check your
+gateway, start the server with `--routing-log-file PATH` and send the same long prompt
+twice. Claude does not cache short prompts, so use one of at least 5,000 tokens. Then
+read the records:
+
+```bash
+jq -c '{route_id, prompt_tokens, cached_tokens, cache_creation_tokens}' PATH
+```
+
+If the gateway caches the prompt, the first record shows it in `cache_creation_tokens`
+and the second shows `cached_tokens` close to `prompt_tokens`. Writing the cache makes
+the first request cost more, and each later request that reuses the prompt costs much
+less. If the second record shows `"cached_tokens": 0`, the gateway billed the whole
+prompt again.
+
+**Thinking.** Claude Opus 5.5 and Sonnet 5 accept only adaptive thinking. Some gateways
+turn the Chat Completions `reasoning_effort` field into Anthropic's older
+`thinking: {type: "enabled"}`, and the model then returns HTTP 400:
+
+```text
+"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.
+```
+
+With `reasoning: true`, pi sends `reasoning_effort`, and Switchyard passes it to an
+`openai_chat` target. You have two options:
+
+- Use an `anthropic_messages` target. Switchyard turns the requested effort into
+  `thinking: {type: "adaptive"}` and `output_config.effort`.
+- Keep the `openai_chat` target and drop the field:
+
+  ```toml
+  [targets.claude]
+  id = "claude-opus-5-5"
+  llm_client = "gateway_chat"  # format = "openai_chat"
+  omit_body_fields = ["reasoning_effort"]
+  ```
+
+  The request then succeeds, and the model thinks at its default effort. pi's
+  `--thinking` level has no effect on this target.
+
+**Forwarded keys.** Every LLM client in one route that sets `forward_auth = true` must
+use the same API family: `openai_chat` and `openai_responses`, or `anthropic_messages`.
+Otherwise the server does not start and prints
+`route <name> cannot forward both Anthropic and OpenAI caller credentials`. A route that
+forwards the caller's key to an `anthropic_messages` client also accepts requests only
+on `/v1/messages`, and pi should not use that API. So when Switchyard forwards pi's key,
+use `openai_chat` Claude targets with `omit_body_fields`. If the server holds the key
+through `api_key_env`, an `anthropic_messages` target works with every request API.

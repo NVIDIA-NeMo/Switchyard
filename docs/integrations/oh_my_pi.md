@@ -94,3 +94,25 @@ Port 4000 is also the default port for `omp`'s `litellm` provider and for
 as a LiteLLM proxy. In that case, run Switchyard on another port or set
 `LITELLM_BASE_URL`. Set `cost` on the model entry if you want `omp` to show a non-zero
 cost.
+
+### Claude targets behind an OpenAI-compatible gateway
+
+The [pi guide's notes on Claude targets behind a gateway](pi.md#claude-targets-behind-an-openai-compatible-gateway)
+apply to `omp` too. The target's LLM client `format` decides prompt caching and
+thinking, not the `api` that `omp` uses. Prefer `format = "openai_chat"` or
+`"anthropic_messages"` for Claude targets, because a gateway may not cache Claude
+prompts on `/v1/responses`.
+
+With thinking on, `omp` sends a reasoning effort on `openai-completions` and
+`openai-responses`. Switchyard passes it to an `openai_chat` target as
+`reasoning_effort`, which some gateways reject for Claude Opus 5.5 and Sonnet 5 with
+HTTP 400. Switchyard turns the effort into adaptive thinking only when it translates a
+Chat Completions or Responses request for an `anthropic_messages` target. It forwards an
+`anthropic-messages` request to that target with `omp`'s own `thinking` settings.
+
+A route that forwards the caller's key to an `anthropic_messages` client accepts
+requests only on `/v1/messages`, and it cannot also forward the key to an
+`openai_chat` or `openai_responses` client. If such a route also needs an OpenAI-format
+target, such as a GPT judge on `openai_responses`, keep the Claude targets on
+`openai_chat` with `omit_body_fields = ["reasoning_effort"]`. The models then think at
+their default effort, and `--thinking` has no effect on them.
