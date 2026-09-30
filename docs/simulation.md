@@ -384,8 +384,9 @@ Paths are resolved before this check, including symlink aliases and `..` compone
 This prevents output folders from changing Harbor's trial discovery on later imports.
 Existing output entries, including dangling symlinks, are rejected.
 The CLI writes a `manifest.json` with the
-configuration hash, inputs, package version, and coverage, then flushes each
-completed row to `results.jsonl`. It writes `report.json` after evaluation returns.
+configuration hash, inputs, task namespace, import-error policy, package version,
+and coverage, then flushes each completed row to `results.jsonl`.
+It writes `report.json` after evaluation returns.
 The hash covers the exact TOML bytes loaded. Invalid routes and recorded-model
 mismatches fail before output creation, leaving the path available for a corrected run.
 The deployment source and credentials are not copied.

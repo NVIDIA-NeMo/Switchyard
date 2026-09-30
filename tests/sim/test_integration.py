@@ -185,8 +185,9 @@ async def test_native_completion_prompt_only_invalidates_its_selected_recording(
     assert prompt not in json.dumps(judge.calls)
 
 
+@pytest.mark.parametrize("namespace", [None, "benchmark/v1"])
 def test_cli_writes_flushed_rows_manifest_and_report_without_copying_config(
-    judge: JudgeStub, tmp_path: Path
+    judge: JudgeStub, tmp_path: Path, namespace: str | None
 ):
     write_trial(tmp_path / "recordings", "task", "weak/model", 1)
     config = tmp_path / "routes.toml"
@@ -204,13 +205,18 @@ def test_cli_writes_flushed_rows_manifest_and_report_without_copying_config(
         "--output",
         str(output),
     ]
+    if namespace is not None:
+        args.extend(["--dataset", namespace])
     assert main(args) == 0
     assert judge.calls == []
     report = json.loads((output / "report.json").read_text())
     rows = [json.loads(line) for line in (output / "results.jsonl").read_text().splitlines()]
     manifest = json.loads((output / "manifest.json").read_text())
     assert report["complete"] and len(rows) == 1
+    assert rows[0]["task_id"] == (f"{namespace}/task" if namespace else "task")
     assert rows[0]["outcome"]["reward"] == 1
+    assert manifest["dataset"] == namespace
+    assert manifest["skip_invalid"] is False
     assert len(manifest["config_sha256"]) == 64
     assert "provider-secret" not in "".join(path.read_text() for path in output.iterdir())
     original = (output / "report.json").read_text()
@@ -278,6 +284,7 @@ def test_cli_releases_excluded_trials_before_routing(
     )
     manifest = json.loads((output / "manifest.json").read_text())
     report = json.loads((output / "report.json").read_text())
+    assert manifest["skip_invalid"] is True
     coverage = manifest["coverage"]
     assert coverage.items() <= report["coverage"].items()
     assert coverage["tasks_seen"] == 3 and coverage["tasks_included"] == 1
