@@ -19,7 +19,7 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, Once, Weak},
+    sync::{Arc, OnceLock, Weak},
     time::{Duration, Instant},
 };
 
@@ -69,7 +69,15 @@ pub struct FallThrough<S = ()> {
     processors: Vec<Arc<dyn Processor<S>>>,
     classifiers: Vec<Arc<dyn Classifier<S>>>,
     session_states: Option<Arc<SessionStates<S>>>,
-    cleanup_started: Once,
+    cleanup_task: OnceLock<tokio::task::JoinHandle<()>>,
+}
+
+impl<S> Drop for FallThrough<S> {
+    fn drop(&mut self) {
+        if let Some(task) = self.cleanup_task.get() {
+            task.abort();
+        }
+    }
 }
 
 impl FallThrough<()> {
@@ -80,7 +88,7 @@ impl FallThrough<()> {
             processors: Vec::new(),
             classifiers: Vec::new(),
             session_states: None,
-            cleanup_started: Once::new(),
+            cleanup_task: OnceLock::new(),
         }
     }
 }
@@ -96,7 +104,7 @@ where
             processors: Vec::new(),
             classifiers: Vec::new(),
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
-            cleanup_started: Once::new(),
+            cleanup_task: OnceLock::new(),
         }
     }
 
@@ -141,10 +149,8 @@ where
         let Some(states) = &self.session_states else {
             return;
         };
-        let states = Arc::downgrade(states);
-        self.cleanup_started.call_once(move || {
-            drop(tokio::spawn(cleanup_inactive_sessions(states)));
-        });
+        self.cleanup_task
+            .get_or_init(|| tokio::spawn(cleanup_inactive_sessions(Arc::downgrade(states))));
     }
 
     async fn execute_session(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
@@ -915,5 +921,49 @@ mod tests {
         let states = states.lock();
         assert!(states.contains_key("session-1"));
         assert!(!states.contains_key("session-2"));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_router_stops_its_cleanup_task() -> Result<()> {
+        #[derive(Default)]
+        struct Payload(Arc<()>);
+
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let baseline = metrics.num_alive_tasks();
+        let stateless = FallThrough::new();
+        stateless.start_cleanup_task();
+        drop(stateless);
+        drop(FallThrough::<Payload>::new_with_state());
+        assert_eq!(metrics.num_alive_tasks(), baseline);
+
+        let router = Arc::new(
+            FallThrough::<Payload>::new_with_state()
+                .with_classifier(Arc::new(DefaultCategoryClassifier(Category::Any))),
+        );
+        let state = router.session_state(&request()).unwrap();
+        let payload = Arc::downgrade(&state.lock().await.0);
+        drop(state);
+        run_turn(&router, echo()).await?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while Arc::strong_count(&router) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed routing task must release the router");
+        assert_eq!(metrics.num_alive_tasks(), baseline + 1);
+        router.start_cleanup_task();
+        assert_eq!(metrics.num_alive_tasks(), baseline + 1);
+
+        drop(router);
+        assert!(payload.upgrade().is_none());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while metrics.num_alive_tasks() != baseline {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("router cleanup task must stop when its owner is dropped");
+        Ok(())
     }
 }
