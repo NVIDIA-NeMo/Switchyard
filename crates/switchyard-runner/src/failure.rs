@@ -85,6 +85,35 @@ pub struct RouteErrorSummary {
 }
 
 impl RunnerError {
+    /// Configuration diagnostics without TOML source snippets or offending values.
+    ///
+    /// Native validation messages identify fields and constraints. Deserialization
+    /// errors can include credentials from a source line or literal, so those return
+    /// only the error category and a one-based byte position when available.
+    pub fn configuration_diagnostic(&self) -> String {
+        let Self::Configuration { message, source } = self else {
+            return "invalid Switchyard configuration".to_string();
+        };
+        if let Some(source) = source {
+            if let Some(error) = source.downcast_ref::<Self>() {
+                return error.configuration_diagnostic();
+            }
+            if let Some(error) = source.downcast_ref::<toml::de::Error>() {
+                return match error.span() {
+                    Some(span) => format!(
+                        "invalid deployment TOML syntax or field value at byte {}",
+                        span.start + 1
+                    ),
+                    None => "invalid deployment TOML syntax or field value".to_string(),
+                };
+            }
+            if let Some(error) = source.downcast_ref::<std::io::Error>() {
+                return format!("cannot read deployment configuration: {:?}", error.kind());
+            }
+        }
+        message.clone()
+    }
+
     /// Returns a safe telemetry summary for a failure before response delivery.
     pub fn execution_error_summary(&self) -> RouteErrorSummary {
         match self {
@@ -180,6 +209,39 @@ mod tests {
     use super::*;
 
     const SECRET: &str = "patient name is Jane Doe";
+
+    #[test]
+    fn configuration_diagnostic_preserves_validation_context() {
+        let error = RunnerError::configuration("route references unknown target missing");
+        let wrapped = RunnerError::configuration_source("invalid file configuration", error);
+        assert_eq!(
+            wrapped.configuration_diagnostic(),
+            "route references unknown target missing"
+        );
+        let error = RunnerError::configuration_source(
+            "failed to read config",
+            std::io::Error::new(std::io::ErrorKind::NotFound, SECRET),
+        );
+        assert_eq!(
+            error.configuration_diagnostic(),
+            "cannot read deployment configuration: NotFound"
+        );
+    }
+
+    #[test]
+    fn configuration_diagnostic_omits_toml_source_and_literal() {
+        let source = "count = 'provider-secret'";
+        let error = toml::from_str::<std::collections::HashMap<String, u32>>(source)
+            .expect_err("string cannot be a token count");
+        assert!(error.to_string().contains("provider-secret"));
+        let error = RunnerError::configuration_source(error.to_string(), error);
+        let wrapped = RunnerError::configuration_source(error.to_string(), error);
+        let diagnostic = wrapped.configuration_diagnostic();
+        assert!(diagnostic.contains("TOML"));
+        assert!(diagnostic.contains("byte"));
+        assert!(!diagnostic.contains("provider-secret"));
+        assert!(!diagnostic.contains("count ="));
+    }
 
     #[test]
     fn execution_error_summary_keeps_http_status_and_target_without_body() {

@@ -1342,6 +1342,7 @@ impl DeploymentConfig {
             return Ok(policy);
         };
         let response = &targets[response_name];
+        policy.routing_answer_target = Some(ModelId::from(response.name));
         if !policy.prompts.contains_key(response.name) {
             return Ok(policy);
         }
@@ -1357,7 +1358,6 @@ impl DeploymentConfig {
                 "route {route_name} cannot apply system_prompt to target {response_name}: it is also the routing-only target"
             )));
         }
-        policy.routing_answer_target = Some(ModelId::from(response.name));
         Ok(policy)
     }
 
@@ -2999,7 +2999,14 @@ classify_trigger"#,
             "base_threshold = 0.5",
             "base_threshold = 0.5\nescalation = { confirmations = 2 }",
         );
-        runner_from_toml(&escalating)?;
+        let runner = runner_from_toml(&escalating)?;
+        assert_eq!(
+            runner
+                .route("switchyard/classifier")
+                .and_then(Route::routing_answer_target)
+                .map(ModelId::as_str),
+            Some("weak/model")
+        );
 
         let reversible = VALID_CONFIG.replace(
             "base_threshold = 0.5",

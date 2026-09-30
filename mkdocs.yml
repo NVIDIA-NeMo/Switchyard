@@ -42,6 +42,7 @@ nav:
       - Choose Models: routing_algorithms/model_selection.md
   - Evaluate and Tune:
       - Benchmarks: benchmarks.md
+      - Task routing evaluation: simulation.md
       - Tuning:
           - tuning/index.md
           - Foundations: tuning/foundations.md

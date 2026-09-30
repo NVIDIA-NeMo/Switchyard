@@ -2669,6 +2669,7 @@ dependencies = [
  "serde",
  "serde_json",
  "switchyard-libsy",
+ "switchyard-llm-client",
  "switchyard-protocol",
  "switchyard-runner",
  "switchyard-server",
