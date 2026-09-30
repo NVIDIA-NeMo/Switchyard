@@ -221,7 +221,8 @@ impl PyCustomClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
-        max_output_tokens=4096
+        max_output_tokens=4096,
+        response_format_type="json_schema"
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -232,6 +233,7 @@ impl PyCustomClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
+        response_format_type: &str,
     ) -> PyResult<Self> {
         // Convert the Python schema into serde JSON and pair it with the target-selector policy;
         // conversion failures propagate to Python through `PyResult`.
@@ -244,6 +246,7 @@ impl PyCustomClassifierConfig {
         inner.message_hash_fallback = message_hash_fallback;
         inner.recent_turn_window = recent_turn_window;
         inner.max_output_tokens = max_output_tokens;
+        inner.response_format_type = parse_response_format_type(response_format_type)?;
         Ok(Self { inner })
     }
 }
@@ -354,16 +357,17 @@ fn classifier_contract(
     if let Some(prompt) = prompt {
         contract = contract.with_prompt(prompt);
     }
-    let response_format_type = match response_format_type {
-        "json_schema" => ClassifierResponseFormat::JsonSchema,
-        "json_object" => ClassifierResponseFormat::JsonObject,
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "response_format_type must be 'json_schema' or 'json_object', got {other:?}"
-            )));
-        }
-    };
-    Ok(contract.with_response_format_type(response_format_type))
+    Ok(contract.with_response_format_type(parse_response_format_type(response_format_type)?))
+}
+
+fn parse_response_format_type(response_format_type: &str) -> PyResult<ClassifierResponseFormat> {
+    match response_format_type {
+        "json_schema" => Ok(ClassifierResponseFormat::JsonSchema),
+        "json_object" => Ok(ClassifierResponseFormat::JsonObject),
+        other => Err(PyValueError::new_err(format!(
+            "response_format_type must be 'json_schema' or 'json_object', got {other:?}"
+        ))),
+    }
 }
 
 /// Judge target and policy used when stage-router signals are inconclusive.

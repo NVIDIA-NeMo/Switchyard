@@ -1298,6 +1298,35 @@ new = ["send_message"]
     }
 
     #[test]
+    fn mode_custom_accepts_json_object_output() -> RunnerResult<()> {
+        let top_level = format!(
+            r#"{VALID_CONFIG}
+[routes.custom]
+id = "switchyard/custom"
+type = "llm_classifier"
+mode = "custom"
+response_format_type = "json_object"
+models = {{ judge = ["classifier"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }}
+default_target = "efficient"
+prompt = "Select a target for this task."
+response_schema = '{{"type":"object","properties":{{"target":{{"type":"string","enum":["capable","efficient"]}}}},"required":["target"],"additionalProperties":false}}'
+policy = {{ type = "target_selector", selector = "/target" }}
+"#
+        );
+        let subagent = with_subagent_llm_classifier(
+            VALID_CONFIG,
+            "passthrough",
+            "\nresponse_format_type = \"json_object\"",
+        );
+
+        for (name, config) in [("top-level", top_level), ("subagent", subagent)] {
+            runner_from_toml(&config)
+                .map_err(|error| RunnerError::configuration(format!("{name}: {error}")))?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn stage_router_rejects_an_unknown_field() {
         let config = stage_config().replace(
             "picker = \"efficient_first\"",
