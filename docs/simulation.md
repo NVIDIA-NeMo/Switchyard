@@ -492,8 +492,13 @@ Treat projected `Trial`, `Task`, and `Dataset` records as read-only. Their froze
 dataclasses still contain mutable nested mappings. If you change recorded input,
 create new trials and rebuild the dataset so pairing is validated again.
 
-The task scorer also rejects answers and material conversation rewrites, because
-recorded outcomes cannot score those changes.
+The task scorer rejects routing-time answers and conversation rewrites visible in
+`decision.outcome.request`, such as a selected target's `system_prompt`. It does
+not reconstruct the final provider payload. Target `extra_body`,
+`omit_body_fields`, and `reasoning_effort` are applied when a provider call is sent;
+for example, `extra_body.instructions` can add instructions to an OpenAI Responses
+request after routing. Verify that the completion target's settings match its
+recorded run before reusing the outcome.
 
 Future trajectory replay can send successive normalized histories through the
 same public Runner interface and supply its own scorer. Task simulation makes no
