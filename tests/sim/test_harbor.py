@@ -358,6 +358,47 @@ def test_malformed_trajectory_records_safe_error_and_task_identity(tmp_path: Pat
     assert "PRIVATE_TRACE" not in run.issues[0].message
 
 
+@pytest.mark.parametrize("artifact", ["result.json", "agent/trajectory.json"])
+def test_excessive_json_nesting_records_issue_without_losing_valid_trials(
+    tmp_path: Path, artifact: str
+) -> None:
+    invalid = write_trial(tmp_path, "invalid")
+    write_trial(tmp_path, "valid", task="benchmark/task-b")
+    path = invalid / artifact
+    nested = "[" * 10_000 + '"PRIVATE_TRACE"' + "]" * 10_000
+    path.write_text(path.read_text()[:-1] + ', "unused":' + nested + "}")
+
+    with pytest.raises(ValueError, match=f"invalid JSON in {path.name}"):
+        load_harbor(tmp_path, target="baseline", dataset="suite")
+    run = load_harbor(tmp_path, target="baseline", dataset="suite", on_error="record")
+    assert [trial.task_id for trial in run.trials] == ["suite/benchmark/task-b"]
+    assert len(run.issues) == 1
+    issue = run.issues[0]
+    assert issue.message == f"invalid JSON in {path.name}"
+    assert issue.source == str(invalid / "result.json")
+    if artifact == "result.json":
+        assert issue.task_id is None
+        with pytest.raises(ValueError, match="no task identity"):
+            Dataset.from_runs({"baseline": run}, input_target="baseline", intersection=True)
+    else:
+        assert issue.task_id == "suite/benchmark/task-a"
+        dataset = Dataset.from_runs({"baseline": run}, input_target="baseline", intersection=True)
+        assert dataset.coverage["excluded_task_ids"] == [issue.task_id]
+
+
+@pytest.mark.parametrize("layout", ["job", "download"])
+def test_excessive_json_nesting_in_summary_keeps_discoverable_trials(
+    tmp_path: Path, layout: str
+) -> None:
+    job = tmp_path / "jobs" / "run" if layout == "download" else tmp_path
+    write_trial(job)
+    nested = "[" * 10_000 + "0" + "]" * 10_000
+    (job / "result.json").write_text('{"unused":' + nested + "}")
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    assert [trial.task_id for trial in run.trials] == ["benchmark/task-a"]
+    assert run.issues == ()
+
+
 def test_trial_without_result_is_an_issue_not_an_invisible_exclusion(tmp_path: Path) -> None:
     trial = write_trial(tmp_path)
     (trial / "result.json").unlink()
