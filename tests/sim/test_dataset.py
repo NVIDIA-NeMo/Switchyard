@@ -109,6 +109,12 @@ def test_checksums_reject_changed_tasks_even_when_names_match():
         )
 
 
+@pytest.mark.parametrize("checksum", ["", " \t\n", 1, True, [], {}])
+def test_invalid_task_checksums_are_rejected(checksum):
+    with pytest.raises(ValueError, match="task_checksum must be a non-empty string or None"):
+        trial(task_checksum=checksum)
+
+
 def test_agent_wrappers_may_differ_and_input_target_is_explicit():
     fast = trial(task_checksum="same")
     strong = replace(

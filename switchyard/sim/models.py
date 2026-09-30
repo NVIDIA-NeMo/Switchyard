@@ -36,6 +36,10 @@ class Trial:
         for name in ("task_id", "trial_id", "target"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"{name} must be a non-empty string")
+        if self.task_checksum is not None and (
+            not isinstance(self.task_checksum, str) or not self.task_checksum.strip()
+        ):
+            raise ValueError("task_checksum must be a non-empty string or None")
         for name in ("reward", "cost_usd", "duration_seconds"):
             value = getattr(self, name)
             try:

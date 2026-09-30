@@ -191,7 +191,8 @@ The recorded initial input itself may contain harness or environment details.
 `input_target` explicitly chooses which run supplies that input.
 
 Task names are matched within the supplied runs. Use `dataset="benchmark-v1"`
-to namespace them. Conflicting task checksums are rejected. When a checksum is
+to namespace them. Conflicting task checksums are rejected. Blank strings and
+non-string checksums are rejected; use `None` when unavailable. When a checksum is
 missing, all initial user messages must match. Full system scaffolding may differ
 between agents. Repeated trials retain their identities; each target's reward,
 cost, and duration are averaged across all repeats of a task. Tasks then have
