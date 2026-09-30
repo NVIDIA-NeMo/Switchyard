@@ -685,7 +685,7 @@
   <span class="md-ellipsis">
     
   
-    Routing
+    Recipes
   
 
     
@@ -698,6 +698,93 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Recipes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../recipes/single_provider_coding_agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single-provider coding agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -986,10 +1073,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
             
   
   
@@ -1007,8 +1094,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1103,10 +1190,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
-          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
             
   
   
@@ -1124,8 +1211,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2260,7 +2347,7 @@ dependencies available in the active virtual environment.</p>
 <td><code>escalation.confirmations</code></td>
 <td style="text-align: center;">No</td>
 <td><code>2</code></td>
-<td>Consecutive escalate verdicts required to latch. Above <code>1</code> needs a session ID.</td>
+<td>Consecutive escalate verdicts required to latch. Above <code>1</code> needs a stable session ID.</td>
 </tr>
 <tr>
 <td><code>escalation.recent_turn_window</code></td>
@@ -2273,6 +2360,36 @@ dependencies available in the active virtual environment.</p>
 <td style="text-align: center;">No</td>
 <td><code>500</code></td>
 <td>Per-message cap inside that window.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Enables phase-aware de-escalation. Requires a stable session ID.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.strong_min_calls</code></td>
+<td style="text-align: center;">With de-escalation</td>
+<td>—</td>
+<td>Strong-tier turns before release is allowed. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.confirmations</code></td>
+<td style="text-align: center;">With de-escalation</td>
+<td>—</td>
+<td>Consecutive judge declines required to return to weak. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.strong_max_calls</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Hard limit on strong-tier turns before forced de-escalation. Must be at least <code>strong_min_calls</code>.</td>
+</tr>
+<tr>
+<td><code>escalation.deescalation.weak_cooldown_calls</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0</code></td>
+<td>Weak calls served without judging after a hard-limit return.</td>
 </tr>
 </tbody>
 </table>
@@ -2529,6 +2646,12 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>p_solve</code> floor that still routes to the efficient tier. In <code>[0, 1]</code>.</td>
 </tr>
 <tr>
+<td><code>classifier.threshold_step</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0.0</code></td>
+<td>Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. <code>base_threshold + 2 * threshold_step</code> must be at most <code>1</code>.</td>
+</tr>
+<tr>
 <td><code>classifier.classify_trigger</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
@@ -2538,7 +2661,31 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>classifier.message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the <code>llm_classifier</code> route, this works on either trigger. Conversations opening with the same text share a tier.</td>
+<td>Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier.</td>
+</tr>
+<tr>
+<td><code>classifier.recent_turn_window</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns.</td>
+</tr>
+<tr>
+<td><code>classifier.prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>packaged prompt</td>
+<td>Replaces the classifier judge prompt. The verdict schema is unchanged.</td>
+</tr>
+<tr>
+<td><code>classifier.response_format_type</code></td>
+<td style="text-align: center;">No</td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for the judge. Use <code>json_object</code> when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally.</td>
+</tr>
+<tr>
+<td><code>classifier.max_output_tokens</code></td>
+<td style="text-align: center;">No</td>
+<td><code>4096</code></td>
+<td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
 </tr>
 <tr>
 <td><code>stage.capable_target</code></td>
@@ -2593,6 +2740,12 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td style="text-align: center;">No</td>
 <td><code>[]</code></td>
 <td>Additional exact ASCII case-insensitive tool names that count as neutral forward activity.</td>
+</tr>
+<tr>
+<td><code>stage.handoff_notes</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Optional guidance appended to forwarded requests. Uses the same fields and behavior as <a href="../../routing_algorithms/stage_router_routing/#optional-handoff-notes">stage-router handoff notes</a>.</td>
 </tr>
 <tr>
 <td><code>subagents</code></td>
