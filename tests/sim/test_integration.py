@@ -6,6 +6,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from switchyard.runner import Runner
 from switchyard.sim import Dataset, evaluate, load_harbor
 from switchyard.sim.__main__ import main
@@ -146,3 +148,81 @@ def test_cli_exits_incomplete_for_missing_reward(judge: JudgeStub, tmp_path: Pat
         == 1
     )
     assert json.loads((output / "report.json").read_text())["counts"]["unscored"] == 1
+
+
+@pytest.mark.parametrize("status", [401, 503])
+def test_cli_retains_safe_native_failure_details(judge: JudgeStub, tmp_path: Path, status: int):
+    judge.status = status
+    for target in ("weak", "strong"):
+        write_trial(tmp_path / target, "task", f"{target}/model", 1)
+    config = tmp_path / "routes.toml"
+    config.write_text(deployment(judge.url))
+    output = tmp_path / "evaluation"
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--route",
+                "auto",
+                "--run",
+                f"weak={tmp_path / 'weak'}",
+                "--run",
+                f"strong={tmp_path / 'strong'}",
+                "--input-target",
+                "weak",
+                "--output",
+                str(output),
+            ]
+        )
+        == 1
+    )
+    row = json.loads((output / "results.jsonl").read_text())
+    assert row["routing_error_kind"] == "upstream_http"
+    assert row["routing_error_status"] == status
+    assert row["routing_error_target"] == "judge/model"
+    assert row["routing_calls"] == row["routing_failed_calls"] == 1
+    assert row["routing_cost_usd"] is None
+    assert row["error"] == "routing failed: DecisionError"
+    assert "provider-secret" not in json.dumps(row)
+    assert "private prompt" not in json.dumps(row)
+    report = json.loads((output / "report.json").read_text())
+    assert report["counts"]["errors"] == 1
+    assert not report["complete"]
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--concurrency=0",
+        "--concurrency=-1",
+        "--timeout=0",
+        "--timeout=-1",
+        "--timeout=nan",
+        "--timeout=inf",
+    ],
+)
+def test_cli_invalid_options_leave_output_path_available(
+    judge: JudgeStub, tmp_path: Path, option: str
+):
+    write_trial(tmp_path / "recordings", "task", "weak/model", 1)
+    config = tmp_path / "routes.toml"
+    config.write_text(deployment(judge.url))
+    output = tmp_path / "new-parent" / "evaluation"
+    args = [
+        "--config",
+        str(config),
+        "--route",
+        "fixed",
+        "--run",
+        f"weak={tmp_path / 'recordings'}",
+        "--input-target",
+        "weak",
+        "--output",
+        str(output),
+    ]
+    assert main([*args, option]) == 2
+    assert not output.parent.exists()
+    assert judge.calls == []
+    assert main(args) == 0
+    assert (output / "report.json").exists()

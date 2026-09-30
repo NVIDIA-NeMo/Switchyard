@@ -172,6 +172,13 @@ def _usage(calls: Sequence[RoutingCall]) -> dict[str, int | None]:
     return result
 
 
+def _validate_options(concurrency: int, timeout: float) -> None:
+    if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
+        raise ValueError("concurrency must be a positive integer")
+    if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+
+
 async def evaluate(
     dataset: Dataset,
     runner: Runner,
@@ -196,10 +203,10 @@ async def evaluate(
     callback errors or cancellation stop and drain pending work. Keep callbacks
     short. Cancelling local work cannot revoke provider requests already sent.
     """
-    if isinstance(concurrency, bool) or not isinstance(concurrency, int) or concurrency < 1:
-        raise ValueError("concurrency must be a positive integer")
-    if isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("timeout must be finite and positive")
+    # Artifact imports and pure scoring do not need to load the native bindings.
+    from switchyard.runner import DecisionError
+
+    _validate_options(concurrency, timeout)
     if not dataset.tasks or len({task.task_id for task in dataset.tasks}) != len(dataset.tasks):
         raise ValueError("dataset must contain non-empty, unique tasks")
     targets = runner.validate_decision_route(route, allow_response=False)
@@ -242,6 +249,7 @@ async def evaluate(
             # Native decision errors expose completed observations without provider
             # bodies. Other errors (including timeouts) cannot prove call counts.
             calls = getattr(error, "calls", None)
+            native_error = error if isinstance(error, DecisionError) else None
             return Result(
                 task.task_id,
                 task.outcomes,
@@ -253,6 +261,11 @@ async def evaluate(
                 routing_cost_usd=_cost(calls, price_call) if calls is not None else None,
                 routing_usage=_usage(calls) if calls is not None else {},
                 error=f"routing failed: {type(error).__name__}",
+                routing_error_kind=native_error.kind if native_error is not None else None,
+                routing_error_status=native_error.upstream_status
+                if native_error is not None
+                else None,
+                routing_error_target=native_error.target if native_error is not None else None,
             )
         score_error = None
         try:

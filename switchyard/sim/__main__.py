@@ -17,6 +17,7 @@ from switchyard import __version__
 from switchyard.runner import Runner
 
 from . import Dataset, Result, evaluate, load_harbor
+from .evaluate import _validate_options
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("each --model-alias must be a unique RECORDED=CONFIGURED")
         aliases[recorded] = configured
     try:
+        _validate_options(args.concurrency, args.timeout)
         runs = {
             target: load_harbor(
                 path,

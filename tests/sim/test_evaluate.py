@@ -160,12 +160,19 @@ def test_routing_measurements_and_pricing_are_separate_from_task_cost():
 async def test_failure_is_an_error_without_exposing_provider_body():
     class BrokenRunner(FakeRunner):
         async def decide(self, *args, **kwargs):
-            raise RuntimeError("provider response containing a secret")
+            error = RuntimeError("provider response containing a secret")
+            error.kind = "secret"
+            error.upstream_status = 503
+            error.target = "secret"
+            raise error
 
     rows = []
     report = await evaluate(dataset(1), BrokenRunner(), route="auto", on_result=rows.append)
     assert report.to_dict()["counts"]["errors"] == 1
     assert "secret" not in rows[0].error
+    assert rows[0].routing_error_kind is None
+    assert rows[0].routing_error_status is None
+    assert rows[0].routing_error_target is None
 
 
 async def test_recorded_model_mismatch_fails_before_calls():
