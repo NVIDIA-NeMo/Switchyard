@@ -50,94 +50,107 @@
 <a href=#50 id=50 data-nosnippet>50</a>        </span>message: String,
 <a href=#51 id=51 data-nosnippet>51</a>    },
 <a href=#52 id=52 data-nosnippet>52</a>
-<a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// The upstream could not be reached or the request could not be sent.
-<a href=#54 id=54 data-nosnippet>54</a>    </span><span class="attr">#[error(<span class="string">"upstream transport error: {source}"</span>)]
-<a href=#55 id=55 data-nosnippet>55</a>    </span>Transport {
-<a href=#56 id=56 data-nosnippet>56</a>        <span class="doccomment">/// Client-specific transport failure.
-<a href=#57 id=57 data-nosnippet>57</a>        </span><span class="attr">#[source]
-<a href=#58 id=58 data-nosnippet>58</a>        </span>source: BoxError,
-<a href=#59 id=59 data-nosnippet>59</a>    },
-<a href=#60 id=60 data-nosnippet>60</a>
-<a href=#61 id=61 data-nosnippet>61</a>    <span class="doccomment">/// The upstream request exceeded its timeout.
-<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="attr">#[error(<span class="string">"upstream request timed out: {source}"</span>)]
-<a href=#63 id=63 data-nosnippet>63</a>    </span>Timeout {
-<a href=#64 id=64 data-nosnippet>64</a>        <span class="doccomment">/// Client-specific timeout failure.
-<a href=#65 id=65 data-nosnippet>65</a>        </span><span class="attr">#[source]
-<a href=#66 id=66 data-nosnippet>66</a>        </span>source: BoxError,
-<a href=#67 id=67 data-nosnippet>67</a>    },
-<a href=#68 id=68 data-nosnippet>68</a>
-<a href=#69 id=69 data-nosnippet>69</a>    <span class="doccomment">/// The upstream rejected the request because it exceeds the model's context window.
-<a href=#70 id=70 data-nosnippet>70</a>    </span><span class="attr">#[error(<span class="string">"context window exceeded for model {model}: {message}"</span>)]
-<a href=#71 id=71 data-nosnippet>71</a>    </span>ContextWindowExceeded {
-<a href=#72 id=72 data-nosnippet>72</a>        <span class="doccomment">/// Model whose context window was exceeded.
-<a href=#73 id=73 data-nosnippet>73</a>        </span>model: ModelId,
-<a href=#74 id=74 data-nosnippet>74</a>        <span class="doccomment">/// Upstream error message.
-<a href=#75 id=75 data-nosnippet>75</a>        </span>message: String,
-<a href=#76 id=76 data-nosnippet>76</a>    },
-<a href=#77 id=77 data-nosnippet>77</a>
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// The upstream returned a non-success HTTP response.
-<a href=#79 id=79 data-nosnippet>79</a>    </span><span class="attr">#[error(<span class="string">"upstream returned HTTP {status}: {body}"</span>)]
-<a href=#80 id=80 data-nosnippet>80</a>    </span>UpstreamHttp {
-<a href=#81 id=81 data-nosnippet>81</a>        <span class="doccomment">/// Upstream HTTP status code.
-<a href=#82 id=82 data-nosnippet>82</a>        </span>status: http::StatusCode,
-<a href=#83 id=83 data-nosnippet>83</a>        <span class="doccomment">/// Raw upstream error body.
-<a href=#84 id=84 data-nosnippet>84</a>        </span>body: String,
-<a href=#85 id=85 data-nosnippet>85</a>    },
-<a href=#86 id=86 data-nosnippet>86</a>
-<a href=#87 id=87 data-nosnippet>87</a>    <span class="doccomment">/// The upstream returned a response the client could not decode.
-<a href=#88 id=88 data-nosnippet>88</a>    </span><span class="attr">#[error(<span class="string">"invalid upstream response: {source}"</span>)]
-<a href=#89 id=89 data-nosnippet>89</a>    </span>InvalidResponse {
-<a href=#90 id=90 data-nosnippet>90</a>        <span class="doccomment">/// Client-specific decoding or validation failure.
-<a href=#91 id=91 data-nosnippet>91</a>        </span><span class="attr">#[source]
-<a href=#92 id=92 data-nosnippet>92</a>        </span>source: BoxError,
-<a href=#93 id=93 data-nosnippet>93</a>    },
-<a href=#94 id=94 data-nosnippet>94</a>
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="doccomment">/// A call across a foreign-function boundary (e.g. a Python-implemented client)
-<a href=#96 id=96 data-nosnippet>96</a>    /// failed. The boxed source is the foreign error itself.
-<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="attr">#[error(<span class="string">"foreign function interface error: {source}"</span>)]
-<a href=#98 id=98 data-nosnippet>98</a>    </span>Ffi {
-<a href=#99 id=99 data-nosnippet>99</a>        <span class="doccomment">/// Foreign-language failure, preserved verbatim.
-<a href=#100 id=100 data-nosnippet>100</a>        </span><span class="attr">#[source]
-<a href=#101 id=101 data-nosnippet>101</a>        </span>source: BoxError,
-<a href=#102 id=102 data-nosnippet>102</a>    },
-<a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="doccomment">/// A string message. Useful in testing, but prefer adding variants over using this.
-<a href=#105 id=105 data-nosnippet>105</a>    </span><span class="attr">#[error(<span class="string">"{0}"</span>)]
-<a href=#106 id=106 data-nosnippet>106</a>    </span>General(String),
-<a href=#107 id=107 data-nosnippet>107</a>}
-<a href=#108 id=108 data-nosnippet>108</a>
-<a href=#109 id=109 data-nosnippet>109</a><span class="doccomment">/// Why routing replaced a selected target with another eligible target.
-<a href=#110 id=110 data-nosnippet>110</a></span><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-<a href=#111 id=111 data-nosnippet>111</a></span><span class="kw">pub enum </span>RoutingFallbackReason {
-<a href=#112 id=112 data-nosnippet>112</a>    <span class="doccomment">/// The selected target rejected the request because its context window was too small.
-<a href=#113 id=113 data-nosnippet>113</a>    </span>ContextWindow,
-<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// The selected target was unavailable after its client retries finished.
-<a href=#115 id=115 data-nosnippet>115</a>    </span>Unavailable,
-<a href=#116 id=116 data-nosnippet>116</a>}
-<a href=#117 id=117 data-nosnippet>117</a>
-<a href=#118 id=118 data-nosnippet>118</a><span class="kw">impl </span>RoutingFallbackReason {
-<a href=#119 id=119 data-nosnippet>119</a>    <span class="doccomment">/// Stable value used when logging a routing fallback.
-<a href=#120 id=120 data-nosnippet>120</a>    </span><span class="kw">pub const fn </span>as_str(<span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
-<a href=#121 id=121 data-nosnippet>121</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#122 id=122 data-nosnippet>122</a>            <span class="self">Self</span>::ContextWindow =&gt; <span class="string">"context_window"</span>,
-<a href=#123 id=123 data-nosnippet>123</a>            <span class="self">Self</span>::Unavailable =&gt; <span class="string">"unavailable"</span>,
-<a href=#124 id=124 data-nosnippet>124</a>        }
-<a href=#125 id=125 data-nosnippet>125</a>    }
-<a href=#126 id=126 data-nosnippet>126</a>}
-<a href=#127 id=127 data-nosnippet>127</a>
-<a href=#128 id=128 data-nosnippet>128</a><span class="doccomment">/// Performs the actual model call for a target. This is the one piece of I/O the
-<a href=#129 id=129 data-nosnippet>129</a>/// library does not own — a host implements it over its own transport (HTTP SDK,
-<a href=#130 id=130 data-nosnippet>130</a>/// in-process model, mock). It serves a call the stream consumer chose not to
-<a href=#131 id=131 data-nosnippet>131</a>/// override, reached as a routed request's `default_client`.
-<a href=#132 id=132 data-nosnippet>132</a>///
-<a href=#133 id=133 data-nosnippet>133</a>/// # Concurrency
-<a href=#134 id=134 data-nosnippet>134</a>///
-<a href=#135 id=135 data-nosnippet>135</a>/// A client may be shared by many targets and concurrent algorithm runs. Calls may
-<a href=#136 id=136 data-nosnippet>136</a>/// overlap, so implementations must synchronize mutable state internally and should
-<a href=#137 id=137 data-nosnippet>137</a>/// not serialize requests unless their transport requires it.
-<a href=#138 id=138 data-nosnippet>138</a></span><span class="attr">#[async_trait]
-<a href=#139 id=139 data-nosnippet>139</a></span><span class="kw">pub trait </span>RoutedLlmClient: Send + Sync {
-<a href=#140 id=140 data-nosnippet>140</a>    <span class="doccomment">/// Make a request
-<a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">async fn </span>call(<span class="kw-2">&amp;</span><span class="self">self</span>, request: Request) -&gt; <span class="prelude-ty">Result</span>&lt;Response, LlmClientError&gt;;
-<a href=#142 id=142 data-nosnippet>142</a>}
+<a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// The route cannot record another provider-owned response or conversation ID.
+<a href=#54 id=54 data-nosnippet>54</a>    </span><span class="attr">#[error(
+<a href=#55 id=55 data-nosnippet>55</a>        <span class="string">"Responses state tracking reached its limit of {limit} IDs; no existing records were removed"
+<a href=#56 id=56 data-nosnippet>56</a>    </span>)]
+<a href=#57 id=57 data-nosnippet>57</a>    </span>ResponseStateLimitExceeded {
+<a href=#58 id=58 data-nosnippet>58</a>        <span class="doccomment">/// Maximum number of IDs retained by this route.
+<a href=#59 id=59 data-nosnippet>59</a>        </span>limit: usize,
+<a href=#60 id=60 data-nosnippet>60</a>    },
+<a href=#61 id=61 data-nosnippet>61</a>
+<a href=#62 id=62 data-nosnippet>62</a>    <span class="doccomment">/// Two configured models reported the same saved response or conversation ID.
+<a href=#63 id=63 data-nosnippet>63</a>    </span><span class="attr">#[error(<span class="string">"Responses state ID is already recorded for another model; its owner was not changed"</span>)]
+<a href=#64 id=64 data-nosnippet>64</a>    </span>ResponseStateConflict,
+<a href=#65 id=65 data-nosnippet>65</a>
+<a href=#66 id=66 data-nosnippet>66</a>    <span class="doccomment">/// The upstream could not be reached or the request could not be sent.
+<a href=#67 id=67 data-nosnippet>67</a>    </span><span class="attr">#[error(<span class="string">"upstream transport error: {source}"</span>)]
+<a href=#68 id=68 data-nosnippet>68</a>    </span>Transport {
+<a href=#69 id=69 data-nosnippet>69</a>        <span class="doccomment">/// Client-specific transport failure.
+<a href=#70 id=70 data-nosnippet>70</a>        </span><span class="attr">#[source]
+<a href=#71 id=71 data-nosnippet>71</a>        </span>source: BoxError,
+<a href=#72 id=72 data-nosnippet>72</a>    },
+<a href=#73 id=73 data-nosnippet>73</a>
+<a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// The upstream request exceeded its timeout.
+<a href=#75 id=75 data-nosnippet>75</a>    </span><span class="attr">#[error(<span class="string">"upstream request timed out: {source}"</span>)]
+<a href=#76 id=76 data-nosnippet>76</a>    </span>Timeout {
+<a href=#77 id=77 data-nosnippet>77</a>        <span class="doccomment">/// Client-specific timeout failure.
+<a href=#78 id=78 data-nosnippet>78</a>        </span><span class="attr">#[source]
+<a href=#79 id=79 data-nosnippet>79</a>        </span>source: BoxError,
+<a href=#80 id=80 data-nosnippet>80</a>    },
+<a href=#81 id=81 data-nosnippet>81</a>
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// The upstream rejected the request because it exceeds the model's context window.
+<a href=#83 id=83 data-nosnippet>83</a>    </span><span class="attr">#[error(<span class="string">"context window exceeded for model {model}: {message}"</span>)]
+<a href=#84 id=84 data-nosnippet>84</a>    </span>ContextWindowExceeded {
+<a href=#85 id=85 data-nosnippet>85</a>        <span class="doccomment">/// Model whose context window was exceeded.
+<a href=#86 id=86 data-nosnippet>86</a>        </span>model: ModelId,
+<a href=#87 id=87 data-nosnippet>87</a>        <span class="doccomment">/// Upstream error message.
+<a href=#88 id=88 data-nosnippet>88</a>        </span>message: String,
+<a href=#89 id=89 data-nosnippet>89</a>    },
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a>    <span class="doccomment">/// The upstream returned a non-success HTTP response.
+<a href=#92 id=92 data-nosnippet>92</a>    </span><span class="attr">#[error(<span class="string">"upstream returned HTTP {status}: {body}"</span>)]
+<a href=#93 id=93 data-nosnippet>93</a>    </span>UpstreamHttp {
+<a href=#94 id=94 data-nosnippet>94</a>        <span class="doccomment">/// Upstream HTTP status code.
+<a href=#95 id=95 data-nosnippet>95</a>        </span>status: http::StatusCode,
+<a href=#96 id=96 data-nosnippet>96</a>        <span class="doccomment">/// Raw upstream error body.
+<a href=#97 id=97 data-nosnippet>97</a>        </span>body: String,
+<a href=#98 id=98 data-nosnippet>98</a>    },
+<a href=#99 id=99 data-nosnippet>99</a>
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="doccomment">/// The upstream returned a response the client could not decode.
+<a href=#101 id=101 data-nosnippet>101</a>    </span><span class="attr">#[error(<span class="string">"invalid upstream response: {source}"</span>)]
+<a href=#102 id=102 data-nosnippet>102</a>    </span>InvalidResponse {
+<a href=#103 id=103 data-nosnippet>103</a>        <span class="doccomment">/// Client-specific decoding or validation failure.
+<a href=#104 id=104 data-nosnippet>104</a>        </span><span class="attr">#[source]
+<a href=#105 id=105 data-nosnippet>105</a>        </span>source: BoxError,
+<a href=#106 id=106 data-nosnippet>106</a>    },
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="doccomment">/// A call across a foreign-function boundary (e.g. a Python-implemented client)
+<a href=#109 id=109 data-nosnippet>109</a>    /// failed. The boxed source is the foreign error itself.
+<a href=#110 id=110 data-nosnippet>110</a>    </span><span class="attr">#[error(<span class="string">"foreign function interface error: {source}"</span>)]
+<a href=#111 id=111 data-nosnippet>111</a>    </span>Ffi {
+<a href=#112 id=112 data-nosnippet>112</a>        <span class="doccomment">/// Foreign-language failure, preserved verbatim.
+<a href=#113 id=113 data-nosnippet>113</a>        </span><span class="attr">#[source]
+<a href=#114 id=114 data-nosnippet>114</a>        </span>source: BoxError,
+<a href=#115 id=115 data-nosnippet>115</a>    },
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a>    <span class="doccomment">/// A string message. Useful in testing, but prefer adding variants over using this.
+<a href=#118 id=118 data-nosnippet>118</a>    </span><span class="attr">#[error(<span class="string">"{0}"</span>)]
+<a href=#119 id=119 data-nosnippet>119</a>    </span>General(String),
+<a href=#120 id=120 data-nosnippet>120</a>}
+<a href=#121 id=121 data-nosnippet>121</a>
+<a href=#122 id=122 data-nosnippet>122</a><span class="doccomment">/// Why routing replaced a selected target with another eligible target.
+<a href=#123 id=123 data-nosnippet>123</a></span><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+<a href=#124 id=124 data-nosnippet>124</a></span><span class="kw">pub enum </span>RoutingFallbackReason {
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="doccomment">/// The selected target rejected the request because its context window was too small.
+<a href=#126 id=126 data-nosnippet>126</a>    </span>ContextWindow,
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// The selected target was unavailable after its client retries finished.
+<a href=#128 id=128 data-nosnippet>128</a>    </span>Unavailable,
+<a href=#129 id=129 data-nosnippet>129</a>}
+<a href=#130 id=130 data-nosnippet>130</a>
+<a href=#131 id=131 data-nosnippet>131</a><span class="kw">impl </span>RoutingFallbackReason {
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="doccomment">/// Stable value used when logging a routing fallback.
+<a href=#133 id=133 data-nosnippet>133</a>    </span><span class="kw">pub const fn </span>as_str(<span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#134 id=134 data-nosnippet>134</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#135 id=135 data-nosnippet>135</a>            <span class="self">Self</span>::ContextWindow =&gt; <span class="string">"context_window"</span>,
+<a href=#136 id=136 data-nosnippet>136</a>            <span class="self">Self</span>::Unavailable =&gt; <span class="string">"unavailable"</span>,
+<a href=#137 id=137 data-nosnippet>137</a>        }
+<a href=#138 id=138 data-nosnippet>138</a>    }
+<a href=#139 id=139 data-nosnippet>139</a>}
+<a href=#140 id=140 data-nosnippet>140</a>
+<a href=#141 id=141 data-nosnippet>141</a><span class="doccomment">/// Performs the actual model call for a target. This is the one piece of I/O the
+<a href=#142 id=142 data-nosnippet>142</a>/// library does not own — a host implements it over its own transport (HTTP SDK,
+<a href=#143 id=143 data-nosnippet>143</a>/// in-process model, mock). It serves a call the stream consumer chose not to
+<a href=#144 id=144 data-nosnippet>144</a>/// override, reached as a routed request's `default_client`.
+<a href=#145 id=145 data-nosnippet>145</a>///
+<a href=#146 id=146 data-nosnippet>146</a>/// # Concurrency
+<a href=#147 id=147 data-nosnippet>147</a>///
+<a href=#148 id=148 data-nosnippet>148</a>/// A client may be shared by many targets and concurrent algorithm runs. Calls may
+<a href=#149 id=149 data-nosnippet>149</a>/// overlap, so implementations must synchronize mutable state internally and should
+<a href=#150 id=150 data-nosnippet>150</a>/// not serialize requests unless their transport requires it.
+<a href=#151 id=151 data-nosnippet>151</a></span><span class="attr">#[async_trait]
+<a href=#152 id=152 data-nosnippet>152</a></span><span class="kw">pub trait </span>RoutedLlmClient: Send + Sync {
+<a href=#153 id=153 data-nosnippet>153</a>    <span class="doccomment">/// Make a request
+<a href=#154 id=154 data-nosnippet>154</a>    </span><span class="kw">async fn </span>call(<span class="kw-2">&amp;</span><span class="self">self</span>, request: Request) -&gt; <span class="prelude-ty">Result</span>&lt;Response, LlmClientError&gt;;
+<a href=#155 id=155 data-nosnippet>155</a>}
 </code></pre></div></section></main></body></html>

@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../overview/">
+        <link rel="prev" href="../plan_execute_routing/">
       
       
         <link rel="next" href="../random_routing/">
@@ -369,34 +369,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../vgr_agent_setup/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Use VGR from an Agent
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../known_issues/" class="md-nav__link">
         
   
@@ -620,6 +592,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -713,6 +741,90 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task (LLM Classifier)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -762,62 +874,6 @@
     
   
     Random Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../llm_classifier_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../stage_router_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Stage-Router Routing
   
 
     
@@ -1279,7 +1335,8 @@
 <h1 id="sub-agent-aware-routing">Sub-Agent-Aware Routing<a class="headerlink" href="#sub-agent-aware-routing" title="Permanent link">&para;</a></h1>
 <p>Sub-agent-aware routing leaves parent-agent traffic with its configured routing
 algorithm while routing delegated sub-agent work separately. It is available on
-<code>passthrough</code> and <code>stage_router</code> routes through the optional <code>subagents</code> table.</p>
+<code>passthrough</code>, <code>stage_router</code>, and <code>composite</code> routes through the optional
+<code>subagents</code> table.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.openrouter]</span>

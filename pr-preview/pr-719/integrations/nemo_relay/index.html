@@ -14,7 +14,7 @@
         <link rel="prev" href="../../architecture/">
       
       
-        <link rel="next" href="../../routing_algorithms/overview/">
+        <link rel="next" href="../pi/">
       
       
         
@@ -369,34 +369,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../vgr_agent_setup/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Use VGR from an Agent
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../known_issues/" class="md-nav__link">
         
   
@@ -663,6 +635,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#upstream-error-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upstream Error Compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#why-use-switchyard-with-nemo-relay" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -843,6 +826,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -937,6 +976,90 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task (LLM Classifier)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/subagent_routing/" class="md-nav__link">
         
   
@@ -973,62 +1096,6 @@
     
   
     Random Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Stage-Router Routing
   
 
     
@@ -1476,6 +1543,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#upstream-error-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upstream Error Compatibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#why-use-switchyard-with-nemo-relay" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1668,11 +1746,27 @@
 
 
 <h1 id="use-switchyard-with-nemo-relay">Use Switchyard with NeMo Relay<a class="headerlink" href="#use-switchyard-with-nemo-relay" title="Permanent link">&para;</a></h1>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5923512661148cf7047a7387c296008c62159eda/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b16ce42490edc6d6edf6106aefca7c2d3f4e3f62/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
 loads Switchyard into an existing
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview">NeMo Relay runtime</a>
 deployment through Relay's
 <a href="https://docs.nvidia.com/nemo/relay/build-plugins/native/about">native dynamic plugin system</a>.</p>
+<h2 id="upstream-error-compatibility">Upstream Error Compatibility<a class="headerlink" href="#upstream-error-compatibility" title="Permanent link">&para;</a></h2>
+<p>Relay 0.8.x and 0.9.0 have a native-plugin error propagation issue. Enabling the
+Switchyard plugin can change an upstream 401 or 403 into a generic 400 for a
+non-streaming request. A streaming request can receive HTTP 200 followed by an
+aborted body. This is not a successful response or an authentication bypass.</p>
+<p>This also affects <strong>unmanaged models</strong>: requested model names that do not match
+a configured Switchyard route. For example, if the route is <code>switchyard/core</code>
+and its target is <code>azure/openai/gpt-5.5</code>, requesting the target name directly
+still delegates the request to Relay.</p>
+<p>This is a known issue. A proposed correction is tracked in
+<a href="https://github.com/NVIDIA/NeMo-Relay/pull/1109">NeMo Relay PR #1109</a>.
+The correction has not been released. Until a fix is available, send unmanaged
+traffic through a separate Relay instance with the plugin disabled.
+Do not assume that upgrading Switchyard alone fixes this.
+The plugin's <code>&gt;=0.8.0, &lt;1.0.0</code> compatibility range describes which hosts can load
+it; it does not mean those older hosts preserve upstream errors correctly.</p>
 <h2 id="why-use-switchyard-with-nemo-relay">Why Use Switchyard with NeMo Relay?<a class="headerlink" href="#why-use-switchyard-with-nemo-relay" title="Permanent link">&para;</a></h2>
 <p>Switchyard's routing algorithms select a model for each LLM request or step in
 an agent trajectory, balancing cost and performance. The NeMo Relay integration
@@ -1690,11 +1784,12 @@ latency, and token use through Relay telemetry. Use it to answer:</p>
 </ul>
 <p>The plugin runs inside Relay, so the agent does not need to change and
 Switchyard does not need to run as a separate service.</p>
-<p>Requests for models that Switchyard does not manage continue through Relay as
-usual.</p>
+<p>Requests for models that Switchyard does not manage are passed to Relay.
+See the <a href="#upstream-error-compatibility">upstream error compatibility note</a> before
+using older Relay versions.</p>
 <p>Routing does not require Relay. You can instead run the
 <a href="../../getting_started/#server-path">standalone server</a> or embed
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5923512661148cf7047a7387c296008c62159eda/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b16ce42490edc6d6edf6106aefca7c2d3f4e3f62/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
 <h3 id="measure-the-cost-of-routing">Measure the Cost of Routing<a class="headerlink" href="#measure-the-cost-of-routing" title="Permanent link">&para;</a></h3>
 <p>A routed request can spend tokens choosing a model and generating the answer.
 Some routes call a judge or classifier first. The selected model, or a fallback,
@@ -1785,11 +1880,25 @@ and metrics.</p>
 and
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/plugins#plugin-delivery-models">plugin delivery models</a>.</p>
 <h2 id="set-up-the-plugin">Set Up the Plugin<a class="headerlink" href="#set-up-the-plugin" title="Permanent link">&para;</a></h2>
-<p>Follow the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5923512661148cf7047a7387c296008c62159eda/crates/switchyard-nemo-relay-plugin/README.md">plugin README</a>
-to install a released bundle from the
-<a href="https://github.com/NVIDIA/NeMo-Relay-Plugins/releases">NeMo Relay Plugins repository</a>
-or build and package the native library from source, then register and enable
-it in Relay and configure its deployment. Relay documents how to
+<p>For Switchyard <code>0.3.0</code>, select a matching published <code>switchyard-plugin</code> bundle
+from the
+<a href="https://github.com/NVIDIA/NeMo-Relay-Plugins/releases">NeMo Relay Plugins releases</a>.
+Confirm its Switchyard source commit in the release metadata. Plugin versions
+are managed separately and can match the Switchyard version. The bundle
+includes the native library, completed manifest, schema, and license notices;
+no separate plugin crate installation is needed.</p>
+<p>The repository currently requires NVIDIA GitHub repository access and
+organization SSO/SAML authorization where required. An HTTP 404 can indicate
+missing access. A Switchyard release does not guarantee that a matching plugin
+bundle has been published.</p>
+<p>Follow the
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b16ce42490edc6d6edf6106aefca7c2d3f4e3f62/crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle">bundle installation steps</a>
+to download the archive and sidecars, verify the checksum, and extract the
+bundle. If a matching published bundle is unavailable or you need a custom
+build, follow
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b16ce42490edc6d6edf6106aefca7c2d3f4e3f62/crates/switchyard-nemo-relay-plugin/README.md#build-from-source">Build from source</a>.
+Then register the manifest, configure the deployment and trust policy, enable
+the plugin, and restart Relay. Relay documents how to
 <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin">add and enable a discoverable plugin</a>
 and how it
 <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#validate-before-loading-code">validates the package before loading code</a>.</p>
@@ -1797,7 +1906,7 @@ and how it
 <p class="admonition-title">Relay compatibility</p>
 <p>The plugin requires <code>relay = "&gt;=0.8.0, &lt;1.0.0"</code> and native plugin API <code>1</code>.
 The packaged
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5923512661148cf7047a7387c296008c62159eda/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b16ce42490edc6d6edf6106aefca7c2d3f4e3f62/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
 is the source of truth.</p>
 </div>
 <p>Configure exactly one Switchyard deployment source: either
@@ -1820,13 +1929,28 @@ model names.</p>
 <p>Only requests whose <code>model</code> is a string matching a Switchyard route ID are
 routed. Other call types, missing or non-string model values, and unconfigured
 model names are left unchanged by Switchyard and passed to Relay's next handler.</p>
-<p>The caller and selected target may use different supported API formats.
-Switchyard normalizes the request, routes it, and returns the response in the
-caller's original format. If Switchyard forwards the caller's credential, both
-formats must use the same credential family: OpenAI-compatible or Anthropic.</p>
+<p>The caller and selected target may use different supported API formats:
+<code>openai_chat</code>, <code>openai_responses</code>, or <code>anthropic_messages</code>. Switchyard translates
+the request into the selected target's configured format and returns buffered
+or streaming responses in the caller's original format. With server-owned
+credentials, one route targeting an <code>openai_chat</code> client can serve all three
+caller formats. Separate targets and routes are not required solely for format
+translation.</p>
+<p>The native Relay plugin rejects routes that use <code>forward_auth = true</code> during
+configuration validation and activation. This includes routing-model calls and
+alternate targets. Relay does not provide caller credentials to the plugin's
+provider calls. Secure forwarding support is tracked in
+<a href="https://github.com/NVIDIA/NeMo-Relay/issues/1108">NeMo Relay #1108</a>.</p>
+<p>For deployment-owned credentials, remove <code>forward_auth</code> or set it to <code>false</code>
+and configure <code>api_key_env</code> on each authenticated client. The two options cannot
+be enabled together. If each caller must use its own provider credential, use
+standalone <code>switchyard-server</code>. Standalone forwarding requires the caller and
+target to use the same credential family: OpenAI-compatible (Chat Completions
+and Responses) or Anthropic (Messages).</p>
 <p>Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated
-route.</p>
+route. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b16ce42490edc6d6edf6106aefca7c2d3f4e3f62/crates/switchyard-nemo-relay-plugin/README.md#request-handling">native-plugin README</a>
+describes the same format and credential rules.</p>
 <h3 id="header-forwarding">Header Forwarding<a class="headerlink" href="#header-forwarding" title="Permanent link">&para;</a></h3>
 <p>Caller headers are forwarded upstream except credentials and headers owned by
 the HTTP client, such as connection and content headers. Authentication and
@@ -1989,12 +2113,12 @@ describes the surrounding event envelope.</p>
 <tr>
 <td><code>switchyard.routing.decision</code></td>
 <td>Info</td>
-<td><code>algorithm</code>, initial <code>selected_model</code>, nullable final <code>served_model</code>, and nullable <code>fallback_used</code>.</td>
+<td><code>algorithm</code>, optional <code>outcome_id</code>, initial <code>selected_model</code>, nullable final <code>served_model</code>, nullable <code>fallback_used</code>, and optional <code>evidence</code>.</td>
 </tr>
 <tr>
 <td><code>switchyard.routing.error</code></td>
 <td>Error</td>
-<td>Generic failures contain <code>failure_kind</code>. Route-execution failures also contain <code>category</code> and <code>phase</code>, plus nullable <code>upstream_status</code> and <code>target</code>.</td>
+<td>Generic failures contain <code>failure_kind</code>. Route-execution failures also contain <code>category</code>, <code>phase</code>, nullable <code>upstream_status</code> and <code>target</code>, and may contain <code>outcome_id</code> and <code>evidence</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -2011,7 +2135,13 @@ telemetry can report the model that answered.</p>
 <p><code>fallback_used</code> is <code>true</code> when the final served model differs from the initial
 selection and <code>false</code> when they match. It and <code>served_model</code> are <code>null</code> when the
 response does not provide serving metadata. If route execution fails before a
-response is available, the error mark describes the terminal failure instead.</p>
+response is available, the error mark describes the terminal failure instead.
+<code>outcome_id</code> is present when the algorithm runner supplies outcome metadata.
+When the algorithm supplies evidence, the plugin includes an object containing
+supported string fields (<code>source</code>, <code>verdict</code>, <code>trigger</code>, and <code>reason_code</code>) and
+numeric fields (<code>score</code>, <code>confidence</code>, and <code>threshold</code>). Other fields and values
+of the wrong type are omitted. String values longer than 64 bytes are also omitted
+and should be stable, non-sensitive labels.</p>
 <h3 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h3>
 <table>
 <thead>

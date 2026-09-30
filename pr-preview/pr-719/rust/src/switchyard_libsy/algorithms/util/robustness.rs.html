@@ -34,151 +34,145 @@
 <a href=#34 id=34 data-nosnippet>34</a>        // upstream error, so only the class is reported.
 <a href=#35 id=35 data-nosnippet>35</a>        </span>LibsyError::AlgorithmError { .. } =&gt; <span class="string">"algorithm error"</span>.to_string(),
 <a href=#36 id=36 data-nosnippet>36</a>        LibsyError::Driver(<span class="kw">_</span>) =&gt; <span class="string">"algorithm driver failed"</span>.to_string(),
-<a href=#37 id=37 data-nosnippet>37</a>        LibsyError::CircuitOpen { target } =&gt; {
-<a href=#38 id=38 data-nosnippet>38</a>            <span class="macro">format!</span>(<span class="string">"target {target:?} circuit breaker is open"</span>)
-<a href=#39 id=39 data-nosnippet>39</a>        }
-<a href=#40 id=40 data-nosnippet>40</a>        LibsyError::VgrTiersUnavailable { .. } =&gt; {
-<a href=#41 id=41 data-nosnippet>41</a>            <span class="string">"both VGR serving tiers are unavailable"</span>.to_string()
-<a href=#42 id=42 data-nosnippet>42</a>        }
-<a href=#43 id=43 data-nosnippet>43</a>        <span class="comment">// The operation is a static label, but the boxed source comes from a user
-<a href=#44 id=44 data-nosnippet>44</a>        // extension and is unvetted.
-<a href=#45 id=45 data-nosnippet>45</a>        </span>LibsyError::External { operation, .. } =&gt; <span class="macro">format!</span>(<span class="string">"{operation} failed"</span>),
-<a href=#46 id=46 data-nosnippet>46</a>        <span class="comment">// The remaining variants render only structural detail: configured target
-<a href=#47 id=47 data-nosnippet>47</a>        // names and fixed strings, nothing request-derived.
-<a href=#48 id=48 data-nosnippet>48</a>        </span>LibsyError::TargetNotFound { .. }
-<a href=#49 id=49 data-nosnippet>49</a>        | LibsyError::NoTargets
-<a href=#50 id=50 data-nosnippet>50</a>        | LibsyError::MissingFinalResponse =&gt; error.to_string(),
-<a href=#51 id=51 data-nosnippet>51</a>    }
-<a href=#52 id=52 data-nosnippet>52</a>}
-<a href=#53 id=53 data-nosnippet>53</a>
-<a href=#54 id=54 data-nosnippet>54</a><span class="doccomment">/// The client half of [`safe_error_summary`].
-<a href=#55 id=55 data-nosnippet>55</a>///
-<a href=#56 id=56 data-nosnippet>56</a>/// `UpstreamHttp` is the sharp edge: its `Display` interpolates the raw upstream
-<a href=#57 id=57 data-nosnippet>57</a>/// body, which routinely quotes the request back. Boxed transport, decode, and FFI
-<a href=#58 id=58 data-nosnippet>58</a>/// sources are reduced for the same reason.
-<a href=#59 id=59 data-nosnippet>59</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>safe_client_error(error: <span class="kw-2">&amp;</span>LlmClientError) -&gt; String {
-<a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">match </span>error {
-<a href=#61 id=61 data-nosnippet>61</a>        LlmClientError::UpstreamHttp { status, .. } =&gt; <span class="macro">format!</span>(<span class="string">"upstream HTTP {status}"</span>),
-<a href=#62 id=62 data-nosnippet>62</a>        LlmClientError::ContextWindowExceeded { model, .. } =&gt; {
-<a href=#63 id=63 data-nosnippet>63</a>            <span class="macro">format!</span>(<span class="string">"context window exceeded for model {model}"</span>)
-<a href=#64 id=64 data-nosnippet>64</a>        }
-<a href=#65 id=65 data-nosnippet>65</a>        LlmClientError::Timeout { .. } =&gt; <span class="string">"upstream request timed out"</span>.to_string(),
-<a href=#66 id=66 data-nosnippet>66</a>        LlmClientError::Transport { .. } =&gt; <span class="string">"upstream transport error"</span>.to_string(),
-<a href=#67 id=67 data-nosnippet>67</a>        LlmClientError::InvalidResponse { .. } =&gt; <span class="string">"invalid upstream response"</span>.to_string(),
-<a href=#68 id=68 data-nosnippet>68</a>        LlmClientError::Ffi { .. } =&gt; <span class="string">"foreign function interface error"</span>.to_string(),
-<a href=#69 id=69 data-nosnippet>69</a>        LlmClientError::InvalidRequest { .. } =&gt; <span class="string">"invalid request"</span>.to_string(),
-<a href=#70 id=70 data-nosnippet>70</a>        LlmClientError::RequestTranslation(<span class="kw">_</span>) =&gt; <span class="string">"request translation failed"</span>.to_string(),
-<a href=#71 id=71 data-nosnippet>71</a>        LlmClientError::RequestEncoding(<span class="kw">_</span>) =&gt; <span class="string">"outbound request encoding failed"</span>.to_string(),
-<a href=#72 id=72 data-nosnippet>72</a>        LlmClientError::ResponseTranslation(<span class="kw">_</span>) =&gt; <span class="string">"response translation failed"</span>.to_string(),
-<a href=#73 id=73 data-nosnippet>73</a>        <span class="comment">// `message` is unconstrained here too, so the class is reported without it.
-<a href=#74 id=74 data-nosnippet>74</a>        </span>LlmClientError::Configuration { .. } =&gt; <span class="string">"client configuration error"</span>.to_string(),
-<a href=#75 id=75 data-nosnippet>75</a>        <span class="comment">// Free-form by definition.
-<a href=#76 id=76 data-nosnippet>76</a>        </span>LlmClientError::General(<span class="kw">_</span>) =&gt; <span class="string">"client call failed"</span>.to_string(),
-<a href=#77 id=77 data-nosnippet>77</a>        <span class="comment">// `LlmClientError` is `#[non_exhaustive]`, so a wildcard is required. A future
-<a href=#78 id=78 data-nosnippet>78</a>        // variant is unvetted until it is given an arm above.
-<a href=#79 id=79 data-nosnippet>79</a>        </span><span class="kw">_ </span>=&gt; <span class="string">"client call failed"</span>.to_string(),
-<a href=#80 id=80 data-nosnippet>80</a>    }
-<a href=#81 id=81 data-nosnippet>81</a>}
+<a href=#37 id=37 data-nosnippet>37</a>        <span class="comment">// The operation is a static label, but the boxed source comes from a user
+<a href=#38 id=38 data-nosnippet>38</a>        // extension and is unvetted.
+<a href=#39 id=39 data-nosnippet>39</a>        </span>LibsyError::External { operation, .. } =&gt; <span class="macro">format!</span>(<span class="string">"{operation} failed"</span>),
+<a href=#40 id=40 data-nosnippet>40</a>        <span class="comment">// The remaining variants render only structural detail: configured target
+<a href=#41 id=41 data-nosnippet>41</a>        // names and fixed strings, nothing request-derived.
+<a href=#42 id=42 data-nosnippet>42</a>        </span>LibsyError::TargetNotFound { .. }
+<a href=#43 id=43 data-nosnippet>43</a>        | LibsyError::NoTargets
+<a href=#44 id=44 data-nosnippet>44</a>        | LibsyError::MissingFinalResponse =&gt; error.to_string(),
+<a href=#45 id=45 data-nosnippet>45</a>    }
+<a href=#46 id=46 data-nosnippet>46</a>}
+<a href=#47 id=47 data-nosnippet>47</a>
+<a href=#48 id=48 data-nosnippet>48</a><span class="doccomment">/// The client half of [`safe_error_summary`].
+<a href=#49 id=49 data-nosnippet>49</a>///
+<a href=#50 id=50 data-nosnippet>50</a>/// `UpstreamHttp` is the sharp edge: its `Display` interpolates the raw upstream
+<a href=#51 id=51 data-nosnippet>51</a>/// body, which routinely quotes the request back. Boxed transport, decode, and FFI
+<a href=#52 id=52 data-nosnippet>52</a>/// sources are reduced for the same reason.
+<a href=#53 id=53 data-nosnippet>53</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>safe_client_error(error: <span class="kw-2">&amp;</span>LlmClientError) -&gt; String {
+<a href=#54 id=54 data-nosnippet>54</a>    <span class="kw">match </span>error {
+<a href=#55 id=55 data-nosnippet>55</a>        LlmClientError::UpstreamHttp { status, .. } =&gt; <span class="macro">format!</span>(<span class="string">"upstream HTTP {status}"</span>),
+<a href=#56 id=56 data-nosnippet>56</a>        LlmClientError::ContextWindowExceeded { model, .. } =&gt; {
+<a href=#57 id=57 data-nosnippet>57</a>            <span class="macro">format!</span>(<span class="string">"context window exceeded for model {model}"</span>)
+<a href=#58 id=58 data-nosnippet>58</a>        }
+<a href=#59 id=59 data-nosnippet>59</a>        LlmClientError::Timeout { .. } =&gt; <span class="string">"upstream request timed out"</span>.to_string(),
+<a href=#60 id=60 data-nosnippet>60</a>        LlmClientError::Transport { .. } =&gt; <span class="string">"upstream transport error"</span>.to_string(),
+<a href=#61 id=61 data-nosnippet>61</a>        LlmClientError::InvalidResponse { .. } =&gt; <span class="string">"invalid upstream response"</span>.to_string(),
+<a href=#62 id=62 data-nosnippet>62</a>        LlmClientError::Ffi { .. } =&gt; <span class="string">"foreign function interface error"</span>.to_string(),
+<a href=#63 id=63 data-nosnippet>63</a>        LlmClientError::InvalidRequest { .. } =&gt; <span class="string">"invalid request"</span>.to_string(),
+<a href=#64 id=64 data-nosnippet>64</a>        LlmClientError::RequestTranslation(<span class="kw">_</span>) =&gt; <span class="string">"request translation failed"</span>.to_string(),
+<a href=#65 id=65 data-nosnippet>65</a>        LlmClientError::RequestEncoding(<span class="kw">_</span>) =&gt; <span class="string">"outbound request encoding failed"</span>.to_string(),
+<a href=#66 id=66 data-nosnippet>66</a>        LlmClientError::ResponseTranslation(<span class="kw">_</span>) =&gt; <span class="string">"response translation failed"</span>.to_string(),
+<a href=#67 id=67 data-nosnippet>67</a>        <span class="comment">// `message` is unconstrained here too, so the class is reported without it.
+<a href=#68 id=68 data-nosnippet>68</a>        </span>LlmClientError::Configuration { .. } =&gt; <span class="string">"client configuration error"</span>.to_string(),
+<a href=#69 id=69 data-nosnippet>69</a>        <span class="comment">// Free-form by definition.
+<a href=#70 id=70 data-nosnippet>70</a>        </span>LlmClientError::General(<span class="kw">_</span>) =&gt; <span class="string">"client call failed"</span>.to_string(),
+<a href=#71 id=71 data-nosnippet>71</a>        <span class="comment">// `LlmClientError` is `#[non_exhaustive]`, so a wildcard is required. A future
+<a href=#72 id=72 data-nosnippet>72</a>        // variant is unvetted until it is given an arm above.
+<a href=#73 id=73 data-nosnippet>73</a>        </span><span class="kw">_ </span>=&gt; <span class="string">"client call failed"</span>.to_string(),
+<a href=#74 id=74 data-nosnippet>74</a>    }
+<a href=#75 id=75 data-nosnippet>75</a>}
+<a href=#76 id=76 data-nosnippet>76</a>
+<a href=#77 id=77 data-nosnippet>77</a><span class="attr">#[cfg(test)]
+<a href=#78 id=78 data-nosnippet>78</a></span><span class="kw">mod </span>tests {
+<a href=#79 id=79 data-nosnippet>79</a>    <span class="kw">use </span>switchyard_protocol::ModelId;
+<a href=#80 id=80 data-nosnippet>80</a>
+<a href=#81 id=81 data-nosnippet>81</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a><span class="attr">#[cfg(test)]
-<a href=#84 id=84 data-nosnippet>84</a></span><span class="kw">mod </span>tests {
-<a href=#85 id=85 data-nosnippet>85</a>    <span class="kw">use </span>switchyard_protocol::ModelId;
-<a href=#86 id=86 data-nosnippet>86</a>
-<a href=#87 id=87 data-nosnippet>87</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#88 id=88 data-nosnippet>88</a>
-<a href=#89 id=89 data-nosnippet>89</a>    <span class="doccomment">/// The conversation text a leaking log line would expose.
-<a href=#90 id=90 data-nosnippet>90</a>    </span><span class="kw">const </span>SECRET: <span class="kw-2">&amp;</span>str = <span class="string">"patient name is Jane Doe"</span>;
-<a href=#91 id=91 data-nosnippet>91</a>
-<a href=#92 id=92 data-nosnippet>92</a>    <span class="attr">#[test]
-<a href=#93 id=93 data-nosnippet>93</a>    </span><span class="kw">fn </span>an_upstream_body_never_reaches_the_summary() {
-<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw">let </span>error = LibsyError::ClientCall {
-<a href=#95 id=95 data-nosnippet>95</a>            target: ModelId::new(<span class="string">"weak"</span>),
-<a href=#96 id=96 data-nosnippet>96</a>            source: LlmClientError::UpstreamHttp {
-<a href=#97 id=97 data-nosnippet>97</a>                status: http::StatusCode::BAD_REQUEST,
-<a href=#98 id=98 data-nosnippet>98</a>                body: <span class="macro">format!</span>(<span class="string">r#"{{"error":{{"message":"bad request: {SECRET}"}}}}"#</span>),
-<a href=#99 id=99 data-nosnippet>99</a>            },
-<a href=#100 id=100 data-nosnippet>100</a>        };
-<a href=#101 id=101 data-nosnippet>101</a>
-<a href=#102 id=102 data-nosnippet>102</a>        <span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>error);
-<a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a>        <span class="comment">// The status and target survive; the body does not.
-<a href=#105 id=105 data-nosnippet>105</a>        </span><span class="macro">assert!</span>(summary.contains(<span class="string">"upstream HTTP 400"</span>), <span class="string">"{summary}"</span>);
-<a href=#106 id=106 data-nosnippet>106</a>        <span class="macro">assert!</span>(summary.contains(<span class="string">"weak"</span>), <span class="string">"{summary}"</span>);
-<a href=#107 id=107 data-nosnippet>107</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
-<a href=#108 id=108 data-nosnippet>108</a>        <span class="comment">// Guard against the redaction silently regressing to `Display`.
-<a href=#109 id=109 data-nosnippet>109</a>        </span><span class="macro">assert!</span>(error.to_string().contains(SECRET));
-<a href=#110 id=110 data-nosnippet>110</a>    }
-<a href=#111 id=111 data-nosnippet>111</a>
-<a href=#112 id=112 data-nosnippet>112</a>    <span class="attr">#[test]
-<a href=#113 id=113 data-nosnippet>113</a>    </span><span class="kw">fn </span>boxed_sources_are_reduced_to_their_class() {
-<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw">for </span>source <span class="kw">in </span>[
-<a href=#115 id=115 data-nosnippet>115</a>            LlmClientError::Transport {
+<a href=#83 id=83 data-nosnippet>83</a>    <span class="doccomment">/// The conversation text a leaking log line would expose.
+<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="kw">const </span>SECRET: <span class="kw-2">&amp;</span>str = <span class="string">"patient name is Jane Doe"</span>;
+<a href=#85 id=85 data-nosnippet>85</a>
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="attr">#[test]
+<a href=#87 id=87 data-nosnippet>87</a>    </span><span class="kw">fn </span>an_upstream_body_never_reaches_the_summary() {
+<a href=#88 id=88 data-nosnippet>88</a>        <span class="kw">let </span>error = LibsyError::ClientCall {
+<a href=#89 id=89 data-nosnippet>89</a>            target: ModelId::new(<span class="string">"weak"</span>),
+<a href=#90 id=90 data-nosnippet>90</a>            source: LlmClientError::UpstreamHttp {
+<a href=#91 id=91 data-nosnippet>91</a>                status: http::StatusCode::BAD_REQUEST,
+<a href=#92 id=92 data-nosnippet>92</a>                body: <span class="macro">format!</span>(<span class="string">r#"{{"error":{{"message":"bad request: {SECRET}"}}}}"#</span>),
+<a href=#93 id=93 data-nosnippet>93</a>            },
+<a href=#94 id=94 data-nosnippet>94</a>        };
+<a href=#95 id=95 data-nosnippet>95</a>
+<a href=#96 id=96 data-nosnippet>96</a>        <span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>error);
+<a href=#97 id=97 data-nosnippet>97</a>
+<a href=#98 id=98 data-nosnippet>98</a>        <span class="comment">// The status and target survive; the body does not.
+<a href=#99 id=99 data-nosnippet>99</a>        </span><span class="macro">assert!</span>(summary.contains(<span class="string">"upstream HTTP 400"</span>), <span class="string">"{summary}"</span>);
+<a href=#100 id=100 data-nosnippet>100</a>        <span class="macro">assert!</span>(summary.contains(<span class="string">"weak"</span>), <span class="string">"{summary}"</span>);
+<a href=#101 id=101 data-nosnippet>101</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
+<a href=#102 id=102 data-nosnippet>102</a>        <span class="comment">// Guard against the redaction silently regressing to `Display`.
+<a href=#103 id=103 data-nosnippet>103</a>        </span><span class="macro">assert!</span>(error.to_string().contains(SECRET));
+<a href=#104 id=104 data-nosnippet>104</a>    }
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a>    <span class="attr">#[test]
+<a href=#107 id=107 data-nosnippet>107</a>    </span><span class="kw">fn </span>boxed_sources_are_reduced_to_their_class() {
+<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">for </span>source <span class="kw">in </span>[
+<a href=#109 id=109 data-nosnippet>109</a>            LlmClientError::Transport {
+<a href=#110 id=110 data-nosnippet>110</a>                source: std::io::Error::other(SECRET).into(),
+<a href=#111 id=111 data-nosnippet>111</a>            },
+<a href=#112 id=112 data-nosnippet>112</a>            LlmClientError::InvalidResponse {
+<a href=#113 id=113 data-nosnippet>113</a>                source: std::io::Error::other(SECRET).into(),
+<a href=#114 id=114 data-nosnippet>114</a>            },
+<a href=#115 id=115 data-nosnippet>115</a>            LlmClientError::Timeout {
 <a href=#116 id=116 data-nosnippet>116</a>                source: std::io::Error::other(SECRET).into(),
 <a href=#117 id=117 data-nosnippet>117</a>            },
-<a href=#118 id=118 data-nosnippet>118</a>            LlmClientError::InvalidResponse {
-<a href=#119 id=119 data-nosnippet>119</a>                source: std::io::Error::other(SECRET).into(),
-<a href=#120 id=120 data-nosnippet>120</a>            },
-<a href=#121 id=121 data-nosnippet>121</a>            LlmClientError::Timeout {
-<a href=#122 id=122 data-nosnippet>122</a>                source: std::io::Error::other(SECRET).into(),
-<a href=#123 id=123 data-nosnippet>123</a>            },
-<a href=#124 id=124 data-nosnippet>124</a>        ] {
-<a href=#125 id=125 data-nosnippet>125</a>            <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>source);
-<a href=#126 id=126 data-nosnippet>126</a>            <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
-<a href=#127 id=127 data-nosnippet>127</a>            <span class="macro">assert!</span>(!summary.is_empty());
-<a href=#128 id=128 data-nosnippet>128</a>        }
-<a href=#129 id=129 data-nosnippet>129</a>    }
-<a href=#130 id=130 data-nosnippet>130</a>
-<a href=#131 id=131 data-nosnippet>131</a>    <span class="attr">#[test]
-<a href=#132 id=132 data-nosnippet>132</a>    </span><span class="kw">fn </span>context_overflow_keeps_the_model_but_not_the_message() {
-<a href=#133 id=133 data-nosnippet>133</a>        <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>LlmClientError::ContextWindowExceeded {
-<a href=#134 id=134 data-nosnippet>134</a>            model: ModelId::new(<span class="string">"weak"</span>),
-<a href=#135 id=135 data-nosnippet>135</a>            message: SECRET.to_string(),
-<a href=#136 id=136 data-nosnippet>136</a>        });
-<a href=#137 id=137 data-nosnippet>137</a>        <span class="macro">assert!</span>(summary.contains(<span class="string">"weak"</span>), <span class="string">"{summary}"</span>);
-<a href=#138 id=138 data-nosnippet>138</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
-<a href=#139 id=139 data-nosnippet>139</a>    }
-<a href=#140 id=140 data-nosnippet>140</a>
-<a href=#141 id=141 data-nosnippet>141</a>    <span class="attr">#[test]
-<a href=#142 id=142 data-nosnippet>142</a>    </span><span class="kw">fn </span>an_algorithm_error_message_is_reduced_to_its_class() {
-<a href=#143 id=143 data-nosnippet>143</a>        <span class="comment">// `AlgorithmError::message` is an unconstrained `String`. Callers build it from
-<a href=#144 id=144 data-nosnippet>144</a>        // static text today, but the summary must not depend on that holding.
-<a href=#145 id=145 data-nosnippet>145</a>        </span><span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>LibsyError::AlgorithmError {
-<a href=#146 id=146 data-nosnippet>146</a>            message: <span class="macro">format!</span>(<span class="string">"judge reply did not parse: {SECRET}"</span>),
-<a href=#147 id=147 data-nosnippet>147</a>        });
-<a href=#148 id=148 data-nosnippet>148</a>        <span class="macro">assert_eq!</span>(summary, <span class="string">"algorithm error"</span>);
-<a href=#149 id=149 data-nosnippet>149</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
-<a href=#150 id=150 data-nosnippet>150</a>    }
-<a href=#151 id=151 data-nosnippet>151</a>
-<a href=#152 id=152 data-nosnippet>152</a>    <span class="attr">#[test]
-<a href=#153 id=153 data-nosnippet>153</a>    </span><span class="kw">fn </span>a_client_configuration_message_is_reduced_to_its_class() {
-<a href=#154 id=154 data-nosnippet>154</a>        <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>LlmClientError::Configuration {
-<a href=#155 id=155 data-nosnippet>155</a>            message: SECRET.to_string(),
-<a href=#156 id=156 data-nosnippet>156</a>        });
-<a href=#157 id=157 data-nosnippet>157</a>        <span class="macro">assert_eq!</span>(summary, <span class="string">"client configuration error"</span>);
+<a href=#118 id=118 data-nosnippet>118</a>        ] {
+<a href=#119 id=119 data-nosnippet>119</a>            <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>source);
+<a href=#120 id=120 data-nosnippet>120</a>            <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
+<a href=#121 id=121 data-nosnippet>121</a>            <span class="macro">assert!</span>(!summary.is_empty());
+<a href=#122 id=122 data-nosnippet>122</a>        }
+<a href=#123 id=123 data-nosnippet>123</a>    }
+<a href=#124 id=124 data-nosnippet>124</a>
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="attr">#[test]
+<a href=#126 id=126 data-nosnippet>126</a>    </span><span class="kw">fn </span>context_overflow_keeps_the_model_but_not_the_message() {
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>LlmClientError::ContextWindowExceeded {
+<a href=#128 id=128 data-nosnippet>128</a>            model: ModelId::new(<span class="string">"weak"</span>),
+<a href=#129 id=129 data-nosnippet>129</a>            message: SECRET.to_string(),
+<a href=#130 id=130 data-nosnippet>130</a>        });
+<a href=#131 id=131 data-nosnippet>131</a>        <span class="macro">assert!</span>(summary.contains(<span class="string">"weak"</span>), <span class="string">"{summary}"</span>);
+<a href=#132 id=132 data-nosnippet>132</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
+<a href=#133 id=133 data-nosnippet>133</a>    }
+<a href=#134 id=134 data-nosnippet>134</a>
+<a href=#135 id=135 data-nosnippet>135</a>    <span class="attr">#[test]
+<a href=#136 id=136 data-nosnippet>136</a>    </span><span class="kw">fn </span>an_algorithm_error_message_is_reduced_to_its_class() {
+<a href=#137 id=137 data-nosnippet>137</a>        <span class="comment">// `AlgorithmError::message` is an unconstrained `String`. Callers build it from
+<a href=#138 id=138 data-nosnippet>138</a>        // static text today, but the summary must not depend on that holding.
+<a href=#139 id=139 data-nosnippet>139</a>        </span><span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>LibsyError::AlgorithmError {
+<a href=#140 id=140 data-nosnippet>140</a>            message: <span class="macro">format!</span>(<span class="string">"judge reply did not parse: {SECRET}"</span>),
+<a href=#141 id=141 data-nosnippet>141</a>        });
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="macro">assert_eq!</span>(summary, <span class="string">"algorithm error"</span>);
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
+<a href=#144 id=144 data-nosnippet>144</a>    }
+<a href=#145 id=145 data-nosnippet>145</a>
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="attr">#[test]
+<a href=#147 id=147 data-nosnippet>147</a>    </span><span class="kw">fn </span>a_client_configuration_message_is_reduced_to_its_class() {
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>LlmClientError::Configuration {
+<a href=#149 id=149 data-nosnippet>149</a>            message: SECRET.to_string(),
+<a href=#150 id=150 data-nosnippet>150</a>        });
+<a href=#151 id=151 data-nosnippet>151</a>        <span class="macro">assert_eq!</span>(summary, <span class="string">"client configuration error"</span>);
+<a href=#152 id=152 data-nosnippet>152</a>    }
+<a href=#153 id=153 data-nosnippet>153</a>
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="attr">#[test]
+<a href=#155 id=155 data-nosnippet>155</a>    </span><span class="kw">fn </span>a_general_error_is_reduced_to_its_class() {
+<a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>LlmClientError::General(SECRET.to_string()));
+<a href=#157 id=157 data-nosnippet>157</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
 <a href=#158 id=158 data-nosnippet>158</a>    }
 <a href=#159 id=159 data-nosnippet>159</a>
 <a href=#160 id=160 data-nosnippet>160</a>    <span class="attr">#[test]
-<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">fn </span>a_general_error_is_reduced_to_its_class() {
-<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">let </span>summary = safe_client_error(<span class="kw-2">&amp;</span>LlmClientError::General(SECRET.to_string()));
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="macro">assert!</span>(!summary.contains(SECRET), <span class="string">"{summary}"</span>);
-<a href=#164 id=164 data-nosnippet>164</a>    }
+<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">fn </span>an_extension_failure_keeps_its_label_but_not_its_source() {
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">let </span>error = LibsyError::external(<span class="string">"loading extension"</span>, std::io::Error::other(SECRET));
+<a href=#163 id=163 data-nosnippet>163</a>
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>error);
 <a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="attr">#[test]
-<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">fn </span>an_extension_failure_keeps_its_label_but_not_its_source() {
-<a href=#168 id=168 data-nosnippet>168</a>        <span class="kw">let </span>error = LibsyError::external(<span class="string">"loading extension"</span>, std::io::Error::other(SECRET));
+<a href=#166 id=166 data-nosnippet>166</a>        <span class="macro">assert_eq!</span>(summary, <span class="string">"loading extension failed"</span>);
+<a href=#167 id=167 data-nosnippet>167</a>        <span class="macro">assert!</span>(error.to_string().contains(SECRET));
+<a href=#168 id=168 data-nosnippet>168</a>    }
 <a href=#169 id=169 data-nosnippet>169</a>
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>error);
-<a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a>        <span class="macro">assert_eq!</span>(summary, <span class="string">"loading extension failed"</span>);
-<a href=#173 id=173 data-nosnippet>173</a>        <span class="macro">assert!</span>(error.to_string().contains(SECRET));
-<a href=#174 id=174 data-nosnippet>174</a>    }
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="attr">#[test]
-<a href=#177 id=177 data-nosnippet>177</a>    </span><span class="kw">fn </span>structural_variants_keep_their_detail() {
-<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>LibsyError::TargetNotFound {
-<a href=#179 id=179 data-nosnippet>179</a>            target: ModelId::new(<span class="string">"strong"</span>),
-<a href=#180 id=180 data-nosnippet>180</a>        });
-<a href=#181 id=181 data-nosnippet>181</a>        <span class="macro">assert!</span>(summary.contains(<span class="string">"strong"</span>), <span class="string">"{summary}"</span>);
-<a href=#182 id=182 data-nosnippet>182</a>    }
-<a href=#183 id=183 data-nosnippet>183</a>}
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="attr">#[test]
+<a href=#171 id=171 data-nosnippet>171</a>    </span><span class="kw">fn </span>structural_variants_keep_their_detail() {
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="kw">let </span>summary = safe_error_summary(<span class="kw-2">&amp;</span>LibsyError::TargetNotFound {
+<a href=#173 id=173 data-nosnippet>173</a>            target: ModelId::new(<span class="string">"strong"</span>),
+<a href=#174 id=174 data-nosnippet>174</a>        });
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="macro">assert!</span>(summary.contains(<span class="string">"strong"</span>), <span class="string">"{summary}"</span>);
+<a href=#176 id=176 data-nosnippet>176</a>    }
+<a href=#177 id=177 data-nosnippet>177</a>}
 </code></pre></div></section></main></body></html>

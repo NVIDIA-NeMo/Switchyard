@@ -1,293 +1,113 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `crates/libsy/src/algorithms/vgr/config.rs`."><title>config.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="switchyard_libsy" data-themes="" data-resource-suffix="" data-rustdoc-version="1.96.1 (31fca3adb 2026-06-26)" data-channel="1.96.1" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-5013f961.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">switchyard_libsy/algorithms/vgr/</div>config.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="comment">// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION &amp; AFFILIATES. All rights reserved.
 <a href=#2 id=2 data-nosnippet>2</a>// SPDX-License-Identifier: Apache-2.0
 <a href=#3 id=3 data-nosnippet>3</a>
-<a href=#4 id=4 data-nosnippet>4</a></span><span class="doccomment">//! Operator configuration for a verification-gated route.
-<a href=#5 id=5 data-nosnippet>5</a>//!
-<a href=#6 id=6 data-nosnippet>6</a>//! Everything an operator chooses lives here: which tiers to route between,
-<a href=#7 id=7 data-nosnippet>7</a>//! which verifiers to consult, how long the decision may take, and — most
-<a href=#8 id=8 data-nosnippet>8</a>//! consequentially — whether decisions are allowed to route traffic at all.
-<a href=#9 id=9 data-nosnippet>9</a>
-<a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">use </span>std::sync::Arc;
-<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>std::time::{Duration, Instant};
-<a href=#12 id=12 data-nosnippet>12</a>
-<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>async_trait::async_trait;
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>switchyard_protocol::ModelId;
-<a href=#15 id=15 data-nosnippet>15</a>
-<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">super</span>::policy::Policy;
-<a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span><span class="kw">super</span>::safety::{BreakerConfig, KillSwitch};
-<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>crate::{LibsyError, <span class="prelude-ty">Result</span>};
-<a href=#19 id=19 data-nosnippet>19</a>
-<a href=#20 id=20 data-nosnippet>20</a><span class="doccomment">/// How much authority a decision has over the traffic it decides.
-<a href=#21 id=21 data-nosnippet>21</a>///
-<a href=#22 id=22 data-nosnippet>22</a>/// The ladder exists because a routing decision and *acting* on that decision
-<a href=#23 id=23 data-nosnippet>23</a>/// are separable, and the gap between them is where a new router earns trust: a
-<a href=#24 id=24 data-nosnippet>24</a>/// deployment can measure what VGR would have done for as long as it likes
-<a href=#25 id=25 data-nosnippet>25</a>/// before letting it do anything.
-<a href=#26 id=26 data-nosnippet>26</a></span><span class="attr">#[derive(Clone, Debug, Default, Eq, PartialEq)]
-<a href=#27 id=27 data-nosnippet>27</a></span><span class="kw">pub enum </span>ServingMode {
-<a href=#28 id=28 data-nosnippet>28</a>    <span class="doccomment">/// Decisions are not made. Every request goes to the capable tier.
-<a href=#29 id=29 data-nosnippet>29</a>    ///
-<a href=#30 id=30 data-nosnippet>30</a>    /// The default, so a route that is configured but not yet consciously
-<a href=#31 id=31 data-nosnippet>31</a>    /// enabled cannot commit anything locally.
-<a href=#32 id=32 data-nosnippet>32</a>    </span><span class="attr">#[default]
-<a href=#33 id=33 data-nosnippet>33</a>    </span>Off,
-<a href=#34 id=34 data-nosnippet>34</a>    <span class="doccomment">/// Decisions are made and reported, and the *decided* route is served.
-<a href=#35 id=35 data-nosnippet>35</a>    ///
-<a href=#36 id=36 data-nosnippet>36</a>    /// For isolated measurement only: readiness gates are not applied, so this
-<a href=#37 id=37 data-nosnippet>37</a>    /// serves routes a production deployment would refuse.
-<a href=#38 id=38 data-nosnippet>38</a>    </span>Evaluate,
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Decisions are made and reported, but the capable tier is always served.
-<a href=#40 id=40 data-nosnippet>40</a>    ///
-<a href=#41 id=41 data-nosnippet>41</a>    /// The safe observation mode — full decision records at no routing risk.
-<a href=#42 id=42 data-nosnippet>42</a>    </span>Shadow,
-<a href=#43 id=43 data-nosnippet>43</a>    <span class="doccomment">/// Decisions route traffic, subject to the readiness gates.
-<a href=#44 id=44 data-nosnippet>44</a>    ///
-<a href=#45 id=45 data-nosnippet>45</a>    /// Requires an explicit attestation string, so enabling live local commits
-<a href=#46 id=46 data-nosnippet>46</a>    /// is a deliberate act rather than a config default someone inherited.
-<a href=#47 id=47 data-nosnippet>47</a>    </span>Active {
-<a href=#48 id=48 data-nosnippet>48</a>        <span class="doccomment">/// The operator's recorded approval to serve local commits.
-<a href=#49 id=49 data-nosnippet>49</a>        </span>approval: String,
-<a href=#50 id=50 data-nosnippet>50</a>    },
-<a href=#51 id=51 data-nosnippet>51</a>}
-<a href=#52 id=52 data-nosnippet>52</a>
-<a href=#53 id=53 data-nosnippet>53</a><span class="doccomment">/// One invocation of an operator-supplied sandboxed checker.
-<a href=#54 id=54 data-nosnippet>54</a>///
-<a href=#55 id=55 data-nosnippet>55</a>/// The absolute deadline and remaining budget describe the same decision
-<a href=#56 id=56 data-nosnippet>56</a>/// deadline. The manifest identity is pinned by [`ValidatedChecker`], not chosen
-<a href=#57 id=57 data-nosnippet>57</a>/// by a request or by the checker implementation.
-<a href=#58 id=58 data-nosnippet>58</a></span><span class="attr">#[derive(Clone, Copy, Debug)]
-<a href=#59 id=59 data-nosnippet>59</a></span><span class="kw">pub struct </span>CheckerRequest&lt;<span class="lifetime">'a</span>&gt; {
-<a href=#60 id=60 data-nosnippet>60</a>    <span class="doccomment">/// The task whose locally produced attempt is being checked.
-<a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">pub </span>task_text: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str,
-<a href=#62 id=62 data-nosnippet>62</a>    <span class="doccomment">/// The locally produced attempt to check.
-<a href=#63 id=63 data-nosnippet>63</a>    </span><span class="kw">pub </span>attempt: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str,
-<a href=#64 id=64 data-nosnippet>64</a>    <span class="doccomment">/// Absolute monotonic deadline for the check.
-<a href=#65 id=65 data-nosnippet>65</a>    </span><span class="kw">pub </span>deadline: Instant,
-<a href=#66 id=66 data-nosnippet>66</a>    <span class="doccomment">/// Budget remaining when the checker was invoked.
-<a href=#67 id=67 data-nosnippet>67</a>    </span><span class="kw">pub </span>remaining: Duration,
-<a href=#68 id=68 data-nosnippet>68</a>    <span class="doccomment">/// Operator-authenticated identity of the immutable check manifest.
-<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub </span>manifest_identity: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str,
-<a href=#70 id=70 data-nosnippet>70</a>}
-<a href=#71 id=71 data-nosnippet>71</a>
-<a href=#72 id=72 data-nosnippet>72</a><span class="doccomment">/// An asynchronous, cancellation-safe sandboxed checker.
-<a href=#73 id=73 data-nosnippet>73</a>///
-<a href=#74 id=74 data-nosnippet>74</a>/// Dropping the returned future must cancel the check or terminate its isolated
-<a href=#75 id=75 data-nosnippet>75</a>/// worker. VGR also enforces [`CheckerRequest::deadline`] around every call.
-<a href=#76 id=76 data-nosnippet>76</a></span><span class="attr">#[async_trait]
-<a href=#77 id=77 data-nosnippet>77</a></span><span class="kw">pub trait </span>Checker: Send + Sync {
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// Runs the task's checks against an attempt, reporting whether they passed.
-<a href=#79 id=79 data-nosnippet>79</a>    ///
-<a href=#80 id=80 data-nosnippet>80</a>    /// `None` means the checks could not be run to a conclusion — a timeout, a
-<a href=#81 id=81 data-nosnippet>81</a>    /// sandbox failure, a missing manifest. It is not a failure verdict, but it
-<a href=#82 id=82 data-nosnippet>82</a>    /// commits nothing either.
-<a href=#83 id=83 data-nosnippet>83</a>    </span><span class="kw">async fn </span>check(<span class="kw-2">&amp;</span><span class="self">self</span>, request: CheckerRequest&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;bool&gt;;
-<a href=#84 id=84 data-nosnippet>84</a>}
+<a href=#4 id=4 data-nosnippet>4</a></span><span class="kw">use </span>std::time::Duration;
+<a href=#5 id=5 data-nosnippet>5</a>
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>switchyard_protocol::ModelId;
+<a href=#7 id=7 data-nosnippet>7</a>
+<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span><span class="kw">super</span>::safety::{BreakerConfig, KillSwitch};
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>crate::{LibsyError, <span class="prelude-ty">Result</span>};
+<a href=#10 id=10 data-nosnippet>10</a>
+<a href=#11 id=11 data-nosnippet>11</a><span class="doccomment">/// Required attestation for live local commits.
+<a href=#12 id=12 data-nosnippet>12</a></span><span class="kw">pub const </span>ACTIVE_APPROVAL: <span class="kw-2">&amp;</span>str = <span class="string">"prospective-validation-and-canary-approved"</span>;
+<a href=#13 id=13 data-nosnippet>13</a>
+<a href=#14 id=14 data-nosnippet>14</a><span class="doccomment">/// Authority granted to VGR decisions.
+<a href=#15 id=15 data-nosnippet>15</a></span><span class="attr">#[derive(Clone, Debug, Default, Eq, PartialEq)]
+<a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">pub enum </span>ServingMode {
+<a href=#17 id=17 data-nosnippet>17</a>    <span class="doccomment">/// Always serves cloud without producing an attempt.
+<a href=#18 id=18 data-nosnippet>18</a>    </span><span class="attr">#[default]
+<a href=#19 id=19 data-nosnippet>19</a>    </span>Off,
+<a href=#20 id=20 data-nosnippet>20</a>    <span class="doccomment">/// Serves decisions, for isolated measurement.
+<a href=#21 id=21 data-nosnippet>21</a>    </span>Evaluate,
+<a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Decides but always serves cloud.
+<a href=#23 id=23 data-nosnippet>23</a>    </span>Shadow,
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// Serves decisions after operator approval.
+<a href=#25 id=25 data-nosnippet>25</a>    </span>Active {
+<a href=#26 id=26 data-nosnippet>26</a>        <span class="doccomment">/// Operator approval attestation.
+<a href=#27 id=27 data-nosnippet>27</a>        </span>approval: String,
+<a href=#28 id=28 data-nosnippet>28</a>    },
+<a href=#29 id=29 data-nosnippet>29</a>}
+<a href=#30 id=30 data-nosnippet>30</a>
+<a href=#31 id=31 data-nosnippet>31</a><span class="doccomment">/// Targets used by a VGR route.
+<a href=#32 id=32 data-nosnippet>32</a></span><span class="attr">#[derive(Clone, Debug)]
+<a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">pub struct </span>Targets {
+<a href=#34 id=34 data-nosnippet>34</a>    <span class="doccomment">/// Tier that produces the candidate attempt.
+<a href=#35 id=35 data-nosnippet>35</a>    </span><span class="kw">pub </span>local: ModelId,
+<a href=#36 id=36 data-nosnippet>36</a>    <span class="doccomment">/// Tier used when the candidate is not licensed.
+<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub </span>cloud: ModelId,
+<a href=#38 id=38 data-nosnippet>38</a>    <span class="doccomment">/// Local verifier, defaulting to `local`.
+<a href=#39 id=39 data-nosnippet>39</a>    </span><span class="kw">pub </span>judge: <span class="prelude-ty">Option</span>&lt;ModelId&gt;,
+<a href=#40 id=40 data-nosnippet>40</a>    <span class="doccomment">/// Capable-tier verifier; unset removes the cloud confirmation rungs.
+<a href=#41 id=41 data-nosnippet>41</a>    </span><span class="kw">pub </span>cloud_judge: <span class="prelude-ty">Option</span>&lt;ModelId&gt;,
+<a href=#42 id=42 data-nosnippet>42</a>}
+<a href=#43 id=43 data-nosnippet>43</a>
+<a href=#44 id=44 data-nosnippet>44</a><span class="doccomment">/// VGR runtime configuration.
+<a href=#45 id=45 data-nosnippet>45</a></span><span class="attr">#[derive(Clone, Debug)]
+<a href=#46 id=46 data-nosnippet>46</a></span><span class="kw">pub struct </span>VgrConfig {
+<a href=#47 id=47 data-nosnippet>47</a>    <span class="doccomment">/// Completion and verifier targets.
+<a href=#48 id=48 data-nosnippet>48</a>    </span><span class="kw">pub </span>targets: Targets,
+<a href=#49 id=49 data-nosnippet>49</a>    <span class="doccomment">/// Authority granted to routing decisions.
+<a href=#50 id=50 data-nosnippet>50</a>    </span><span class="kw">pub </span>mode: ServingMode,
+<a href=#51 id=51 data-nosnippet>51</a>    <span class="doccomment">/// Budget for one turn's attempt and verification.
+<a href=#52 id=52 data-nosnippet>52</a>    </span><span class="kw">pub </span>deadline: Duration,
+<a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// Optional live stop controlled by the operator.
+<a href=#54 id=54 data-nosnippet>54</a>    </span><span class="kw">pub </span>kill_switch: <span class="prelude-ty">Option</span>&lt;KillSwitch&gt;,
+<a href=#55 id=55 data-nosnippet>55</a>    <span class="doccomment">/// Local endpoint breaker tuning.
+<a href=#56 id=56 data-nosnippet>56</a>    </span><span class="kw">pub </span>breaker: BreakerConfig,
+<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// Whether a cheap typing call selects a verification regime.
+<a href=#58 id=58 data-nosnippet>58</a>    </span><span class="kw">pub </span>task_typing: bool,
+<a href=#59 id=59 data-nosnippet>59</a>    <span class="doccomment">/// Whether the local tier accepts image content.
+<a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub </span>local_supports_images: bool,
+<a href=#61 id=61 data-nosnippet>61</a>    <span class="doccomment">/// Lets a long agentic run with earlier tool errors commit on a capable-tier
+<a href=#62 id=62 data-nosnippet>62</a>    /// confirmation once it ends in this many consecutive clean tool results.
+<a href=#63 id=63 data-nosnippet>63</a>    </span><span class="kw">pub </span>confirmed_recovery_min_clean_tail: <span class="prelude-ty">Option</span>&lt;u32&gt;,
+<a href=#64 id=64 data-nosnippet>64</a>}
+<a href=#65 id=65 data-nosnippet>65</a>
+<a href=#66 id=66 data-nosnippet>66</a><span class="kw">impl </span>VgrConfig {
+<a href=#67 id=67 data-nosnippet>67</a>    <span class="doccomment">/// Creates an off-by-default route between local and capable tiers.
+<a href=#68 id=68 data-nosnippet>68</a>    </span><span class="kw">pub fn </span>new(local: ModelId, cloud: ModelId) -&gt; <span class="self">Self </span>{
+<a href=#69 id=69 data-nosnippet>69</a>        <span class="self">Self </span>{
+<a href=#70 id=70 data-nosnippet>70</a>            targets: Targets {
+<a href=#71 id=71 data-nosnippet>71</a>                local,
+<a href=#72 id=72 data-nosnippet>72</a>                cloud,
+<a href=#73 id=73 data-nosnippet>73</a>                judge: <span class="prelude-val">None</span>,
+<a href=#74 id=74 data-nosnippet>74</a>                cloud_judge: <span class="prelude-val">None</span>,
+<a href=#75 id=75 data-nosnippet>75</a>            },
+<a href=#76 id=76 data-nosnippet>76</a>            mode: ServingMode::Off,
+<a href=#77 id=77 data-nosnippet>77</a>            deadline: Duration::from_secs(<span class="number">30</span>),
+<a href=#78 id=78 data-nosnippet>78</a>            kill_switch: <span class="prelude-val">None</span>,
+<a href=#79 id=79 data-nosnippet>79</a>            breaker: BreakerConfig::default(),
+<a href=#80 id=80 data-nosnippet>80</a>            task_typing: <span class="bool-val">true</span>,
+<a href=#81 id=81 data-nosnippet>81</a>            local_supports_images: <span class="bool-val">false</span>,
+<a href=#82 id=82 data-nosnippet>82</a>            confirmed_recovery_min_clean_tail: <span class="prelude-val">None</span>,
+<a href=#83 id=83 data-nosnippet>83</a>        }
+<a href=#84 id=84 data-nosnippet>84</a>    }
 <a href=#85 id=85 data-nosnippet>85</a>
-<a href=#86 id=86 data-nosnippet>86</a><span class="doccomment">/// A checker bound to validation evidence for one pinned manifest.
-<a href=#87 id=87 data-nosnippet>87</a>///
-<a href=#88 id=88 data-nosnippet>88</a>/// Keeping the checker handle and authenticated manifest identity in one value
-<a href=#89 id=89 data-nosnippet>89</a>/// makes it impossible for route configuration to claim checker validation
-<a href=#90 id=90 data-nosnippet>90</a>/// without also supplying the checker that was validated.
-<a href=#91 id=91 data-nosnippet>91</a></span><span class="attr">#[derive(Clone)]
-<a href=#92 id=92 data-nosnippet>92</a></span><span class="kw">pub struct </span>ValidatedChecker {
-<a href=#93 id=93 data-nosnippet>93</a>    checker: Arc&lt;<span class="kw">dyn </span>Checker&gt;,
-<a href=#94 id=94 data-nosnippet>94</a>    manifest_identity: Arc&lt;str&gt;,
-<a href=#95 id=95 data-nosnippet>95</a>}
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a><span class="kw">impl </span>ValidatedChecker {
-<a href=#98 id=98 data-nosnippet>98</a>    <span class="doccomment">/// Binds a checker to an operator-authenticated immutable manifest identity.
-<a href=#99 id=99 data-nosnippet>99</a>    ///
-<a href=#100 id=100 data-nosnippet>100</a>    /// The host authenticates the identity before construction. Empty,
-<a href=#101 id=101 data-nosnippet>101</a>    /// whitespace-padded, or control-character identities are rejected so the
-<a href=#102 id=102 data-nosnippet>102</a>    /// pinned value is unambiguous when passed to the checker.
-<a href=#103 id=103 data-nosnippet>103</a>    </span><span class="kw">pub fn </span>new(
-<a href=#104 id=104 data-nosnippet>104</a>        checker: Arc&lt;<span class="kw">dyn </span>Checker&gt;,
-<a href=#105 id=105 data-nosnippet>105</a>        authenticated_manifest_identity: <span class="kw">impl </span>Into&lt;String&gt;,
-<a href=#106 id=106 data-nosnippet>106</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>&gt; {
-<a href=#107 id=107 data-nosnippet>107</a>        <span class="kw">let </span>identity = authenticated_manifest_identity.into();
-<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">if </span>identity.is_empty()
-<a href=#109 id=109 data-nosnippet>109</a>            || identity.trim() != identity
-<a href=#110 id=110 data-nosnippet>110</a>            || identity.chars().any(char::is_control)
-<a href=#111 id=111 data-nosnippet>111</a>        {
-<a href=#112 id=112 data-nosnippet>112</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
-<a href=#113 id=113 data-nosnippet>113</a>                message: <span class="string">"vgr checker requires an authenticated manifest identity"</span>.to_string(),
-<a href=#114 id=114 data-nosnippet>114</a>            });
-<a href=#115 id=115 data-nosnippet>115</a>        }
-<a href=#116 id=116 data-nosnippet>116</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
-<a href=#117 id=117 data-nosnippet>117</a>            checker,
-<a href=#118 id=118 data-nosnippet>118</a>            manifest_identity: Arc::from(identity),
-<a href=#119 id=119 data-nosnippet>119</a>        })
-<a href=#120 id=120 data-nosnippet>120</a>    }
-<a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Runs the bound checker with its pinned manifest identity.
-<a href=#123 id=123 data-nosnippet>123</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">async fn </span>check(
-<a href=#124 id=124 data-nosnippet>124</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#125 id=125 data-nosnippet>125</a>        task_text: <span class="kw-2">&amp;</span>str,
-<a href=#126 id=126 data-nosnippet>126</a>        attempt: <span class="kw-2">&amp;</span>str,
-<a href=#127 id=127 data-nosnippet>127</a>        deadline: Instant,
-<a href=#128 id=128 data-nosnippet>128</a>    ) -&gt; <span class="prelude-ty">Option</span>&lt;bool&gt; {
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw">let </span>remaining = deadline.saturating_duration_since(Instant::now());
-<a href=#130 id=130 data-nosnippet>130</a>        <span class="kw">if </span>remaining.is_zero() {
-<a href=#131 id=131 data-nosnippet>131</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
-<a href=#132 id=132 data-nosnippet>132</a>        }
-<a href=#133 id=133 data-nosnippet>133</a>        <span class="kw">let </span>request = CheckerRequest {
-<a href=#134 id=134 data-nosnippet>134</a>            task_text,
-<a href=#135 id=135 data-nosnippet>135</a>            attempt,
-<a href=#136 id=136 data-nosnippet>136</a>            deadline,
-<a href=#137 id=137 data-nosnippet>137</a>            remaining,
-<a href=#138 id=138 data-nosnippet>138</a>            manifest_identity: <span class="kw-2">&amp;</span><span class="self">self</span>.manifest_identity,
-<a href=#139 id=139 data-nosnippet>139</a>        };
-<a href=#140 id=140 data-nosnippet>140</a>        tokio::time::timeout_at(
-<a href=#141 id=141 data-nosnippet>141</a>            tokio::time::Instant::from_std(deadline),
-<a href=#142 id=142 data-nosnippet>142</a>            <span class="self">self</span>.checker.check(request),
-<a href=#143 id=143 data-nosnippet>143</a>        )
-<a href=#144 id=144 data-nosnippet>144</a>        .<span class="kw">await
-<a href=#145 id=145 data-nosnippet>145</a>        </span>.ok()
-<a href=#146 id=146 data-nosnippet>146</a>        .flatten()
-<a href=#147 id=147 data-nosnippet>147</a>    }
-<a href=#148 id=148 data-nosnippet>148</a>
-<a href=#149 id=149 data-nosnippet>149</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>manifest_identity(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.manifest_identity
-<a href=#151 id=151 data-nosnippet>151</a>    }
-<a href=#152 id=152 data-nosnippet>152</a>}
-<a href=#153 id=153 data-nosnippet>153</a>
-<a href=#154 id=154 data-nosnippet>154</a><span class="doccomment">/// The tiers a verification-gated route moves between.
-<a href=#155 id=155 data-nosnippet>155</a></span><span class="attr">#[derive(Clone, Debug)]
-<a href=#156 id=156 data-nosnippet>156</a></span><span class="kw">pub struct </span>Targets {
-<a href=#157 id=157 data-nosnippet>157</a>    <span class="doccomment">/// The tier that produces the attempt being verified.
-<a href=#158 id=158 data-nosnippet>158</a>    </span><span class="kw">pub </span>local: ModelId,
-<a href=#159 id=159 data-nosnippet>159</a>    <span class="doccomment">/// The tier a request escalates to when the attempt is not licensed.
-<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="kw">pub </span>cloud: ModelId,
-<a href=#161 id=161 data-nosnippet>161</a>    <span class="doccomment">/// The tier that answers verification questions.
-<a href=#162 id=162 data-nosnippet>162</a>    ///
-<a href=#163 id=163 data-nosnippet>163</a>    /// Defaults to the local tier, since the readout and deliberation rungs are
-<a href=#164 id=164 data-nosnippet>164</a>    /// deliberately cheap and local.
-<a href=#165 id=165 data-nosnippet>165</a>    </span><span class="kw">pub </span>judge: <span class="prelude-ty">Option</span>&lt;ModelId&gt;,
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// The tier that answers the cloud confirmation rungs, when configured.
-<a href=#167 id=167 data-nosnippet>167</a>    ///
-<a href=#168 id=168 data-nosnippet>168</a>    /// Leaving this unset removes those rungs, which the decision rules treat as
-<a href=#169 id=169 data-nosnippet>169</a>    /// signals never produced rather than as indeterminate ones.
-<a href=#170 id=170 data-nosnippet>170</a>    </span><span class="kw">pub </span>cloud_judge: <span class="prelude-ty">Option</span>&lt;ModelId&gt;,
-<a href=#171 id=171 data-nosnippet>171</a>}
-<a href=#172 id=172 data-nosnippet>172</a>
-<a href=#173 id=173 data-nosnippet>173</a><span class="doccomment">/// A complete verification-gated route.
-<a href=#174 id=174 data-nosnippet>174</a></span><span class="attr">#[derive(Clone)]
-<a href=#175 id=175 data-nosnippet>175</a></span><span class="kw">pub struct </span>VgrConfig {
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="doccomment">/// The tiers to route between and consult.
-<a href=#177 id=177 data-nosnippet>177</a>    </span><span class="kw">pub </span>targets: Targets,
-<a href=#178 id=178 data-nosnippet>178</a>    <span class="doccomment">/// Whether the local tier accepts image content.
-<a href=#179 id=179 data-nosnippet>179</a>    ///
-<a href=#180 id=180 data-nosnippet>180</a>    /// False by default because an undeclared local capability must not turn an
-<a href=#181 id=181 data-nosnippet>181</a>    /// image-bearing request into a failed speculative call.
-<a href=#182 id=182 data-nosnippet>182</a>    </span><span class="kw">pub </span>local_supports_images: bool,
-<a href=#183 id=183 data-nosnippet>183</a>    <span class="doccomment">/// The decision constants. Defaults to the current policy.
-<a href=#184 id=184 data-nosnippet>184</a>    </span><span class="kw">pub </span>policy: Policy,
-<a href=#185 id=185 data-nosnippet>185</a>    <span class="doccomment">/// How much authority decisions have.
-<a href=#186 id=186 data-nosnippet>186</a>    </span><span class="kw">pub </span>mode: ServingMode,
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="doccomment">/// A checker bound to its authenticated pinned-manifest evidence.
-<a href=#188 id=188 data-nosnippet>188</a>    </span><span class="kw">pub </span>checker: <span class="prelude-ty">Option</span>&lt;ValidatedChecker&gt;,
-<a href=#189 id=189 data-nosnippet>189</a>    <span class="doccomment">/// Whether the operator declares this surface enforces a schema-validated
-<a href=#190 id=190 data-nosnippet>190</a>    /// terse final-answer format, on which typed agreement is checkable.
-<a href=#191 id=191 data-nosnippet>191</a>    </span><span class="kw">pub </span>structured_answer: bool,
-<a href=#192 id=192 data-nosnippet>192</a>    <span class="doccomment">/// Whether an escalation carries the local attempt forward as context.
-<a href=#193 id=193 data-nosnippet>193</a>    ///
-<a href=#194 id=194 data-nosnippet>194</a>    /// Per-route rather than global: carrying the attempt was measured to help
-<a href=#195 id=195 data-nosnippet>195</a>    /// substantially on research-style work and to hurt on conversational work.
-<a href=#196 id=196 data-nosnippet>196</a>    </span><span class="kw">pub </span>speculation_carry: bool,
-<a href=#197 id=197 data-nosnippet>197</a>    <span class="doccomment">/// The budget for the whole decision, verification included.
-<a href=#198 id=198 data-nosnippet>198</a>    ///
-<a href=#199 id=199 data-nosnippet>199</a>    /// Exceeding it does not fail the request; it ends evidence gathering, and
-<a href=#200 id=200 data-nosnippet>200</a>    /// whatever was not established stays unestablished — which escalates.
-<a href=#201 id=201 data-nosnippet>201</a>    </span><span class="kw">pub </span>deadline: Duration,
-<a href=#202 id=202 data-nosnippet>202</a>    <span class="doccomment">/// An operator handle that stops local commits without rebuilding the route.
-<a href=#203 id=203 data-nosnippet>203</a>    ///
-<a href=#204 id=204 data-nosnippet>204</a>    /// Unset means no runtime stop exists, which is not the same as one that is
-<a href=#205 id=205 data-nosnippet>205</a>    /// never engaged: the operator must hold a handle for there to be anything
-<a href=#206 id=206 data-nosnippet>206</a>    /// to engage.
-<a href=#207 id=207 data-nosnippet>207</a>    </span><span class="kw">pub </span>kill_switch: <span class="prelude-ty">Option</span>&lt;KillSwitch&gt;,
-<a href=#208 id=208 data-nosnippet>208</a>    <span class="doccomment">/// Tuning for the local-endpoint circuit breaker.
-<a href=#209 id=209 data-nosnippet>209</a>    </span><span class="kw">pub </span>breaker: BreakerConfig,
-<a href=#210 id=210 data-nosnippet>210</a>    <span class="doccomment">/// Whether the router types the request before deriving capabilities.
-<a href=#211 id=211 data-nosnippet>211</a>    ///
-<a href=#212 id=212 data-nosnippet>212</a>    /// Typing costs one cheap local call per turn and is what makes the
-<a href=#213 id=213 data-nosnippet>213</a>    /// answer and conversational regimes reachable at all; abstaining selects
-<a href=#214 id=214 data-nosnippet>214</a>    /// the default regime, which is more conservative rather than weaker.
-<a href=#215 id=215 data-nosnippet>215</a>    </span><span class="kw">pub </span>task_typing: bool,
-<a href=#216 id=216 data-nosnippet>216</a>    <span class="doccomment">/// Whether a session that escalated stays on the capable tier.
-<a href=#217 id=217 data-nosnippet>217</a>    ///
-<a href=#218 id=218 data-nosnippet>218</a>    /// Off by default: holding a session on the capable tier is a cost decision
-<a href=#219 id=219 data-nosnippet>219</a>    /// an operator makes, not one this router should make for them.
-<a href=#220 id=220 data-nosnippet>220</a>    </span><span class="kw">pub </span>latch_escalation: bool,
-<a href=#221 id=221 data-nosnippet>221</a>}
-<a href=#222 id=222 data-nosnippet>222</a>
-<a href=#223 id=223 data-nosnippet>223</a><span class="kw">impl </span>VgrConfig {
-<a href=#224 id=224 data-nosnippet>224</a>    <span class="doccomment">/// A route between two tiers, with everything else at its default.
-<a href=#225 id=225 data-nosnippet>225</a>    </span><span class="kw">pub fn </span>new(local: ModelId, cloud: ModelId) -&gt; <span class="self">Self </span>{
-<a href=#226 id=226 data-nosnippet>226</a>        <span class="self">Self </span>{
-<a href=#227 id=227 data-nosnippet>227</a>            targets: Targets {
-<a href=#228 id=228 data-nosnippet>228</a>                local,
-<a href=#229 id=229 data-nosnippet>229</a>                cloud,
-<a href=#230 id=230 data-nosnippet>230</a>                judge: <span class="prelude-val">None</span>,
-<a href=#231 id=231 data-nosnippet>231</a>                cloud_judge: <span class="prelude-val">None</span>,
-<a href=#232 id=232 data-nosnippet>232</a>            },
-<a href=#233 id=233 data-nosnippet>233</a>            local_supports_images: <span class="bool-val">false</span>,
-<a href=#234 id=234 data-nosnippet>234</a>            policy: Policy::CURRENT,
-<a href=#235 id=235 data-nosnippet>235</a>            mode: ServingMode::Off,
-<a href=#236 id=236 data-nosnippet>236</a>            checker: <span class="prelude-val">None</span>,
-<a href=#237 id=237 data-nosnippet>237</a>            structured_answer: <span class="bool-val">false</span>,
-<a href=#238 id=238 data-nosnippet>238</a>            speculation_carry: <span class="bool-val">false</span>,
-<a href=#239 id=239 data-nosnippet>239</a>            deadline: Duration::from_secs(<span class="number">30</span>),
-<a href=#240 id=240 data-nosnippet>240</a>            kill_switch: <span class="prelude-val">None</span>,
-<a href=#241 id=241 data-nosnippet>241</a>            breaker: BreakerConfig::default(),
-<a href=#242 id=242 data-nosnippet>242</a>            task_typing: <span class="bool-val">true</span>,
-<a href=#243 id=243 data-nosnippet>243</a>            latch_escalation: <span class="bool-val">false</span>,
-<a href=#244 id=244 data-nosnippet>244</a>        }
-<a href=#245 id=245 data-nosnippet>245</a>    }
-<a href=#246 id=246 data-nosnippet>246</a>
-<a href=#247 id=247 data-nosnippet>247</a>    <span class="doccomment">/// The tier that answers verification questions, defaulting to local.
-<a href=#248 id=248 data-nosnippet>248</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>judge_target(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ModelId {
-<a href=#249 id=249 data-nosnippet>249</a>        <span class="kw">match </span><span class="self">self</span>.targets.judge.as_ref() {
-<a href=#250 id=250 data-nosnippet>250</a>            <span class="prelude-val">Some</span>(judge) =&gt; judge,
-<a href=#251 id=251 data-nosnippet>251</a>            <span class="prelude-val">None </span>=&gt; <span class="kw-2">&amp;</span><span class="self">self</span>.targets.local,
-<a href=#252 id=252 data-nosnippet>252</a>        }
-<a href=#253 id=253 data-nosnippet>253</a>    }
-<a href=#254 id=254 data-nosnippet>254</a>}
-<a href=#255 id=255 data-nosnippet>255</a>
-<a href=#256 id=256 data-nosnippet>256</a><span class="attr">#[cfg(test)]
-<a href=#257 id=257 data-nosnippet>257</a></span><span class="kw">mod </span>tests {
-<a href=#258 id=258 data-nosnippet>258</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#259 id=259 data-nosnippet>259</a>
-<a href=#260 id=260 data-nosnippet>260</a>    <span class="kw">struct </span>NoopChecker;
-<a href=#261 id=261 data-nosnippet>261</a>
-<a href=#262 id=262 data-nosnippet>262</a>    <span class="attr">#[async_trait]
-<a href=#263 id=263 data-nosnippet>263</a>    </span><span class="kw">impl </span>Checker <span class="kw">for </span>NoopChecker {
-<a href=#264 id=264 data-nosnippet>264</a>        <span class="kw">async fn </span>check(<span class="kw-2">&amp;</span><span class="self">self</span>, _request: CheckerRequest&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;bool&gt; {
-<a href=#265 id=265 data-nosnippet>265</a>            <span class="prelude-val">None
-<a href=#266 id=266 data-nosnippet>266</a>        </span>}
-<a href=#267 id=267 data-nosnippet>267</a>    }
-<a href=#268 id=268 data-nosnippet>268</a>
-<a href=#269 id=269 data-nosnippet>269</a>    <span class="attr">#[test]
-<a href=#270 id=270 data-nosnippet>270</a>    </span><span class="kw">fn </span>checker_validation_binds_a_handle_to_one_manifest() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#271 id=271 data-nosnippet>271</a>        <span class="kw">let </span>checker = ValidatedChecker::new(
-<a href=#272 id=272 data-nosnippet>272</a>            Arc::new(NoopChecker),
-<a href=#273 id=273 data-nosnippet>273</a>            <span class="string">"sha256:0123456789abcdef0123456789abcdef"</span>,
-<a href=#274 id=274 data-nosnippet>274</a>        )<span class="question-mark">?</span>;
-<a href=#275 id=275 data-nosnippet>275</a>
-<a href=#276 id=276 data-nosnippet>276</a>        <span class="macro">assert_eq!</span>(
-<a href=#277 id=277 data-nosnippet>277</a>            checker.manifest_identity(),
-<a href=#278 id=278 data-nosnippet>278</a>            <span class="string">"sha256:0123456789abcdef0123456789abcdef"
-<a href=#279 id=279 data-nosnippet>279</a>        </span>);
-<a href=#280 id=280 data-nosnippet>280</a>        <span class="prelude-val">Ok</span>(())
-<a href=#281 id=281 data-nosnippet>281</a>    }
-<a href=#282 id=282 data-nosnippet>282</a>
-<a href=#283 id=283 data-nosnippet>283</a>    <span class="attr">#[test]
-<a href=#284 id=284 data-nosnippet>284</a>    </span><span class="kw">fn </span>checker_validation_rejects_ambiguous_manifest_identity() {
-<a href=#285 id=285 data-nosnippet>285</a>        <span class="kw">for </span>identity <span class="kw">in </span>[<span class="string">""</span>, <span class="string">" manifest"</span>, <span class="string">"manifest "</span>, <span class="string">"manifest\nother"</span>] {
-<a href=#286 id=286 data-nosnippet>286</a>            <span class="macro">assert!</span>(
-<a href=#287 id=287 data-nosnippet>287</a>                ValidatedChecker::new(Arc::new(NoopChecker), identity).is_err(),
-<a href=#288 id=288 data-nosnippet>288</a>                <span class="string">"{identity:?} must not become checker evidence"
-<a href=#289 id=289 data-nosnippet>289</a>            </span>);
-<a href=#290 id=290 data-nosnippet>290</a>        }
-<a href=#291 id=291 data-nosnippet>291</a>    }
-<a href=#292 id=292 data-nosnippet>292</a>}
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>validate(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">if </span><span class="self">self</span>.deadline.is_zero() || <span class="self">self</span>.breaker.threshold == <span class="number">0 </span>{
+<a href=#88 id=88 data-nosnippet>88</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
+<a href=#89 id=89 data-nosnippet>89</a>                message: <span class="string">"vgr deadline and breaker threshold must be non-zero"</span>.into(),
+<a href=#90 id=90 data-nosnippet>90</a>            });
+<a href=#91 id=91 data-nosnippet>91</a>        }
+<a href=#92 id=92 data-nosnippet>92</a>        <span class="kw">if let </span>ServingMode::Active { approval } = <span class="kw-2">&amp;</span><span class="self">self</span>.mode
+<a href=#93 id=93 data-nosnippet>93</a>            &amp;&amp; approval != ACTIVE_APPROVAL
+<a href=#94 id=94 data-nosnippet>94</a>        {
+<a href=#95 id=95 data-nosnippet>95</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::AlgorithmError {
+<a href=#96 id=96 data-nosnippet>96</a>                message: <span class="macro">format!</span>(
+<a href=#97 id=97 data-nosnippet>97</a>                    <span class="string">"vgr active mode requires approval attestation {ACTIVE_APPROVAL:?}"
+<a href=#98 id=98 data-nosnippet>98</a>                </span>),
+<a href=#99 id=99 data-nosnippet>99</a>            });
+<a href=#100 id=100 data-nosnippet>100</a>        }
+<a href=#101 id=101 data-nosnippet>101</a>        <span class="prelude-val">Ok</span>(())
+<a href=#102 id=102 data-nosnippet>102</a>    }
+<a href=#103 id=103 data-nosnippet>103</a>
+<a href=#104 id=104 data-nosnippet>104</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>judge(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ModelId {
+<a href=#105 id=105 data-nosnippet>105</a>        <span class="self">self</span>.targets.judge.as_ref().unwrap_or(<span class="kw-2">&amp;</span><span class="self">self</span>.targets.local)
+<a href=#106 id=106 data-nosnippet>106</a>    }
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>confirmed_min_clean_tail(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;i32&gt; {
+<a href=#109 id=109 data-nosnippet>109</a>        <span class="self">self</span>.confirmed_recovery_min_clean_tail
+<a href=#110 id=110 data-nosnippet>110</a>            .map(|tail| i32::try_from(tail.max(<span class="number">1</span>)).unwrap_or(i32::MAX))
+<a href=#111 id=111 data-nosnippet>111</a>    }
+<a href=#112 id=112 data-nosnippet>112</a>}
 </code></pre></div></section></main></body></html>

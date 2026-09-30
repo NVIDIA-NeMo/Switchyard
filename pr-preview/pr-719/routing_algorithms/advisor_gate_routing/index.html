@@ -369,34 +369,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../vgr_agent_setup/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Use VGR from an Agent
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../known_issues/" class="md-nav__link">
         
   
@@ -620,6 +592,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -716,6 +744,90 @@
   
   
     <li class="md-nav__item">
+      <a href="../llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task (LLM Classifier)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../subagent_routing/" class="md-nav__link">
         
   
@@ -752,62 +864,6 @@
     
   
     Random Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../llm_classifier_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../stage_router_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Stage-Router Routing
   
 
     
@@ -1442,14 +1498,19 @@ stamp every request of one evaluation with it, sub-agents included, so the
 budget means "reviews for this task" even behind a gateway shared by many
 tasks — then the session id resolved from harness headers (such as
 <code>x-switchyard-session-id</code>), and one scope per server when neither is present.
-Failed consults refund the budget and count toward a separate cap of 3, which
-bounds consult latency against a down advisor. An unparseable verdict also
-refunds and passes the turn through as APPROVE.</p>
+For hosts that return client errors to the core algorithm, a failed consult refunds
+the review budget and counts toward a separate cap of 3. The Rust runner stops on
+HTTP client errors before returning them to the algorithm, so failed HTTP calls
+do not refund this budget. An unparseable verdict still refunds the budget and
+passes the turn through as APPROVE.</p>
 <p>Long sessions are truncated middle-out before the consult: the transcript keeps
 the task statement at the start and the most recent work at the end, marked
 <code>...&lt;middle of the conversation truncated&gt;...</code>, capped at
-<code>transcript_max_chars</code>. With <code>fail_open = true</code> (default) any advisor failure
-degrades to APPROVE; <code>fail_open = false</code> surfaces it as a server error instead.</p>
+<code>transcript_max_chars</code>. <code>fail_open</code> controls failures returned to the core
+algorithm by its host. The Rust runner stops the request after an HTTP client's
+configured retries fail or its deadline expires, even with <code>fail_open = true</code>.
+HTTP client errors also stop the request when <code>timeout_ms</code> is unset. A timeout
+before the answer starts returns <code>504</code>.</p>
 <p>Gate behavior is observable at <code>/v1/stats</code> under <code>advisor_gate</code>: verdicts by
 trigger, consult failures by reason, and REDO-discarded turns with their token
 counts (the client never saw those turns, so terminal usage accounting alone
@@ -1534,7 +1595,7 @@ would miss them).</p>
 <tr>
 <td><code>fail_open</code></td>
 <td><code>true</code></td>
-<td>Advisor failure passes the turn through instead of erroring.</td>
+<td>Failures returned to the core algorithm pass the turn through. The Rust runner stops HTTP client failures regardless of this setting.</td>
 </tr>
 <tr>
 <td><code>reviewer_system_prompt</code></td>

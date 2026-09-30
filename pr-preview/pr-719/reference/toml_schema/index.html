@@ -369,34 +369,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../vgr_agent_setup/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Use VGR from an Agent
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../known_issues/" class="md-nav__link">
         
   
@@ -620,6 +592,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -714,6 +742,90 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task (LLM Classifier)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/subagent_routing/" class="md-nav__link">
         
   
@@ -750,62 +862,6 @@
     
   
     Random Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    LLM Classifier Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../routing_algorithms/stage_router_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Stage-Router Routing
   
 
     
@@ -1282,6 +1338,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#plan_execute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        plan_execute
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#prefill_router" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1330,17 +1397,6 @@
     <span class="md-ellipsis">
       
         composite
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vgr" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        vgr
       
     </span>
   </a>
@@ -1564,6 +1620,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#plan_execute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        plan_execute
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#prefill_router" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1612,17 +1679,6 @@
     <span class="md-ellipsis">
       
         composite
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#vgr" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        vgr
       
     </span>
   </a>
@@ -1769,10 +1825,26 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td><code>2</code></td>
 <td>Retry budget, <code>0</code>–<code>10</code>.</td>
 </tr>
+<tr>
+<td><code>timeout_ms</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least <code>1</code>. Unset leaves the wait unbounded.</td>
+</tr>
 </tbody>
 </table>
 <p>The TOML never contains the secret itself. <code>api_key_env</code> names a variable that
 must exist and be non-empty when the server loads.</p>
+<p><code>timeout_ms</code> applies separately to every call through the client, including judge
+verdicts and answers. To give a judge a short deadline without limiting the
+answering models, put the judge on its own <code>[llm_clients]</code> entry; two entries may
+share a <code>base_url</code>. When the deadline expires, the server returns <code>504</code> without
+trying another target. If the final answer has already started streaming, the
+server sends a framed error and ends the stream without a success marker.</p>
+<p>The Rust runner collects streams used during routing before the algorithm
+continues, preserving provider events for replay. After the configured retries,
+an HTTP client failure stops routing. This also applies when <code>timeout_ms</code> is
+unset or an advisor has <code>fail_open = true</code>.</p>
 <p>Set <code>forward_auth = true</code> to use each caller's credential instead of a
 server-owned key:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[llm_clients.claude]</span>
@@ -1833,10 +1905,14 @@ endpoint, before it calls an upstream.</p>
 <td><code>reasoning_effort</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Reasoning effort forced on every request to this target, replacing the value the caller sent (<code>reasoning.effort</code> on <code>openai_responses</code>, <code>reasoning_effort</code> on <code>openai_chat</code>). Rejected on <code>anthropic_messages</code> clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at <code>max</code> behind a client that sends <code>high</code>. Two targets for the same model id on the same <code>llm_client</code> collapse into one, so give each effort tier its own <code>llm_clients</code> entry (same endpoint, different name).</td>
+<td>Reasoning effort forced on every request to this target, replacing the value the caller sent (<code>reasoning.effort</code> on <code>openai_responses</code>, <code>reasoning_effort</code> on <code>openai_chat</code>). Rejected on <code>anthropic_messages</code> clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at <code>max</code> behind a client that sends <code>high</code>. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate <code>llm_clients</code> entries (same endpoint, different name).</td>
 </tr>
 </tbody>
 </table>
+<p>Within one route, callable targets with the same model ID must use the same <code>llm_client</code>.
+This includes completion targets and targets used for judging or classification. Switchyard rejects
+same-model targets on different clients within a route because execution is keyed by model ID.
+Separate routes may use the same model ID on different clients.</p>
 <p>Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.
 Judge-only, classifier-only, and reviewer-only targets are not completion destinations and do not
@@ -1874,25 +1950,25 @@ Token-count requests do not apply target system prompts.</p>
 <td><code>context_window</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Positive token count advertised for this route by <code>GET /v1/models</code>. Unset values appear as <code>null</code>. This does not enforce a request limit.</td>
+<td>Positive token count that <code>GET /v1/models</code> advertises for this route as <code>data[].context_length</code>. Unset values appear as <code>null</code>. This does not enforce a request limit.</td>
 </tr>
 <tr>
 <td><code>tool_calling</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Whether <code>GET /v1/models</code> advertises tool-calling support for this route. Unset values appear as <code>null</code>.</td>
+<td>Tool-calling support advertised by <code>GET /v1/models</code>. When <code>false</code>, the server rejects tool definitions, tool controls, and tool history with HTTP 400 before dispatch. Unset values appear as <code>null</code>. Explicit <code>true</code> and unset values do not restrict requests.</td>
 </tr>
 <tr>
 <td><code>reasoning</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Declared reasoning support, stored in route metadata. The server does not include it in <code>GET /v1/models</code>.</td>
+<td>When <code>false</code>, the server rejects reasoning controls with HTTP 400 before dispatch. Explicit <code>true</code> and unset values do not restrict requests. The server does not include this declaration in <code>GET /v1/models</code>.</td>
 </tr>
 <tr>
 <td><code>vision</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Image-input support advertised in <code>GET /v1/models</code> under <code>data[].capabilities.vision</code>. Unset values appear as <code>null</code>. Declare <code>true</code> only when every target the route can select accepts images.</td>
+<td>Image-input support advertised in <code>GET /v1/models</code> under <code>data[].capabilities.vision</code>. When <code>false</code>, the server rejects images with HTTP 400 before dispatch, including images in tool results. Unset values appear as <code>null</code>. Explicit <code>true</code> and unset values do not restrict requests. Declare <code>true</code> only when every target the route can select accepts images.</td>
 </tr>
 </tbody>
 </table>
@@ -1966,7 +2042,60 @@ see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing
 </tr>
 </tbody>
 </table>
+<h3 id="plan_execute"><code>plan_execute</code><a class="headerlink" href="#plan_execute" title="Permanent link">&para;</a></h3>
+<p>Plans on a capable target, then switches to an efficient target after the first
+file mutation. See <a href="../../routing_algorithms/plan_execute_routing/">Plan/Execute Routing</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>capable_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>-</td>
+<td>Target used for read-only inspection and planning.</td>
+</tr>
+<tr>
+<td><code>efficient_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>-</td>
+<td>Target used after the first edit or write.</td>
+</tr>
+<tr>
+<td><code>planning_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>packaged prompt</td>
+<td>Replaces the planning instruction.</td>
+</tr>
+<tr>
+<td><code>handoff_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Adds an instruction to the handoff request.</td>
+</tr>
+<tr>
+<td><code>planner_reasoning_as_text</code></td>
+<td style="text-align: center;">No</td>
+<td><code>false</code></td>
+<td>Converts visible planner reasoning summaries to assistant text at handoff.</td>
+</tr>
+</tbody>
+</table>
 <h3 id="prefill_router"><code>prefill_router</code><a class="headerlink" href="#prefill_router" title="Permanent link">&para;</a></h3>
+<div class="admonition warning">
+<p class="admonition-title">Experimental in v0.3.0</p>
+<p>Switchyard v0.3.0 does not provide or support a router checkpoint, an
+exporter, or compatible encoder assets. You must obtain or train a compatible
+checkpoint and obtain its encoder and tokenizer yourself. There is no
+supported end-to-end checkpoint export and compatibility contract.
+The example below shows configuration syntax, not a ready-to-run deployment.</p>
+</div>
 <p>Routes the latest non-empty user message with a checkpoint-backed prefill classifier. Build
 <code>switchyard-server</code> with <code>--features prefill-router</code> and make the prefill router's Python
 dependencies available in the active virtual environment.</p>
@@ -2109,7 +2238,7 @@ dependencies available in the active virtual environment.</p>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
+<td>Retains the target against a hash of the first user message when a request carries no session ID. Requires <code>classify_trigger = "new_session"</code> or <code>"user_turn"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -2178,8 +2307,9 @@ dependencies available in the active virtual environment.</p>
 <p>Existing configurations that contain <code>escalation</code> but omit <code>mode</code> remain valid.</p>
 <p>Custom mode validates the judge's JSON against <code>response_schema</code>, resolves the
 policy selector, and routes to a runtime model group. A verdict names a group and
-the first model in it serves the turn; if that call fails the client falls through
-the rest of that group, then through whatever <code>models.any</code> adds.</p>
+the first model in it serves the turn. An eligible non-timeout failure tries the
+rest of that group, then any remaining models in <code>models.any</code>. A timeout stops
+the request without trying another model.</p>
 <p>The <code>[routes.&lt;name&gt;.models]</code> table takes any group name you choose. <code>any</code> and
 <code>judge</code> are reserved and required; <code>capable</code> and <code>efficient</code> are reserved for the
 tier meaning the other algorithms give them. Every other key is yours, which is
@@ -2198,37 +2328,37 @@ how one route chooses between more than two models.</p>
 <td><code>models.any</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Every selectable completion target, in last-resort fallback order. Every other group's targets must also appear here; one that does not is rejected at configuration load.</td>
+<td>Every selectable completion target, in fallback order for eligible non-timeout failures. Every other group's targets must also appear here; one that does not is rejected at configuration load.</td>
 </tr>
 <tr>
 <td><code>models.judge</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>One or more ordered judge candidates. Not a completion destination.</td>
+<td>One or more ordered judge candidates. The Rust runner calls the first and stops on a client error after retries. Not a completion destination.</td>
 </tr>
 <tr>
 <td><code>models.capable</code></td>
 <td style="text-align: center;">No</td>
 <td>—</td>
-<td>Ordered capable-tier models. A <code>capable</code> verdict selects the first and falls through the rest in order.</td>
+<td>Ordered capable-tier models. A <code>capable</code> verdict selects the first; eligible non-timeout failures try the rest in order.</td>
 </tr>
 <tr>
 <td><code>models.efficient</code></td>
 <td style="text-align: center;">No</td>
 <td>—</td>
-<td>Ordered efficient-tier models. An <code>efficient</code> verdict selects the first and falls through the rest in order.</td>
+<td>Ordered efficient-tier models. An <code>efficient</code> verdict selects the first; eligible non-timeout failures try the rest in order.</td>
 </tr>
 <tr>
 <td><code>models.&lt;your name&gt;</code></td>
 <td style="text-align: center;">No</td>
 <td>—</td>
-<td>A group you name. A verdict naming it selects its first model and falls through the rest in order.</td>
+<td>A group you name. A verdict naming it selects its first model; eligible non-timeout failures try the rest in order.</td>
 </tr>
 <tr>
 <td><code>default_target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Group used when the judge fails or its verdict cannot be routed. Any group except <code>judge</code>, and it must contain at least one target.</td>
+<td>Group used when the judge's verdict cannot be parsed or routed. HTTP client failures stop the request after retries. Any group except <code>judge</code>, and it must contain at least one target.</td>
 </tr>
 <tr>
 <td><code>prompt</code></td>
@@ -2258,7 +2388,7 @@ how one route chooses between more than two models.</p>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
+<td>Retains the target against a hash of the first user message when a request carries no session ID. Requires <code>classify_trigger = "new_session"</code> or <code>"user_turn"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -2427,6 +2557,12 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>p_solve</code> floor that still routes to the efficient tier. In <code>[0, 1]</code>.</td>
 </tr>
 <tr>
+<td><code>classifier.threshold_step</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0.0</code></td>
+<td>Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. <code>base_threshold + 2 * threshold_step</code> must be at most <code>1</code>.</td>
+</tr>
+<tr>
 <td><code>classifier.classify_trigger</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
@@ -2436,7 +2572,31 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>classifier.message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the <code>llm_classifier</code> route, this works on either trigger. Conversations opening with the same text share a tier.</td>
+<td>Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier.</td>
+</tr>
+<tr>
+<td><code>classifier.recent_turn_window</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns.</td>
+</tr>
+<tr>
+<td><code>classifier.prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>packaged prompt</td>
+<td>Replaces the classifier judge prompt. The verdict schema is unchanged.</td>
+</tr>
+<tr>
+<td><code>classifier.response_format_type</code></td>
+<td style="text-align: center;">No</td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for the judge. Use <code>json_object</code> when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally.</td>
+</tr>
+<tr>
+<td><code>classifier.max_output_tokens</code></td>
+<td style="text-align: center;">No</td>
+<td><code>4096</code></td>
+<td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
 </tr>
 <tr>
 <td><code>stage.capable_target</code></td>
@@ -2493,6 +2653,12 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td>Additional exact ASCII case-insensitive tool names that count as neutral forward activity.</td>
 </tr>
 <tr>
+<td><code>stage.handoff_notes</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Optional guidance appended to forwarded requests. Uses the same fields and behavior as <a href="../../routing_algorithms/stage_router_routing/#optional-handoff-notes">stage-router handoff notes</a>.</td>
+</tr>
+<tr>
 <td><code>subagents</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
@@ -2502,167 +2668,10 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 </table>
 <p>The tier is retained per session. A deployment that sends no session ID needs
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
-instead. The stage table takes no <code>picker</code>: the classifier supplies that tier per turn. A turn the
-classifier cannot reach falls open to the efficient tier. Leaving out
-<code>classifier</code> is recommended: that judge runs ahead of the fall-open tier.</p>
-<h3 id="vgr"><code>vgr</code><a class="headerlink" href="#vgr" title="Permanent link">&para;</a></h3>
-<p>Verification-gated routing. The local tier answers, the router gathers evidence
-about <em>that answer</em> — a checker's test run, agreement with an independently
-produced answer, a cheap probability readout — and either serves it or escalates
-to the capable tier. See <a href="../../routing_algorithms/vgr_routing/">Verification-Gated Routing</a>.</p>
-<table>
-<thead>
-<tr>
-<th>Key</th>
-<th style="text-align: center;">Required</th>
-<th>Default</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>local_target</code></td>
-<td style="text-align: center;">Yes</td>
-<td>—</td>
-<td>Tier that produces the attempt being verified.</td>
-</tr>
-<tr>
-<td><code>cloud_target</code></td>
-<td style="text-align: center;">Yes</td>
-<td>—</td>
-<td>Tier a request escalates to when the attempt is not licensed.</td>
-</tr>
-<tr>
-<td><code>local_supports_images</code></td>
-<td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Set <code>true</code> only when the local tier accepts image content. Otherwise image-bearing requests, including images nested in tool results, go directly to the capable tier.</td>
-</tr>
-<tr>
-<td><code>judge_target</code></td>
-<td style="text-align: center;">No</td>
-<td>local tier</td>
-<td>Answers the cheap local verification rungs. Not a routing destination.</td>
-</tr>
-<tr>
-<td><code>cloud_judge_target</code></td>
-<td style="text-align: center;">No</td>
-<td>unset</td>
-<td>Answers the cloud confirmation rungs. Unset removes them, which the rules read as evidence never gathered rather than as indeterminate. Not a routing destination.</td>
-</tr>
-<tr>
-<td><code>mode</code></td>
-<td style="text-align: center;">No</td>
-<td><code>off</code></td>
-<td>Serving authority: <code>off</code>, <code>evaluate</code>, <code>shadow</code>, or <code>active</code>. See below.</td>
-</tr>
-<tr>
-<td><code>active_approval</code></td>
-<td style="text-align: center;">With <code>active</code></td>
-<td>—</td>
-<td>Approval attestation validated verbatim as <code>prospective-validation-and-canary-approved</code>.</td>
-</tr>
-<tr>
-<td><code>deadline_seconds</code></td>
-<td style="text-align: center;">No</td>
-<td><code>30</code></td>
-<td>Budget for the whole decision, verification included. Exceeding it ends evidence gathering, and what was not established escalates.</td>
-</tr>
-<tr>
-<td><code>task_typing</code></td>
-<td style="text-align: center;">No</td>
-<td><code>true</code></td>
-<td>Types the request with one cheap local call before deriving capabilities. Set <code>false</code> to opt out; without it the answer and conversational regimes are unreachable.</td>
-</tr>
-<tr>
-<td><code>latch_escalation</code></td>
-<td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>A session that escalated stays on the capable tier, skipping verification on later turns.</td>
-</tr>
-<tr>
-<td><code>speculation_carry</code></td>
-<td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>An escalation carries the rejected attempt forward as unverified reference. Measured to help on research-style work and hurt on conversational work, so it is per-route.</td>
-</tr>
-<tr>
-<td><code>structured_answer</code></td>
-<td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Declares that this surface enforces a schema-validated terse final answer, which is the only place typed agreement counts as evidence.</td>
-</tr>
-<tr>
-<td><code>breaker_threshold</code></td>
-<td style="text-align: center;">No</td>
-<td><code>5</code></td>
-<td>Consecutive local-tier failures that stop the local tier being called.</td>
-</tr>
-<tr>
-<td><code>breaker_cooldown_seconds</code></td>
-<td style="text-align: center;">No</td>
-<td><code>30</code></td>
-<td>How long the local tier is skipped before one trial request is allowed through.</td>
-</tr>
-<tr>
-<td><code>checker.tests_dir</code></td>
-<td style="text-align: center;">Yes, in <code>[checker]</code></td>
-<td>—</td>
-<td>Directory holding the task's tests. Snapshotted and hashed at startup.</td>
-</tr>
-<tr>
-<td><code>checker.materialize_command</code></td>
-<td style="text-align: center;">Yes, in <code>[checker]</code></td>
-<td>—</td>
-<td>Trusted host argv that materializes the attempted source tree under <code>WORKSPACE_DIR</code>.</td>
-</tr>
-<tr>
-<td><code>checker.command</code></td>
-<td style="text-align: center;">Yes, in <code>[checker]</code></td>
-<td>—</td>
-<td>Argv list, never a shell string. <code>{tests}</code> and <code>{workdir}</code> are substituted.</td>
-</tr>
-<tr>
-<td><code>checker.sandbox_attestation</code></td>
-<td style="text-align: center;">Yes, in <code>[checker]</code></td>
-<td>—</td>
-<td>The operator's declaration that a deployment sandbox confines the checker, verbatim: <code>vgr-checker-runs-in-deployment-sandbox</code>.</td>
-</tr>
-<tr>
-<td><code>checker.timeout_seconds</code></td>
-<td style="text-align: center;">No</td>
-<td><code>120</code></td>
-<td>How long one checker run may take.</td>
-</tr>
-<tr>
-<td><code>checker.validated</code></td>
-<td style="text-align: center;">Yes, in <code>[checker]</code></td>
-<td>—</td>
-<td>Must be <code>true</code>; the checker handle is bound to its pinned manifest identity at construction.</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Serving modes.</strong> Deciding and serving are separate steps, which is what lets a
-deployment measure the router before it routes anything. <code>off</code> makes no decisions
-and spends nothing. <code>shadow</code> decides and records but always serves the capable
-tier. <code>evaluate</code> serves the <em>ungated</em> decision and is for isolated measurement
-only: it will serve routes the gates exist to refuse. <code>active</code> requires the
-approval attestation and serves the readiness-gated route. It does not provide
-native privacy/no-egress enforcement or an operator runtime kill switch;
-deployments that require those controls must supply them outside the runner.</p>
-<p>The local and cloud targets must resolve to distinct model IDs, even when their
-target or client names differ, because the runtime client router is keyed only
-by model ID.</p>
-<p><strong>Transcript tool evidence.</strong> <code>switchyard-server</code> is not a tool executor, but
-VGR trusts normalized tool results supplied in request history as Host evidence.
-This enables native-runner agentic commits and also means a client that controls
-the conversation history can report a clean tool record. Agentic judged views
-include user task text, the bounded assistant/tool trajectory, and the current
-attempt; framework system and developer instructions are omitted.</p>
-<p><strong>The checker runs natively on Unix and Windows.</strong> Unix process groups and
-Windows Job Objects terminate the complete checker process tree on timeout or
-cancellation. Commands remain platform-specific argv lists; use native Windows
-paths and executables in a Windows deployment.</p>
+instead. The outer <code>[routes.&lt;name&gt;.classifier]</code> table is required. The nested
+<code>[routes.&lt;name&gt;.stage]</code> table accepts neither <code>picker</code> nor a second <code>classifier</code>.
+The outer classifier supplies the default tier. A turn the classifier cannot
+reach falls open to the efficient tier.</p>
 <h3 id="advisor"><code>advisor</code><a class="headerlink" href="#advisor" title="Permanent link">&para;</a></h3>
 <p>Serves every client-visible turn from the executor and has a stronger advisor
 review terminal turns before the caller sees them: APPROVE releases the
