@@ -17,7 +17,7 @@ from switchyard import __version__
 from switchyard.runner import Runner
 
 from . import Dataset, Result, evaluate, load_harbor
-from .evaluate import _validate_options
+from .evaluate import _aliases, _validate_options, _validate_route
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -94,12 +94,14 @@ def main(argv: list[str] | None = None) -> int:
         dataset = Dataset.from_runs(
             runs, input_target=args.input_target, intersection=args.intersection
         )
-        runner = Runner.load(args.config)
+        config_bytes = args.config.read_bytes()
+        runner = Runner.from_toml(config_bytes.decode("utf-8"))
+        _validate_route(dataset, runner, args.route, _aliases(aliases))
         args.output.mkdir(parents=True, exist_ok=False)
         manifest = {
             "schema_version": 1,
             "switchyard_version": __version__,
-            "config_sha256": hashlib.sha256(args.config.read_bytes()).hexdigest(),
+            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
             "route": args.route,
             "runs": {target: str(path) for target, path in paths.items()},
             "input_target": args.input_target,

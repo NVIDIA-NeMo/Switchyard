@@ -3,6 +3,7 @@
 
 """Harbor import through real native decisions and incremental report output."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -226,3 +227,87 @@ def test_cli_invalid_options_leave_output_path_available(
     assert judge.calls == []
     assert main(args) == 0
     assert (output / "report.json").exists()
+
+
+@pytest.mark.parametrize(
+    "problem", ["unknown-route", "missing-target", "model-mismatch", "response-route"]
+)
+def test_cli_route_preflight_leaves_output_path_available(
+    judge: JudgeStub, tmp_path: Path, problem: str
+):
+    model = "different/model" if problem == "model-mismatch" else "weak/model"
+    write_trial(tmp_path / "recordings", "task", model, 1)
+    config = tmp_path / "routes.toml"
+    config.write_text(deployment(judge.url, escalation=problem == "response-route"))
+    output = tmp_path / "new-parent" / "evaluation"
+    route = (
+        "missing"
+        if problem == "unknown-route"
+        else ("auto" if problem in ("missing-target", "response-route") else "fixed")
+    )
+    args = [
+        "--config",
+        str(config),
+        "--route",
+        route,
+        "--run",
+        f"weak={tmp_path / 'recordings'}",
+        "--input-target",
+        "weak",
+        "--output",
+        str(output),
+    ]
+    assert main(args) == 2
+    assert not output.parent.exists()
+    assert judge.calls == []
+
+    args[3] = "fixed"
+    if problem == "model-mismatch":
+        args.extend(["--model-alias", "different/model=weak/model"])
+    assert main(args) == 0
+    assert (output / "report.json").exists()
+
+
+def test_manifest_hash_identifies_the_loaded_configuration_snapshot(
+    judge: JudgeStub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    write_trial(tmp_path / "recordings", "task", "weak/model", 1)
+    config = tmp_path / "routes.toml"
+    original = deployment(judge.url).replace("\n", "\r\n").encode("utf-8")
+    config.write_bytes(original)
+
+    class ConcurrentEdit:
+        @staticmethod
+        def load(path):
+            runner = Runner.load(path)
+            config.write_bytes(original + b"\n# edited after loading\n")
+            return runner
+
+        @staticmethod
+        def from_toml(source):
+            runner = Runner.from_toml(source)
+            config.write_bytes(original + b"\n# edited after loading\n")
+            return runner
+
+    monkeypatch.setattr("switchyard.sim.__main__.Runner", ConcurrentEdit)
+    output = tmp_path / "evaluation"
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--route",
+                "fixed",
+                "--run",
+                f"weak={tmp_path / 'recordings'}",
+                "--input-target",
+                "weak",
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert config.read_bytes() != original
+    assert manifest["config_sha256"] == hashlib.sha256(original).hexdigest()
