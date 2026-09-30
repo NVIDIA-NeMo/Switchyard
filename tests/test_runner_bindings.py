@@ -168,6 +168,48 @@ target = "weak"
 """
 
 
+def composite_deployment(url: str) -> str:
+    source = deployment(url).split("[routes.classifier]")[0]
+    for target in ("child_judge", "worker", "reviewer", "backup"):
+        source += f'\n[targets.{target}]\nid = "{target}/model"\nllm_client = "provider"\n'
+    return (
+        source
+        + """
+[routes.composite]
+id = "auto"
+type = "composite"
+[routes.composite.classifier]
+target = "judge"
+base_threshold = 0.5
+classify_trigger = "new_session"
+[routes.composite.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.5
+[routes.composite.subagents]
+type = "llm_classifier"
+mode = "custom"
+default_target = "efficient"
+classify_trigger = "new_session"
+prompt = "Select a target for this delegated task."
+response_schema = '''
+{
+  "type": "object",
+  "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+  "required": ["target"],
+  "additionalProperties": false
+}
+'''
+policy = { type = "target_selector", selector = "/target" }
+[routes.composite.subagents.models]
+judge = ["child_judge"]
+capable = ["reviewer", "backup"]
+efficient = ["worker"]
+any = ["worker", "reviewer", "backup"]
+"""
+    )
+
+
 def request(text: str = "easy task", *, model: str = "auto") -> dict[str, object]:
     return {
         "model": model,
@@ -303,6 +345,96 @@ async def test_passthrough_decision_never_calls_answer_model(judge: JudgeStub) -
     assert decision.selected.target == "weak"
     assert decision.calls == []
     assert decision.outcome.response is None
+    assert judge.calls == []
+
+
+@pytest.mark.parametrize(
+    ("verdict", "selected", "fallbacks"),
+    [
+        pytest.param('{"target":"capable"}', "reviewer", ["backup", "worker"], id="selected"),
+        pytest.param("not valid routing JSON", "worker", ["reviewer", "backup"], id="default"),
+    ],
+)
+async def test_composite_child_decisions_preserve_target_scope_and_fallback_order(
+    judge: JudgeStub, verdict: str, selected: str, fallbacks: list[str]
+) -> None:
+    runner = Runner.from_toml(composite_deployment(judge.url))
+    targets = runner.validate_decision_route("auto")
+    assert {(target.target, target.model) for target in targets} == {
+        (target, f"{target}/model") for target in ("strong", "weak", "worker", "reviewer", "backup")
+    }
+    assert judge.calls == []
+
+    parent_request = request("parent task")
+    parent = await runner.decide(
+        parent_request,
+        headers={
+            **session(f"parent-{selected}"),
+            "x-switchyard-session-final": "true",
+        },
+    )
+    assert (parent.selected.target, parent.selected.model) == ("weak", "weak/model")
+    assert [(target.target, target.model) for target in parent.fallbacks] == [
+        ("strong", "strong/model")
+    ]
+    assert parent.outcome.selected_model_ids == ["weak/model", "strong/model"]
+    assert [call["model"] for call in judge.calls] == ["judge/model"]
+
+    judge.response_text = verdict
+    child_request = request("child task")
+    child = await runner.decide(
+        child_request,
+        headers={
+            **session(f"child-{selected}"),
+            "x-switchyard-is-subagent": "true",
+            "x-switchyard-agent-id": "child",
+            "x-switchyard-session-final": "true",
+        },
+    )
+    assert (child.selected.target, child.selected.model) == (selected, f"{selected}/model")
+    assert [(target.target, target.model) for target in child.fallbacks] == [
+        (target, f"{target}/model") for target in fallbacks
+    ]
+    assert child.outcome.selected_model_ids == [
+        f"{target}/model" for target in (selected, *fallbacks)
+    ]
+    assert [call["model"] for call in judge.calls] == ["judge/model", "child_judge/model"]
+    assert parent_request == request("parent task")
+    assert child_request == request("child task")
+    for decision, original, judge_model in (
+        (parent, parent_request, "judge/model"),
+        (child, child_request, "child_judge/model"),
+    ):
+        assert decision.outcome.response is None
+        assert decision.outcome.request["model"] == decision.selected.model
+        assert decision.outcome.request["messages"] == original["messages"]
+        (call,) = decision.calls
+        assert call.model == judge_model
+        assert call.is_success
+        assert call.usage == {
+            "input_tokens": 12,
+            "cached_input_tokens": 5,
+            "cache_creation_input_tokens": None,
+            "output_tokens": 8,
+            "total_tokens": 25,
+            "reasoning_tokens": 3,
+        }
+        assert decision.duration_seconds >= call.duration_seconds >= 0
+
+
+def test_composite_child_escalation_is_rejected_before_calls(judge: JudgeStub) -> None:
+    source = composite_deployment(judge.url).split("[routes.composite.subagents]")[0]
+    source += """
+[routes.composite.subagents]
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "child_judge"
+strong_target = "reviewer"
+weak_target = "worker"
+escalation = { confirmations = 2 }
+"""
+    with pytest.raises(ValueError, match="subagents llm_classifier only supports mode custom"):
+        Runner.from_toml(source)
     assert judge.calls == []
 
 
