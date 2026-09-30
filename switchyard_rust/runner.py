@@ -5,9 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from os import PathLike
-from typing import TYPE_CHECKING, Any, final
+from typing import TYPE_CHECKING, Any, cast, final
 
 from switchyard_rust._native import load_native
 
@@ -79,8 +80,8 @@ if TYPE_CHECKING:
 
         Give independent tasks distinct session headers. Process turns sharing
         a session in order. Use a separate runner for independent experiments.
-        Cancelling a decision cancels local routing; a provider may still finish
-        or bill an already submitted request.
+        Cancelling a decision waits for local routing and its Python bridge to
+        stop; a provider may still finish or bill an already submitted request.
         """
 
         @staticmethod
@@ -104,6 +105,50 @@ if TYPE_CHECKING:
         ) -> Decision:
             """Route normalized IR; response-based algorithms need explicit opt-in."""
             ...
+
+
+async def _decide(
+    runner: Any,
+    request: Mapping[str, object],
+    headers: Mapping[str, str] | None,
+    allow_response: bool,
+) -> Decision:
+    future, cancellation = runner._start_decision(
+        request, headers=headers, allow_response=allow_response
+    )
+    cancelled = False
+    try:
+        return cast("Decision", await asyncio.shield(future))
+    except asyncio.CancelledError:
+        cancelled = True
+        cancellation.cancel()
+        # The PyO3 bridge attaches to Python after native routing finishes. Keep
+        # its future alive and uncancelled until that completion has been delivered,
+        # including when shutdown cancels this coroutine more than once.
+        await _drain(future)
+        if not future.cancelled():
+            future.exception()
+        raise
+    finally:
+        if future.done() and not cancellation.is_finished():
+            # Delivery can precede the bridge worker's exit: call_soon_threadsafe
+            # releases the GIL while waking the loop. Join that remaining cleanup.
+            join = asyncio.get_running_loop().run_in_executor(None, cancellation.wait)
+            interrupted = await _drain(join)
+            join.result()
+            if interrupted is not None and not cancelled:
+                raise interrupted
+
+
+async def _drain(future: asyncio.Future[Any]) -> asyncio.CancelledError | None:
+    interrupted = None
+    while not future.done():
+        try:
+            await asyncio.wait({future})
+        except asyncio.CancelledError as error:
+            if interrupted is None:
+                interrupted = error
+    return interrupted
 
 
 def __getattr__(name: str) -> object:
