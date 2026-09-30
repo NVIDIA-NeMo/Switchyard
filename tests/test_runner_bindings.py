@@ -790,6 +790,38 @@ def test_invalid_unicode_headers_do_not_expose_caller_data(
     assert judge.calls == []
 
 
+@pytest.mark.parametrize("string_subclass", [False, True])
+def test_invalid_unicode_configuration_does_not_expose_source(
+    judge: JudgeStub, string_subclass: bool
+) -> None:
+    class Source(str):
+        pass
+
+    secret = "private-configuration-value"
+    source = deployment(judge.url) + f"\n# {secret}\udcff"
+    with pytest.raises(ValueError) as caught:
+        Runner.from_toml(Source(source) if string_subclass else source)
+    error = caught.value
+    for diagnostic in (str(error), repr(error), repr(error.args)):
+        assert secret not in diagnostic
+    assert error.__cause__ is None and error.__context__ is None
+    assert "valid UTF-8" in str(error)
+    assert judge.calls == []
+
+
+def test_configuration_string_conversion_preserves_supported_types(judge: JudgeStub) -> None:
+    class Source(str):
+        pass
+
+    source = deployment(judge.url) + "\n# café 路線"
+    runner = Runner.from_toml(Source(source))
+    assert runner.validate_decision_route("fixed")[0].target == "weak"
+    for invalid in (None, 42, {}, source.encode("utf-8")):
+        with pytest.raises(TypeError):
+            Runner.from_toml(invalid)
+    assert judge.calls == []
+
+
 async def test_bad_request_and_configuration_fail_before_calls(
     judge: JudgeStub, tmp_path: Path
 ) -> None:
