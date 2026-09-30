@@ -45,7 +45,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 | [Prefill](prefill_routing.md) | `prefill_router` | A classifier you train on the prompt's hidden states picks the target. Experimental: Switchyard supplies no checkpoint, exporter, or encoder assets. |
 | [Random](random_routing.md) | `random` | A fixed traffic split. |
 | [Fixed](#direct-model-routes) | `passthrough` | One target, no decision. |
-| [Sub-agent](subagent_routing.md) | `subagents` table | A separate policy for delegated sub-agent work on `passthrough`, `stage_router`, and `composite` routes. |
+| [Sub-agent](subagent_routing.md) | `subagents` table | A separate policy for delegated sub-agent work on `passthrough`, `llm_classifier`, `stage_router`, and `composite` routes. |
 
 ### Compare the strategies
 
