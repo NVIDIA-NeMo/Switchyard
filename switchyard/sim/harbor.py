@@ -90,15 +90,16 @@ def _trial_paths(root: Path) -> list[Path]:
     result_path = root / "result.json"
     if (root / "agent").is_dir():
         return [result_path]
+    unreadable_result = False
     if result_path.is_file():
         try:
             if "task_name" in _read_object(result_path):
                 return [result_path]
-        except ValueError:
-            return [result_path]
+        except (OSError, ValueError):
+            unreadable_result = True
     jobs = root / "jobs"
     roots = sorted(p for p in jobs.iterdir() if p.is_dir()) if jobs.is_dir() else [root]
-    return [
+    paths = [
         trial / "result.json"
         for job in roots
         for trial in sorted(job.iterdir())
@@ -109,6 +110,9 @@ def _trial_paths(root: Path) -> list[Path]:
             or (trial / "config.json").is_file()
         )
     ]
+    # A damaged job summary must not hide valid trial directories. Without
+    # children, keep the unreadable artifact visible as a standalone trial issue.
+    return paths or ([result_path] if unreadable_result else [])
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -218,7 +222,9 @@ def _messages(trajectory: dict[str, Any], fallback: str | None) -> tuple[dict[st
     has_user_input = False
     if trajectory:
         version = trajectory.get("schema_version")
-        if version not in {f"ATIF-v1.{minor}" for minor in range(8)}:
+        if not isinstance(version, str) or version not in {
+            f"ATIF-v1.{minor}" for minor in range(8)
+        }:
             raise ValueError("unsupported or missing ATIF schema_version")
         steps = trajectory.get("steps")
         if not isinstance(steps, list):

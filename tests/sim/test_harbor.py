@@ -119,6 +119,46 @@ def test_discovery_ignores_nested_metadata_and_accepts_download_layout(tmp_path:
         assert len(load_harbor(root, target="baseline").trials) == 1
 
 
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_invalid_job_summary_does_not_hide_valid_trials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unreadable: bool
+) -> None:
+    write_trial(tmp_path)
+    summary = tmp_path / "result.json"
+    summary.write_text("{")
+    if unreadable:
+        original_open = Path.open
+
+        def open_artifact(path: Path, *args, **kwargs):
+            if path == summary:
+                raise PermissionError("cannot read summary")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", open_artifact)
+
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    assert len(run.trials) == 1
+    assert run.issues == ()
+
+
+@pytest.mark.parametrize("has_agent_directory", [False, True])
+def test_standalone_malformed_result_is_still_a_trial_issue(
+    tmp_path: Path, has_agent_directory: bool
+) -> None:
+    if has_agent_directory:
+        (tmp_path / "agent").mkdir()
+    result_path = tmp_path / "result.json"
+    result_path.write_text("{")
+
+    with pytest.raises(ValueError, match="invalid JSON in result.json"):
+        load_harbor(tmp_path, target="baseline")
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    assert run.trials == ()
+    assert len(run.issues) == 1
+    assert run.issues[0].source == str(result_path)
+    assert run.issues[0].task_id is None
+
+
 def test_repeated_tasks_are_preserved_as_distinct_trials(tmp_path: Path) -> None:
     write_trial(tmp_path, "repeat-1")
     write_trial(tmp_path, "repeat-2")
@@ -303,3 +343,21 @@ def test_unsupported_schema_is_rejected(tmp_path: Path) -> None:
     write_trial(tmp_path, version="ATIF-v2.0")
     with pytest.raises(ValueError, match="schema_version"):
         load_harbor(tmp_path, target="baseline")
+
+
+@pytest.mark.parametrize("version", [[], {}])
+def test_invalid_schema_type_records_issue_without_aborting_other_trials(
+    tmp_path: Path, version: object
+) -> None:
+    invalid = write_trial(tmp_path, "invalid")
+    write_trial(tmp_path, "valid", task="benchmark/task-b")
+    update(invalid / "agent" / "trajectory.json", schema_version=version)
+
+    with pytest.raises(ValueError, match="schema_version"):
+        load_harbor(tmp_path, target="baseline")
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    assert len(run.trials) == 1
+    assert run.trials[0].task_id == "benchmark/task-b"
+    assert len(run.issues) == 1
+    assert run.issues[0].task_id == "benchmark/task-a"
+    assert "schema_version" in run.issues[0].message
