@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DISTRIBUTION_SUM_TOLERANCE"],"enum":["BooleanEstimate","DecisionKind","DecisionValue"],"struct":["ChoiceOption","DecisionAnswer","DecisionError","DecisionQuestion","DecisionRequest","DecisionResponse","Probability","ProviderConfidence","ScoreValue"]};
+window.SIDEBAR_ITEMS = {"enum":["BooleanEstimate","DecisionKind","DecisionValue"],"struct":["ChoiceOption","DecisionAnswer","DecisionQuestion","DecisionRequest","DecisionResponse","Probability","ProviderConfidence","ScoreValue"]};
