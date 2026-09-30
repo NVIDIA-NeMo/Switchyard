@@ -146,7 +146,7 @@ def _read_object(path: Path) -> dict[str, Any]:
     try:
         with path.open(encoding="utf-8") as stream:
             value = json.load(stream)
-    except (json.JSONDecodeError, UnicodeError):
+    except (json.JSONDecodeError, UnicodeError, RecursionError):
         raise ValueError(f"invalid JSON in {path.name}") from None
     return _object(value, path.name)
 
