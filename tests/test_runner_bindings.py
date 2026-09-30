@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,7 @@ from switchyard.runner import DecisionError, Runner
 class JudgeStub:
     url: str = ""
     calls: list[dict[str, Any]] = field(default_factory=list)
+    request_headers: list[dict[str, str]] = field(default_factory=list)
     response_text: str | None = None
     status: int = 200
     started: Event = field(default_factory=Event)
@@ -40,6 +42,9 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
         def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             stub.calls.append(body)
+            stub.request_headers.append(
+                {name.lower(): value for name, value in self.headers.items()}
+            )
             stub.started.set()
             if stub.release is not None:
                 stub.release.wait(timeout=5)
@@ -72,7 +77,11 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
                     },
                 }
             else:
-                payload = {"error": {"message": "echoed provider-secret and private prompt"}}
+                payload = {
+                    "error": {
+                        "message": f"echoed provider-secret and private prompt {self.headers.get('authorization', '')}"
+                    }
+                }
             encoded = json.dumps(payload).encode()
             self.send_response(stub.status)
             self.send_header("Content-Type", "application/json")
@@ -218,6 +227,47 @@ async def test_affinity_and_observations_are_isolated_across_sessions_and_runner
     assert len(judge.calls) == 4
 
 
+@pytest.mark.parametrize("forward_auth", [False, True])
+async def test_caller_headers_are_request_scoped_and_respect_configured_auth(
+    judge: JudgeStub, forward_auth: bool
+) -> None:
+    source = deployment(judge.url)
+    if forward_auth:
+        source = source.replace('api_key_env = "SWITCHYARD_RUNNER_TEST_KEY"', "forward_auth = true")
+    runner = Runner.from_toml(source)
+    await asyncio.gather(
+        *(
+            runner.decide(
+                request(),
+                headers={
+                    **session(identity),
+                    "authorization": f"Bearer caller-{identity}",
+                    "x-request-id": identity,
+                },
+            )
+            for identity in ("first", "second")
+        )
+    )
+    assert {
+        headers.get("x-request-id"): headers.get("authorization")
+        for headers in judge.request_headers
+    } == {
+        identity: f"Bearer caller-{identity}" if forward_auth else "Bearer provider-secret"
+        for identity in ("first", "second")
+    }
+
+    judge.status = 401
+    with pytest.raises(DecisionError) as caught:
+        await runner.decide(
+            request(),
+            headers={**session("failed"), "authorization": "Bearer caller-failed"},
+        )
+    assert caught.value.upstream_status == 401
+    assert "caller-failed" not in str(caught.value)
+    assert "provider-secret" not in str(caught.value)
+    assert "private prompt" not in str(caught.value)
+
+
 @pytest.mark.parametrize("advisor", [False, True])
 async def test_response_based_route_requires_opt_in_before_calls(
     judge: JudgeStub, advisor: bool
@@ -311,6 +361,24 @@ def test_configuration_diagnostics_name_missing_target_and_environment(
     monkeypatch.delenv("SWITCHYARD_RUNNER_TEST_KEY")
     with pytest.raises(ValueError, match="api_key_env SWITCHYARD_RUNNER_TEST_KEY"):
         Runner.from_toml(deployment(judge.url))
+    assert judge.calls == []
+
+
+@pytest.mark.skipif(
+    not os.supports_bytes_environ, reason="requires byte-valued environment variables"
+)
+def test_configuration_diagnostics_hide_non_unicode_api_keys(
+    judge: JudgeStub, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setitem(os.environb, b"SWITCHYARD_RUNNER_TEST_KEY", b"provider-secret\xff")
+    source = deployment(judge.url)
+    path = tmp_path / "routes.toml"
+    path.write_text(source)
+    for load in (lambda: Runner.from_toml(source), lambda: Runner.load(path)):
+        with pytest.raises(ValueError, match="api_key_env SWITCHYARD_RUNNER_TEST_KEY") as caught:
+            load()
+        assert "provider-secret" not in str(caught.value)
+        assert "not valid" in str(caught.value)
     assert judge.calls == []
 
 
