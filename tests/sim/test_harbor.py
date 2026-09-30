@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from switchyard.sim import Dataset
 from switchyard.sim.harbor import load_harbor
 
 
@@ -168,6 +169,64 @@ def test_repeated_tasks_are_preserved_as_distinct_trials(tmp_path: Path) -> None
     assert len(trials) == 2
     assert trials[0].task_id == trials[1].task_id
     assert trials[0].trial_id != trials[1].trial_id
+
+
+@pytest.mark.parametrize("layout", ["job", "download"])
+@pytest.mark.parametrize("remaining", [0, 1])
+def test_missing_repeat_directory_is_not_silently_dropped(
+    tmp_path: Path, layout: str, remaining: int
+) -> None:
+    job = tmp_path / "jobs" / "run" if layout == "download" else tmp_path
+    job.mkdir(parents=True, exist_ok=True)
+    if remaining:
+        write_trial(job, "retained")
+    summary = job / "result.json"
+    summary.write_text(json.dumps({"n_total_trials": 2}))
+
+    with pytest.raises(ValueError, match=f"expected 2, found {remaining}"):
+        load_harbor(tmp_path, target="baseline")
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    assert len(run.trials) == remaining
+    assert len(run.issues) == 1
+    assert run.issues[0].source == str(summary)
+    assert run.issues[0].task_id is None
+    with pytest.raises(ValueError, match="no task identity"):
+        Dataset.from_runs({"baseline": run}, input_target="baseline", intersection=True)
+
+
+def test_job_counts_are_checked_separately_including_empty_jobs(tmp_path: Path) -> None:
+    for name, count in (("retained", 0), ("empty", 1)):
+        job = tmp_path / "jobs" / name
+        job.mkdir(parents=True)
+        (job / "result.json").write_text(json.dumps({"n_total_trials": count}))
+    write_trial(tmp_path / "jobs" / "retained")
+
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    assert len(run.trials) == 1
+    assert {issue.message for issue in run.issues} == {
+        "job trial count mismatch: expected 0, found 1",
+        "job trial count mismatch: expected 1, found 0",
+    }
+
+
+def test_job_count_includes_rejected_trial_directories(tmp_path: Path) -> None:
+    invalid = write_trial(tmp_path, "invalid")
+    (invalid / "result.json").unlink()
+    write_trial(tmp_path, "valid")
+    (tmp_path / "result.json").write_text(json.dumps({"n_total_trials": 2}))
+
+    run = load_harbor(tmp_path, target="baseline", on_error="record")
+    assert len(run.trials) == len(run.issues) == 1
+    assert run.issues[0].source == str(invalid / "result.json")
+
+
+@pytest.mark.parametrize("count", [None, True, -1, "2"])
+def test_unusable_job_count_does_not_hide_valid_trials(tmp_path: Path, count: object) -> None:
+    write_trial(tmp_path)
+    (tmp_path / "result.json").write_text(json.dumps({"n_total_trials": count}))
+    run = load_harbor(tmp_path, target="baseline")
+    assert len(run.trials) == 1
+    assert run.issues == ()
 
 
 def test_missing_measurements_remain_unknown_and_preserve_exception_type(tmp_path: Path) -> None:
