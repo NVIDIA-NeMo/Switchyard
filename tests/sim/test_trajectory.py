@@ -212,6 +212,28 @@ def test_multimodal_input_is_preserved_but_cannot_be_scored_as_text() -> None:
         trajectory.initial_messages()
 
 
+@pytest.mark.parametrize("blank_user", [False, True])
+def test_missing_task_input_preserves_recorded_initial_context(blank_user: bool) -> None:
+    data = atif()
+    prefix = [{"source": "system", "message": "Use the recorded constraints."}]
+    if blank_user:
+        prefix.append({"source": "user", "message": " \t"})
+    data["steps"] = [*prefix, {"source": "agent", "message": "LATER_ANSWER"}]
+    trajectory = Trajectory.from_dict(data)
+    with pytest.raises(ValueError, match="missing initial task input"):
+        trajectory.initial_messages()
+    expected = tuple(
+        {"role": step["source"], "content": [{"type": "text", "text": step["message"]}]}
+        for step in [*prefix, {"source": "user", "message": "Canonical task."}]
+    )
+    assert trajectory.initial_messages(task_input="Canonical task.") == expected
+    trial = trajectory.to_trial(
+        task_id="task", trial_id="attempt", target="fast", task_input="Canonical task."
+    )
+    assert trial.messages == expected
+    assert trajectory.to_dict() == data
+
+
 def test_copied_continuation_context_requires_original_task_input() -> None:
     data = atif()
     data["steps"][1].update(is_copied_context=True, message="SUMMARY_OF_COMPLETED_WORK")
