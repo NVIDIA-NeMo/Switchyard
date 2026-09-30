@@ -9,6 +9,9 @@ use crate::codecs::common::{
     first_nonempty_string, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
     reasoning_text_from_details, text_from_blocks,
 };
+use crate::codecs::openai_media::{
+    ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
+};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -23,8 +26,8 @@ use crate::llm::{
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy, stable_id,
-    string_value, validate_request_capabilities,
+    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy,
+    reject_responses_builtin_tool_item, stable_id, string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -193,6 +196,19 @@ impl FormatCodec for OpenAiChatCodec {
         }
         let mut diagnostics = Vec::new();
         validate_request_capabilities(request, &mut diagnostics, policy)?;
+        let allowed = match &request.tool_choice {
+            Some(ToolChoice::Raw(choice))
+                if choice.get("type").and_then(Value::as_str) == Some("allowed_tools")
+                    && choice.get("allowed_tools").is_some() =>
+            {
+                None
+            }
+            _ => crate::codecs::common::allowed_function_tools(request)?,
+        };
+        let (tools, tool_choice) = allowed.as_ref().map_or(
+            (request.tools.as_slice(), request.tool_choice.as_ref()),
+            |(tools, choice)| (tools.as_slice(), Some(choice)),
+        );
         let mut body = Map::new();
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
@@ -214,9 +230,9 @@ impl FormatCodec for OpenAiChatCodec {
         }
         body.insert("messages".to_string(), Value::Array(messages));
 
-        if !request.tools.is_empty() {
-            body.insert("tools".to_string(), encode_openai_tools(&request.tools));
-            if let Some(choice) = &request.tool_choice {
+        if !tools.is_empty() {
+            body.insert("tools".to_string(), encode_openai_tools(tools));
+            if let Some(choice) = tool_choice {
                 body.insert("tool_choice".to_string(), encode_openai_tool_choice(choice));
             }
         }
@@ -284,13 +300,17 @@ impl FormatCodec for OpenAiChatCodec {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            let mut content = decode_openai_content(
-                message.get("content").unwrap_or(&Value::Null),
-                WireFormat::OpenAiChat,
-                &mut Vec::new(),
-                &TranslationPolicy::default(),
-                "$.choices[0].message.content",
-            )?;
+            let mut content = match message.get("content") {
+                // decode_openai_content would turn absent response text into an empty text block.
+                None | Some(Value::Null) => Vec::new(),
+                Some(content) => decode_openai_content(
+                    content,
+                    WireFormat::OpenAiChat,
+                    &mut Vec::new(),
+                    &TranslationPolicy::default(),
+                    "$.choices[0].message.content",
+                )?,
+            };
             prepend_openai_reasoning_blocks(&mut content, &message);
             if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for (index, tool_call) in tool_calls.iter().enumerate() {
@@ -304,6 +324,16 @@ impl FormatCodec for OpenAiChatCodec {
                 }
             }
             response.outputs.push(ResponseOutput {
+                url_citations: message
+                    .get("annotations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|annotation| annotation["type"] == "url_citation")
+                    .filter_map(|annotation| {
+                        serde_json::from_value(annotation["url_citation"].clone()).ok()
+                    })
+                    .collect(),
                 role: Role::Assistant,
                 content,
                 stop_reason: Some(map_openai_finish_reason(
@@ -323,6 +353,7 @@ impl FormatCodec for OpenAiChatCodec {
         response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
+        super::super::responses::validate_response_output(response, WireFormat::OpenAiChat)?;
         if let Some(body) =
             exact_preserved_response(&response.preservation, WireFormat::OpenAiChat, _policy)
         {
@@ -362,6 +393,15 @@ impl FormatCodec for OpenAiChatCodec {
                 Value::String(content)
             },
         });
+        if let Some(output) = output.filter(|output| !output.url_citations.is_empty()) {
+            message["annotations"] = Value::Array(
+                output
+                    .url_citations
+                    .iter()
+                    .map(|citation| json!({"type": "url_citation", "url_citation": citation}))
+                    .collect(),
+            );
+        }
         if let Some(reasoning) = output
             .map(|output| reasoning_text_from_blocks(&output.content, "\n"))
             .filter(|reasoning| !reasoning.is_empty())
@@ -524,6 +564,9 @@ pub(crate) fn decode_openai_content(
                             content.push(ContentBlock::Image { source });
                         }
                     }
+                    Some("input_audio") => content.push(ContentBlock::Audio {
+                        source: MediaSource::Raw(Value::Object(block.clone())),
+                    }),
                     Some("file") | Some("input_file") => {
                         content.push(ContentBlock::File {
                             source: decode_file_source(block),
@@ -584,7 +627,7 @@ pub(crate) fn decode_image_source(block: &Map<String, Value>) -> Option<ImageSou
                 .map(ToOwned::to_owned),
         });
     }
-    None
+    Some(ImageSource::Raw(Value::Object(block.clone())))
 }
 
 /// Decodes OpenAI file block shapes into normalized file sources.
@@ -651,11 +694,21 @@ pub(crate) fn decode_openai_tool_call(
             }
             DeterministicIdPolicy::Preserve => String::new(),
         });
-    let arguments = function
-        .get("arguments")
-        .map(parse_arguments)
-        .unwrap_or_else(|| json!({}));
-    let name = function
+    // A custom (freeform) call has `custom.name` and a raw `custom.input` string. Carry the
+    // input as the single `input` argument, the same way Responses custom calls are carried.
+    let custom = tool_call.get("custom").and_then(Value::as_object);
+    let arguments = match custom {
+        Some(custom) => json!({
+            crate::codex_custom_tools::INPUT_ARGUMENT:
+                custom.get("input").and_then(Value::as_str).unwrap_or_default()
+        }),
+        None => function
+            .get("arguments")
+            .map(parse_arguments)
+            .unwrap_or_else(|| json!({})),
+    };
+    let name = custom
+        .unwrap_or(&function)
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -956,6 +1009,8 @@ fn copy_openai_chat_request_extensions(
         "service_tier",
         "store",
         "stream_options",
+        // `top_logprobs` is only valid alongside `logprobs`.
+        "logprobs",
         "top_logprobs",
         "user",
     ] {
@@ -1004,6 +1059,7 @@ pub(crate) fn encode_openai_content(
     }
     let mut blocks = Vec::new();
     for block in content {
+        crate::codecs::openai_media::validate_media(block, WireFormat::OpenAiChat)?;
         match block {
             ContentBlock::Text { text } => blocks.push(json!({"type": "text", "text": text})),
             ContentBlock::Refusal { text } => blocks.push(json!({"type": "text", "text": text})),
@@ -1030,12 +1086,7 @@ pub(crate) fn encode_openai_content(
                 }
             },
             ContentBlock::Audio { source } => {
-                push_lossy(
-                    diagnostics,
-                    policy,
-                    "OpenAI Chat codec does not have a stable audio request mapping yet",
-                )?;
-                blocks.push(openai_text_part(&media_source_text(source)));
+                blocks.push(crate::codecs::openai_media::audio_part(source)?);
             }
             ContentBlock::Video { source } => {
                 push_lossy(
@@ -1045,7 +1096,8 @@ pub(crate) fn encode_openai_content(
                 )?;
                 blocks.push(openai_text_part(&media_source_text(source)));
             }
-            ContentBlock::Unknown { raw, .. } => {
+            ContentBlock::Unknown { provider, raw } => {
+                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
                 push_lossy(
                     diagnostics,
                     policy,
@@ -1066,116 +1118,22 @@ fn openai_text_part(text: &str) -> Value {
     json!({"type": "text", "text": text})
 }
 
-// Maps IR image sources to OpenAI Chat image content parts when possible.
 fn openai_image_part(source: &ImageSource) -> Option<Value> {
-    match source {
-        ImageSource::Url { url, detail } => {
-            let mut image_url = json!({"url": url});
-            if let Some(detail) = detail {
-                image_url["detail"] = Value::String(detail.clone());
-            }
-            Some(json!({"type": "image_url", "image_url": image_url}))
-        }
-        ImageSource::Base64 { media_type, data } => media_type.as_ref().map(|media_type| {
-            json!({
-                "type": "image_url",
-                "image_url": {"url": format!("data:{media_type};base64,{data}")},
-            })
-        }),
-        ImageSource::Raw(raw) => openai_raw_image_part(raw),
+    let ImagePayload { url, detail } = image_payload(source)?;
+    let mut image_url = json!({});
+    image_url["url"] = Value::String(url);
+    if let Some(detail) = detail {
+        image_url["detail"] = Value::String(detail);
     }
+    let mut part = json!({"type": "image_url"});
+    part["image_url"] = image_url;
+    Some(part)
 }
 
-// Recognizes common raw image shapes emitted by Anthropic and Responses.
-fn openai_raw_image_part(raw: &Value) -> Option<Value> {
-    let object = raw.as_object()?;
-    let object = if object.get("type").and_then(Value::as_str) == Some("image") {
-        let source = object.get("source").and_then(Value::as_object)?;
-        if !matches!(
-            source.get("type").and_then(Value::as_str),
-            Some("base64" | "url")
-        ) {
-            return None;
-        }
-        source
-    } else {
-        object
-    };
-    if let Some(url) = object.get("url").and_then(Value::as_str) {
-        return Some(json!({"type": "image_url", "image_url": {"url": url}}));
-    }
-    if let Some(url) = object.get("image_url").and_then(Value::as_str) {
-        return Some(json!({"type": "image_url", "image_url": {"url": url}}));
-    }
-    let data = object.get("data").and_then(Value::as_str)?;
-    let media_type = object
-        .get("media_type")
-        .and_then(Value::as_str)
-        .unwrap_or("application/octet-stream");
-    Some(json!({
-        "type": "image_url",
-        "image_url": {"url": format!("data:{media_type};base64,{data}")},
-    }))
-}
-
-// Converts image sources to deterministic text fallback content.
-fn image_source_text(source: &ImageSource) -> String {
-    match source {
-        ImageSource::Url { url, detail } => json_string(&json!({
-            "url": url,
-            "detail": detail,
-        })),
-        ImageSource::Base64 { media_type, data } => json_string(&json!({
-            "media_type": media_type,
-            "data": data,
-        })),
-        ImageSource::Raw(raw) => json_string(raw),
-    }
-}
-
-// Maps IR file sources to OpenAI Chat file content parts when possible.
 fn openai_file_part(source: &FileSource) -> Option<Value> {
-    match source {
-        FileSource::FileId(file_id) => Some(json!({"type": "file", "file": {"file_id": file_id}})),
-        FileSource::FileData { data, filename } => {
-            let mut file = json!({"file_data": data});
-            if let Some(filename) = filename {
-                file["filename"] = Value::String(filename.clone());
-            }
-            Some(json!({"type": "file", "file": file}))
-        }
-        FileSource::Raw(raw) => openai_raw_file_part(raw),
-    }
-}
-
-// Maps portable fields from raw Anthropic documents without forwarding provider-managed IDs.
-fn openai_raw_file_part(raw: &Value) -> Option<Value> {
-    let block = raw.as_object()?;
-    if block.get("type").and_then(Value::as_str) != Some("document") {
-        return None;
-    }
-    let source = block.get("source").and_then(Value::as_object)?;
-    if source.get("type").and_then(Value::as_str) != Some("base64") {
-        return None;
-    }
-    let data = source.get("data").and_then(Value::as_str)?;
-    let mut file = json!({"file_data": data});
-    if let Some(title) = block.get("title").and_then(Value::as_str) {
-        file["filename"] = Value::String(title.to_string());
-    }
-    Some(json!({"type": "file", "file": file}))
-}
-
-// Converts file sources to deterministic text fallback content.
-fn file_source_text(source: &FileSource) -> String {
-    match source {
-        FileSource::FileId(file_id) => json_string(&json!({"file_id": file_id})),
-        FileSource::FileData { data, filename } => json_string(&json!({
-            "file_data": data,
-            "filename": filename,
-        })),
-        FileSource::Raw(raw) => json_string(raw),
-    }
+    let mut part = json!({"type": "file"});
+    part["file"] = Value::Object(file_payload(source)?);
+    Some(part)
 }
 
 // Converts unsupported media sources to deterministic text fallback content.

@@ -11,6 +11,11 @@ repos:
         additional_dependencies:
           - "@commitlint/config-conventional@20.4.1"
 
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
   - repo: local
     hooks:
       - id: spdx-headers

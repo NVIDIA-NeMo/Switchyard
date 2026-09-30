@@ -6,7 +6,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{Algorithm, LibsyError, RoutingOutcome};
+use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
@@ -14,27 +14,19 @@ use thiserror::Error;
 
 use crate::DecisionTarget;
 
-/// Capabilities that one route advertises on `GET /v1/models`.
+/// Capabilities declared for one route.
 ///
-/// An unset capability is undeclared: it serializes as `null` in the OpenAI
-/// `data` entry, and the Codex entry falls back to a safe default for it.
+/// `GET /v1/models` includes `context_window`, `tool_calling`, and `vision` in each
+/// standard `data` entry, using `null` for unset values. It omits `reasoning`.
+/// The server rejects tool inputs, reasoning controls, or images when the
+/// corresponding declaration is explicitly `false` for the selected route.
 #[derive(Clone, Copy, Default)]
 pub struct ModelCapabilities {
     pub context_window: Option<u32>,
     pub tool_calling: Option<bool>,
-    /// Whether the routed model takes reasoning controls. A serving surface cannot
-    /// probe this, so a route opts in via config; undeclared routes advertise as
-    /// non-reasoning to Codex (fail closed).
+    /// Whether the routed model accepts reasoning controls, as declared in config.
     pub reasoning: Option<bool>,
-    /// Whether the routed model accepts image input. Declared per route for the same
-    /// reason as `reasoning`, and failing closed matters more here: a route may
-    /// resolve to a target with no vision at all.
-    ///
-    /// This is not cosmetic metadata. Codex reads `input_modalities` from the model
-    /// card and, when it reads text-only, replaces an attached image with the literal
-    /// text `image content omitted because you do not support image input` *before
-    /// sending*. An undeclared vision-capable route therefore loses the image in the
-    /// client, and the proxy never receives one to forward.
+    /// Whether the routed model accepts image input, as declared in config.
     pub vision: Option<bool>,
 }
 
@@ -125,6 +117,7 @@ pub struct Route {
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
+    models: Arc<RuntimeModels>,
 }
 
 /// The selected model and untouched response produced by a route execution.
@@ -135,6 +128,7 @@ pub struct RunOutput {
 
 impl Route {
     /// Creates a fully configured execution route.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         algorithm: Arc<dyn Algorithm>,
         clients: ClientRouter,
@@ -143,6 +137,7 @@ impl Route {
         anthropic_auxiliary_target: Option<AuxiliaryTarget>,
         responses_auxiliary_target: Option<AuxiliaryTarget>,
         decision_targets: Vec<DecisionTarget>,
+        models: RuntimeModels,
     ) -> Self {
         Self {
             algorithm,
@@ -152,6 +147,7 @@ impl Route {
             anthropic_auxiliary_target,
             responses_auxiliary_target,
             decision_targets,
+            models: Arc::new(models),
         }
     }
 
@@ -178,6 +174,11 @@ impl Route {
             .cloned()
     }
 
+    /// Returns the models grouped for one algorithm execution.
+    pub fn models(&self) -> &RuntimeModels {
+        &self.models
+    }
+
     /// Rejects a caller format incompatible with forwarded credentials.
     pub fn check_caller_format(&self, input_format: WireFormat) -> Result<(), RunnerError> {
         if let Some(kind) = self.caller_auth
@@ -198,6 +199,7 @@ impl Route {
             Arc::clone(&self.algorithm),
             self.clients.clone(),
             request,
+            Arc::clone(&self.models),
             observer,
         )
         .await?;
@@ -209,9 +211,14 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        switchyard_llm_client::decide(Arc::clone(&self.algorithm), self.clients.clone(), request)
-            .await
-            .map_err(Into::into)
+        switchyard_llm_client::decide(
+            Arc::clone(&self.algorithm),
+            self.clients.clone(),
+            request,
+            Arc::clone(&self.models),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Executes a model-bearing provider operation through a compatible target.

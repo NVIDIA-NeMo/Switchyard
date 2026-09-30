@@ -32,6 +32,7 @@ impl Algorithm for Noop {
             id: Some("switchyard-noop".to_string()),
             model: Some(model_id.to_string()),
             outputs: vec![ResponseOutput {
+                url_citations: Vec::new(),
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
                     text: "OK".to_string(),
@@ -48,6 +49,7 @@ impl Algorithm for Noop {
         let response = Response {
             llm_response,
             metadata: request.metadata.clone(),
+            upstream_headers: http::HeaderMap::new(),
         };
         Ok(RoutingOutcome::answered(model_id, request, response))
     }

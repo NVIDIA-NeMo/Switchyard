@@ -24,6 +24,7 @@ fi
 CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.211}"
 CODEX_VERSION="${CODEX_VERSION:-0.144.5}"
 OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.3}"
+PI_VERSION="${PI_VERSION:-0.84.3}"
 NODE_VERSION="${NODE_VERSION:-20.11.1}"
 
 DEFAULT_HARBOR_MODEL="openai/gpt-5.2"
@@ -97,8 +98,9 @@ Main options:
                                --server-config this is a Switchyard route
                                key; without it, this is the upstream model.
                                Defaults --harbor-model to nvidia/MODEL for
-                               opencode, openai/MODEL for other OpenAI-style
-                               agents, and MODEL for claude-code/codex.
+                               opencode, switchyard/MODEL for pi, openai/MODEL
+                               for other OpenAI-style agents, and MODEL for
+                               claude-code/codex.
   --route-model MODEL          Deprecated alias for --model in Switchyard mode.
   --agent NAME                 Harbor agent (default: terminus-2)
   --harbor-model MODEL         Explicit Harbor model label override.
@@ -111,7 +113,8 @@ Main options:
   --book-mode MODE             closed or open (default: closed). Both modes use
                                the generated dataset proxy topology; open mode
                                allows broad egress through the proxy.
-  --reasoning-effort VALUE     Forwarded as --ak reasoning_effort=VALUE.
+  --reasoning-effort VALUE     Forwarded as --ak reasoning_effort=VALUE
+                               (--ak thinking=VALUE for pi).
                                Defaults by agent/model; pass an empty value to omit.
   --harbor-bin PATH            Optional Harbor executable override
                                (default: uv run --no-sync harbor)
@@ -288,6 +291,7 @@ add_agent_version_kwarg() {
         claude-code) HARBOR_CMD+=(--ak "version=${CLAUDE_CODE_VERSION}") ;;
         codex) HARBOR_CMD+=(--ak "version=${CODEX_VERSION}") ;;
         opencode) HARBOR_CMD+=(--ak "version=${OPENCODE_VERSION}") ;;
+        pi) HARBOR_CMD+=(--ak "version=${PI_VERSION}") ;;
     esac
 }
 
@@ -401,6 +405,7 @@ if [[ "${HARBOR_MODEL_SET}" -eq 0 ]]; then
         case "${AGENT}" in
             claude-code|codex) HARBOR_MODEL="${MODEL}" ;;
             opencode) HARBOR_MODEL="nvidia/${MODEL}" ;;
+            pi) HARBOR_MODEL="switchyard/${MODEL}" ;;
             *) HARBOR_MODEL="openai/${MODEL}" ;;
         esac
     else
@@ -573,7 +578,12 @@ fi
 add_agent_version_kwarg
 
 if [[ -n "${REASONING_EFFORT}" ]]; then
-    HARBOR_CMD+=(--ak "reasoning_effort=${REASONING_EFFORT}")
+    if [[ "${AGENT}" == "pi" ]]; then
+        # Harbor's pi agent takes --thinking (off|minimal|low|medium|high|xhigh), not reasoning_effort.
+        HARBOR_CMD+=(--ak "thinking=${REASONING_EFFORT}")
+    else
+        HARBOR_CMD+=(--ak "reasoning_effort=${REASONING_EFFORT}")
+    fi
     # Claude code does not support thinking=true for now, so we use adaptive instead
     if [[ "${AGENT}" == "claude-code" ]] && ! harbor_extra_has_agent_kwarg thinking; then
         HARBOR_CMD+=(--ak "thinking=adaptive")
@@ -747,7 +757,7 @@ fi
 
 AGENT_VERSIONS_JSON="$(json_object_from_pairs \
     claude_code "${CLAUDE_CODE_VERSION}" codex "${CODEX_VERSION}" \
-    opencode "${OPENCODE_VERSION}" node "${NODE_VERSION}")"
+    opencode "${OPENCODE_VERSION}" pi "${PI_VERSION}" node "${NODE_VERSION}")"
 HARBOR_EXTRA_JSON="$(json_array)"
 if [[ "${#HARBOR_EXTRA[@]}" -gt 0 ]]; then
     HARBOR_EXTRA_JSON="$(json_array "${HARBOR_EXTRA[@]}")"

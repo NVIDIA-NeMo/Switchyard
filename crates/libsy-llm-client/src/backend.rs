@@ -3,10 +3,14 @@
 
 //! Per-provider backend configuration: wire format, upstream URL, and auth.
 
-use std::{collections::BTreeMap, fmt};
+use std::time::Duration;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use reqwest::RequestBuilder;
-use reqwest::header::HeaderValue;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::Value;
 use switchyard_protocol::{Metadata, WireFormat};
 
@@ -27,6 +31,7 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "please reduce the length of the input",
     "exceeds the maximum allowed input length",
     "exceeds the maximum allowed length",
+    "exceeds the available context size",
     "is longer than the model's context length",
 ];
 
@@ -44,22 +49,33 @@ pub struct HttpBackendConfig {
     /// Base URL of the provider API (e.g. `https://api.openai.com/v1`).
     pub base_url: String,
     /// API key for the provider, loaded by the caller. `None` sends no configured auth.
+    /// Client construction rejects active values that cannot form the provider's auth header.
     pub api_key: Option<String>,
-    /// Whether this backend forwards the caller's provider credential instead.
+    /// Whether this backend forwards the caller's provider credential and application headers.
+    ///
+    /// All backends reachable through a forwarding route must use the same provider.
     pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///
     /// Provider-owned headers are rejected so a static value cannot replace
-    /// configured or forwarded auth. Header names are case-insensitive.
+    /// configured or forwarded auth. Names and values must be valid HTTP header bytes;
+    /// header names are case-insensitive.
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,
+    /// Top-level request fields dropped from the outbound body before `extra_body` is merged,
+    /// so a target can reinstate one deliberately. For providers that reject an otherwise
+    /// standard field (e.g. an internal API that 400s on `max_output_tokens`).
+    pub omit_body_fields: BTreeSet<String>,
     /// Reasoning effort forced on every request to this backend, replacing whatever the caller
     /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
     /// Anthropic has no equivalent and rejects the setting at configuration time.
     pub reasoning_effort: Option<String>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
+    /// Deadline for one complete response, including retries, retry delays, and stream reads.
+    /// `None` leaves the wait unbounded.
+    pub timeout: Option<Duration>,
 }
 
 impl fmt::Debug for HttpBackendConfig {
@@ -70,8 +86,10 @@ impl fmt::Debug for HttpBackendConfig {
             .field("forward_auth", &self.forward_auth)
             .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
+            .field("omit_body_fields", &self.omit_body_fields)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("max_retries", &self.max_retries)
+            .field("timeout", &self.timeout)
             .finish()
     }
 }
@@ -91,8 +109,25 @@ pub enum Backend {
 }
 
 impl Backend {
-    // Checks custom headers before the client can send a request.
-    pub(crate) fn validate_extra_headers(&self, model_name: &str) -> Result<()> {
+    // Matches reqwest's header conversions before the client can send a request.
+    pub(crate) fn validate_configured_headers(&self, model_name: &str) -> Result<()> {
+        for (name, value) in &self.config().extra_headers {
+            if HeaderName::from_bytes(name.as_bytes()).is_err() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model_name:?} extra_headers contains invalid HTTP header name {name:?}"
+                    ),
+                });
+            }
+            if HeaderValue::from_bytes(value.as_bytes()).is_err() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model_name:?} has invalid HTTP header value for extra_headers entry {name:?}"
+                    ),
+                });
+            }
+        }
+
         let invalid_name = self.config().extra_headers.keys().find(|name| match self {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
                 name.eq_ignore_ascii_case("authorization")
@@ -112,6 +147,23 @@ impl Backend {
             return Err(LlmClientError::Configuration {
                 message: format!(
                     "model {model_name:?} extra_headers cannot set {name:?}; extra_headers is only for additional headers"
+                ),
+            });
+        }
+
+        let Some(api_key) = self.configured_api_key() else {
+            return Ok(());
+        };
+        let valid_api_key = match self {
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                HeaderValue::try_from(format!("Bearer {api_key}")).is_ok()
+            }
+            Backend::Anthropic(_) => HeaderValue::from_str(api_key).is_ok(),
+        };
+        if !valid_api_key {
+            return Err(LlmClientError::Configuration {
+                message: format!(
+                    "model {model_name:?} api_key cannot be encoded as an HTTP header"
                 ),
             });
         }
@@ -136,17 +188,34 @@ impl Backend {
         }
     }
 
+    // Static credentials are unused when the caller's authorization is forwarded.
+    fn configured_api_key(&self) -> Option<&str> {
+        if self.is_forwarding_auth() {
+            None
+        } else {
+            self.config().api_key.as_deref()
+        }
+    }
+
+    pub(crate) fn base_url(&self) -> &str {
+        &self.config().base_url
+    }
+
     /// The fully resolved upstream URL for this backend's endpoint.
     ///
     /// Tolerates base URLs that already include the provider path (or a bare
     /// `/v1`), matching the join rules of the existing native backends.
     pub fn url(&self) -> String {
-        let base_url = self.config().base_url.trim_end_matches('/');
-        match self {
+        let base_url = &self.config().base_url;
+        let result = match self {
             Backend::OpenAiChat(_) => openai_url(base_url, "/chat/completions"),
             Backend::OpenAiResponses(_) => openai_url(base_url, "/responses"),
-            Backend::Anthropic(_) => anthropic_url(base_url),
-        }
+            Backend::Anthropic(_) => anthropic_url(base_url, ""),
+        };
+        result.unwrap_or_else(|error| {
+            tracing::error!(%error, "Unable to build provider endpoint URL");
+            base_url.clone()
+        })
     }
 
     /// Applies this backend's configured auth and version headers to a request builder.
@@ -155,11 +224,7 @@ impl Backend {
     /// `x-api-key: <key>` plus the required `anthropic-version` header. A backend
     /// with `forward_auth` uses the caller's provider credential instead.
     pub fn apply_auth(&self, mut builder: RequestBuilder) -> RequestBuilder {
-        let api_key = if self.is_forwarding_auth() {
-            None
-        } else {
-            self.config().api_key.as_deref()
-        };
+        let api_key = self.configured_api_key();
         match self {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
                 if let Some(api_key) = api_key {
@@ -178,6 +243,24 @@ impl Backend {
 
     pub(crate) fn is_forwarding_auth(&self) -> bool {
         self.config().forward_auth
+    }
+
+    pub(crate) fn is_provider_owned_header(&self, name: &str) -> bool {
+        match self {
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
+                ["authorization", "chatgpt-account-id", "x-openai-fedramp"]
+                    .iter()
+                    .any(|owned| name.eq_ignore_ascii_case(owned))
+            }
+            Backend::Anthropic(_) => [
+                "authorization",
+                "x-api-key",
+                "anthropic-beta",
+                "anthropic-version",
+            ]
+            .iter()
+            .any(|owned| name.eq_ignore_ascii_case(owned)),
+        }
     }
 
     /// Applies only the caller credential accepted by this provider.
@@ -216,35 +299,6 @@ impl Backend {
         builder
     }
 
-    /// Removes an echoed caller credential before an upstream error is returned or logged.
-    pub(crate) fn redact_forwarded_auth(
-        &self,
-        mut body: String,
-        metadata: Option<&Metadata>,
-    ) -> String {
-        if !self.is_forwarding_auth() {
-            return body;
-        }
-        let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
-            return body;
-        };
-        let secret_headers: &[&str] = match self {
-            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => {
-                &["authorization", "chatgpt-account-id"]
-            }
-            Backend::Anthropic(_) => &["authorization", "x-api-key"],
-        };
-        for name in secret_headers {
-            let Some(value) = headers.get(*name).and_then(|value| value.to_str().ok()) else {
-                continue;
-            };
-            if !value.is_empty() {
-                body = body.replace(value, "[REDACTED]");
-            }
-        }
-        body
-    }
-
     /// Custom per-backend headers to forward on every call.
     pub fn extra_headers(&self) -> &BTreeMap<String, String> {
         &self.config().extra_headers
@@ -253,6 +307,11 @@ impl Backend {
     /// Default top-level fields to merge into outbound request bodies.
     pub fn extra_body(&self) -> &BTreeMap<String, Value> {
         &self.config().extra_body
+    }
+
+    /// Top-level fields dropped from outbound request bodies before `extra_body` is merged.
+    pub fn omit_body_fields(&self) -> &BTreeSet<String> {
+        &self.config().omit_body_fields
     }
 
     /// Reasoning effort forced on outbound requests, if the target configures one.
@@ -265,6 +324,11 @@ impl Backend {
         self.config().max_retries
     }
 
+    /// Deadline for all attempts and the complete response; `None` leaves the wait unbounded.
+    pub fn timeout(&self) -> Option<Duration> {
+        self.config().timeout
+    }
+
     /// Whether this backend speaks the Anthropic Messages wire format — the only
     /// one with a `count_tokens` endpoint.
     pub fn is_anthropic(&self) -> bool {
@@ -274,8 +338,11 @@ impl Backend {
     /// The upstream `/v1/messages/count_tokens` URL, derived from the same base
     /// URL join as [`url`](Self::url).
     pub fn count_tokens_url(&self) -> String {
-        let base_url = self.config().base_url.trim_end_matches('/');
-        format!("{}/count_tokens", anthropic_url(base_url))
+        let base_url = &self.config().base_url;
+        anthropic_url(base_url, "/count_tokens").unwrap_or_else(|error| {
+            tracing::error!(%error, "Unable to build Anthropic token-counting URL");
+            base_url.clone()
+        })
     }
 
     /// Whether an upstream 400 `body` looks like a context-window overflow for
@@ -325,23 +392,34 @@ fn oauth_beta_header(value: &HeaderValue) -> Option<HeaderValue> {
 }
 
 // Accept either a root `/v1` URL or an already-specific OpenAI endpoint URL.
-fn openai_url(base_url: &str, suffix: &str) -> String {
-    let base_root = base_url
+pub(crate) fn openai_url(base_url: &str, suffix: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url).map_err(|error| LlmClientError::Configuration {
+        message: format!("Invalid OpenAI base URL: {error}"),
+    })?;
+    let base_path = url.path().trim_end_matches('/');
+    let base_root = base_path
         .strip_suffix("/chat/completions")
-        .or_else(|| base_url.strip_suffix("/responses"))
-        .unwrap_or(base_url);
-    format!("{base_root}{suffix}")
+        .or_else(|| base_path.strip_suffix("/responses"))
+        .unwrap_or(base_path);
+    url.set_path(&format!("{base_root}{suffix}"));
+    Ok(url.into())
 }
 
 // Accept a bare host, a `/v1` root, or an already-specific `/v1/messages` URL.
-fn anthropic_url(base_url: &str) -> String {
-    if base_url.ends_with("/v1/messages") {
-        base_url.to_string()
-    } else if base_url.ends_with("/v1") {
-        format!("{base_url}/messages")
+fn anthropic_url(base_url: &str, suffix: &str) -> Result<String> {
+    let mut url = reqwest::Url::parse(base_url).map_err(|error| LlmClientError::Configuration {
+        message: format!("Invalid Anthropic base URL: {error}"),
+    })?;
+    let base_path = url.path().trim_end_matches('/');
+    let messages_path = if base_path.ends_with("/v1/messages") {
+        base_path.to_string()
+    } else if base_path.ends_with("/v1") {
+        format!("{base_path}/messages")
     } else {
-        format!("{base_url}/v1/messages")
-    }
+        format!("{base_path}/v1/messages")
+    };
+    url.set_path(&format!("{messages_path}{suffix}"));
+    Ok(url.into())
 }
 
 #[cfg(test)]
@@ -355,8 +433,10 @@ mod tests {
             forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
+            timeout: None,
         }
     }
 
@@ -418,6 +498,75 @@ mod tests {
         );
     }
 
+    // Header validation follows reqwest for both accepted and rejected bytes.
+    #[test]
+    fn validates_additional_header_bytes() {
+        let cases = [
+            ("x-display-name", "café", None),
+            (
+                "bad header",
+                "value",
+                Some("invalid HTTP header name \"bad header\""),
+            ),
+            (
+                "x-test-header",
+                "bad\nvalue",
+                Some("invalid HTTP header value for extra_headers entry \"x-test-header\""),
+            ),
+        ];
+
+        for (name, value, expected) in cases {
+            let mut config = config("x");
+            config
+                .extra_headers
+                .insert(name.to_string(), value.to_string());
+            let result = Backend::OpenAiChat(config).validate_configured_headers("model");
+            match expected {
+                Some(expected) => assert!(
+                    result.is_err_and(|error| error.to_string().contains(expected)),
+                    "expected {expected:?}"
+                ),
+                None => result.expect("encodable header must pass validation"),
+            }
+        }
+    }
+
+    // Only static credentials that apply_auth would send are validated.
+    #[test]
+    fn configured_api_key_validation_matches_auth_application() {
+        const INVALID_KEY: &str = "canary\nsecret";
+        let mut config = config("x");
+        config.api_key = Some(INVALID_KEY.to_string());
+        let builders: [fn(HttpBackendConfig) -> Backend; 2] =
+            [Backend::OpenAiChat, Backend::Anthropic];
+        let client = reqwest::Client::new();
+
+        for build_backend in builders {
+            let error = build_backend(config.clone())
+                .validate_configured_headers("model")
+                .expect_err("invalid API key must fail")
+                .to_string();
+            assert!(
+                error.contains("api_key cannot be encoded as an HTTP header"),
+                "{error}"
+            );
+            assert!(!error.contains(INVALID_KEY), "API key leaked in: {error}");
+
+            let mut forwarded = config.clone();
+            forwarded.forward_auth = true;
+            let backend = build_backend(forwarded);
+            backend
+                .validate_configured_headers("model")
+                .expect("unused API key must not fail validation");
+            let request = backend
+                .apply_auth(client.get("https://example.test"))
+                .build()
+                .expect("request");
+            assert!(!request.headers().contains_key("authorization"));
+            assert!(!request.headers().contains_key("x-api-key"));
+        }
+    }
+
     #[test]
     fn openai_detects_canonical_and_wrapped_overflow() {
         let backend = Backend::OpenAiChat(config("x"));
@@ -435,7 +584,7 @@ mod tests {
         assert!(backend.is_context_overflow(
             r#"{"error":{"message":"Input length 877338 exceeds the maximum allowed input length of 639968 tokens","code":"400"}}"#
         ));
-        // Native SGLang: top-level envelope (no `error` key), caught by the raw-body phrase match.
+        // Native SGLang: top-level error envelope (no `error` key).
         // KV-pool rejection (managers/utils.py) and declared-context rejection
         // (tokenizer_manager.py); both stable across v0.5.15-v0.5.17.
         assert!(backend.is_context_overflow(

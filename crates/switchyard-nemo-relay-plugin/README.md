@@ -10,8 +10,52 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-The plugin requires NeMo Relay `>=0.8.1,<0.9.0`, a Rust toolchain, and Python 3
-for the packaging script. Run every command from the repository root.
+The plugin requires NeMo Relay `>=0.8.0, <1.0.0`.
+
+Relay 0.8.x and 0.9.0 can lose upstream error status and details when this native
+plugin is enabled, including for models outside its configured routes. This is
+a known issue tracked by [NeMo Relay PR #1109](https://github.com/NVIDIA/NeMo-Relay/pull/1109).
+Until a fix is available, isolate unmanaged traffic in a plugin-disabled gateway.
+See the [upstream error compatibility note](../../docs/integrations/nemo_relay.md#upstream-error-compatibility).
+
+### Install a released bundle
+
+Official plugin bundles are distributed through the
+[NeMo Relay Plugins repository](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases).
+Each bundle includes the native library, a completed `relay-plugin.toml`, the
+configuration schema, and license notices. Installing a bundle requires no
+Rust build or separate `switchyard-nemo-relay-plugin` crate installation.
+
+The repository currently requires NVIDIA GitHub repository access. Sign in
+with an account that has access and complete organization SSO/SAML authorization
+where required, including for credentials used by `gh`. An HTTP 404 can mean
+that your account or credentials lack access; it does not prove that a bundle
+is missing.
+
+1. Select a published `switchyard-plugin-<version>` release for Switchyard
+   `0.3.0`. Plugin versions are managed separately and can match the Switchyard
+   version. Confirm the source commit in the release notes and `.json` metadata
+   rather than relying on the version number alone. A Switchyard release does
+   not itself publish a plugin bundle. If no matching published bundle is
+   available, use [Build from source](#build-from-source).
+2. Download the archive for your platform and its matching `.sha256` and `.json`
+   sidecars. For Linux x86_64, the archive is named
+   `switchyard-plugin-<version>-linux-x86_64.tar.gz`. Check the metadata's
+   `source_commit`, `platform`, and `relay` fields for the source and tested host.
+3. Verify the downloaded archive against its `.sha256` file before extracting
+   it. On Linux, run `sha256sum -c <archive>.sha256` from the download directory,
+   replacing `<archive>` with the archive's filename.
+4. Extract the archive into a directory you plan to keep, then follow
+   [Register and enable the plugin](#register-and-enable-the-plugin). Use the
+   actual path to the extracted `relay-plugin.toml`; the examples below use
+   `./plugins/switchyard/relay-plugin.toml`.
+
+### Build from source
+
+Build from source when you need a Switchyard commit that does not have a
+released bundle or when you need to customize the plugin. This path requires a
+Rust toolchain and Python 3 for the packaging script. Run every command from
+the repository root.
 
 **1. Build the shared library.**
 
@@ -47,7 +91,11 @@ python crates/switchyard-nemo-relay-plugin/scripts/package_bundle.py \
 Pass `--archive switchyard-plugin.tar.gz` (or `.zip`) to also produce an
 archive for distribution.
 
-**3. Register the plugin.**
+### Register and enable the plugin
+
+These steps apply to both a downloaded bundle and a bundle built from source.
+
+**1. Register the plugin.**
 
 ```bash
 nemo-relay plugins validate ./plugins/switchyard/relay-plugin.toml
@@ -59,10 +107,10 @@ nemo-relay plugins add --user ./plugins/switchyard/relay-plugin.toml
 The plugin is not enabled yet; enabling before the deployment is configured
 fails validation because the plugin requires a Switchyard configuration.
 
-**4. Configure the deployment and trust policy** in that `plugins.toml`, as
+**2. Configure the deployment and trust policy** in that `plugins.toml`, as
 described in [Configure Relay](#configure-relay).
 
-**5. Enable and validate the plugin**, then restart Relay. The manifest ships
+**3. Enable and validate the plugin**, then restart Relay. The manifest ships
 with `enabled = false`; Relay validates a disabled plugin but never loads it.
 
 ```bash
@@ -149,11 +197,31 @@ deployment's route IDs.
 - Streaming responses are returned as unpolled translated streams; Relay owns
   cancellation and the outer serving-call lifecycle.
 
-Each route's target client must use the caller's wire format: `openai_chat`,
-`openai_responses`, or `anthropic_messages`. The runner selects the upstream
-backend from that format rather than translating a route to a different
-provider API. When one upstream model must serve multiple caller formats,
-declare a target and route for each corresponding client format.
+The caller and selected target may use different supported API formats:
+`openai_chat`, `openai_responses`, or `anthropic_messages`. Switchyard translates
+the request into the selected target's configured format and returns buffered
+or streaming responses in the caller's original format. With server-owned
+credentials, one route targeting an `openai_chat` client can serve all three
+caller formats. Separate targets and routes are not required solely for format
+translation.
+
+The native Relay plugin rejects routes that use `forward_auth = true` during
+configuration validation and activation. This includes routing-model calls and
+alternate targets. Relay does not provide caller credentials to the plugin's
+provider calls. Secure forwarding support is tracked in
+[NeMo Relay #1108](https://github.com/NVIDIA/NeMo-Relay/issues/1108).
+
+For deployment-owned credentials, remove `forward_auth` or set it to `false`
+and configure `api_key_env` on each authenticated client. The two options cannot
+be enabled together. If each caller must use its own provider credential, use
+standalone `switchyard-server`. Standalone forwarding requires the caller and
+target to use the same credential family: OpenAI-compatible (Chat Completions
+and Responses) or Anthropic (Messages).
+
+Support for provider-specific fields depends on the source and target formats.
+Test any fields that your application relies on before deploying a translated
+route. See the [integration guide](../../docs/integrations/nemo_relay.md#request-handling)
+for request handling, header forwarding, and streaming details.
 
 The plugin emits routing request, model-call, measured-overhead, and decision
 marks. Call marks distinguish routing from answer calls; decisions distinguish
@@ -198,12 +266,39 @@ meaning requires a new schema version.
 | `switchyard.routing.requested` | `algorithm` |
 | `switchyard.routing.llm_call` | `call_index`, `selected_model`, `call_role`, `outcome`, `latency_ms` |
 | `switchyard.routing.overhead` | `latency_ms` |
-| `switchyard.routing.decision` | `algorithm`, `selected_model`, nullable `served_model`, nullable `fallback_used` |
-| `switchyard.routing.error` | `failure_kind`; optional `category`, `phase`, `upstream_status`, and `target` |
+| `switchyard.routing.decision` | `algorithm`, optional `outcome_id`, `selected_model`, nullable `served_model`, nullable `fallback_used`, and optional `evidence` |
+| `switchyard.routing.error` | `failure_kind`; route-execution failures also include `category`, `phase`, nullable `upstream_status` and `target`, and may include `outcome_id` and `evidence` |
 
 `served_model` and `fallback_used` are `null` when serving metadata is unavailable.
+`outcome_id` is present when the algorithm runner supplies outcome metadata.
+`evidence` is an object containing the supported string fields `source`, `verdict`,
+`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
+String values longer than 64 bytes are omitted and should be stable, non-sensitive labels.
 
 ## Failure policy
+
+### Provider credential redaction
+
+The plugin replaces configured `api_key_env` credentials with `[REDACTED]` in
+buffered responses and each translated stream event before returning them to
+Relay. It also redacts returned error strings, routing mark data and metadata,
+metric attributes and metadata, and plugin telemetry-emission diagnostics.
+The intended upstream still receives the original credential. Upstream response
+headers are not returned through the plugin's JSON execution intercepts.
+
+The plugin and standalone server share the credential replacement helpers.
+Redaction runs after translation, including on preserved provider fields and
+JSON member names. It does not buffer the response stream or change cancellation.
+Each event is handled independently: a credential split across events or separate
+JSON strings is **not** reconstructed or redacted as a whole. String values and error
+text are checked for both raw credentials and their JSON-escaped forms, including
+one embedded JSON serialization layer such as serialized tool arguments. Further
+repeated escaping and other encodings or transformations are outside this policy.
+Preventing reconstruction across stream events requires a separate stateful policy
+for each logical text or tool argument field; per-event redaction does not provide
+that guarantee.
+
+### Execution failures
 
 `switchyard-llm-client` owns provider retry and route-candidate fallback
 behavior. The plugin does not maintain a separate trusted-default target or

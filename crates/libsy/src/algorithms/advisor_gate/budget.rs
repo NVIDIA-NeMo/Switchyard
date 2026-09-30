@@ -132,6 +132,12 @@ impl ReviewBudget {
         }
         state.stall_fired.insert(key)
     }
+
+    /// Re-arms the stall checkpoint for a conversation key after a review
+    /// that was reserved but never completed (the budget was refunded).
+    pub(super) fn clear_stall_fired(&self, key: u64) {
+        self.state.lock().stall_fired.remove(&key);
+    }
 }
 
 /// Resolves the review budget scope: the benchmark harness header, then the
@@ -216,5 +222,14 @@ mod tests {
         assert!(budget.try_mark_stall_fired(7));
         assert!(!budget.try_mark_stall_fired(7));
         assert!(budget.try_mark_stall_fired(8));
+    }
+
+    #[test]
+    fn clearing_the_stall_latch_readmits_the_key() {
+        let budget = ReviewBudget::new(1);
+        assert!(budget.try_mark_stall_fired(7));
+        budget.clear_stall_fired(7);
+        assert!(budget.try_mark_stall_fired(7));
+        assert!(!budget.try_mark_stall_fired(7));
     }
 }

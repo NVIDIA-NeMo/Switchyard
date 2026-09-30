@@ -1,0 +1,30 @@
+model_list:
+  - model_name: fixed
+    litellm_params: &ultra
+      model: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
+      api_base: os.environ/NVIDIA_BASE_URL
+      api_key: os.environ/NVIDIA_API_KEY
+      max_retries: 0
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+  - model_name: routed
+    litellm_params: *ultra
+  - model_name: routed
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-3.5-lightning-30b-a3b
+      api_base: os.environ/NVIDIA_BASE_URL
+      api_key: os.environ/NVIDIA_API_KEY
+      max_retries: 0
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false
+router_settings:
+  num_retries: 0
+  plugins:
+    - switchyard_litellm.configuration.configured_plugin.ROUTING_PLUGIN
+litellm_settings:
+  num_retries: 0
+  callbacks:
+    - switchyard_litellm.configuration.configured_plugin.ROUTING_PLUGIN
+    - gym_routing_plugin.PLUGIN

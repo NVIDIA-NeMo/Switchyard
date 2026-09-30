@@ -97,22 +97,38 @@ async def test_stage_plugin_controls_real_litellm_router_pipeline() -> None:
     assert capable.choices[0].message.content == "served by capable"
 
 
-async def test_seeded_random_plugin_reaches_both_litellm_candidates() -> None:
-    router = Router(model_list=model_list(), plugins=[RandomRoutingPlugin(seed=6)])
-
-    served = {
-        (
-            await router.acompletion(
+async def test_seeded_random_plugin_repeats_valid_litellm_selections() -> None:
+    sequences = []
+    for _ in range(2):
+        router = Router(model_list=model_list(), plugins=[RandomRoutingPlugin(seed=6)])
+        served = []
+        for index in range(8):
+            response = await router.acompletion(
                 model=MODEL_GROUP,
                 messages=[{"role": "user", "content": f"Request {index}"}],
             )
-        )
-        .choices[0]
-        .message.content
-        for index in range(2)
-    }
+            served.append(response.choices[0].message.content)
+        sequences.append(served)
 
-    assert served == {"served by capable", "served by efficient"}
+    assert sequences[0] == sequences[1]
+    assert set(sequences[0]) <= {"served by capable", "served by efficient"}
+
+
+async def test_random_plugin_weights_select_each_litellm_candidate() -> None:
+    for weights, expected in [
+        ([1.0, 0.0], "served by capable"),
+        ([0.0, 1.0], "served by efficient"),
+    ]:
+        router = Router(
+            model_list=model_list(),
+            plugins=[RandomRoutingPlugin(weights=weights, seed=6)],
+        )
+        response = await router.acompletion(
+            model=MODEL_GROUP,
+            messages=[{"role": "user", "content": "Say hello."}],
+        )
+
+        assert response.choices[0].message.content == expected
 
 
 class DeploymentRequestRecorder(CustomLogger):

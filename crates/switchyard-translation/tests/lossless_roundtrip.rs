@@ -304,7 +304,7 @@ fn request_fixture(format: WireFormat) -> Value {
                         },
                         {
                             "type": "file",
-                            "file": {"file_id": "file_123"}
+                            "file": {"file_data": "aGVsbG8=", "filename": "notes.txt"}
                         },
                         {
                             "type": "vendor_block",
@@ -470,7 +470,8 @@ fn request_fixture(format: WireFormat) -> Value {
                         },
                         {
                             "type": "input_file",
-                            "file": {"file_id": "file_123"}
+                            "file_data": "aGVsbG8=",
+                            "filename": "notes.txt"
                         },
                         {
                             "type": "vendor_block",

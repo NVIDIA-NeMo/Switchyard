@@ -413,6 +413,154 @@
                  f"opencode --model={self.model_name} run --format=json {cli_flags_arg}--thinking --dangerously-skip-permissions -- {escaped_instruction} "
                  f"2>&1 </dev/null | stdbuf -oL tee /logs/agent/opencode.txt"
              ),
+--- a/harbor/agents/installed/pi.py
++++ b/harbor/agents/installed/pi.py
+@@ -14,6 +14,8 @@
+
+ class Pi(BaseInstalledAgent):
+     _OUTPUT_FILENAME = "pi.txt"
++    # Source nvm only if it exists: the prebaked dataset image installs pi on PATH without nvm.
++    _NVM_PRELUDE = '[ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh"; '
+
+     CLI_FLAGS = [
+         CliFlag(
+@@ -29,7 +31,7 @@
+         return AgentName.PI.value
+
+     def get_version_command(self) -> str | None:
+-        return ". ~/.nvm/nvm.sh; pi --version"
++        return f"{self._NVM_PRELUDE}pi --version"
+
+     def parse_version(self, stdout: str) -> str:
+         return stdout.strip().splitlines()[-1].strip()
+@@ -37,7 +39,14 @@
+     async def install(self, environment: BaseEnvironment) -> None:
+         await self.exec_as_root(
+             environment,
+-            command="apt-get update && apt-get install -y curl",
++            command=(
++                # Skip if pi is already installed (e.g. from agent-bake layer).
++                "if command -v pi >/dev/null 2>&1; then"
++                f"  echo 'pi {self._version or 'unknown'} already installed, skipping system pkg install';"
++                "  exit 0;"
++                "fi;"
++                "apt-get update && apt-get install -y curl"
++            ),
+             env={"DEBIAN_FRONTEND": "noninteractive"},
+         )
+         version_spec = f"@{self._version}" if self._version else "@latest"
+@@ -45,12 +54,17 @@
+             environment,
+             command=(
+                 "set -euo pipefail; "
++                # Skip if pi is already installed (e.g. from agent-bake layer).
++                "if command -v pi >/dev/null 2>&1; then"
++                f"  echo 'pi {self._version or 'unknown'} already installed, skipping install';"
++                "  exit 0;"
++                "fi;"
+                 "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
+                 'export NVM_DIR="$HOME/.nvm" && '
+                 '\\. "$NVM_DIR/nvm.sh" || true && '
+                 "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
+                 "nvm install 22 && npm -v && "
+-                f"npm install -g @mariozechner/pi-coding-agent{version_spec} && "
++                f"npm install -g @earendil-works/pi-coding-agent{version_spec} && "
+                 "pi --version"
+             ),
+         )
+@@ -65,6 +79,46 @@
+             f"$HOME/.agents/skills/ 2>/dev/null || true"
+         )
+
++    def _build_models_json_command(self, provider: str, model_id: str) -> str | None:
++        """Return a shell command that writes ~/.pi/agent/models.json for Switchyard.
++
++        pi has no built-in "switchyard" provider and does not read OPENAI_BASE_URL, so this
++        command adds the gateway as a custom provider before pi starts.
++        """
++        if provider != "switchyard":
++            return None
++        base_url = self._get_env("OPENAI_BASE_URL")
++        if not base_url:
++            raise ValueError("--model switchyard/<route> requires OPENAI_BASE_URL")
++        model_entry: dict[str, object] = {
++            "id": model_id,
++            "name": f"{model_id} (Switchyard)",
++            "reasoning": True,
++        }
++        context_window = self._get_env("PI_CONTEXT_WINDOW")
++        if context_window:
++            model_entry["contextWindow"] = int(context_window)
++        max_output_tokens = self._get_env("PI_MAX_OUTPUT_TOKENS")
++        if max_output_tokens:
++            model_entry["maxTokens"] = int(max_output_tokens)
++        models_config = {
++            "providers": {
++                "switchyard": {
++                    "baseUrl": base_url,
++                    "api": "openai-completions",
++                    # Keep the literal string "$OPENAI_API_KEY"; pi expands the variable itself.
++                    "apiKey": "$OPENAI_API_KEY",
++                    "compat": {"supportsDeveloperRole": False},
++                    "models": [model_entry],
++                }
++            }
++        }
++        # shlex.quote wraps the JSON in single quotes so the shell does not expand "$OPENAI_API_KEY".
++        return (
++            'mkdir -p "$HOME/.pi/agent" && '
++            f'echo {shlex.quote(json.dumps(models_config))} > "$HOME/.pi/agent/models.json"'
++        )
++
+     @with_prompt_template
+     async def run(
+         self,
+@@ -77,7 +131,7 @@
+         if not self.model_name or "/" not in self.model_name:
+             raise ValueError("Model name must be in the format provider/model_name")
+
+-        provider, _ = self.model_name.split("/", 1)
++        provider, model_id = self.model_name.split("/", 1)
+
+         env: dict[str, str] = {}
+         keys: list[str] = []
+@@ -106,7 +160,7 @@
+             keys.append("HF_TOKEN")
+         elif provider == "mistral":
+             keys.append("MISTRAL_API_KEY")
+-        elif provider == "openai":
++        elif provider in ("openai", "switchyard"):
+             keys.append("OPENAI_API_KEY")
+         elif provider == "openrouter":
+             keys.append("OPENROUTER_API_KEY")
+@@ -123,9 +177,7 @@
+             if val:
+                 env[key] = val
+
+-        model_args = (
+-            f"--provider {provider} --model {self.model_name.split('/', 1)[1]} "
+-        )
++        model_args = f"--provider {provider} --model {model_id} "
+
+         cli_flags = self.build_cli_flags()
+         if cli_flags:
+@@ -134,11 +186,14 @@
+         skills_command = self._build_register_skills_command()
+         if skills_command:
+             await self.exec_as_agent(environment, command=skills_command)
++        models_json_command = self._build_models_json_command(provider, model_id)
++        if models_json_command:
++            await self.exec_as_agent(environment, command=models_json_command)
+
+         await self.exec_as_agent(
+             environment,
+             command=(
+-                f". ~/.nvm/nvm.sh; "
++                f"{self._NVM_PRELUDE}"
+                 f"pi --print --mode json --no-session "
+                 f"{model_args}"
+                 f"{cli_flags}"
+
 --- a/harbor/models/trial/config.py
 +++ b/harbor/models/trial/config.py
 @@ -219,4 +219,5 @@
@@ -425,7 +573,7 @@
 --- /dev/null
 +++ b/harbor/switchyard_patch_id.txt
 @@ -0,0 +1 @@
-+switchyard-harbor-patches-2026-05-22-v2
++switchyard-harbor-patches-2026-09-22-v3
 
 --- a/harbor/agents/installed/hermes.py
 +++ b/harbor/agents/installed/hermes.py

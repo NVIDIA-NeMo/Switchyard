@@ -2,7 +2,8 @@
 
 Sub-agent-aware routing leaves parent-agent traffic with its configured routing
 algorithm while routing delegated sub-agent work separately. It is available on
-`passthrough` and `stage_router` routes through the optional `subagents` table.
+`passthrough`, `stage_router`, and `composite` routes through the optional
+`subagents` table.
 
 ```toml
 schema_version = 1
@@ -39,16 +40,15 @@ reasoning = true
 [routes.agent.subagents]
 type = "llm_classifier"
 mode = "custom"
-classifier_target = "classifier"
-targets = ["worker", "reviewer"]
-default_target = "worker"
+models = { judge = ["classifier"], capable = ["reviewer"], efficient = ["worker"], any = ["worker", "reviewer"] }
+default_target = "efficient"
 classify_trigger = "new_session"
 max_output_tokens = 64
 prompt = """
 Select exactly one target for the delegated task.
 
-- Select "reviewer" for code review, critique, auditing, or correctness analysis.
-- Select "worker" for implementation, research, explanation, and other delegated work.
+- Select "capable" for code review, critique, auditing, or correctness analysis.
+- Select "efficient" for implementation, research, explanation, and other delegated work.
 
 Return only JSON matching the response schema.
 """
@@ -56,7 +56,7 @@ response_schema = '''
 {
   "type": "object",
   "properties": {
-    "target": {"type": "string", "enum": ["worker", "reviewer"]}
+    "target": {"type": "string", "enum": ["capable", "efficient"]}
   },
   "required": ["target"],
   "additionalProperties": false
@@ -73,6 +73,11 @@ export OPENROUTER_API_KEY="sk-or-v1-..."  # pragma: allowlist secret
 switchyard-server --config routes.toml --dry-run
 switchyard-server --config routes.toml --port 4000
 ```
+
+The `subagents` table has its own model groups, separate from the parent
+route's. A category name in the sub-agent table always means the sub-agent's own
+models, even when the parent route uses that category too, and the parent never
+falls back onto a model only the sub-agents were given.
 
 The parent always uses `parent`. For a delegated request, the classifier sees
 the prompt supplied by the parent and selects one configured target. With
@@ -105,6 +110,13 @@ Clients must still request the route ID (`agent` above). An explicit model name
 that is not registered as a route is rejected before sub-agent classification.
 `message_hash_fallback` is not supported for sub-agent routing because affinity
 requires harness-provided child identity.
+
+Claude Code sends child identity (`x-claude-code-agent-id`) starting with version
+2.1.139. Older builds send only the session id, so Switchyard cannot tell a
+sub-agent request from the parent's and routes it through the parent route.
+When a route with a `subagents` table sees an older Claude Code, Switchyard logs
+one warning that a harness upgrade may be required. Upgrade Claude Code to
+2.1.139 or later.
 
 To send every delegated sub-agent request to one fixed target without calling a
 classifier, replace the `subagents` table above with:

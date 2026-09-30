@@ -13,7 +13,7 @@ rust-version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.2.0" }
+libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.3.0" }
 pyo3 = { version = "0.28.3", features = ["auto-initialize"] }
 switchyard-protocol.workspace = true
 thiserror.workspace = true

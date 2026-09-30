@@ -25,6 +25,7 @@ pub(crate) fn observe(
     let Response {
         llm_response,
         metadata,
+        upstream_headers,
     } = response;
     let model = model.to_string();
 
@@ -99,16 +100,13 @@ pub(crate) fn observe(
     Response {
         llm_response,
         metadata,
+        upstream_headers,
     }
 }
 
 // Records a terminal stream failure after the routed call was already counted.
 fn record_stream_error(stats: &StatsAccumulator, model: &str) {
-    stats.record_stream_error(model);
-    global::meter("switchyard")
-        .u64_counter("switchyard.errors")
-        .build()
-        .add(1, &attributes(model));
+    stats.record_response_error(model);
 }
 
 pub(crate) fn token_usage(usage: &Usage) -> TokenUsage {
@@ -213,6 +211,7 @@ mod tests {
         let response = Response {
             llm_response: LlmResponse::Stream(Box::pin(source)),
             metadata: None,
+            upstream_headers: http::HeaderMap::new(),
         };
         let stats = StatsAccumulator::default();
         let observed = observe(

@@ -424,6 +424,19 @@ pub enum StopReason {
     Unknown,
 }
 
+/// A source URL cited by generated text.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UrlCitation {
+    /// Start character offset in the concatenated text and refusal blocks.
+    pub start_index: usize,
+    /// Exclusive end character offset in the same text.
+    pub end_index: usize,
+    /// Source URL.
+    pub url: String,
+    /// Source title.
+    pub title: String,
+}
+
 /// One assistant output item in a normalized response.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResponseOutput {
@@ -431,6 +444,9 @@ pub struct ResponseOutput {
     pub role: Role,
     /// Ordered output content.
     pub content: Vec<ContentBlock>,
+    /// URL citations in the concatenated text and refusal blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub url_citations: Vec<UrlCitation>,
     /// Why this output stopped, when known.
     pub stop_reason: Option<StopReason>,
 }

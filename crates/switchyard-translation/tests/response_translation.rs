@@ -17,6 +17,205 @@ use common::{
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+#[test]
+fn responses_native_output_is_preserved_or_rejected() -> TestResult {
+    use switchyard_translation::{StreamTranslationState, TranslationError};
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let items = [
+        json!({"type": "apply_patch_call", "id": "ap_1", "call_id": "call_1", "status": "completed",
+            "operation": {"type": "create_file", "path": "probe.txt", "diff": "+probe\n"}}),
+        json!({"type": "shell_call", "id": "sh_1", "call_id": "call_1", "status": "completed",
+            "action": {"commands": ["pwd"], "timeout_ms": 1000, "max_output_length": 1024}}),
+        json!({"type": "computer_call", "id": "cu_1", "call_id": "call_1", "status": "completed",
+            "action": {"type": "click", "x": 10, "y": 20, "button": "left"}, "pending_safety_checks": []}),
+        json!({"type": "image_generation_call", "id": "ig_1", "status": "completed", "result": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l2QAAAAASUVORK5CYII="}),
+    ];
+    let text = json!({"type": "message", "role": "assistant", "content": [
+        {"type": "output_text", "text": "Working."}
+    ]});
+    let mut failures = Vec::new();
+    for item in items {
+        let kind = item["type"].as_str().ok_or("missing item type")?;
+        let body = json!({"id": "resp_native", "model": "provider", "status": "completed", "output": [item]});
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            let decoded = engine.decode_response(source, &body, &policy)?.response;
+            let replay = engine.encode_response(source, &decoded, &policy)?.body;
+            if replay["output"] != body["output"] {
+                failures.push(format!("{kind}: same-format buffered output lost"));
+            }
+            for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+                for output in [json!([item]), json!([text, item])] {
+                    let mut body = body.clone();
+                    body["output"] = output;
+                    let result = engine.translate_response(source, target, &body, &policy);
+                    if !matches!(result, Err(TranslationError::UnsupportedTranslation { .. })) {
+                        failures.push(format!("{kind}: {target:?} buffered did not reject"));
+                    }
+                }
+                if !matches!(
+                    engine.encode_response(target, &decoded, &policy),
+                    Err(TranslationError::UnsupportedTranslation { .. })
+                ) {
+                    failures.push(format!(
+                        "{kind}: {target:?} separate buffered encode did not reject"
+                    ));
+                }
+            }
+        }
+        let mut initial = item.clone();
+        initial["status"] = json!("in_progress");
+        let added =
+            json!({"type": "response.output_item.added", "output_index": 0, "item": initial});
+        let done = json!({"type": "response.output_item.done", "output_index": 0, "item": item});
+        let completed = json!({"type": "response.completed", "response": body});
+        let incomplete = json!({"type": "response.incomplete", "response": {
+            "id": "resp_native", "status": "incomplete", "output": [item],
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }});
+        for frames in [
+            vec![added, done.clone(), completed.clone()],
+            vec![done, completed.clone()],
+            vec![completed.clone()],
+            vec![
+                json!({"type": "response.output_text.delta", "output_index": 1, "delta": "Working."}),
+                completed,
+            ],
+            vec![incomplete],
+        ] {
+            let mut decoder = StreamTranslationState::default();
+            let mut replay_state = StreamTranslationState::default();
+            let mut replay = Vec::new();
+            for frame in &frames {
+                let event = engine.decode_stream_event(&mut decoder, source, frame.clone())?;
+                replay.extend(engine.encode_stream_event(&mut replay_state, source, event)?);
+            }
+            replay.extend(engine.finish_stream(&mut replay_state, source)?);
+            assert_eq!(replay, frames, "{kind}: same-format stream");
+            for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+                for is_preserved in [false, true] {
+                    let mut decoder = StreamTranslationState::default();
+                    let mut encoder = StreamTranslationState::default();
+                    let mut events = Vec::new();
+                    for frame in &frames {
+                        let encoded = if is_preserved {
+                            let event =
+                                engine.decode_stream_event(&mut decoder, source, frame.clone())?;
+                            engine.encode_stream_event(&mut encoder, target, event)?
+                        } else {
+                            engine.translate_event(&mut encoder, source, target, frame)?
+                        };
+                        events.extend(encoded);
+                    }
+                    events.extend(engine.finish_stream(&mut encoder, target)?);
+                    let errors = events
+                        .iter()
+                        .filter(|event| event["error"].is_object())
+                        .count();
+                    let last = events.last().ok_or("missing terminal error")?;
+                    if !encoder.errored
+                        || errors != 1
+                        || !last["error"]["message"]
+                            .as_str()
+                            .is_some_and(|message| message.contains("not supported"))
+                        || events.iter().any(|event| {
+                            event["type"] == "message_stop"
+                                || event["choices"][0]["finish_reason"].is_string()
+                        })
+                    {
+                        failures.push(format!("{kind}: {target:?} stream did not terminate with one unsupported-translation error"));
+                    }
+                    assert!(engine.finish_stream(&mut encoder, target)?.is_empty());
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    Ok(())
+}
+
+#[test]
+fn url_citations_survive_chat_responses_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let citation = json!({
+        "start_index": 13, "end_index": 20,
+        "url": "https://example.test/source", "title": "Example"
+    });
+    let chat_annotations = json!([{"type": "url_citation", "url_citation": citation}]);
+    let mut flat_citation = citation;
+    flat_citation["type"] = json!("url_citation");
+    let responses_annotations = json!([flat_citation]);
+    let chat = json!({
+        "choices": [{"message": {
+            "role": "assistant", "content": "According to Example.",
+            "annotations": chat_annotations
+        }, "finish_reason": "stop"}]
+    });
+    let responses = json!({
+        "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [{
+            "type": "output_text", "text": "According to Example.",
+            "annotations": responses_annotations
+        }]}]
+    });
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiChat,
+                WireFormat::OpenAiResponses,
+                &chat,
+                &policy,
+            )?
+            .body;
+        assert_eq!(
+            output["output"][0]["content"][0]["annotations"],
+            responses_annotations
+        );
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiChat,
+                &responses,
+                &policy,
+            )?
+            .body;
+        assert_eq!(
+            output["choices"][0]["message"]["annotations"],
+            chat_annotations
+        );
+
+        // Responses text parts and messages are concatenated in Chat.
+        let mut multipart = responses.clone();
+        multipart["output"][0]["content"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"type": "output_text", "text": "🌍 "}));
+        multipart["output"].as_array_mut().unwrap().insert(
+            0,
+            json!({"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "é"}
+            ]}),
+        );
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiChat,
+                &multipart,
+                &policy,
+            )?
+            .body;
+        let mut shifted = chat_annotations.clone();
+        shifted[0]["url_citation"]["start_index"] = json!(16);
+        shifted[0]["url_citation"]["end_index"] = json!(23);
+        assert_eq!(
+            output["choices"][0]["message"]["content"],
+            "é🌍 According to Example."
+        );
+        assert_eq!(output["choices"][0]["message"]["annotations"], shifted);
+    }
+    Ok(())
+}
+
 // Verifies OpenAI Chat responses map to Anthropic message responses.
 #[test]
 fn openai_chat_response_translates_to_anthropic_message() -> TestResult {
@@ -108,6 +307,7 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
             "input_tokens": 10,
             "output_tokens": 5,
             "total_tokens": 15,
+            "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 2},
             "output_tokens_details": {"reasoning_tokens": 3}
         }
     });
@@ -127,6 +327,64 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
         output["usage"]["completion_tokens_details"],
         json!({"reasoning_tokens": 3})
     );
+    assert_eq!(
+        output["usage"]["prompt_tokens_details"]["cache_creation_tokens"],
+        2
+    );
+    let decoded = engine
+        .decode_response(WireFormat::OpenAiResponses, &body, &normalized_policy())?
+        .response;
+    assert_eq!(decoded.usage.input_tokens, Some(4));
+    assert_eq!(decoded.usage.cached_input_tokens(), Some(4));
+    assert_eq!(decoded.usage.cache_creation_input_tokens(), Some(2));
+    assert_eq!(decoded.usage.total_tokens, Some(15));
+    let mut aliased = body.clone();
+    aliased["usage"] = output["usage"].clone();
+    assert_eq!(
+        engine
+            .decode_response(WireFormat::OpenAiResponses, &aliased, &normalized_policy())?
+            .response
+            .usage,
+        decoded.usage
+    );
+    let encoded = engine
+        .encode_response(WireFormat::OpenAiResponses, &decoded, &normalized_policy())?
+        .body;
+    assert_eq!(encoded["usage"], body["usage"]);
+
+    let mut state = switchyard_translation::StreamTranslationState::new(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+    );
+    let events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &json!({"type": "response.completed", "response": body}),
+    )?;
+    assert_eq!(state.usage, decoded.usage);
+    let chat = events
+        .iter()
+        .find(|event| event.get("usage").is_some())
+        .ok_or("missing usage")?;
+    assert_eq!(chat["usage"], output["usage"]);
+    let mut state = switchyard_translation::StreamTranslationState::new(
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+    );
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &json!({"id": "chat_usage", "model": "model", "usage": output["usage"],
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("missing completion")?;
+    assert_eq!(completed["response"]["usage"], body["usage"]);
     Ok(())
 }
 
@@ -216,7 +474,7 @@ fn openai_chat_cache_usage_translates_to_responses_usage_details() -> TestResult
     assert_eq!(output["usage"]["input_tokens"], 100);
     assert_eq!(
         output["usage"]["input_tokens_details"],
-        json!({"cached_tokens": 80})
+        json!({"cached_tokens": 80, "cache_write_tokens": 0})
     );
     Ok(())
 }
@@ -289,6 +547,85 @@ fn anthropic_thinking_response_translates_to_openai_reasoning_content() -> TestR
     let message = &output["choices"][0]["message"];
     assert_eq!(message["content"], "Visible answer");
     assert_eq!(message["reasoning_content"], "private reasoning");
+    for (details, thinking_tokens) in [
+        (json!({"thinking_tokens": 0}), 0),
+        (json!({"thinking_tokens": 5}), 5),
+        (json!({"thinking_tokens": null, "reasoning_tokens": 5}), 5),
+    ] {
+        let mut body = body.clone();
+        body["usage"]["output_tokens_details"] = details;
+        let decoded = engine
+            .decode_response(WireFormat::AnthropicMessages, &body, &normalized_policy())?
+            .response;
+        assert_eq!(decoded.usage.reasoning_tokens, Some(thinking_tokens));
+        assert_eq!(decoded.usage.output_tokens, Some(7));
+        assert_eq!(decoded.usage.total_tokens, Some(19));
+
+        for (target, details, field) in [
+            (
+                WireFormat::OpenAiChat,
+                "completion_tokens_details",
+                "reasoning_tokens",
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                "output_tokens_details",
+                "reasoning_tokens",
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                "output_tokens_details",
+                "thinking_tokens",
+            ),
+        ] {
+            let output = engine
+                .translate_response(
+                    WireFormat::AnthropicMessages,
+                    target,
+                    &body,
+                    &normalized_policy(),
+                )?
+                .body;
+            assert_eq!(output["usage"][details][field], thinking_tokens);
+            let mut state = switchyard_translation::StreamTranslationState::new(
+                WireFormat::AnthropicMessages,
+                target,
+            );
+            engine.translate_event(
+                &mut state,
+                WireFormat::AnthropicMessages,
+                target,
+                &json!({"type": "message_start", "message": {
+                    "id": "msg_test", "model": "claude-opus", "usage": {"input_tokens": 12}
+                }}),
+            )?;
+            engine.translate_event(
+                &mut state,
+                WireFormat::AnthropicMessages,
+                target,
+                &json!({"type": "message_delta", "delta": {}, "usage": body["usage"]}),
+            )?;
+            let mut events = engine.translate_event(
+                &mut state,
+                WireFormat::AnthropicMessages,
+                target,
+                &json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 7}}),
+            )?;
+            assert_eq!(state.usage.reasoning_tokens, Some(thinking_tokens));
+            assert_eq!(state.usage.output_tokens, Some(7));
+            events.extend(engine.finish_stream(&mut state, target)?);
+            let usage = events
+                .iter()
+                .find_map(|event| {
+                    event
+                        .get("usage")
+                        .or_else(|| event.get("response")?.get("usage"))
+                })
+                .ok_or("missing terminal usage")?;
+            assert_eq!(usage[details][field], thinking_tokens);
+        }
+    }
     Ok(())
 }
 
@@ -336,6 +673,47 @@ fn openai_reasoning_response_translates_to_responses_reasoning_item() -> TestRes
         output["usage"]["output_tokens_details"],
         json!({"reasoning_tokens": 2})
     );
+    Ok(())
+}
+
+#[test]
+fn openai_reasoning_response_preserves_visible_content_presence() -> TestResult {
+    let engine = TranslationEngine::default();
+    for content in [json!(null), json!(""), json!("Answer")] {
+        let mut body = json!({
+            "id": "chatcmpl-test",
+            "model": "gpt-reasoning",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "reasoning_content": "private reasoning"
+                },
+                "finish_reason": "length"
+            }]
+        });
+        let mut expected = vec![json!({
+            "type": "thinking",
+            "thinking": "private reasoning",
+            "signature": ""
+        })];
+        if let Some(text) = content.as_str() {
+            expected.push(json!({"type": "text", "text": text}));
+        }
+        body["choices"][0]["message"]["content"] = content;
+
+        let output = engine
+            .translate_response(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &normalized_policy(),
+            )?
+            .body;
+
+        assert_eq!(output["content"], json!(expected), "input: {body}");
+        assert_eq!(output["stop_reason"], "max_tokens");
+    }
     Ok(())
 }
 
@@ -461,7 +839,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             "input_tokens": 4,
             "output_tokens": 3,
             "total_tokens": 7,
-            "input_tokens_details": {"cached_tokens": 0},
+            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
             "output_tokens_details": {"reasoning_tokens": 0}
         })
     );
@@ -539,7 +917,7 @@ fn openai_chat_usage_without_breakdowns_still_emits_responses_usage_details() ->
             "input_tokens": 41,
             "output_tokens": 3,
             "total_tokens": 44,
-            "input_tokens_details": {"cached_tokens": 0},
+            "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
             "output_tokens_details": {"reasoning_tokens": 0}
         })
     );
@@ -578,7 +956,7 @@ fn openai_chat_cache_only_usage_still_emits_reasoning_details() -> TestResult {
 
     assert_eq!(
         output["usage"]["input_tokens_details"],
-        json!({"cached_tokens": 32})
+        json!({"cached_tokens": 32, "cache_write_tokens": 0})
     );
     assert_eq!(
         output["usage"]["output_tokens_details"],
@@ -648,6 +1026,34 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
         .body;
 
     assert_eq!(output["choices"][0]["finish_reason"], "length");
+    Ok(())
+}
+
+#[test]
+fn failed_responses_return_upstream_failure_with_provider_message() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "resp_failed",
+        "object": "response",
+        "model": "gpt-4o",
+        "status": "failed",
+        "error": {"code": "server_error", "message": "deterministic upstream failure"},
+        "output": [],
+        "usage": null
+    });
+
+    let target = WireFormat::OpenAiChat;
+    let error = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            target,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .err()
+        .ok_or_else(|| format!("{target:?} accepted a failed response"))?;
+    assert_eq!(error.kind(), "UpstreamFailure");
+    assert!(error.to_string().contains("deterministic upstream failure"));
     Ok(())
 }
 

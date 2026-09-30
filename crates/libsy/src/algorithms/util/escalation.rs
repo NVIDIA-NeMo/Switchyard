@@ -9,13 +9,14 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, Message, ModelId, Role};
+use switchyard_protocol::{Category, ContentBlock, InstructionBlock, Message, Role};
 
 use super::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
+use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
@@ -110,8 +111,12 @@ pub(crate) struct EscalationInput {
 
 impl ClassifierInput for EscalationInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
-        let messages = &request.llm_request.messages;
-        let summary = summarize_for_judge(messages, conversation_turn(request), &self.config);
+        let summary = summarize_for_judge(
+            &request.llm_request.instructions,
+            &request.llm_request.messages,
+            conversation_turn(request),
+            &self.config,
+        );
         vec![Message::text(Role::User, summary)]
     }
 }
@@ -124,15 +129,16 @@ pub(crate) type EscalationJudge = StructuredJudge<EscalationInput, SerdeDecoder<
 /// [`Classification::Ambiguous`] carries the unavailable case, which names no tier: both a
 /// decline and an outage stay efficient, but only a decline is evidence, so only a decline
 /// clears the streak.
-pub(crate) struct EscalationPolicy {
-    capable: ModelId,
-    efficient: ModelId,
-}
+pub(crate) struct EscalationPolicy;
 
 impl JudgePolicy for EscalationPolicy {
     type Verdict = EscalationVerdict;
 
-    fn to_classification(&self, verdict: Option<&EscalationVerdict>) -> Classification {
+    fn to_classification(
+        &self,
+        verdict: Option<&EscalationVerdict>,
+        driver: &Driver,
+    ) -> Result<Classification> {
         if let Some(verdict) = verdict {
             tracing::debug!(
                 escalate = verdict.escalate,
@@ -141,15 +147,17 @@ impl JudgePolicy for EscalationPolicy {
             );
         }
         match verdict {
-            Some(verdict) if verdict.escalate => Classification::Scores(vec![Score {
-                target: self.capable.clone(),
+            Some(verdict) if verdict.escalate => Ok(Classification::Scores(vec![Score {
+                target: driver.first_model_for(&Category::Capable)?.clone(),
                 confidence: 1.0,
-            }]),
-            Some(_) => Classification::Scores(vec![Score {
-                target: self.efficient.clone(),
+                category: Some(Category::Capable),
+            }])),
+            Some(_) => Ok(Classification::Scores(vec![Score {
+                target: driver.first_model_for(&Category::Efficient)?.clone(),
                 confidence: 1.0,
-            }]),
-            None => Classification::Ambiguous(Vec::new()),
+                category: Some(Category::Efficient),
+            }])),
+            None => Ok(Classification::Ambiguous(Vec::new())),
         }
     }
 }
@@ -167,14 +175,11 @@ fn escalation_evidence(
     })
 }
 
-/// Builds the trajectory judge over `judge_target`, scoring `capable` when it escalates.
+/// Builds the trajectory judge, scoring the runtime capable category when it escalates.
 ///
 /// Loads the packaged prompt and schema, so an unusable asset or an unusable `config` value
 /// fails here rather than on the first request.
 pub(crate) fn build_judge(
-    judge_target: ModelId,
-    capable: ModelId,
-    efficient: ModelId,
     contract_config: &ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
@@ -189,8 +194,7 @@ pub(crate) fn build_judge(
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(max_output_tokens)?,
         ),
-        judge_target,
-        EscalationPolicy { capable, efficient },
+        EscalationPolicy,
     )
     .with_evidence(escalation_evidence))
 }
@@ -262,26 +266,38 @@ fn truncate_middle(text: &str, limit: usize) -> String {
 
 /// Renders a compact role-labelled transcript for the judge.
 ///
-/// The framing anchors — system/developer messages and the first user message, where agent
-/// harnesses put the task statement — are kept unconditionally and capped individually. The
-/// trailing window carries recent activity. A coverage header states how much history is not
-/// shown, so the judge can reason about pace rather than assuming it sees everything.
+/// Task-framing user messages are capped individually. System/developer instructions share
+/// the remaining budget after reserving space for task framing and the newest window entry.
+/// The trailing window carries recent activity. A coverage header states how much history is
+/// not shown, so the judge can reason about pace rather than assuming it sees everything.
 ///
 /// When the assembled text still exceeds `max_request_chars`, the oldest window lines go
 /// first: for a trajectory judge the newest evidence is strictly the most valuable.
 fn summarize_for_judge(
+    instructions: &[InstructionBlock],
     messages: &[Message],
     turn: usize,
     config: &EscalationJudgeConfig,
 ) -> String {
+    let mut instruction_anchors: Vec<String> = Vec::new();
     let mut anchors: Vec<String> = Vec::new();
     let mut window: Vec<String> = Vec::new();
     let mut assistant_seen = false;
 
+    for instruction in instructions {
+        let mut parts = Vec::new();
+        collect_text(&instruction.content, &mut parts);
+        instruction_anchors.push(format!(
+            "[{}] {}",
+            role_label(instruction.role),
+            truncate_middle(&parts.join(" "), SYSTEM_CHARS)
+        ));
+    }
+
     for message in messages {
         let text = message_text(message);
         match message.role {
-            Role::System | Role::Developer => anchors.push(format!(
+            Role::System | Role::Developer => instruction_anchors.push(format!(
                 "[{}] {}",
                 role_label(message.role),
                 truncate_middle(&text, SYSTEM_CHARS)
@@ -310,23 +326,34 @@ fn summarize_for_judge(
         window.drain(..window.len() - config.recent_turn_window);
     }
 
-    let assemble = |window: &[String]| {
+    let assemble = |instructions: Option<&str>, window: &[String]| {
         let header = format!(
             "Conversation turn {turn}; showing the last {} of {} messages after the task framing.",
             window.len(),
             messages.len(),
         );
         std::iter::once(header)
+            .chain(instructions.map(str::to_owned))
             .chain(anchors.iter().cloned())
             .chain(window.iter().cloned())
             .collect::<Vec<_>>()
             .join("\n")
     };
 
-    let mut text = assemble(&window);
+    let reserved = assemble(None, &window[window.len().saturating_sub(1)..])
+        .chars()
+        .count();
+    let instruction_budget = MAX_REQUEST_CHARS.saturating_sub(reserved + 1);
+    // The remaining budget may be smaller than truncate_middle's minimum retained span.
+    let instruction_text = truncate_middle(&instruction_anchors.join("\n"), instruction_budget)
+        .chars()
+        .take(instruction_budget)
+        .collect::<String>();
+    let instructions = (!instruction_text.is_empty()).then_some(instruction_text.as_str());
+    let mut text = assemble(instructions, &window);
     while text.chars().count() > MAX_REQUEST_CHARS && !window.is_empty() {
         window.remove(0);
-        text = assemble(&window);
+        text = assemble(instructions, &window);
     }
     if text.chars().count() > MAX_REQUEST_CHARS {
         let keep = MAX_REQUEST_CHARS.saturating_sub(TRUNCATION_SUFFIX.chars().count() + 1);
@@ -402,6 +429,16 @@ mod tests {
 
         // As the classifier calls it: the turn's reply is already on the transcript.
         let mut judged = request_at_turn(None, 4);
+        judged.llm_request.instructions = [
+            (Role::System, "system constraint"),
+            (Role::Developer, "developer constraint"),
+        ]
+        .into_iter()
+        .map(|(role, text)| InstructionBlock {
+            role,
+            content: Message::text(role, text).content,
+        })
+        .collect();
         judged
             .llm_request
             .messages
@@ -413,17 +450,38 @@ mod tests {
         assert_eq!(built.llm_request.instructions[0].role, Role::System);
         assert_eq!(built.llm_request.messages.len(), 1);
         assert_eq!(built.llm_request.messages[0].role, Role::User);
-        assert!(
-            built.llm_request.messages[0]
-                .text_content("")
-                .is_some_and(|text| text.contains("Conversation turn 4"))
-        );
+        let summary = built.llm_request.messages[0]
+            .text_content("")
+            .expect("summary");
+        assert!(summary.contains("Conversation turn 4"));
+        assert!(summary.contains(
+            "[system] system constraint\n[developer] developer constraint\n[user (task)] What is 2+2?"
+        ));
+        assert!(summary.contains("[assistant] this turn's reply"));
         // Bounded output, so a reasoning judge cannot run away mid-verdict.
         assert_eq!(
             built.llm_request.output.max_output_tokens,
             Some(super::super::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
         );
         assert!(built.llm_request.output.response_format.is_some());
+
+        judged.llm_request.instructions.extend(vec![
+            InstructionBlock {
+                role: Role::Developer,
+                content: Message::text(Role::Developer, "x".repeat(SYSTEM_CHARS)).content,
+            };
+            MAX_REQUEST_CHARS / SYSTEM_CHARS + 1
+        ]);
+        let built = judge.build_request(&State::default(), &judged);
+        let summary = built.llm_request.messages[0]
+            .text_content("")
+            .expect("summary");
+        assert!(summary.chars().count() <= MAX_REQUEST_CHARS);
+        assert!(summary.contains(TRIM_MARKER));
+        assert!(summary.contains("[system] system constraint"));
+        assert!(summary.contains("[developer] developer constraint"));
+        assert!(summary.contains("[user (task)] What is 2+2?"));
+        assert!(summary.contains("[assistant] this turn's reply"));
         Ok(())
     }
 
@@ -510,7 +568,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 11, &config);
+        let summary = summarize_for_judge(&[], &messages, 11, &config);
 
         assert!(
             summary.contains("[system] you are a coding agent"),
@@ -551,7 +609,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 40, &config);
+        let summary = summarize_for_judge(&[], &messages, 40, &config);
 
         assert!(
             summary.contains("[user (task)] <environment_context>"),
@@ -590,7 +648,7 @@ mod tests {
             ..EscalationJudgeConfig::default()
         };
 
-        let summary = summarize_for_judge(&messages, 21, &config);
+        let summary = summarize_for_judge(&[], &messages, 21, &config);
 
         assert!(
             summary.chars().count() <= MAX_REQUEST_CHARS,

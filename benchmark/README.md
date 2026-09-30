@@ -13,6 +13,9 @@ Both paths use the same generated dataset, task proxy, pinned agent versions, an
 layout. Passing `--server-config` starts the Rust server; omitting it disables Switchyard and points
 Harbor directly at the upstream provider.
 
+For a small automated MMLU-Redux example using NeMo Gym instead of Harbor, see
+[Evaluate Switchyard routing with NeMo Gym](nemo_gym/README.md).
+
 ## Prerequisites
 
 From the repo root:
@@ -264,6 +267,30 @@ bash benchmark/run-baseline.sh \
 Tune `--n-concurrent` for your machine and provider quota. Use `--task-id`, `--task-list-file`, or
 `--n-tasks` for subsets.
 
+### Run with the pi coding agent
+
+```bash
+bash benchmark/run-baseline.sh \
+  --harbor-path benchmark/datasets/openthoughts-tblite-closed-book \
+  --server-config benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml \
+  --agent pi \
+  --model switchyard \
+  --reasoning-effort high \
+  --harbor-extra --ae --harbor-extra PI_CONTEXT_WINDOW=200000 \
+  --harbor-extra --ae --harbor-extra PI_MAX_OUTPUT_TOKENS=32000 \
+  --n-concurrent 8 \
+  --max-retries 2
+```
+
+With `--server-config`, the script passes the model label `switchyard/<route>` to Harbor's pi
+agent. The patched agent then writes `~/.pi/agent/models.json` inside the task container. That file
+defines a `switchyard` provider that points at `OPENAI_BASE_URL` and uses the `openai-completions`
+API. The agent environment variables `PI_CONTEXT_WINDOW` and `PI_MAX_OUTPUT_TOKENS` set
+`contextWindow` and `maxTokens` on that model entry. When they are unset, pi uses its defaults of
+128000 and 16384. `--reasoning-effort` sets pi's `--thinking` level, so pass one of `off`,
+`minimal`, `low`, `medium`, `high`, or `xhigh`. Without `--server-config`, pass pi's own provider
+label as `--model`, for example `openrouter/openai/gpt-5.5`.
+
 ## Inspect A Run
 
 Run directories are created under `benchmark/tb_runs/`. The most useful artifacts are:
@@ -301,6 +328,117 @@ SWITCHYARD_DOCKER_BUILD=0 bash benchmark/run-baseline.sh ...
 ```
 
 Only reuse the image when you know it already contains the current Rust `switchyard-server` binary.
+
+## DeepSWE v1.1
+
+DeepSWE uses Harbor's task format but its own runner, [Pier](https://github.com/datacurve-ai/pier)
+(required since v1.1 for the separate-verifier/collect-hook pattern). It is not part of
+`run-baseline.sh`.
+
+See [DeepSWE v1.1 qualification settings](DEEPSWE_V11_QUALIFICATION.md) for the exact
+versions, timeouts, scoring rules, and routing profiles used for qualification.
+
+```bash
+git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
+uv tool install 'datacurve-pier>0.3.0'
+```
+
+Direct upstream:
+
+```bash
+export OPENAI_API_KEY="..."
+pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent --model openai/gpt-5.5
+```
+
+Switchyard routing: start the server, then point the agent's OpenAI client at it through `--ae`.
+Pier's Docker environment routes all agent traffic through a policy proxy whose `Safe_ports` ACL
+only allows ports 80/443, so bind Switchyard to 443:
+
+```bash
+switchyard-server --config benchmark/server-configs/deepswe-single.toml \
+  --host 0.0.0.0 --port 443
+
+pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent \
+  --model openai/deepswe-single \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
+`--agent codex` reads the same `OPENAI_BASE_URL`/`OPENAI_API_KEY` pair through `--ae`:
+
+```bash
+pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
+  --model openai/deepswe-single \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
+`host.docker.internal` requires Docker Desktop; on Linux, pass the host's Docker-bridge address
+instead. Binding port 443 needs elevated privileges on most Linux hosts (`sudo`, or
+`setcap 'cap_net_bind_service=+ep'` on the binary).
+
+Advisor-gate routing (GPT-5.6 Luna executes; GPT-5.6 Sol reviews its "done" claims, up to
+three per task) measured 57.5% +/- 3.2 on the full 113 tasks (k=3, closed-book). The profile
+keeps the routing parameters exactly as run and reaches both models through OpenRouter, so it
+needs only `OPENROUTER_API_KEY`. The measured runs had Codex at reasoning effort `max`
+(`model_reasoning_effort = "max"` in the agent's Codex config); the profile forces `max` on
+both models server-side regardless:
+
+```bash
+export OPENROUTER_API_KEY="..."
+switchyard-server --config benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml \
+  --host 0.0.0.0 --port 443
+
+pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
+  --model openai/switchyard \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
+Plan/execute routing uses GPT-5.6 Sol for repository inspection and planning, then hands the
+full trajectory to GPT-5.6 Luna after the first mutation. It measured 60.8% +/- 5.3 at
+$180.51 +/- 9.43 per run on the full closed-book benchmark (k=3). The profile preserves the
+exact planning prompt and routing policy, with provider settings adapted from NVIDIA Inference
+Hub to OpenRouter:
+
+```bash
+export OPENROUTER_API_KEY="..."
+switchyard-server \
+  --config benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml \
+  --host 0.0.0.0 --port 443
+
+pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
+  --model openai/switchyard \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
+The qualified stage-router profile (GPT-5.6 Luna efficient tier, GPT-5.6 Sol capable tier) solved
+76/113 tasks (67.3% strict) on the full closed-book benchmark. Its routing policy is published
+with OpenRouter provider settings so the file runs as-is with `OPENROUTER_API_KEY`. The header
+records the Switchyard commit, model ids, harness inputs, run id, and the one crashed task. The
+profile's public route id is `gpt-5.6-luna`, matching the qualification run:
+
+```bash
+export OPENROUTER_API_KEY="..."
+switchyard-server \
+  --config benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml \
+  --host 0.0.0.0 --port 443
+
+pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
+  --model openai/gpt-5.6-luna \
+  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
+  --ae OPENAI_API_KEY=unused
+```
+
+Smoke subset:
+
+```bash
+pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent \
+  --model openai/gpt-5.5 --n-tasks 1 --sample-seed 0
+```
+
+Results land under `jobs/<job-name>/`, per Pier's own layout.
 
 ## Troubleshooting
 

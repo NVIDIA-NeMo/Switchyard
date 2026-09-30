@@ -1,7 +1,11 @@
 # LLM Classifier Routing
 
-LLM classifier routing supports capability classification, trajectory escalation,
-and custom schema-driven routing across two or more targets.
+**Task** routing uses the LLM classifier's `capability` mode to judge whether
+an efficient model can handle the task or a capable model is needed. Configure
+it with `type = "llm_classifier"` and `mode = "capability"`.
+
+The same classifier also supports [escalation](escalation_router_routing.md)
+and [custom routing](#custom-multi-target-routing) across two or more targets.
 
 ## Configure a classifier route
 
@@ -67,8 +71,18 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 - `uncertain` and `unmatched` use `base_threshold + threshold_step`.
 - `unsupported` uses `base_threshold + 2 * threshold_step`.
 
-An invalid, inconsistent, or unparseable verdict, or a judge failure, routes to
+An invalid, inconsistent, or unparseable verdict routes to
 `strong_target`. Raising either knob sends more traffic to the strong model.
+
+To stop waiting for a judge that accepts the request but never finishes its
+response, set `timeout_ms` on the judge's `[llm_clients]` entry
+(see the [TOML schema](../reference/toml_schema.md)); it covers the judge's
+retries and the complete verdict body. When the deadline expires, the Rust server returns
+`504` without calling `strong_target` or `weak_target`. Other HTTP client failures
+also stop routing after retries. The deadline applies to every call
+through that client. Give the judge its own entry if the answering models need a
+different deadline, even when they use the same provider. Without a deadline,
+the request can wait indefinitely for the judge.
 
 ## Judge model compatibility
 
@@ -107,7 +121,7 @@ for the server merge behavior.
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
 | `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
-| `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"`. |
+| `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
@@ -139,18 +153,17 @@ packaged `crux`, `primary_rule`, `capability_boundary`, and `p_solve` fields.
 ## Custom multi-target routing
 
 Custom mode accepts an inner JSON Schema and a policy that reads the validated
-verdict. This example routes across four configured targets:
+verdict. The policy selects one of the route's model groups, and you name those
+groups yourself, so a route can choose between as many models as you like.
 
 ```toml
 [routes.smart]
 id = "smart"
 type = "llm_classifier"
 mode = "custom"
-classifier_target = "classifier"
-targets = ["fast", "balanced", "reasoning", "premium"]
 default_target = "premium"
 prompt = """
-Choose the best configured target for this request.
+Choose the best group for this request.
 Return JSON matching the response schema supplied with the request.
 """
 response_schema = '''
@@ -174,15 +187,36 @@ response_schema = '''
 }
 '''
 
+[routes.smart.models]
+judge = ["classifier"]
+fast = ["fast"]
+balanced = ["balanced"]
+reasoning = ["reasoning", "premium"]
+premium = ["premium"]
+any = ["fast", "balanced", "reasoning", "premium"]
+
 [routes.smart.policy]
 type = "target_selector"
 selector = "/decision/target"
 ```
 
-The names in `targets` reference existing target tables. Switchyard passes the
+The names in `models` reference existing target tables. Switchyard passes the
 schema to the provider in a strict structured-output wrapper and validates the
 returned JSON again. `jsonptr` resolves the selector against that verdict. A
-missing, non-string, or unknown target falls back to `default_target`.
+missing, non-string, or unconfigured label falls back to `default_target`, and
+`judge` is never routable.
+
+A verdict names a group, and the **first** model in that group serves the turn.
+Later entries are that group's own fallbacks: if the serving call fails, the
+client falls through the rest of the chosen group first — `reasoning` retries on
+`premium` above — and then through whatever `models.any` adds. Every group's
+targets must also appear in `models.any`; one that does not is rejected when the
+configuration loads. `models.judge` supplies the judge call's own candidates in
+order and is not a completion destination.
+
+`capable` and `efficient` are reserved names. Use them when you want a group to
+carry the tier meaning the stage and composite routers give it; otherwise any
+name works.
 
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.
@@ -195,8 +229,10 @@ The deterministic policy applies `base_threshold` and `threshold_step` after
 generation.
 
 Without affinity, the runtime judges every request. By default, it sends the
-opening task and the latest user follow-up when they differ. Set
-`recent_turn_window` when intervening conversation context affects the forecast.
+opening task and the latest user follow-up when they differ, excluding tool calls,
+tool results, and reasoning. It keeps ordinary user content from messages that
+also contain tool results. Set `recent_turn_window` when intervening conversation
+context affects the forecast.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.
@@ -229,6 +265,48 @@ The selection is held in per-session state, so requests without a session
 identity are judged every time. Clients can send `x-switchyard-session-id`, or
 enable `message_hash_fallback` to key on the first user-message text under
 `new_session`.
+
+### Responses continuations by ID
+
+A Responses API client can continue without resending the conversation history.
+Switchyard handles state differently depending on the target API:
+
+- **Native Responses targets:** The provider stores the conversation. When answer
+  targets use different `[llm_clients]` entries, Switchyard records response and
+  conversation IDs with the model that served them, but no transcript. Classifier-only
+  clients do not count. When answer targets share one client, no local record is needed.
+  The provider's `store` value takes precedence over the request value. If it is
+  `false`, Switchyard skips the response ID but still records the conversation ID.
+- **Chat Completions or Anthropic Messages targets:** For incoming Responses
+  requests, Switchyard retains request and reply messages in memory under the
+  response ID. It restores that history on a later `previous_response_id` request.
+  This also applies when answer targets share one client. Request `store: false`
+  prevents retaining the new response and history, but does not delete earlier
+  records. This path supports `previous_response_id`, not provider conversation IDs.
+
+A request with a recorded ID returns to the model that served it without a judge
+call or fallback to another provider. This applies to every `classify_trigger`
+and to `stage_router` and `composite` routes. Tracking covers buffered replies and
+completed streams, including answers returned by `/v1/decision`. Ordinary Chat
+Completions and Anthropic Messages requests do not create Responses history.
+
+Each route keeps up to 65,536 distinct ID-to-model records per process. This
+limit counts response and conversation IDs recorded over the process's lifetime,
+not tokens or simultaneous requests. Records do not expire, and Switchyard does
+not remove older records to make room. Cross-format records also retain message
+history, so this ID limit is not a memory limit. Memory use depends on the retained
+messages as well as the number of IDs.
+
+At capacity, Switchyard logs a warning and returns the reply without retaining
+new IDs or history. Existing records remain usable, but a later continuation from
+an unrecorded ID may fail. Conflicting native Responses IDs return HTTP 409 with
+code `response_state_conflict`. If streaming headers have already been sent, the
+stream emits an error instead of changing the HTTP status.
+
+A restart removes all local records and history, and each replica has its own
+state. Unknown IDs use normal routing and can still fail at the selected provider.
+Send the full history instead of an ID to avoid relying on local continuation
+state and to keep dynamic routing across turns.
 
 ## Run the route
 

@@ -4,7 +4,10 @@
 //! The [`Algorithm`] trait and its [`Driver`] — the orchestration contract every
 //! algorithm implements and the offload channel it uses for routing-time model calls.
 
-use std::{future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc,
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
@@ -21,7 +24,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStreamEvent`] is its host/algorithm envelope; and
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
 use crate::{DriverError, LibsyError, Result, observability};
 
@@ -29,6 +32,65 @@ use crate::{DriverError, LibsyError, Result, observability};
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
 /// `Arc<dyn Algorithm>` object-safe.
 pub type StepStream = Pin<Box<dyn Stream<Item = Result<Step>> + Send>>;
+
+/// The models one algorithm run may use, grouped by [`Category`]. Within a
+/// category they are ordered best-first.
+///
+/// Delegated sub-agent work gets its own groups, reachable only through
+/// [`Driver::for_subagent`]. Keeping them separate is what stops a sub-agent's
+/// `capable` from resolving to the parent's, and stops the parent falling back
+/// onto a model only its sub-agents were given.
+///
+/// One run's driver clones all read the same value, so it is passed as
+/// `Arc<RuntimeModels>` rather than cloned per driver.
+#[derive(Clone, Debug, Default)]
+pub struct RuntimeModels {
+    /// When using subagents this is the parent agent category.
+    by_category: HashMap<Category, Vec<ModelId>>,
+    subagent: Option<HashMap<Category, Vec<ModelId>>>,
+}
+
+impl RuntimeModels {
+    /// The models available to the algorithm itself.
+    pub fn new(by_category: HashMap<Category, Vec<ModelId>>) -> Self {
+        Self {
+            by_category,
+            subagent: None,
+        }
+    }
+
+    /// Adds the groups used for delegated sub-agent work.
+    pub fn with_subagent(mut self, models: HashMap<Category, Vec<ModelId>>) -> Self {
+        self.subagent = Some(models);
+        self
+    }
+
+    /// The models in `category`, ordered best-first.
+    pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        self.by_category.get(category).map_or(&[], Vec::as_slice)
+    }
+
+    /// The models delegated sub-agent work uses for `category`, ordered best-first.
+    pub fn subagent_models_for(&self, category: &Category) -> &[ModelId] {
+        self.subagent
+            .as_ref()
+            .and_then(|models| models.get(category))
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
+impl From<HashMap<Category, Vec<ModelId>>> for RuntimeModels {
+    fn from(by_category: HashMap<Category, Vec<ModelId>>) -> Self {
+        Self::new(by_category)
+    }
+}
+
+/// Which of a [`RuntimeModels`]' groups a driver reads.
+#[derive(Clone, Copy)]
+enum Scope {
+    Parent,
+    Subagent,
+}
 
 /// An offloaded model call, surfaced inside [`Step::CallModel`].
 ///
@@ -47,18 +109,50 @@ pub struct CallModel {
     pub request: Request,
     /// Candidate models, tried in order until one answers. Never empty.
     pub models: Vec<ModelId>,
-    // How to send the response back to the algorithm
-    reply: oneshot::Sender<Result<Response>>,
+    /// How to send the response back to the algorithm. `None` once the call is recorded.
+    reply: Option<oneshot::Sender<Result<Response>>>,
+    started: Instant,
 }
 
 impl CallModel {
     /// Fulfill the promise with the caller's model-call result. Pass `Err(..)` to
     /// propagate a failed model call back to the algorithm. Consumes the promise: it
     /// can only be fulfilled once.
-    pub fn respond(self, result: Result<Response>) -> Result<()> {
+    pub fn respond(mut self, result: Result<Response>) -> Result<()> {
+        self.record(result.is_ok());
         self.reply
+            .take()
+            .ok_or(DriverError::ResponseDropped)?
             .send(result)
             .map_err(|_| DriverError::ResponseDropped.into())
+    }
+
+    /// Record a failed call and return its error to stop [`drive`].
+    /// Leaves the promise unfulfilled so the driver can cancel the algorithm.
+    pub fn fail(mut self, error: LibsyError) -> Result<()> {
+        self.reply = None;
+        self.record(false);
+        Err(error)
+    }
+
+    fn record(&self, is_ok: bool) {
+        observability::record_llm_call(
+            &self.algorithm,
+            self.models
+                .first()
+                .map(ModelId::as_str)
+                .unwrap_or("NoTargets"),
+            self.started.elapsed(),
+            is_ok,
+        );
+    }
+}
+
+impl Drop for CallModel {
+    fn drop(&mut self) {
+        if self.reply.is_some() {
+            self.record(false);
+        }
     }
 }
 
@@ -121,16 +215,27 @@ impl RoutingOutcome {
 #[derive(Clone)]
 pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
+
     /// The owning algorithm's telemetry label, stamped onto every call this driver publishes.
     algorithm: String,
+
     /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
     evidence: Arc<Mutex<Option<Value>>>,
+
+    /// Every group this run may route over, shared by all driver clones.
+    models: Arc<RuntimeModels>,
+
+    /// Which of those groups this driver reads.
+    scope: Scope,
 }
 
 impl Driver {
     /// Build an empty driver with its step channel ready. Created per call by
     /// [`run_stream`](Algorithm::run_stream). Also returns the Step receiver.
-    pub(crate) fn new(algorithm: &str) -> (Self, mpsc::Receiver<Result<Step>>) {
+    pub(crate) fn new(
+        algorithm: &str,
+        models: Arc<RuntimeModels>,
+    ) -> (Self, mpsc::Receiver<Result<Step>>) {
         // Capacity one keeps the algorithm paced by the stream consumer. It limits queued steps,
         // not model calls already pulled from the stream, which can still run at the same time.
         // A larger buffer would use more memory and let the algorithm run farther ahead with
@@ -141,6 +246,8 @@ impl Driver {
                 step_tx,
                 algorithm: algorithm.to_string(),
                 evidence: Arc::new(Mutex::new(None)),
+                models,
+                scope: Scope::Parent,
             },
             step_rx,
         )
@@ -164,8 +271,9 @@ impl Driver {
     /// Errors if the stream is closed or the call failed.
     /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
     /// the algorithm observes it (host queueing/serving included; a streamed
-    /// response resolves when its stream handle arrives); latency, outcome, and
-    /// token usage are recorded when it resolves. The provider call itself is the
+    /// response resolves when its stream handle arrives). The host records call metrics
+    /// through [`CallModel::respond`] or [`CallModel::fail`]; outcome and token usage
+    /// are recorded on the span when the promise resolves. The provider call itself is the
     /// host's, and is instrumented by whoever makes it.
     #[tracing::instrument(
         target = "libsy",
@@ -183,7 +291,7 @@ impl Driver {
         )
     )]
     pub async fn call_model(&self, mut request: Request, models: Vec<ModelId>) -> Result<Response> {
-        let Some(selected_model_id) = models.first().cloned() else {
+        let Some(selected_model_id) = models.first() else {
             return Err(LibsyError::NoTargets);
         };
         request.llm_request.model = Some(selected_model_id.to_string());
@@ -193,7 +301,8 @@ impl Driver {
             algorithm: self.algorithm.clone(),
             request,
             models,
-            reply,
+            reply: Some(reply),
+            started,
         };
         let result = async {
             self.step_tx
@@ -205,15 +314,39 @@ impl Driver {
                 .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
         }
         .await;
-        let elapsed = started.elapsed();
-        observability::record_llm_call(
-            &self.algorithm,
-            selected_model_id.as_str(),
-            elapsed,
-            &result,
-            &tracing::Span::current(),
-        );
+        observability::record_llm_call_span(&result, &tracing::Span::current());
         result
+    }
+
+    /// The available models for this category, typically ordered best-first.
+    pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        match self.scope {
+            Scope::Parent => self.models.models_for(category),
+            Scope::Subagent => self.models.subagent_models_for(category),
+        }
+    }
+
+    /// The first available model for `category`.
+    pub fn first_model_for(&self, category: &Category) -> Result<&ModelId> {
+        self.models_for(category)
+            .first()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: format!("no models available for category {}", category.as_str()),
+            })
+    }
+
+    /// A driver scoped to delegated sub-agent work: its categories are the
+    /// sub-agent's own, and the parent's are no longer reachable through it.
+    pub fn for_subagent(&self) -> Result<Self> {
+        if self.models.subagent.is_none() {
+            return Err(LibsyError::AlgorithmError {
+                message: "delegated work has no sub-agent models".to_string(),
+            });
+        }
+        Ok(Self {
+            scope: Scope::Subagent,
+            ..self.clone()
+        })
     }
 
     /// Emit the terminal step: [`Step::Done`] on `Ok`, or an `Err` stream
@@ -257,9 +390,10 @@ pub enum Step {
 /// Returns the final [`RoutingOutcome`].
 /// `serve` owns the call: it performs it however the host likes and must fulfill the promise
 /// with [`CallModel::respond`]. A failed *model* call belongs in `respond` — the
-/// algorithm may route around it. Returning `Err` from `serve` aborts the whole run, so
-/// reserve it for infrastructure failures. Calls are served concurrently, so an algorithm
-/// that offloads several at once (hedging, fan-out) gets real parallelism.
+/// algorithm may route around it. To stop routing on a model-call failure, return
+/// [`CallModel::fail`] instead. Returning `Err` from `serve` aborts the whole run.
+/// Calls are served concurrently, so an algorithm that offloads several at once (hedging, fan-out)
+/// gets real parallelism.
 ///
 /// libsy performs no I/O; this is only the mechanics of consuming its own step stream, kept
 /// here so every host does not reimplement the same loop. `switchyard-llm-client`'s `run`
@@ -267,13 +401,14 @@ pub enum Step {
 pub async fn drive<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
     request: Request,
+    models: Arc<RuntimeModels>,
     serve: F,
 ) -> Result<RoutingOutcome>
 where
     F: Fn(CallModel) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(request);
+    let stream = algorithm.run_stream(request, models);
     tokio::pin!(stream);
 
     let mut in_flight = futures::stream::FuturesUnordered::new();
@@ -416,8 +551,8 @@ pub trait Algorithm: Send + Sync + 'static {
     /// the stream aborts the spawned algorithm task.
     ///
     /// Every invocation owns a separate [`Driver`].
-    fn run_stream(self: Arc<Self>, request: Request) -> StepStream {
-        let (driver, step_rx) = Driver::new(self.name());
+    fn run_stream(self: Arc<Self>, request: Request, models: Arc<RuntimeModels>) -> StepStream {
+        let (driver, step_rx) = Driver::new(self.name(), models);
         let span = observability::run_span(self.name(), &request);
         let handle = tokio::spawn(
             async move {
@@ -538,6 +673,7 @@ mod tests {
             Response {
                 llm_response: LlmResponse::Agg(text_response(None, "existing")),
                 metadata: None,
+                upstream_headers: http::HeaderMap::new(),
             },
         );
 
@@ -562,7 +698,7 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             // Distinct oneshots keep reverse-order replies paired with their producers, and a
             // retained call remains pending until the host responds.
-            let (driver, mut step_rx) = Driver::new("test");
+            let (driver, mut step_rx) = Driver::new("test", Arc::new(RuntimeModels::default()));
             let first_driver = driver.clone();
             let mut first = tokio::spawn(async move {
                 first_driver
@@ -619,7 +755,7 @@ mod tests {
             );
 
             // Dropping the host-facing promise closes only that call's reply channel.
-            let (driver, mut step_rx) = Driver::new("test");
+            let (driver, mut step_rx) = Driver::new("test", Arc::new(RuntimeModels::default()));
             let producer = tokio::spawn(async move {
                 driver
                     .call_model(request(), vec![ModelId::from("dropped")])
@@ -639,7 +775,7 @@ mod tests {
             ));
 
             // A standalone driver reports the typed step receiver disappearing at its next call.
-            let (driver, step_rx) = Driver::new("test");
+            let (driver, step_rx) = Driver::new("test", Arc::new(RuntimeModels::default()));
             drop(step_rx);
             let result = driver
                 .call_model(request(), vec![ModelId::from("closed")])
@@ -675,6 +811,7 @@ mod tests {
                 Ok(Response {
                     llm_response: LlmResponse::Stream(stream),
                     metadata: None,
+                    upstream_headers: http::HeaderMap::new(),
                 })
             }
         };
@@ -742,7 +879,8 @@ mod tests {
     async fn run_offloads_via_promise_then_finishes() -> Result<()> {
         // Every call is offloaded via a promise the orchestrator surfaces as a
         // `CallModel` step for us to fulfill.
-        let stream = orch(target_set(&["offload/model"])).run_stream(request());
+        let stream = orch(target_set(&["offload/model"]))
+            .run_stream(request(), Arc::new(RuntimeModels::default()));
         tokio::pin!(stream);
 
         let mut saw_call = false;
@@ -759,6 +897,7 @@ mod tests {
                             "fulfilled".to_string(),
                         )),
                         metadata: None,
+                        upstream_headers: http::HeaderMap::new(),
                     }))?;
                 }
                 Step::Done(outcome) => {
@@ -854,7 +993,8 @@ mod tests {
         // A client-less target offloads its call; we fulfill the promise with an
         // Err, which must flow back through `call_model_target` into the algorithm and
         // out as an error step — not a response.
-        let stream = orch(target_set(&["offload/model"])).run_stream(request());
+        let stream = orch(target_set(&["offload/model"]))
+            .run_stream(request(), Arc::new(RuntimeModels::default()));
         tokio::pin!(stream);
 
         let mut saw_error = false;
@@ -926,7 +1066,7 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let stream = algo.run_stream(request());
+        let stream = algo.run_stream(request(), Arc::new(RuntimeModels::default()));
         started_rx
             .recv()
             .await
@@ -963,7 +1103,7 @@ mod tests {
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        let stream = algo.run_stream(request());
+        let stream = algo.run_stream(request(), Arc::new(RuntimeModels::default()));
         tokio::pin!(stream);
 
         let mut saw_error = false;

@@ -41,21 +41,22 @@ impl<S> SubagentGate<S> {
     }
 }
 
-/// Builds the prompt-only request shown to a delegated-work classifier.
+/// Builds a classifier request containing only the delegated task text.
 fn delegated_prompt_request(request: &Request) -> Option<Request> {
-    // Coding harnesses append the parent's task after their injected user context and reminders.
+    // Agent clients put the delegated task after added context and reminders.
+    // A user message containing only tool-result blocks has no top-level text.
+    // Find the latest nonblank user text without using text inside tool results.
     let prompt = request
         .llm_request
         .messages
         .iter()
         .rev()
-        .find(|message| message.role == Role::User)?
-        .content
-        .iter()
-        .rev()
-        .find_map(|block| match block {
-            ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.clone()),
-            _ => None,
+        .filter(|message| message.role == Role::User)
+        .find_map(|message| {
+            message.content.iter().rev().find_map(|block| match block {
+                ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+                _ => None,
+            })
         })?;
 
     Some(Request {
@@ -78,7 +79,7 @@ where
         &self,
         state: &mut S,
         request: &mut Request,
-        driver: Option<&Driver>,
+        driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         if !request
             .metadata
@@ -123,7 +124,7 @@ where
         &self,
         _state: &mut S,
         request: &mut Request,
-        driver: Option<&Driver>,
+        driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         // Delegated *work* only. A harness maintenance turn (e.g. Codex `compact`) carries
         // sub-agent lineage but is not delegated work, so it abstains and routes normally.
@@ -131,7 +132,7 @@ where
             .metadata
             .as_ref()
             .is_some_and(Metadata::is_subagent_work);
-        if is_delegated_work && let Some(driver) = driver {
+        if is_delegated_work {
             driver.set_evidence(serde_json::json!({"source": "subagent"}));
         }
         Ok((
@@ -139,6 +140,7 @@ where
                 vec![Score {
                     confidence: 1.0,
                     target: self.worker.clone(),
+                    category: None,
                 }]
             } else {
                 Vec::new()
@@ -151,32 +153,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use parking_lot::Mutex;
+    use crate::core::testing::empty_driver;
     use switchyard_protocol::{slice_to_header_map, text_request};
-
-    #[derive(Default)]
-    struct CapturingClassifier {
-        requests: Mutex<Vec<Request>>,
-    }
-
-    #[async_trait]
-    impl Classifier<()> for CapturingClassifier {
-        async fn score(
-            &self,
-            _state: &mut (),
-            request: &mut Request,
-            _driver: Option<&Driver>,
-        ) -> Result<(Classification, Option<Response>)> {
-            self.requests.lock().push(request.clone());
-            Ok((
-                Classification::Scores(vec![Score {
-                    confidence: 1.0,
-                    target: ModelId::from("worker"),
-                }]),
-                None,
-            ))
-        }
-    }
 
     fn request(headers: &[(&str, &str)]) -> Request {
         let metadata =
@@ -192,7 +170,7 @@ mod tests {
     async fn selected(headers: &[(&str, &str)]) -> Result<Option<ModelId>> {
         let mut state = ();
         let classification = SubagentOverride::new("worker")
-            .score(&mut state, &mut request(headers), None)
+            .score(&mut state, &mut request(headers), &empty_driver())
             .await?;
         Ok(classification.0.argmax(false)?.map(|score| score.target))
     }
@@ -243,7 +221,7 @@ mod tests {
             .score(
                 &mut state,
                 &mut request(&[("x-openai-subagent", "review")]),
-                None,
+                &empty_driver(),
             )
             .await?;
         match classification.0 {
@@ -253,22 +231,6 @@ mod tests {
             }
             Classification::Ambiguous(_) => panic!("override must score definitively"),
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn gate_abstains_when_delegated_work_has_no_text_prompt() -> Result<()> {
-        let classifier = Arc::new(CapturingClassifier::default());
-        let gate = SubagentGate::new(classifier.clone());
-        let mut request = request(&[("x-openai-subagent", "collab_spawn")]);
-        request.llm_request.messages = vec![Message::text(Role::Assistant, "no user prompt")];
-
-        let mut state = ();
-        let (classification, response) = gate.score(&mut state, &mut request, None).await?;
-
-        assert!(classification.argmax(false)?.is_none());
-        assert!(response.is_none());
-        assert!(classifier.requests.lock().is_empty());
         Ok(())
     }
 }

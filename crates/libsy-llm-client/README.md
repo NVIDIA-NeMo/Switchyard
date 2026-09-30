@@ -36,8 +36,8 @@ It depends on `switchyard-libsy`, `switchyard-protocol`, and
   `anthropic-version`).
 - **Model rewrite.** The resolved [`ModelId`] is both the map key and the model id
   sent upstream — it overwrites whatever `model` the request arrived with.
-- **Streaming is chosen by the request.** If the encoded body has `stream: true`
-  (i.e. `request.llm_request.stream`), you get `LlmResponse::Stream`; otherwise
+- **Streaming is chosen by the encoded request body.** If the body has
+  `stream: true` after `extra_body` is applied, you get `LlmResponse::Stream`; otherwise
   `LlmResponse::Agg`. OpenAI Chat streaming requests default
   `stream_options.include_usage` to `true`; an explicit caller value is preserved.
 
@@ -47,8 +47,10 @@ Within this workspace:
 
 ```toml
 [dependencies]
+futures-util = "0.3"
+switchyard-libsy = { path = "../libsy" }
 switchyard-llm-client = { path = "../libsy-llm-client" }
-switchyard-protocol = { path = "../libsy-protocol" }
+switchyard-protocol = { path = "../protocol" }
 switchyard-translation = { path = "../switchyard-translation" }   # for WireFormat
 ```
 
@@ -69,7 +71,9 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        reasoning_effort: None,
         max_retries: 2,
+        timeout: None,
     };
 
     let models = [ModelConfig::new(
@@ -151,7 +155,7 @@ ordered fallbacks for the client to try. `ClientRouter::single` is the single-pr
 
 ```rust
 use std::sync::Arc;
-use switchyard_libsy::Algorithm;
+use switchyard_libsy::{Algorithm, RuntimeModels};
 use switchyard_llm_client::{ClientRouter, TranslatingLlmClient};
 use switchyard_protocol::Request;
 
@@ -159,10 +163,11 @@ async fn route(
     algorithm: Arc<dyn Algorithm>,
     client: Arc<TranslatingLlmClient>,
     request: Request,
+    models: Arc<RuntimeModels>,
 ) -> switchyard_libsy::Result<String> {
     let clients = ClientRouter::single(client);
     let (selected_model, _response) =
-        switchyard_llm_client::run(algorithm, clients, request, None).await?;
+        switchyard_llm_client::run(algorithm, clients, request, models, None).await?;
     Ok(selected_model.to_string())
 }
 ```
@@ -228,15 +233,16 @@ fn build_multi_format_client(
 
 - The `Backend` variant sets auth: OpenAI formats send `Authorization: Bearer <key>`;
   Anthropic sends `x-api-key: <key>` plus `anthropic-version`.
-- `request.metadata.http_headers` are forwarded upstream, **except** reserved ones:
-  `host`, `content-length`, `connection`, and the backend-owned
-  login, API-key, version, and content headers. So a caller's placeholder
-  credential never overrides the backend's real key.
+- By default, only `x-request-id` from `request.metadata.http_headers` is forwarded.
+  With `forward_auth`, application headers are forwarded, while connection, destination,
+  body, and the selected provider's owned headers are removed or rebuilt.
 - `HttpBackendConfig::forward_auth` uses the caller's credential instead of the
-  backend's configured key. OpenAI backends forward `authorization`,
-  `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic backends forward
-  `authorization` or `x-api-key`; they also keep `oauth-*` values from
-  `anthropic-beta` and remove other caller-supplied beta values.
+  backend's configured key and forwards other application headers. OpenAI backends
+  normalize `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`.
+  Anthropic backends forward `authorization` or `x-api-key`; they also keep
+  `oauth-*` values from `anthropic-beta` and remove other caller-supplied beta values.
+  All backends reachable through a forwarding route must use the same provider.
+  Headers owned by other providers are preserved as application headers.
 - Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
   `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
   and `anthropic-version`. Header names are case-insensitive.
@@ -246,13 +252,23 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `HttpBackendConfig::timeout` bounds one complete response, including retries,
+  retry delays, and every stream read. Expiry returns `LlmClientError::Timeout`,
+  either from the call or from the returned stream, which then ends. `None` leaves
+  the wait unbounded.
 
-Retries replay the same upstream request to the same model. Each candidate's
-`max_retries` budget is exhausted before candidate fallback advances to the next
-model. The worst case is `candidates × (max_retries + 1)` upstream requests, and
-total latency includes every candidate's capped `Retry-After` backoff. A transport
-failure can duplicate a request that the provider processed but did not finish
-returning.
+`run` and `decide` collect streams used during routing, including answers that an
+algorithm must inspect, before returning them to the algorithm. They retain the
+provider events for replay. After the configured retries, a client failure stops
+`run` or `decide` before the algorithm can choose another routing candidate. This
+also applies when `timeout` is `None` or an advisor has `fail_open = true`.
+`libsy` and custom hosts that drive it directly are unchanged.
+
+Retries replay the same upstream request to the same model. After routing completes,
+non-timeout failures may try another completion candidate. A timeout stops the call.
+A transport failure can duplicate a request that the provider processed but did not
+finish returning. Each attempt is counted once; expiry during a retry delay or
+after a stream has started does not count another attempt.
 
 ## Errors
 
@@ -272,8 +288,8 @@ returning.
 | `InvalidResponse { source }` | the upstream response could not be decoded |
 | `Other(source)` | a client-specific failure outside the shared categories |
 
-[`switchyard_protocol::Request`]: ../libsy-protocol
-[`switchyard_protocol::Response`]: ../libsy-protocol
+[`switchyard_protocol::Request`]: ../protocol
+[`switchyard_protocol::Response`]: ../protocol
 [`libsy-proxy`]: ../libsy-proxy
 [`Backend`]: src/backend.rs
 [`HttpBackendConfig`]: src/backend.rs

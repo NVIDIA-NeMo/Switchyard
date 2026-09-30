@@ -6,14 +6,19 @@
 mod algorithm;
 mod config;
 mod failure;
+mod provider_key_redactor;
 mod route;
 mod runner;
 
 pub use algorithm::{
-    AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, ClassifierMode,
+    AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, CategoryModelConfig, ClassifierMode,
     ClassifierPolicyConfig, LlmClassifierRouteConfig, StageClassifierConfig, SubagentRouteConfig,
+    VgrModeConfig, VgrRouteConfig,
 };
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
+// Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.
+pub use libsy::RuntimeModels;
+pub use provider_key_redactor::ProviderKeyRedactor;
 pub use route::{
     AuxiliaryTarget, CallerAuthKind, ModelCapabilities, Route, RunOutput, RunnerError,
 };

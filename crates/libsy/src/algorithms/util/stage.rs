@@ -28,8 +28,7 @@ use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::{State, StateValue};
 use crate::observability::meter;
-use switchyard_protocol::ModelId;
-use switchyard_protocol::Request;
+use switchyard_protocol::{Category, Request};
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
 /// normal exploration, not a stall.
@@ -46,6 +45,8 @@ const HARD_SEVERITY: f64 = 0.7;
 const SIGNAL_UNIT: f64 = 0.10;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
+/// Session-state key for the remaining capable-tier recovery turns.
+const CAPABLE_HOLD_KEY: &str = "capable_hold_turns";
 
 /// Counts final stage-router choices by decision source and semantic target.
 const ROUTING_DECISIONS_METRIC: &str = "switchyard.stage_router.routing_decisions";
@@ -95,51 +96,6 @@ impl Tier {
             "weak" => Some(Self::Efficient),
             _ => None,
         }
-    }
-}
-
-/// The targets a stage router's two tiers route to.
-///
-/// The tiers are a fixed pair, but their targets are whatever the deployment
-/// calls them, so the classifier scores onto those names and the routed call
-/// reaches the right model.
-#[derive(Clone, Debug)]
-pub struct StageTargets {
-    capable: ModelId,
-    efficient: ModelId,
-}
-
-impl StageTargets {
-    /// Name the targets the two tiers route to.
-    pub fn new(capable: impl Into<ModelId>, efficient: impl Into<ModelId>) -> Self {
-        Self {
-            capable: capable.into(),
-            efficient: efficient.into(),
-        }
-    }
-
-    /// The target `tier` routes to.
-    pub fn name(&self, tier: Tier) -> &ModelId {
-        match tier {
-            Tier::Capable => &self.capable,
-            Tier::Efficient => &self.efficient,
-        }
-    }
-
-    /// The tier a routed target belongs to, or `None` for one outside the pair.
-    pub fn tier_for(&self, target: &ModelId) -> Option<Tier> {
-        if *target == self.capable {
-            Some(Tier::Capable)
-        } else if *target == self.efficient {
-            Some(Tier::Efficient)
-        } else {
-            None
-        }
-    }
-
-    /// The tier label for a routed target, or `None` for one outside the pair.
-    pub fn label_for(&self, target: &ModelId) -> Option<&'static str> {
-        self.tier_for(target).map(Tier::label)
     }
 }
 
@@ -210,8 +166,8 @@ pub(crate) fn record_decision_source(state: &mut State, source: DecisionSource) 
 pub enum DecisionSource {
     /// Hard override (critical severity or context compaction).
     Override,
-    /// Settled run: recent tests passed with recent production and no error.
-    TestsPassed,
+    /// A recent escalation is being held on the capable tier.
+    CapableHold,
     /// Scorer crossed `confidence_threshold`.
     Dimensions,
     /// Scorer was not confident, so the signals did not decide this turn.
@@ -227,7 +183,7 @@ impl DecisionSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Override => "override",
-            Self::TestsPassed => "tests_passed",
+            Self::CapableHold => "capable_hold",
             Self::Dimensions => "dimensions",
             Self::Ambiguous => "ambiguous",
             Self::LlmClassifier => "llm-classifier",
@@ -390,54 +346,57 @@ pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
     }
 }
 
-/// Hard **escalate** — force the capable tier no matter what the scorer would
-/// say. Fires on a critical error or a compacted context.
-fn should_escalate(signal: &ToolSignals) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OverrideReason {
+    RepeatedFailure,
+    CriticalError,
+    Compaction,
+}
+
+impl OverrideReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RepeatedFailure => "repeated_failure",
+            Self::CriticalError => "critical_error",
+            Self::Compaction => "compaction",
+        }
+    }
+}
+
+/// Hard **escalate** — force the capable tier no matter what the scorer would say.
+fn override_reason(signal: &ToolSignals) -> Option<OverrideReason> {
     // Compaction wipes the accumulated signals, so a task that had escalated
     // would snap back to efficient — a context big enough to overflow belongs capable.
     if signal.compacted {
-        return true;
+        return Some(OverrideReason::Compaction);
     }
     // A critical error is unambiguous.
-    signal.severity >= SEVERITY_CRITICAL
-}
-
-/// Hard **de-escalate** — drop to the cheap tier on a settled turn: tests
-/// passed, code was just written or edited, and nothing errored in the window.
-fn should_deescalate(signal: &ToolSignals) -> bool {
-    signal.tests_passed
-        && (signal.recent_write_count + signal.recent_edit_count) >= 1
-        && signal.severity <= 0.0
+    if signal.severity >= SEVERITY_CRITICAL {
+        return Some(OverrideReason::CriticalError);
+    }
+    signal
+        .repeated_failure
+        .then_some(OverrideReason::RepeatedFailure)
 }
 
 /// Decide a turn's tier from its signal.
 ///
 /// The rules run in order; the first that fires wins:
 ///
-/// 1. **Escalate** — a hard reason to go capable (critical error / compaction).
-/// 2. **De-escalate** — a hard reason to go cheap (a settled turn).
-/// 3. **Scorer** — no hard reason, so weigh the two axes; if confident, follow it.
-/// 4. **Fall open** — not confident: hand to the classifier, else the default.
+/// 1. **Escalate** — repeated failure, critical error, or compaction.
+/// 2. **Scorer** — no hard reason, so weigh the two axes; if confident, follow it.
+/// 3. **Fall open** — not confident: hand to the classifier, else the default.
 ///
-/// Rules 1 and 2 are the two hard shortcuts that skip the scorer — one always
-/// escalates, one always de-escalates. **Escalate is checked first**, so a
-/// critical error still wins on a turn whose tests also happened to pass.
-///
-/// Deterministic and pure: the async classifier lives in the caller, so rule 4
+/// Deterministic and pure: the async classifier lives in the caller, so rule 3
 /// returns [`PickOutcome::ConsultClassifier`] instead of calling it here. The
 /// `no_signal` case (no tool activity yet) is handled one level up.
 pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f64) -> PickOutcome {
     // 1. Escalate — a hard reason to go capable, ahead of everything else.
-    if should_escalate(signal) {
+    if override_reason(signal).is_some() {
         return resolved(Tier::Capable, DecisionSource::Override, 0.5, Some(1.0));
     }
 
-    // 2. De-escalate — a hard reason to go cheap (the turn is winding down).
-    if should_deescalate(signal) {
-        return resolved(Tier::Efficient, DecisionSource::TestsPassed, 0.5, None);
-    }
-
-    // 3. Scorer — no hard reason either way, so weigh error vs production.
+    // 2. Scorer — no hard reason, so weigh error vs production.
     //    Resolve outside the closed ambiguous band [0.5 - t/2, 0.5 + t/2].
     let scored = score_signal(signal);
     let probability = scored.probability();
@@ -456,7 +415,7 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
         );
     }
 
-    // 4. Fall open — the signals didn't corroborate enough to be sure. Hand off
+    // 3. Fall open — the signals didn't corroborate enough to be sure. Hand off
     //    to the caller's classifier; with none, land on the picker's default.
     PickOutcome::ConsultClassifier {
         probability,
@@ -557,22 +516,29 @@ impl HandoffNoteConfig {
 /// With [`with_handoff_notes`](Self::with_handoff_notes) it also splices a note
 /// into the request explaining why the signals sent the turn where they did.
 pub struct StageClassifier {
-    targets: StageTargets,
     mode: PickerMode,
     confidence_threshold: f64,
+    capable_hold_turns: u32,
     handoff_notes: Option<HandoffNoteConfig>,
 }
 
 impl StageClassifier {
-    /// Scores onto `targets`, with the given default tier (`mode`) and
-    /// `confidence_threshold`.
-    pub fn new(targets: StageTargets, mode: PickerMode, confidence_threshold: f64) -> Self {
+    /// Scores onto the runtime capable and efficient models, with the given
+    /// default tier (`mode`) and `confidence_threshold`.
+    pub fn new(mode: PickerMode, confidence_threshold: f64) -> Self {
         Self {
-            targets,
             mode,
             confidence_threshold,
+            capable_hold_turns: 2,
             handoff_notes: None,
         }
+    }
+
+    /// Keep the capable tier for this many requests after an escalation. A
+    /// clean passing test clears the hold early. Set to zero to disable.
+    pub fn with_capable_hold_turns(mut self, turns: u32) -> Self {
+        self.capable_hold_turns = turns;
+        self
     }
 
     /// Hand the routed model a note on a signal-driven escalation, and on a
@@ -597,6 +563,42 @@ impl StageClassifier {
             prompts::append_note(request, note);
         }
     }
+
+    fn capable_hold_key(request: &Request) -> String {
+        request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_id.as_deref())
+            .map_or_else(
+                || CAPABLE_HOLD_KEY.to_string(),
+                |agent_id| format!("{CAPABLE_HOLD_KEY}:{agent_id}"),
+            )
+    }
+
+    fn consume_capable_hold(state: &mut State, key: &str) -> bool {
+        let Some(StateValue::Count(remaining)) = state.extra.get_mut(key) else {
+            return false;
+        };
+        if *remaining == 0 {
+            state.extra.remove(key);
+            return false;
+        }
+        *remaining -= 1;
+        if *remaining == 0 {
+            state.extra.remove(key);
+        }
+        true
+    }
+
+    fn set_capable_hold(&self, state: &mut State, key: &str) {
+        if self.capable_hold_turns == 0 {
+            state.extra.remove(key);
+        } else {
+            state
+                .extra
+                .insert(key.to_string(), StateValue::Count(self.capable_hold_turns));
+        }
+    }
 }
 
 #[async_trait]
@@ -605,17 +607,25 @@ impl Classifier<State> for StageClassifier {
         &self,
         state: &mut State,
         request: &mut Request,
-        driver: Option<&Driver>,
+        driver: &Driver,
     ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
-        let tool_signals = &state.tool_signals;
-        let Some(signal) = tool_signals else {
+        let Some(signal) = state.tool_signals.clone() else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
             return Ok((Self::abstain(state), None));
         };
 
-        let outcome = pick_tier(signal, self.mode, self.confidence_threshold);
-        record_score_metrics(signal, &outcome);
+        let capable_hold_key = Self::capable_hold_key(request);
+        let clean_test_pass = signal.tests_passed && signal.no_error_streak > 0;
+        if clean_test_pass {
+            state.extra.remove(&capable_hold_key);
+        }
+        let outcome = if !clean_test_pass && Self::consume_capable_hold(state, &capable_hold_key) {
+            resolved(Tier::Capable, DecisionSource::CapableHold, 0.5, Some(1.0))
+        } else {
+            pick_tier(&signal, self.mode, self.confidence_threshold)
+        };
+        record_score_metrics(&signal, &outcome);
         match outcome {
             PickOutcome::Resolved {
                 tier,
@@ -623,24 +633,44 @@ impl Classifier<State> for StageClassifier {
                 probability,
                 confidence,
             } => {
-                let target = self.targets.name(tier);
+                let category = match tier {
+                    Tier::Capable => Category::Capable,
+                    Tier::Efficient => Category::Efficient,
+                };
+                let target = driver.first_model_for(&category)?;
+                if tier == Tier::Capable
+                    && matches!(
+                        source,
+                        DecisionSource::Override | DecisionSource::Dimensions
+                    )
+                {
+                    self.set_capable_hold(state, &capable_hold_key);
+                }
                 record_decision_source(state, source);
                 record_routing_decision(source, target);
+                if source == DecisionSource::Override
+                    && let Some(reason) = override_reason(&signal)
+                {
+                    tracing::info!(
+                        decision_source = source.as_str(),
+                        override_reason = reason.as_str(),
+                        target = %target,
+                        "stage router override"
+                    );
+                }
                 // Only a resolved turn routes on this classifier's target, so it
                 // is the only branch whose tier the signals actually chose — an
                 // ambiguous turn is decided further down the cascade.
                 self.apply_handoff_note(request, tier, source);
-                if let Some(driver) = driver {
-                    let evidence = match (source, confidence) {
-                        (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
-                            "source": source.as_str(),
-                            "confidence": confidence,
-                            "threshold": self.confidence_threshold,
-                        }),
-                        _ => serde_json::json!({"source": source.as_str()}),
-                    };
-                    driver.set_evidence(evidence);
-                }
+                let evidence = match (source, confidence) {
+                    (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
+                        "source": source.as_str(),
+                        "confidence": confidence,
+                        "threshold": self.confidence_threshold,
+                    }),
+                    _ => serde_json::json!({"source": source.as_str()}),
+                };
+                driver.set_evidence(evidence);
                 // Prefer pick_tier's own confidence (e.g. 1.0 for an Override)
                 // over re-deriving it from the neutral 0.5 placeholder.
                 let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
@@ -648,6 +678,7 @@ impl Classifier<State> for StageClassifier {
                     Classification::Scores(vec![Score {
                         target: target.clone(),
                         confidence: conf,
+                        category: Some(category),
                     }]),
                     None,
                 ))
@@ -660,8 +691,24 @@ impl Classifier<State> for StageClassifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::algorithm::RuntimeModels;
     use serde_json::json;
-    use switchyard_protocol::{Metadata, Request, WireFormat, text_request};
+    use std::sync::Arc;
+    use switchyard_protocol::{Metadata, ModelId, Request, WireFormat, text_request};
+
+    fn driver() -> Driver {
+        Driver::new(
+            "stage_test",
+            Arc::new(RuntimeModels::new(
+                [
+                    (Category::Capable, vec![ModelId::from("strong")]),
+                    (Category::Efficient, vec![ModelId::from("weak")]),
+                ]
+                .into(),
+            )),
+        )
+        .0
+    }
 
     fn signal_from(messages: serde_json::Value) -> ToolSignals {
         let raw_request = Some(json!({"model": "m", "messages": messages}));
@@ -701,6 +748,48 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn repeated_failure_overrides_to_capable() {
+        let signal = ToolSignals {
+            severity: HARD_SEVERITY as f32,
+            repeated_failure: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::EfficientFirst, 0.5),
+            PickOutcome::Resolved {
+                tier: Tier::Capable,
+                source: DecisionSource::Override,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn override_reasons_are_specific() {
+        assert_eq!(
+            override_reason(&ToolSignals {
+                repeated_failure: true,
+                ..Default::default()
+            }),
+            Some(OverrideReason::RepeatedFailure)
+        );
+        assert_eq!(
+            override_reason(&ToolSignals {
+                severity: SEVERITY_CRITICAL,
+                ..Default::default()
+            }),
+            Some(OverrideReason::CriticalError)
+        );
+        assert_eq!(
+            override_reason(&ToolSignals {
+                compacted: true,
+                ..Default::default()
+            }),
+            Some(OverrideReason::Compaction)
+        );
     }
 
     #[test]
@@ -800,11 +889,6 @@ mod tests {
 
     // ─── StageClassifier ─────────────────────────────────────────────────
 
-    /// Tiers named the way a deployment would name them.
-    fn tiers() -> StageTargets {
-        StageTargets::new("strong", "weak")
-    }
-
     /// A `State` carrying `signal` as its tool signals.
     fn state_with(signal: ToolSignals) -> State {
         State {
@@ -818,8 +902,8 @@ mod tests {
         // No tool activity yet — nothing to score, so the signals have no opinion
         // and the turn belongs to whatever the cascade has behind them.
         let mut state = State::default();
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         assert!(matches!(
@@ -837,8 +921,9 @@ mod tests {
             ..Default::default()
         };
         let mut state = state_with(signal);
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let driver = driver();
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         match classification.0 {
             Classification::Scores(scores) => {
@@ -858,26 +943,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn classifier_deescalates_settled_turn_to_weak() -> Result<()> {
-        // Tests passed with recent production and no error → the settled-turn shortcut
-        // resolves straight to a definite efficient-tier score.
+    async fn passing_tests_do_not_force_the_efficient_tier() -> Result<()> {
         let signal = ToolSignals {
             tests_passed: true,
+            no_error_streak: 1,
             recent_write_count: 1,
             severity: 0.0,
             ..Default::default()
         };
         let mut state = state_with(signal);
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let driver = driver();
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
-        match classification.0 {
-            Classification::Scores(scores) => {
-                assert_eq!(scores.len(), 1);
-                assert_eq!(scores[0].target, "weak");
-            }
-            _ => panic!("expected a definite classification"),
+        assert!(matches!(classification.0, Classification::Ambiguous(_)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn escalation_holds_capable_for_two_more_turns() -> Result<()> {
+        let classifier = StageClassifier::new(PickerMode::EfficientFirst, 0.5);
+        let mut state = state_with(critical());
+        let driver = driver();
+
+        for _ in 0..3 {
+            let classification = classifier
+                .score(&mut state, &mut Request::default(), &driver)
+                .await?;
+            assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
+            state.tool_signals = Some(ToolSignals::default());
         }
+
+        let classification = classifier
+            .score(&mut state, &mut Request::default(), &driver)
+            .await?;
+        assert!(classification.0.argmax(false)?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn passing_tests_clear_the_capable_hold() -> Result<()> {
+        let classifier = StageClassifier::new(PickerMode::EfficientFirst, 0.5);
+        let mut state = state_with(critical());
+        let driver = driver();
+        classifier
+            .score(&mut state, &mut Request::default(), &driver)
+            .await?;
+        state.tool_signals = Some(ToolSignals {
+            tests_passed: true,
+            no_error_streak: 1,
+            severity: HARD_SEVERITY as f32,
+            ..Default::default()
+        });
+
+        let classification = classifier
+            .score(&mut state, &mut Request::default(), &driver)
+            .await?;
+        assert!(classification.0.argmax(false)?.is_none());
+        assert!(!state.extra.contains_key(CAPABLE_HOLD_KEY));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capable_hold_is_isolated_per_agent() -> Result<()> {
+        let classifier = StageClassifier::new(PickerMode::EfficientFirst, 0.5);
+        let mut state = state_with(critical());
+        let driver = driver();
+        let mut parent = Request {
+            metadata: Some(Metadata {
+                agent_id: Some("parent".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        classifier.score(&mut state, &mut parent, &driver).await?;
+
+        state.tool_signals = Some(ToolSignals::default());
+        let mut child = Request {
+            metadata: Some(Metadata {
+                agent_id: Some("child".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let classification = classifier.score(&mut state, &mut child, &driver).await?;
+
+        assert!(classification.0.argmax(false)?.is_none());
+        assert!(matches!(
+            state.extra.get("capable_hold_turns:parent"),
+            Some(StateValue::Count(2))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn zero_disables_the_capable_hold() -> Result<()> {
+        let classifier =
+            StageClassifier::new(PickerMode::EfficientFirst, 0.5).with_capable_hold_turns(0);
+        let mut state = state_with(critical());
+        let driver = driver();
+        classifier
+            .score(&mut state, &mut Request::default(), &driver)
+            .await?;
+        state.tool_signals = Some(ToolSignals::default());
+
+        let classification = classifier
+            .score(&mut state, &mut Request::default(), &driver)
+            .await?;
+        assert!(classification.0.argmax(false)?.is_none());
         Ok(())
     }
 
@@ -886,8 +1059,8 @@ mod tests {
         // A quiet signal corroborates neither axis, so the scorer abstains and
         // records why.
         let mut state = state_with(ToolSignals::default());
-        let classification = StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), None)
+        let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         assert!(matches!(
@@ -937,7 +1110,7 @@ mod tests {
     #[test]
     fn deescalation_note_applies_to_efficient_when_configured() {
         assert_eq!(
-            config(true).note_for(Tier::Efficient, DecisionSource::TestsPassed),
+            config(true).note_for(Tier::Efficient, DecisionSource::Dimensions),
             Some(DEESCALATION)
         );
     }
@@ -946,7 +1119,7 @@ mod tests {
     fn no_deescalation_note_when_unconfigured() {
         let config = HandoffNoteConfig::new(ESCALATION, None, true);
         assert_eq!(
-            config.note_for(Tier::Efficient, DecisionSource::TestsPassed),
+            config.note_for(Tier::Efficient, DecisionSource::Dimensions),
             None
         );
     }
@@ -956,7 +1129,7 @@ mod tests {
     /// A classifier that hands the capable tier an escalation note, gated to
     /// signal-driven escalations.
     fn noting_classifier(mode: PickerMode) -> StageClassifier {
-        StageClassifier::new(tiers(), mode, 0.5).with_handoff_notes(HandoffNoteConfig::new(
+        StageClassifier::new(mode, 0.5).with_handoff_notes(HandoffNoteConfig::new(
             ESCALATION,
             Some(DEESCALATION.to_string()),
             true,
@@ -993,9 +1166,10 @@ mod tests {
     async fn a_signal_driven_escalation_carries_the_note() -> Result<()> {
         let mut state = state_with(critical());
         let mut request = request();
+        let driver = driver();
 
         noting_classifier(PickerMode::EfficientFirst)
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
@@ -1003,37 +1177,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_turn_the_signals_drive_carries_the_note() -> Result<()> {
-        // Stateless by design: the note describes this turn's signals, so a run
-        // of escalated turns each carries one. Nothing tracks the previous tier.
+    async fn held_turns_do_not_repeat_the_escalation_note() -> Result<()> {
         let classifier = noting_classifier(PickerMode::EfficientFirst);
         let mut state = state_with(critical());
+        let driver = driver();
 
-        for _ in 0..3 {
-            let mut request = request();
-            classifier.score(&mut state, &mut request, None).await?;
-            assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
+        let mut first = request();
+        classifier.score(&mut state, &mut first, &driver).await?;
+        assert_eq!(trailing_text(&first), Some(format!("hi|{ESCALATION}")));
+
+        for _ in 0..2 {
+            let mut held = request();
+            classifier.score(&mut state, &mut held, &driver).await?;
+            assert_eq!(trailing_text(&held), Some("hi".to_string()));
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn a_settled_turn_carries_the_deescalation_note() -> Result<()> {
-        // Tests passed with recent production resolves to weak on the settled-turn
-        // shortcut, which is the hand-back the de-escalation note is for.
+    async fn a_passing_test_does_not_force_a_deescalation_note() -> Result<()> {
         let signal = ToolSignals {
             tests_passed: true,
+            no_error_streak: 1,
             recent_write_count: 1,
             ..Default::default()
         };
         let mut state = state_with(signal);
         let mut request = request();
+        let driver = driver();
 
         noting_classifier(PickerMode::EfficientFirst)
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some(format!("hi|{DEESCALATION}")));
+        assert_eq!(trailing_text(&request), Some("hi".to_string()));
         Ok(())
     }
 
@@ -1045,7 +1222,7 @@ mod tests {
         let mut request = request();
 
         let classification = noting_classifier(PickerMode::CapableFirst)
-            .score(&mut state, &mut request, None)
+            .score(&mut state, &mut request, &driver())
             .await?;
 
         assert!(matches!(classification.0, Classification::Ambiguous(_)));
@@ -1057,9 +1234,10 @@ mod tests {
     async fn no_note_when_notes_are_unconfigured() -> Result<()> {
         let mut state = state_with(critical());
         let mut request = request();
+        let driver = driver();
 
-        StageClassifier::new(tiers(), PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut request, None)
+        StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some("hi".to_string()));

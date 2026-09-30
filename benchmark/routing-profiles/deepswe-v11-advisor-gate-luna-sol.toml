@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Advisor-gate routing for DeepSWE v1.1: a fast executor serves every turn. Once the
+# executor has at least three tool results, a stronger reviewer checks its "done" claims,
+# up to three per task, and either approves or sends it back with a concrete redo plan.
+# See docs/routing_algorithms/advisor_gate_routing.md.
+#
+# Measured on:
+#   Switchyard     main at 832374ac, config schema version 1
+#   Executor       OpenAI GPT-5.6 Luna, reasoning effort `max`
+#   Advisor        OpenAI GPT-5.6 Sol, reasoning effort `max`
+#   Benchmark      DeepSWE v1.1 (github.com/datacurve-ai/deep-swe), all 113 tasks,
+#                  closed-book: sandbox egress limited to this server, 3-hour agent
+#                  budget, no step or cost limit
+#   Agent          Codex CLI 0.154.0 with `model_reasoning_effort = "max"`, calling
+#                  this server with model name `switchyard`; Harbor 0.13.2 ran the
+#                  sandboxes, 10 tasks at a time
+#   Scoring        strict: tasks with reward 1 over all 113, so a sandbox failure counts
+#                  as unsolved; k=3 independent runs, mean +/- sample standard deviation
+#   Result         57.5% +/- 3.2 solved at $208 +/- 22 per run (about $3.20 per solve);
+#                  8 of 339 attempts failed, all sandbox out-of-memory, none timed out
+#   Anchors        same harness and conditions, k=3: Sol alone 62.8% +/- 3.1 at $743 per
+#                  run; Luna alone 46.9% and 52.2% (two valid runs) at about $49 per run
+#   Pricing        per-token list prices frozen 2026-09-09
+#
+# The routing parameters below are exactly as run. The model wiring is not: the measured
+# runs reached the same two models through a different serving stack, replaced here with
+# OpenRouter so the file runs as written with an OpenRouter key. Treat the figures above
+# as this pair's operating point, not a guarantee for every serving stack.
+#
+#   switchyard-server --config benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml --port 4000
+
+schema_version = 1
+
+[llm_clients.openrouter]
+format = "openai_responses"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+max_retries = 2
+
+[targets.executor]
+id = "openai/gpt-5.6-luna"
+llm_client = "openrouter"
+reasoning_effort = "max"
+
+[targets.advisor]
+id = "openai/gpt-5.6-sol"
+llm_client = "openrouter"
+reasoning_effort = "max"
+
+# Luna serves every client-visible turn. When it stops calling tools (after at least three
+# tool results) or grinds for 30 turns, Sol reviews the transcript, trimmed from the middle
+# past 200k characters, and either approves or returns a redo plan that Luna must act on;
+# at most three reviews per session.
+[routes.switchyard]
+id = "switchyard"
+type = "advisor"
+executor_target = "executor"
+advisor_target = "advisor"
+max_reviews = 3
+gate_stall_turns = 30
+gate_min_tool_results = 3
+advisor_max_tokens = 32768
+fail_open = false

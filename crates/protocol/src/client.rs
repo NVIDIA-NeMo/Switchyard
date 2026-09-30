@@ -50,6 +50,19 @@ pub enum LlmClientError {
         message: String,
     },
 
+    /// The route cannot record another provider-owned response or conversation ID.
+    #[error(
+        "Responses state tracking reached its limit of {limit} IDs; no existing records were removed"
+    )]
+    ResponseStateLimitExceeded {
+        /// Maximum number of IDs retained by this route.
+        limit: usize,
+    },
+
+    /// Two configured models reported the same saved response or conversation ID.
+    #[error("Responses state ID is already recorded for another model; its owner was not changed")]
+    ResponseStateConflict,
+
     /// The upstream could not be reached or the request could not be sent.
     #[error("upstream transport error: {source}")]
     Transport {

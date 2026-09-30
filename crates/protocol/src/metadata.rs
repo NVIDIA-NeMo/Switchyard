@@ -65,10 +65,17 @@ const TASK_ID_HEADER: &str = "x-task-id";
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const CLIENT_REQUEST_ID_HEADER: &str = "x-client-request-id";
 
+// Caller identification. Coding harnesses report their name and version here.
+const USER_AGENT_HEADER: &str = "user-agent";
+
+/// First Claude Code release whose sub-agents send `x-claude-code-agent-id`. Earlier builds
+/// send only the session id, so their delegated requests look like the parent's.
+const CLAUDE_CHILD_IDENTITY_VERSION: [u64; 3] = [2, 1, 139];
+
 /// Harness-defined sub-agent kinds that carry delegated user work rather than
 /// harness maintenance (`compact`, `memory_consolidation`, ...). Unknown kinds
 /// are excluded deliberately; extend with captured request fixtures.
-const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "review"];
+const SUBAGENT_WORK_KINDS: &[&str] = &["collab_spawn", "thread_spawn", "review"];
 
 /// Ordered candidate lookup paths for each correlation field, keyed by the field's
 /// canonical `x-switchyard-*` header name.
@@ -186,6 +193,10 @@ pub struct Metadata {
     pub session_final: Option<bool>,
     /// External trace/request id for joining with the host's telemetry.
     pub correlation_id: Option<String>,
+    /// Whether the calling harness build is known not to send child-agent identity, so its
+    /// delegated sub-agent requests cannot be told apart from the parent's. Derived during
+    /// header normalization from the harness's `User-Agent`.
+    pub subagent_identity_unsupported: bool,
     /// Switchyard target that successfully served a response.
     pub served_model: Option<ModelId>,
     /// Arbitrary host-defined key/value metadata.
@@ -216,6 +227,7 @@ impl Metadata {
                 .as_deref()
                 .and_then(parse_bool),
             correlation_id: sy_header(headers, SWITCHYARD_REQUEST_ID_HEADER),
+            subagent_identity_unsupported: claude_lacks_child_identity(headers),
             ..Metadata::default()
         }
     }
@@ -255,27 +267,22 @@ fn parse_sub_agent(headers: &http::HeaderMap) -> (Option<String>, bool, bool) {
     let parent = sy_header(headers, SWITCHYARD_PARENT_AGENT_ID_HEADER)
         .or_else(|| claude_parent.map(str::to_string));
 
-    // Current Codex releases identify spawned children through lineage rather than
-    // `subagent_kind`. Require both fields so a parent id used only for correlation
-    // cannot accidentally route an ordinary turn as delegated work.
+    // Codex child lineage requires both a parent id and `thread_source = subagent`.
+    // A parent id used only for correlation must not route an ordinary turn as
+    // delegated work.
     let codex_child = parent.is_some()
         && resolve_path(headers, CODEX_THREAD_SOURCE_PATH).as_deref() == Some("subagent");
 
     let is_subagent = explicit.unwrap_or(claude_subagent || codex_child || harness_kind.is_some());
 
-    let is_delegated_work = match explicit {
-        Some(false) => false,
-        Some(true) => harness_kind
-            .as_deref()
-            .map(|k| SUBAGENT_WORK_KINDS.contains(&k))
-            .unwrap_or(true),
-        None => {
-            claude_subagent
-                || codex_child
-                || harness_kind
-                    .as_deref()
-                    .is_some_and(|k| SUBAGENT_WORK_KINDS.contains(&k))
-        }
+    // An explicit false disables subagent routing. Otherwise, a supplied task kind must
+    // be in SUBAGENT_WORK_KINDS; child-thread headers cannot override it. Without a kind,
+    // an explicit true or recognized child-thread headers indicate subagent work.
+    let is_delegated_work = match (explicit, harness_kind.as_deref()) {
+        (Some(false), _) => false,
+        (_, Some(kind)) => SUBAGENT_WORK_KINDS.contains(&kind),
+        (Some(true), None) => true,
+        (None, None) => claude_subagent || codex_child,
     };
 
     (parent, is_subagent, is_delegated_work)
@@ -295,6 +302,32 @@ fn claude_lineage(headers: &http::HeaderMap) -> (Option<&str>, bool) {
         .then(|| header(headers, CLAUDE_PARENT_AGENT_ID_HEADER).or(session))
         .flatten();
     (parent, is_subagent)
+}
+
+/// Whether the request comes from a Claude Code build that predates its child identity headers.
+///
+/// Claude Code names itself in `User-Agent` as `claude-cli/<version> (...)`. A prerelease of
+/// the first release with the headers (`2.1.139-beta.1`) predates it too. Build metadata after
+/// `+` is ignored. Other clients never match.
+fn claude_lacks_child_identity(headers: &http::HeaderMap) -> bool {
+    fn parse(user_agent: &str) -> Option<([u64; 3], bool)> {
+        let tagged = user_agent
+            .strip_prefix("claude-cli/")?
+            .split([' ', '+'])
+            .next()?;
+        let (version, prerelease) = match tagged.split_once('-') {
+            Some((version, _)) => (version, true),
+            None => (tagged, false),
+        };
+        let mut parts = version.split('.').map(|part| part.parse::<u64>().ok());
+        Some(([parts.next()??, parts.next()??, parts.next()??], prerelease))
+    }
+    header(headers, USER_AGENT_HEADER)
+        .and_then(parse)
+        .is_some_and(|(version, prerelease)| {
+            version < CLAUDE_CHILD_IDENTITY_VERSION
+                || (prerelease && version == CLAUDE_CHILD_IDENTITY_VERSION)
+        })
 }
 
 /// Parses the common textual spellings of a boolean header value.
@@ -490,6 +523,23 @@ mod tests {
         assert_eq!(root.agent_id, None);
         assert_eq!(root.parent_agent_id, None);
         assert!(!root.is_subagent);
+    }
+
+    #[test]
+    fn flags_claude_code_builds_without_child_identity() {
+        let unsupported = |user_agent: &str| {
+            metadata(&[("user-agent", user_agent)]).subagent_identity_unsupported
+        };
+        // Builds before the headers existed, including a prerelease of the first build with them.
+        assert!(unsupported(" claude-cli/2.1.121 (external, cli) "));
+        assert!(unsupported("claude-cli/2.1.139-beta.1"));
+        // The first build with the headers and anything newer.
+        assert!(!unsupported("claude-cli/2.1.139 (external, cli)"));
+        assert!(!unsupported("claude-cli/2.1.211+build (external, cli)"));
+        // Other clients and unparseable versions are never flagged.
+        assert!(!unsupported("codex_cli_rs/0.120.0"));
+        assert!(!unsupported("claude-cli/nightly"));
+        assert!(!metadata(&[]).subagent_identity_unsupported);
     }
 
     #[test]

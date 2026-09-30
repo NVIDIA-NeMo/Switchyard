@@ -61,15 +61,20 @@ stamp every request of one evaluation with it, sub-agents included, so the
 budget means "reviews for this task" even behind a gateway shared by many
 tasks — then the session id resolved from harness headers (such as
 `x-switchyard-session-id`), and one scope per server when neither is present.
-Failed consults refund the budget and count toward a separate cap of 3, which
-bounds consult latency against a down advisor. An unparseable verdict also
-refunds and passes the turn through as APPROVE.
+For hosts that return client errors to the core algorithm, a failed consult refunds
+the review budget and counts toward a separate cap of 3. The Rust runner stops on
+HTTP client errors before returning them to the algorithm, so failed HTTP calls
+do not refund this budget. An unparseable verdict still refunds the budget and
+passes the turn through as APPROVE.
 
 Long sessions are truncated middle-out before the consult: the transcript keeps
 the task statement at the start and the most recent work at the end, marked
 `...<middle of the conversation truncated>...`, capped at
-`transcript_max_chars`. With `fail_open = true` (default) any advisor failure
-degrades to APPROVE; `fail_open = false` surfaces it as a server error instead.
+`transcript_max_chars`. `fail_open` controls failures returned to the core
+algorithm by its host. The Rust runner stops the request after an HTTP client's
+configured retries fail or its deadline expires, even with `fail_open = true`.
+HTTP client errors also stop the request when `timeout_ms` is unset. A timeout
+before the answer starts returns `504`.
 
 Gate behavior is observable at `/v1/stats` under `advisor_gate`: verdicts by
 trigger, consult failures by reason, and REDO-discarded turns with their token
@@ -109,7 +114,7 @@ gate_min_tool_results = 3
 | `advisor_max_tokens` | `2048` | Output cap for each advisor consult. |
 | `advisor_temperature` | unset | Sampling temperature for consults; omitted when unset. |
 | `transcript_max_chars` | `200000` | Middle-out cap on the serialized transcript (~50k tokens). |
-| `fail_open` | `true` | Advisor failure passes the turn through instead of erroring. |
+| `fail_open` | `true` | Failures returned to the core algorithm pass the turn through. The Rust runner stops HTTP client failures regardless of this setting. |
 | `reviewer_system_prompt` | built-in | Overrides the APPROVE/REDO reviewer contract. |
 | `redo_feedback_prefix` | built-in | Overrides the prefix injected before a REDO plan. |
 

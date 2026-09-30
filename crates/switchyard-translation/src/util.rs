@@ -99,6 +99,38 @@ pub fn push_lossy(
     }
 }
 
+// These Responses history items are valid only as top-level `input` items.
+pub(crate) fn is_responses_builtin_tool_item(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some(
+            "apply_patch_call"
+                | "apply_patch_call_output"
+                | "shell_call"
+                | "shell_call_output"
+                | "computer_call"
+                | "computer_call_output"
+        )
+    )
+}
+
+// Prevent provider-specific tool history from being downgraded to target-visible prose.
+pub(crate) fn reject_responses_builtin_tool_item(
+    provider: &FormatId,
+    item: &Value,
+    target: WireFormat,
+) -> Result<()> {
+    if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+        && is_responses_builtin_tool_item(item)
+    {
+        return Err(TranslationError::UnsupportedTranslation {
+            from: WireFormat::OpenAiResponses.into(),
+            to: target.into(),
+        });
+    }
+    Ok(())
+}
+
 /// Generates a stable, human-readable ID from a prefix and counter.
 pub fn stable_id(prefix: &str, counter: usize) -> String {
     format!("{prefix}_{counter:08}")
@@ -218,11 +250,27 @@ fn messages_have_tools(messages: &[Message]) -> bool {
 }
 
 // Scans message content for a caller-provided block predicate.
-fn messages_have_block(messages: &[Message], predicate: impl FnMut(&ContentBlock) -> bool) -> bool {
+fn messages_have_block(
+    messages: &[Message],
+    mut predicate: impl FnMut(&ContentBlock) -> bool,
+) -> bool {
     messages
         .iter()
-        .flat_map(|message| message.content.iter())
-        .any(predicate)
+        .any(|message| content_has_block(&message.content, &mut predicate))
+}
+
+// Scans content recursively because tool results can contain media blocks.
+fn content_has_block(
+    content: &[ContentBlock],
+    predicate: &mut impl FnMut(&ContentBlock) -> bool,
+) -> bool {
+    content.iter().any(|block| {
+        predicate(block)
+            || match block {
+                ContentBlock::ToolResult(result) => content_has_block(&result.content, predicate),
+                _ => false,
+            }
+    })
 }
 
 /// Captures an exact source request body according to preservation policy.
@@ -277,8 +325,8 @@ pub fn exact_preserved_response(
 
 /// Applies a selected target model and optionally prepends its system prompt.
 ///
-/// Model-only preparation restamps built-in preserved bodies so exact replay uses the target.
-/// Adding a prompt invalidates preserved bodies because they predate that content mutation.
+/// Preserved built-in bodies are updated in their native format when possible so exact replay
+/// keeps caller fields that are not represented in the normalized request.
 /// Call this once per candidate using a request that has not already received a target prompt.
 pub fn prepare_request_for_target(
     request: &mut LlmRequest,
@@ -297,14 +345,16 @@ pub fn prepare_request_for_target(
                 }],
             },
         );
-        request.preservation.requests.clear();
-    } else {
-        stamp_preserved_request_models(&mut request.preservation, &target);
     }
+    prepare_preserved_requests(&mut request.preservation, &target, prompt);
 }
 
-// Retains exact replay only where the built-in wire model field can be updated safely.
-fn stamp_preserved_request_models(preservation: &mut PreservationMetadata, target: &str) {
+// Retains exact replay only where the built-in wire body can receive the target changes safely.
+fn prepare_preserved_requests(
+    preservation: &mut PreservationMetadata,
+    target: &str,
+    prompt: Option<&str>,
+) {
     preservation.requests.retain(|format, body| {
         let is_builtin = format.as_str() == WireFormat::OpenAiChat.as_str()
             || format.as_str() == WireFormat::OpenAiResponses.as_str()
@@ -313,8 +363,78 @@ fn stamp_preserved_request_models(preservation: &mut PreservationMetadata, targe
             return false;
         };
         body.insert("model".to_string(), Value::String(target.to_string()));
-        true
+        match prompt {
+            None => true,
+            Some(prompt) if format.as_str() == WireFormat::OpenAiChat.as_str() => {
+                prepend_openai_chat_system(body, prompt)
+            }
+            Some(prompt) if format.as_str() == WireFormat::OpenAiResponses.as_str() => {
+                prepend_openai_responses_instructions(body, prompt)
+            }
+            Some(prompt) if format.as_str() == WireFormat::AnthropicMessages.as_str() => {
+                body.remove(crate::codecs::common::ANTHROPIC_REQUEST_KEY);
+                prepend_anthropic_system(body, prompt)
+            }
+            Some(_) => false,
+        }
     });
+}
+
+// Prepends a target prompt without rebuilding or otherwise changing a Chat request.
+fn prepend_openai_chat_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    let message = json!({"role": "system", "content": prompt});
+    match body.get_mut("messages") {
+        None | Some(Value::Null) => {
+            body.insert("messages".to_string(), Value::Array(vec![message]));
+        }
+        Some(Value::Array(messages)) => messages.insert(0, message),
+        Some(_) => return false,
+    }
+    true
+}
+
+// Prepends a target prompt without rebuilding or otherwise changing a Responses request.
+fn prepend_openai_responses_instructions(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    match body.get_mut("instructions") {
+        None | Some(Value::Null) => {
+            body.insert(
+                "instructions".to_string(),
+                Value::String(prompt.to_string()),
+            );
+        }
+        Some(Value::String(instructions)) if instructions.is_empty() => {
+            *instructions = prompt.to_string();
+        }
+        Some(Value::String(instructions)) => {
+            instructions.insert_str(0, &format!("{prompt}\n\n"));
+        }
+        Some(_) => return false,
+    }
+    true
+}
+
+// Prepends a target prompt without rebuilding or otherwise changing an Anthropic request.
+fn prepend_anthropic_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    match body.get_mut("system") {
+        None | Some(Value::Null) => {
+            body.insert("system".to_string(), Value::String(prompt.to_string()));
+        }
+        Some(Value::String(system)) if system.is_empty() => {
+            *system = prompt.to_string();
+        }
+        Some(Value::String(system)) => {
+            system.insert_str(0, &format!("{prompt}\n\n"));
+        }
+        Some(Value::Array(blocks)) => blocks.insert(
+            0,
+            json!({
+                "type": "text",
+                "text": prompt,
+            }),
+        ),
+        Some(_) => return false,
+    }
+    true
 }
 
 /// Embeds preservation metadata into a translated wire body when requested.

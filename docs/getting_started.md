@@ -28,9 +28,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
-On macOS or native Windows, follow the
+For v0.3.0, the standalone server is release-validated on Ubuntu 24.04,
+Linux x86_64. Other platforms are outside the release-validation scope.
+
+If you try a source build on macOS or native Windows, follow the
 [official Rust installation instructions](https://rust-lang.org/tools/install/).
-The Rust installer includes `rustc`, Cargo, and `rustup`.
 
 Install `uv` for the repository's Python-based tooling and CI checks. It is not
 required to build or run the Rust server:
@@ -59,6 +61,17 @@ switchyard-server --help
 ```
 
 Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
+
+#### Build from source
+
+Install the server from `main` to use unreleased features:
+
+```bash
+cargo install --locked \
+  --git https://github.com/NVIDIA-NeMo/Switchyard.git \
+  --branch main \
+  switchyard-server
+```
 
 ### Configure
 
@@ -96,8 +109,10 @@ A client can set `forward_auth = true` instead of `api_key_env` to send each
 caller's credential to that upstream. OpenAI clients forward `authorization`,
 `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients forward
 `authorization` or `x-api-key`. Enable this only for an upstream that should
-receive the caller's login. The server rejects a forwarding route called
-through the other provider's API.
+receive the caller's login. All backends reachable through the route, including
+efficient and capable targets, must use the same provider. Other application
+headers are preserved, so they may contain provider-specific credentials. The
+server rejects a forwarding route called through the other provider's API.
 
 ### Run the server
 
@@ -128,15 +143,14 @@ curl http://localhost:4000/v1/chat/completions \
 
 #### Choose a route type
 
-This guide uses `auto`, which routes with Switchyard's recommended default
-settings. The Rust server also supports:
+Start with **Auto**, as shown above. Choose Task or Execution when you want
+more control over how requests are routed.
 
-| Algorithm | Use it when | Config |
+| Choice | Use it when | Route `type` |
 |---|---|---|
-| Auto | You want a recommended default instead of picking a strategy yourself. | `auto` |
-| [Random](routing_algorithms/random_routing.md) | You need a weighted split for A/B tests or baselines. | `random` |
-| [LLM classifier](routing_algorithms/llm_classifier_routing.md) | Request content should decide whether to use the weak or strong target. | `llm_classifier` |
-| [Stage router](routing_algorithms/stage_router_routing.md) | Built-in or configured tool-activity signals should select an efficient or capable target. | `stage_router` |
+| **[Auto](routing_algorithms/overview.md#auto)** | You want Switchyard's recommended preset. | `auto` |
+| **[Task](routing_algorithms/llm_classifier_routing.md)** | You want an LLM to judge which model can handle the task. | `llm_classifier` |
+| **[Execution](routing_algorithms/stage_router_routing.md)** | You want tool results and agent progress to guide each request. | `stage_router` |
 
 A single TOML file can declare multiple routes. The table key, such as
 `routes.smart`, is a local configuration name; each route's `id` is exposed as a
@@ -184,8 +198,8 @@ picks a target and hands the model call back to you.
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 

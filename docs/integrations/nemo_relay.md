@@ -6,6 +6,26 @@ loads Switchyard into an existing
 deployment through Relay's
 [native dynamic plugin system](https://docs.nvidia.com/nemo/relay/build-plugins/native/about).
 
+## Upstream Error Compatibility
+
+Relay 0.8.x and 0.9.0 have a native-plugin error propagation issue. Enabling the
+Switchyard plugin can change an upstream 401 or 403 into a generic 400 for a
+non-streaming request. A streaming request can receive HTTP 200 followed by an
+aborted body. This is not a successful response or an authentication bypass.
+
+This also affects **unmanaged models**: requested model names that do not match
+a configured Switchyard route. For example, if the route is `switchyard/core`
+and its target is `azure/openai/gpt-5.5`, requesting the target name directly
+still delegates the request to Relay.
+
+This is a known issue. A proposed correction is tracked in
+[NeMo Relay PR #1109](https://github.com/NVIDIA/NeMo-Relay/pull/1109).
+The correction has not been released. Until a fix is available, send unmanaged
+traffic through a separate Relay instance with the plugin disabled.
+Do not assume that upgrading Switchyard alone fixes this.
+The plugin's `>=0.8.0, <1.0.0` compatibility range describes which hosts can load
+it; it does not mean those older hosts preserve upstream errors correctly.
+
 ## Why Use Switchyard with NeMo Relay?
 
 Switchyard's routing algorithms select a model for each LLM request or step in
@@ -26,8 +46,9 @@ latency, and token use through Relay telemetry. Use it to answer:
 The plugin runs inside Relay, so the agent does not need to change and
 Switchyard does not need to run as a separate service.
 
-Requests for models that Switchyard does not manage continue through Relay as
-usual.
+Requests for models that Switchyard does not manage are passed to Relay.
+See the [upstream error compatibility note](#upstream-error-compatibility) before
+using older Relay versions.
 
 Routing does not require Relay. You can instead run the
 [standalone server](../getting_started.md#server-path) or embed
@@ -125,16 +146,34 @@ and
 
 ## Set Up the Plugin
 
-Follow the [plugin README](../../crates/switchyard-nemo-relay-plugin/README.md)
-to build and package the native library, register and enable it in Relay, and
-configure its deployment. Relay documents how to
+For Switchyard `0.3.0`, select a matching published `switchyard-plugin` bundle
+from the
+[NeMo Relay Plugins releases](https://github.com/NVIDIA/NeMo-Relay-Plugins/releases).
+Confirm its Switchyard source commit in the release metadata. Plugin versions
+are managed separately and can match the Switchyard version. The bundle
+includes the native library, completed manifest, schema, and license notices;
+no separate plugin crate installation is needed.
+
+The repository currently requires NVIDIA GitHub repository access and
+organization SSO/SAML authorization where required. An HTTP 404 can indicate
+missing access. A Switchyard release does not guarantee that a matching plugin
+bundle has been published.
+
+Follow the
+[bundle installation steps](../../crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle)
+to download the archive and sidecars, verify the checksum, and extract the
+bundle. If a matching published bundle is unavailable or you need a custom
+build, follow
+[Build from source](../../crates/switchyard-nemo-relay-plugin/README.md#build-from-source).
+Then register the manifest, configure the deployment and trust policy, enable
+the plugin, and restart Relay. Relay documents how to
 [add and enable a discoverable plugin](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin)
 and how it
 [validates the package before loading code](https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#validate-before-loading-code).
 
 !!! note "Relay compatibility"
 
-    The plugin requires `relay = ">=0.8.1,<0.9.0"` and native plugin API `1`.
+    The plugin requires `relay = ">=0.8.0, <1.0.0"` and native plugin API `1`.
     The packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
     is the source of truth.
@@ -164,14 +203,31 @@ Only requests whose `model` is a string matching a Switchyard route ID are
 routed. Other call types, missing or non-string model values, and unconfigured
 model names are left unchanged by Switchyard and passed to Relay's next handler.
 
-The caller and selected target may use different supported API formats.
-Switchyard normalizes the request, routes it, and returns the response in the
-caller's original format. If Switchyard forwards the caller's credential, both
-formats must use the same credential family: OpenAI-compatible or Anthropic.
+The caller and selected target may use different supported API formats:
+`openai_chat`, `openai_responses`, or `anthropic_messages`. Switchyard translates
+the request into the selected target's configured format and returns buffered
+or streaming responses in the caller's original format. With server-owned
+credentials, one route targeting an `openai_chat` client can serve all three
+caller formats. Separate targets and routes are not required solely for format
+translation.
+
+The native Relay plugin rejects routes that use `forward_auth = true` during
+configuration validation and activation. This includes routing-model calls and
+alternate targets. Relay does not provide caller credentials to the plugin's
+provider calls. Secure forwarding support is tracked in
+[NeMo Relay #1108](https://github.com/NVIDIA/NeMo-Relay/issues/1108).
+
+For deployment-owned credentials, remove `forward_auth` or set it to `false`
+and configure `api_key_env` on each authenticated client. The two options cannot
+be enabled together. If each caller must use its own provider credential, use
+standalone `switchyard-server`. Standalone forwarding requires the caller and
+target to use the same credential family: OpenAI-compatible (Chat Completions
+and Responses) or Anthropic (Messages).
 
 Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated
-route.
+route. The [native-plugin README](../../crates/switchyard-nemo-relay-plugin/README.md#request-handling)
+describes the same format and credential rules.
 
 ### Header Forwarding
 
@@ -314,8 +370,8 @@ describes the surrounding event envelope.
 | `switchyard.routing.requested` | Info | Routing `algorithm` for a managed request. |
 | `switchyard.routing.llm_call` | Debug | `call_index`, `selected_model`, `call_role` (`routing` or `answer`), `outcome`, and `latency_ms` for each observed model call. |
 | `switchyard.routing.overhead` | Info | `latency_ms` spent producing the routing outcome, including routing-model calls. This is not the end-to-end request duration. |
-| `switchyard.routing.decision` | Info | `algorithm`, initial `selected_model`, nullable final `served_model`, and nullable `fallback_used`. |
-| `switchyard.routing.error` | Error | Generic failures contain `failure_kind`. Route-execution failures also contain `category` and `phase`, plus nullable `upstream_status` and `target`. |
+| `switchyard.routing.decision` | Info | `algorithm`, optional `outcome_id`, initial `selected_model`, nullable final `served_model`, nullable `fallback_used`, and optional `evidence`. |
+| `switchyard.routing.error` | Error | Generic failures contain `failure_kind`. Route-execution failures also contain `category`, `phase`, nullable `upstream_status` and `target`, and may contain `outcome_id` and `evidence`. |
 
 Call marks describe Switchyard observations, not every HTTP retry made inside a
 client. `call_role` records whether Switchyard classified the call as routing
@@ -334,6 +390,12 @@ telemetry can report the model that answered.
 selection and `false` when they match. It and `served_model` are `null` when the
 response does not provide serving metadata. If route execution fails before a
 response is available, the error mark describes the terminal failure instead.
+`outcome_id` is present when the algorithm runner supplies outcome metadata.
+When the algorithm supplies evidence, the plugin includes an object containing
+supported string fields (`source`, `verdict`, `trigger`, and `reason_code`) and
+numeric fields (`score`, `confidence`, and `threshold`). Other fields and values
+of the wrong type are omitted. String values longer than 64 bytes are also omitted
+and should be stable, non-sensitive labels.
 
 ### Metrics
 

@@ -100,8 +100,21 @@ fn decode_anthropic_stream(
                 model: state.model.clone(),
             }]
         }
-        Some("content_block_start") => decode_anthropic_content_block_start(object),
-        Some("content_block_delta") => decode_anthropic_content_block_delta(object),
+        Some("content_block_start") => decode_anthropic_content_block_start(state, object),
+        Some("content_block_delta") => decode_anthropic_content_block_delta(state, object),
+        Some("content_block_stop") => {
+            let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if state.empty_anthropic_tool_inputs.remove(&index) {
+                vec![LlmResponseChunk::ToolCallDelta {
+                    index,
+                    id: None,
+                    name: None,
+                    arguments_delta: Some("{}".to_string()),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
         Some("message_delta") => {
             let mut out = Vec::new();
             if let Some(usage) = object.get("usage") {
@@ -229,7 +242,7 @@ fn encode_anthropic_stream(
             // An in-band error is terminal: emit the error, then nothing further.
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"type": "error", "error": {"message": message}})]
+            vec![json!({"type": "error", "error": {"type": "api_error", "message": message}})]
         }
     }
 }
@@ -238,6 +251,17 @@ fn encode_anthropic_stream(
 fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished {
         return Vec::new();
+    }
+    if state.tool_states.values().any(|tool| {
+        tool.id.as_deref().is_none_or(str::is_empty)
+            || tool.name.as_deref().is_none_or(str::is_empty)
+    }) {
+        return encode_anthropic_stream(
+            state,
+            LlmResponseChunk::StreamError {
+                message: "Tool call ended without a non-empty ID and name".to_string(),
+            },
+        );
     }
     let mut out = Vec::new();
     if !state.emitted_message_start {
@@ -266,6 +290,18 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             }
             tool.started = false;
         }
+    }
+
+    state.active_anthropic_tool = None;
+    for index in std::mem::take(&mut state.deferred_anthropic_tools) {
+        out.extend(encode_anthropic_tool_delta(state, index, None, None, None));
+        if let Some(tool) = state.tool_states.get_mut(&index) {
+            if let Some(content_index) = tool.content_index {
+                out.push(json!({"type": "content_block_stop", "index": content_index}));
+            }
+            tool.started = false;
+        }
+        state.active_anthropic_tool = None;
     }
 
     if !state.emitted_content_block {
@@ -298,7 +334,10 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 }
 
 // Converts Anthropic content-block starts into text or tool-call deltas.
-fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmResponseChunk> {
+fn decode_anthropic_content_block_start(
+    state: &mut StreamTranslationState,
+    object: &Map<String, Value>,
+) -> Vec<LlmResponseChunk> {
     let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     let block = object.get("content_block").and_then(Value::as_object);
     match block
@@ -316,21 +355,38 @@ fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmR
                 }]
             })
             .unwrap_or_default(),
-        Some("thinking") => block
-            .and_then(|block| block.get("thinking"))
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
-            .map(|text| {
-                vec![LlmResponseChunk::ReasoningDelta {
+        Some("thinking") => {
+            let mut out = Vec::new();
+            if let Some(text) = block
+                .and_then(|block| block.get("thinking"))
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+            {
+                out.push(LlmResponseChunk::ReasoningDelta {
                     index,
                     text: text.to_string(),
-                }]
-            })
-            .unwrap_or_default(),
+                });
+            }
+            if let Some(signature) = block
+                .and_then(|block| block.get("signature"))
+                .and_then(Value::as_str)
+                .filter(|signature| !signature.is_empty())
+            {
+                out.push(anthropic_signature_delta(index, signature));
+            }
+            out
+        }
         Some("tool_use") => {
             let Some(block) = block else {
                 return Vec::new();
             };
+            if block
+                .get("input")
+                .and_then(Value::as_object)
+                .is_some_and(|input| input.is_empty())
+            {
+                state.empty_anthropic_tool_inputs.insert(index);
+            }
             vec![LlmResponseChunk::ToolCallDelta {
                 index,
                 id: block
@@ -349,7 +405,10 @@ fn decode_anthropic_content_block_start(object: &Map<String, Value>) -> Vec<LlmR
 }
 
 // Converts Anthropic content-block deltas into neutral text or argument deltas.
-fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmResponseChunk> {
+fn decode_anthropic_content_block_delta(
+    state: &mut StreamTranslationState,
+    object: &Map<String, Value>,
+) -> Vec<LlmResponseChunk> {
     let index = object.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
     let Some(delta) = object.get("delta").and_then(Value::as_object) else {
         return Vec::new();
@@ -375,11 +434,18 @@ fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmR
                 }]
             })
             .unwrap_or_default(),
-        Some("signature_delta") => Vec::new(),
+        Some("signature_delta") => delta
+            .get("signature")
+            .and_then(Value::as_str)
+            .map(|signature| vec![anthropic_signature_delta(index, signature)])
+            .unwrap_or_default(),
         Some("input_json_delta") => delta
             .get("partial_json")
             .and_then(Value::as_str)
             .map(|partial_json| {
+                if !partial_json.is_empty() {
+                    state.empty_anthropic_tool_inputs.remove(&index);
+                }
                 vec![LlmResponseChunk::ToolCallDelta {
                     index,
                     id: None,
@@ -389,6 +455,14 @@ fn decode_anthropic_content_block_delta(object: &Map<String, Value>) -> Vec<LlmR
             })
             .unwrap_or_default(),
         _ => Vec::new(),
+    }
+}
+
+fn anthropic_signature_delta(index: usize, signature: &str) -> LlmResponseChunk {
+    LlmResponseChunk::ReasoningDetailsDelta {
+        index,
+        details: vec![json!({"type": "anthropic.signature_delta", "signature": signature})],
+        text: String::new(),
     }
 }
 
@@ -471,20 +545,34 @@ fn encode_anthropic_tool_delta(
         state.text_block_started = false;
     }
 
+    // Reserve the first call even while its name is still being assembled.
+    let other_tool_started = *state.active_anthropic_tool.get_or_insert(index) != index;
     let tool = state.tool_states.entry(index).or_default();
-    if id.is_some() {
-        tool.id = id.map(|id| sanitize_anthropic_tool_use_id(&id));
+    if let Some(id) = id.filter(|id| !id.is_empty()) {
+        tool.id = Some(sanitize_anthropic_tool_use_id(&id));
     }
-    if name.is_some() {
-        tool.name = name;
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        tool.name = Some(name);
     }
     if let Some(delta) = arguments_delta {
         tool.arguments.push_str(&delta);
         tool.pending_arguments.push_str(&delta);
     }
 
+    // Chat can interleave calls until EOF; Anthropic callbacks require one open block.
+    if other_tool_started {
+        if !state.deferred_anthropic_tools.contains(&index) {
+            state.deferred_anthropic_tools.push(index);
+        }
+        return out;
+    }
+
     if !tool.started {
-        let Some(name) = tool.name.clone() else {
+        // A published tool-use ID cannot be replaced when a later snapshot supplies it.
+        let (Some(id), Some(name)) = (
+            tool.id.as_deref().filter(|id| !id.is_empty()),
+            tool.name.as_deref().filter(|name| !name.is_empty()),
+        ) else {
             return out;
         };
         let content_index = state.next_content_index;
@@ -497,7 +585,7 @@ fn encode_anthropic_tool_delta(
             "index": content_index,
             "content_block": {
                 "type": "tool_use",
-                "id": tool.id.clone().unwrap_or_else(|| format!("toolu_{index}")),
+                "id": id,
                 "name": name,
                 "input": {},
             },
@@ -552,6 +640,14 @@ fn capture_anthropic_usage(state: &mut StreamTranslationState, usage: &Value) {
     if let Some(value) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
         state.usage.set_cached_input_tokens(value);
     }
+    if let Some(value) = usage.get("output_tokens_details").and_then(|details| {
+        details
+            .get("thinking_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| details.get("reasoning_tokens").and_then(Value::as_u64))
+    }) {
+        state.usage.reasoning_tokens = Some(value);
+    }
 }
 
 // Builds Anthropic usage payloads from normalized and provider-extra state.
@@ -573,6 +669,12 @@ fn anthropic_stream_usage(state: &StreamTranslationState) -> Value {
     }
     if let Some(value) = state.usage.cached_input_tokens() {
         usage.insert("cache_read_input_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = state.usage.reasoning_tokens {
+        usage.insert(
+            "output_tokens_details".to_string(),
+            json!({"thinking_tokens": value}),
+        );
     }
     Value::Object(usage)
 }

@@ -30,7 +30,7 @@ pub(crate) struct SwitchyardConfig {
 
 impl SwitchyardConfig {
     pub(crate) fn load_runner(&self) -> Result<Runner, String> {
-        match (&self.switchyard_config_path, &self.switchyard_config) {
+        let runner = match (&self.switchyard_config_path, &self.switchyard_config) {
             (Some(path), None) => Runner::load(path).map_err(|error| error.to_string()),
             (None, Some(config)) => toml::to_string(config)
                 .map_err(|error| format!("failed to serialize Switchyard configuration: {error}"))
@@ -41,7 +41,23 @@ impl SwitchyardConfig {
             (None, None) => {
                 Err("configure one of switchyard_config_path or switchyard_config".to_string())
             }
+        }?;
+        // Relay keeps caller credentials outside the request passed to execution plugins.
+        for model in runner.models() {
+            if runner
+                .route(model.id.as_str())
+                .and_then(|route| route.caller_auth())
+                .is_some()
+            {
+                return Err(format!(
+                    "route {} uses forward_auth = true, which the native Relay plugin does not support; \
+                     disable forward_auth and configure api_key_env for deployment-owned credentials, \
+                     or use standalone switchyard-server for caller-owned credentials",
+                    model.id
+                ));
+            }
         }
+        Ok(runner)
     }
 }
 
@@ -49,6 +65,7 @@ impl SwitchyardConfig {
 mod tests {
     use std::io::Write;
 
+    use nemo_relay_plugin::{DiagnosticLevel, NativePlugin};
     use serde_json::json;
     use tempfile::NamedTempFile;
 
@@ -125,6 +142,103 @@ mod tests {
 
         let runner = config.load_runner().unwrap();
         assert!(runner.route("switchyard/default").is_some());
+    }
+
+    // Both plugin validation and activation must reject every configuration source.
+    fn assert_forward_auth_rejected(deployment: Map<String, Value>) {
+        let source = toml::to_string(&deployment).unwrap();
+        // The same deployment remains supported by the standalone runner.
+        let runner = Runner::from_toml(&source).unwrap();
+        assert!(
+            runner
+                .route("switchyard/default")
+                .unwrap()
+                .caller_auth()
+                .is_some()
+        );
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{source}").unwrap();
+
+        for plugin_config in [
+            json!({"switchyard_config": deployment}),
+            json!({"switchyard_config_path": file.path()}),
+        ] {
+            let plugin_config = plugin_config.as_object().unwrap();
+            let diagnostics = crate::SwitchyardPlugin.validate(plugin_config);
+            assert_eq!(diagnostics.len(), 1);
+            assert!(matches!(diagnostics[0].level, DiagnosticLevel::Error));
+            assert_eq!(diagnostics[0].code, "switchyard.invalid_config");
+            for detail in [
+                "switchyard/default",
+                "forward_auth",
+                "api_key_env",
+                "switchyard-server",
+            ] {
+                assert!(diagnostics[0].message.contains(detail), "{diagnostics:?}");
+            }
+            assert!(matches!(
+                crate::parse_config(plugin_config).and_then(crate::runtime::SwitchyardRuntime::new),
+                Err(error) if error == diagnostics[0].message
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_forward_auth_for_all_provider_formats() {
+        for format in ["openai_chat", "openai_responses", "anthropic_messages"] {
+            let mut deployment = inline_deployment();
+            deployment["llm_clients"]["primary"]["format"] = json!(format);
+            deployment["llm_clients"]["primary"]["forward_auth"] = json!(true);
+            assert_forward_auth_rejected(deployment);
+        }
+    }
+
+    #[test]
+    fn rejects_forward_auth_on_routing_only_and_alternate_targets() {
+        for route in [
+            json!({
+                "id": "switchyard/default", "type": "advisor",
+                "executor_target": "default", "advisor_target": "forwarded"
+            }),
+            json!({
+                "id": "switchyard/default", "type": "random",
+                "targets": ["default", "forwarded"]
+            }),
+        ] {
+            let mut deployment = inline_deployment();
+            deployment["llm_clients"]["forwarded"] = json!({
+                "format": "openai_chat", "base_url": "https://example.test/v1",
+                "forward_auth": true
+            });
+            deployment["targets"]["forwarded"] = json!({
+                "id": "example/forwarded", "llm_client": "forwarded"
+            });
+            deployment["routes"]["default"] = route;
+            assert_forward_auth_rejected(deployment);
+        }
+    }
+
+    #[test]
+    fn accepts_deployment_credentials_and_unused_forward_auth_clients() {
+        let mut deployment = inline_deployment();
+        deployment["llm_clients"]["primary"]["forward_auth"] = json!(false);
+        // PATH supplies a non-secret, existing value without mutating process environment.
+        deployment["llm_clients"]["primary"]["api_key_env"] = json!("PATH");
+        deployment["llm_clients"]["unused"] = json!({
+            "format": "openai_chat", "base_url": "https://example.test/v1",
+            "forward_auth": true
+        });
+        deployment["targets"]["unused"] = json!({
+            "id": "example/unused", "llm_client": "unused"
+        });
+        let plugin_config = json!({"switchyard_config": deployment});
+        let plugin_config = plugin_config.as_object().unwrap();
+        assert!(crate::SwitchyardPlugin.validate(plugin_config).is_empty());
+        assert!(
+            crate::parse_config(plugin_config)
+                .and_then(crate::runtime::SwitchyardRuntime::new)
+                .is_ok()
+        );
     }
 
     #[test]

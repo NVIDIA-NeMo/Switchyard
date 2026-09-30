@@ -46,6 +46,35 @@ pub fn additional_tools(extensions: &ProviderExtensions) -> Option<&Vec<Value>> 
         .and_then(Value::as_array)
 }
 
+/// Request-extension key holding the `call_id`s of `custom_tool_call_output` items whose
+/// call is not in the request, so the outputs keep their type when re-encoded.
+pub const CUSTOM_CALL_OUTPUTS_KEY: &str = "switchyard_codex_custom_call_outputs";
+
+/// Stores the call ids of stored-state custom tool outputs, when there are any.
+pub fn attach_custom_call_outputs(extensions: &mut ProviderExtensions, call_ids: Vec<String>) {
+    if !call_ids.is_empty() {
+        extensions.fields.insert(
+            CUSTOM_CALL_OUTPUTS_KEY.to_string(),
+            Value::Array(call_ids.into_iter().map(Value::String).collect()),
+        );
+    }
+}
+
+/// Reads the stored-state custom tool output call ids back off a request's extensions.
+pub fn custom_call_outputs(extensions: &ProviderExtensions) -> HashSet<String> {
+    extensions
+        .fields
+        .get(CUSTOM_CALL_OUTPUTS_KEY)
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Argument name used to carry a custom tool's freeform input through the IR.
 pub const INPUT_ARGUMENT: &str = "input";
 

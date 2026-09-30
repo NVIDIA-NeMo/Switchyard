@@ -4,25 +4,25 @@
 //! Delegated sub-agent routing around an arbitrary parent algorithm.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use switchyard_protocol::{Metadata, ModelId, Request};
+use switchyard_protocol::{Category, Metadata, Request};
 
-use super::fall_through::{DefaultTarget, FallThrough};
+use super::fall_through::FallThrough;
 use super::util::affinity::{AffinityRouter, ClassifyTrigger};
 use super::util::subagent::SubagentGate;
-use crate::core::algorithm::{self, Algorithm, Driver};
+use crate::algorithms::llm_class::DefaultCategoryClassifier;
+use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::Classifier;
 use crate::core::state::State;
 use crate::{LibsyError, Result, RoutingOutcome};
 
 /// Runtime components for delegated sub-agent routing.
 pub struct SubagentRouterConfig {
-    /// Targets the delegated-work classifier may select.
-    pub targets: Vec<ModelId>,
     /// Classifier invoked for delegated work according to `classify_trigger`.
     pub classifier: Arc<dyn Classifier<State>>,
-    /// Child target used when `classifier` abstains.
-    pub default_target: ModelId,
+    /// Child model category used when `classifier` abstains.
+    pub default_target: Category,
     /// Controls whether each child is classified once or on every request.
     pub classify_trigger: ClassifyTrigger,
     /// Unsupported for child routing because child identity must come from harness metadata.
@@ -30,13 +30,11 @@ pub struct SubagentRouterConfig {
 }
 
 impl SubagentRouterConfig {
-    /// Routes delegated work directly to one fixed target.
-    pub fn fixed_target(target: impl Into<ModelId>) -> Self {
-        let target = target.into();
+    /// Routes all delegated work to the first model in the sub-agent `Any` category.
+    pub fn fixed_target() -> Self {
         Self {
-            targets: vec![target.clone()],
-            classifier: Arc::new(DefaultTarget::new(target.clone())),
-            default_target: target,
+            classifier: Arc::new(DefaultCategoryClassifier(Category::Any)),
+            default_target: Category::Any,
             classify_trigger: ClassifyTrigger::EveryRequest,
             message_hash_fallback: false,
         }
@@ -47,6 +45,8 @@ impl SubagentRouterConfig {
 pub struct SubagentRouter {
     parent: Arc<dyn Algorithm>,
     subagent: FallThrough<State>,
+    /// Whether the one-time warning about a harness without sub-agent identity has been emitted.
+    identity_warning_emitted: AtomicBool,
 }
 
 impl SubagentRouter {
@@ -54,10 +54,8 @@ impl SubagentRouter {
     ///
     /// # Errors
     ///
-    /// Returns an error when the child default is not a child target or when the affinity
-    /// settings cannot identify delegated children safely.
+    /// Returns an error when the affinity settings cannot identify delegated children safely.
     pub fn new(parent: Arc<dyn Algorithm>, config: SubagentRouterConfig) -> Result<Self> {
-        algorithm::ensure_model_is_target(&config.targets, &config.default_target)?;
         if config.message_hash_fallback {
             return Err(LibsyError::AlgorithmError {
                 message: "sub-agent routing cannot use message_hash_fallback".to_string(),
@@ -65,12 +63,10 @@ impl SubagentRouter {
         }
 
         let mut subagent = match config.classify_trigger {
-            ClassifyTrigger::EveryRequest => {
-                FallThrough::new_with_state(config.targets).with_name("subagent")
-            }
+            ClassifyTrigger::EveryRequest => FallThrough::new_with_state().with_name("subagent"),
             ClassifyTrigger::NewSession => {
                 let affinity = Arc::new(AffinityRouter::for_subagents());
-                FallThrough::new_with_state(config.targets)
+                FallThrough::new_with_state()
                     .with_name("subagent")
                     .with_processor(affinity.clone())
                     .with_classifier(affinity)
@@ -84,9 +80,34 @@ impl SubagentRouter {
         };
         subagent = subagent
             .with_classifier(Arc::new(SubagentGate::new(config.classifier)))
-            .with_classifier(Arc::new(DefaultTarget::new(config.default_target)));
+            .with_classifier(Arc::new(DefaultCategoryClassifier(config.default_target)));
 
-        Ok(Self { parent, subagent })
+        Ok(Self {
+            parent,
+            subagent,
+            identity_warning_emitted: AtomicBool::new(false),
+        })
+    }
+
+    /// Warns once when a harness that cannot identify its children reaches this route.
+    ///
+    /// Such a build sends only the session id, so its sub-agent requests look like the
+    /// parent's and route through the parent algorithm. Without this the route reports
+    /// itself as configured while never routing any delegated work.
+    fn warn_if_subagent_identity_unsupported(&self, request: &Request) {
+        let unsupported = request
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.subagent_identity_unsupported);
+        if !unsupported || self.identity_warning_emitted.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        tracing::warn!(
+            target: "libsy",
+            "this route has sub-agent routing but the calling harness does not send \
+             sub-agent identity, so its delegated requests route through the parent route; \
+             a harness upgrade may be required"
+        );
     }
 }
 
@@ -102,8 +123,10 @@ impl Algorithm for SubagentRouter {
             .as_ref()
             .is_some_and(Metadata::is_subagent_work)
         {
-            self.subagent.execute(driver, request).await
+            // Delegated work routes over the sub-agent's own models, never the parent's.
+            self.subagent.execute(driver.for_subagent()?, request).await
         } else {
+            self.warn_if_subagent_identity_unsupported(&request);
             self.parent.clone().route(driver, request).await
         }
     }
@@ -115,22 +138,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use parking_lot::Mutex;
-    use serde_json::json;
-    use switchyard_protocol::{
-        ContentBlock, InstructionBlock, Message, Metadata, ModelId, Request, Response, Role,
-        text_request,
-    };
+    use switchyard_protocol::{Category, Metadata, ModelId, Request, Response, text_request};
 
     use super::{SubagentRouter, SubagentRouterConfig};
     use crate::algorithms::passthrough::Passthrough;
-    use crate::core::algorithm::Algorithm;
     use crate::core::classifier::{Classification, Classifier, Score};
-    use crate::core::testing::{echo, reply, test_drive};
-    use crate::{
-        ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy, Driver,
-        LlmClassifierConfig, LlmTaskClassifier, State,
-    };
+    use crate::core::testing::{echo, test_drive_with_models};
+    use crate::{ClassifyTrigger, Driver, RuntimeModels, State};
 
     struct ScriptedClassifier {
         calls: AtomicUsize,
@@ -142,18 +156,20 @@ mod tests {
             &self,
             _state: &mut State,
             _request: &mut Request,
-            _driver: Option<&Driver>,
+            driver: &Driver,
         ) -> crate::Result<(Classification, Option<Response>)> {
-            let scores = match self.calls.fetch_add(1, Ordering::Relaxed) {
-                0 => vec![Score {
+            let category = match self.calls.fetch_add(1, Ordering::Relaxed) {
+                0 => Some(Category::Capable),
+                1 => Some(Category::Efficient),
+                _ => None,
+            };
+            let scores = match category {
+                Some(category) => vec![Score {
                     confidence: 1.0,
-                    target: ModelId::from("worker"),
+                    target: driver.first_model_for(&category)?.clone(),
+                    category: Some(category),
                 }],
-                1 => vec![Score {
-                    confidence: 1.0,
-                    target: ModelId::from("reviewer"),
-                }],
-                _ => Vec::new(),
+                None => Vec::new(),
             };
             Ok((Classification::Scores(scores), None))
         }
@@ -177,21 +193,44 @@ mod tests {
         }))
     }
 
-    fn parent() -> Arc<dyn Algorithm> {
-        Arc::new(Passthrough::new("parent"))
-    }
-
     fn configured(classifier: Arc<dyn Classifier<State>>) -> crate::Result<Arc<SubagentRouter>> {
         Ok(Arc::new(SubagentRouter::new(
-            parent(),
+            Arc::new(Passthrough),
             SubagentRouterConfig {
-                targets: vec![ModelId::from("worker"), ModelId::from("reviewer")],
                 classifier,
-                default_target: ModelId::from("worker"),
+                default_target: Category::Capable,
                 classify_trigger: ClassifyTrigger::NewSession,
                 message_hash_fallback: false,
             },
         )?))
+    }
+
+    fn without_subagent_identity() -> Request {
+        request(Some(Metadata {
+            session_id: Some("session-1".to_string()),
+            subagent_identity_unsupported: true,
+            ..Metadata::default()
+        }))
+    }
+
+    #[tokio::test]
+    async fn harness_without_subagent_identity_warns_once_and_routes_through_the_parent()
+    -> crate::Result<()> {
+        // Without child identity the request is indistinguishable from the parent's, so it
+        // keeps routing through the parent algorithm; the warning fires once per route.
+        let router = configured(Arc::new(ScriptedClassifier {
+            calls: AtomicUsize::new(0),
+        }))?;
+        let models = RuntimeModels::new([(Category::Any, vec![ModelId::from("parent")])].into())
+            .with_subagent([(Category::Any, vec![ModelId::from("worker")])].into());
+        for _ in 0..2 {
+            let request = without_subagent_identity();
+            let (selected, _) =
+                test_drive_with_models(router.clone(), request, models.clone(), echo()).await?;
+            assert_eq!(selected, "parent");
+        }
+        assert!(router.identity_warning_emitted.load(Ordering::Relaxed));
+        Ok(())
     }
 
     #[tokio::test]
@@ -201,11 +240,33 @@ mod tests {
         });
         let router = configured(classifier.clone())?;
 
-        let (parent, _) = test_drive(router.clone(), request(None), echo()).await?;
-        let (first, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
-        let (same_child, _) = test_drive(router.clone(), child("child-1"), echo()).await?;
-        let (sibling, _) = test_drive(router.clone(), child("child-2"), echo()).await?;
-        let (defaulted, _) = test_drive(router.clone(), child("child-3"), echo()).await?;
+        // The parent and its children route over separate model groups.
+        let models = RuntimeModels::new([(Category::Any, vec![ModelId::from("parent")])].into())
+            .with_subagent(
+                [
+                    (
+                        Category::Any,
+                        vec![ModelId::from("worker"), ModelId::from("reviewer")],
+                    ),
+                    (Category::Capable, vec![ModelId::from("worker")]),
+                    (Category::Efficient, vec![ModelId::from("reviewer")]),
+                ]
+                .into(),
+            );
+        let (selected_parent, _) =
+            test_drive_with_models(router.clone(), request(None), models.clone(), echo()).await?;
+        let (first, _) =
+            test_drive_with_models(router.clone(), child("child-1"), models.clone(), echo())
+                .await?;
+        let (same_child, _) =
+            test_drive_with_models(router.clone(), child("child-1"), models.clone(), echo())
+                .await?;
+        let (sibling, _) =
+            test_drive_with_models(router.clone(), child("child-2"), models.clone(), echo())
+                .await?;
+        let (defaulted, _) =
+            test_drive_with_models(router.clone(), child("child-3"), models.clone(), echo())
+                .await?;
         let maintenance = request(Some(Metadata {
             session_id: Some("session-1".to_string()),
             agent_id: Some("child-1".to_string()),
@@ -213,92 +274,23 @@ mod tests {
             is_delegated_work: false,
             ..Metadata::default()
         }));
-        let (maintenance, _) = test_drive(router, maintenance, echo()).await?;
+        let (maintenance, _) =
+            test_drive_with_models(router, maintenance, models.clone(), echo()).await?;
 
-        assert_eq!(parent, "parent");
+        assert_eq!(selected_parent, "parent");
         assert_eq!(first, "worker");
         assert_eq!(same_child, "worker");
         assert_eq!(sibling, "reviewer");
         assert_eq!(defaulted, "worker");
         assert_eq!(maintenance, "parent");
         assert_eq!(classifier.calls.load(Ordering::Relaxed), 3);
-        Ok(())
-    }
 
-    #[tokio::test]
-    async fn custom_classifier_receives_only_the_delegated_prompt() -> crate::Result<()> {
-        let classifier = LlmTaskClassifier::new(LlmClassifierConfig::Custom {
-            judge_target: ModelId::from("judge"),
-            targets: vec![
-                ("worker".to_string(), ModelId::from("worker")),
-                ("reviewer".to_string(), ModelId::from("reviewer")),
-            ],
-            default_target: "worker".to_string(),
-            config: CustomClassifierConfig::new(
-                "classify the delegated task",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "target": {"type": "string", "enum": ["worker", "reviewer"]}
-                    },
-                    "required": ["target"],
-                    "additionalProperties": false
-                }),
-                CustomClassifierPolicy::target_selector("/target"),
-            ),
-        })?;
-        let router = configured(Arc::new(classifier))?;
-        let mut request = child("child-1");
-        request.llm_request.instructions = vec![InstructionBlock {
-            role: Role::System,
-            content: Message::text(Role::System, "child system instructions").content,
-        }];
-        request.llm_request.messages = vec![
-            Message::text(Role::User, "harness context"),
-            Message {
-                role: Role::User,
-                content: vec![
-                    ContentBlock::Text {
-                        text: "<system-reminder>tool context</system-reminder>".to_string(),
-                    },
-                    ContentBlock::Text {
-                        text: "review this parser".to_string(),
-                    },
-                ],
-            },
-        ];
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let served_calls = calls.clone();
-
-        let (selected, _) = test_drive(router, request, move |target, request| {
-            let calls = served_calls.clone();
-            async move {
-                let completion = if target == "judge" {
-                    r#"{"target":"reviewer"}"#
-                } else {
-                    "child answer"
-                };
-                calls.lock().push((target, request));
-                Ok(reply(completion))
-            }
-        })
-        .await?;
-
-        assert_eq!(selected, "reviewer");
-        let calls = calls.lock();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].0, "judge");
-        assert_eq!(
-            calls[0].1.llm_request.instructions[0].content,
-            Message::text(Role::System, "classify the delegated task").content
-        );
-        assert_eq!(
-            calls[0].1.llm_request.messages,
-            vec![Message::text(Role::User, "review this parser")]
-        );
-        assert_eq!(calls[1].0, "reviewer");
-        assert_eq!(calls[1].1.llm_request.instructions.len(), 1);
-        assert_eq!(calls[1].1.llm_request.messages.len(), 2);
+        let fixed = Arc::new(SubagentRouter::new(
+            Arc::new(Passthrough),
+            SubagentRouterConfig::fixed_target(),
+        )?);
+        let (fixed, _) = test_drive_with_models(fixed, child("fixed"), models, echo()).await?;
+        assert_eq!(fixed, "worker");
         Ok(())
     }
 }

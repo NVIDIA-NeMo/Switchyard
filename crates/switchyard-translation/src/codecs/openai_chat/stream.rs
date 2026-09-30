@@ -67,14 +67,17 @@ fn decode_openai_chat_stream(
     }
 
     let mut out = Vec::new();
-    if !state.saw_message_start {
+    let mut identity_changed = false;
+    if state.model.is_none() {
+        state.model = string_field(object, "model");
+        identity_changed |= state.model.is_some();
+    }
+    if state.message_id.is_none() {
+        state.message_id = string_field(object, "id");
+        identity_changed |= state.message_id.is_some();
+    }
+    if !state.saw_message_start || identity_changed {
         state.saw_message_start = true;
-        if let Some(model) = string_field(object, "model") {
-            state.model = Some(model);
-        }
-        if let Some(id) = string_field(object, "id") {
-            state.message_id = Some(id);
-        }
         out.push(LlmResponseChunk::MessageStart {
             id: state.message_id.clone(),
             model: state.model.clone(),
@@ -138,27 +141,46 @@ fn decode_openai_chat_stream(
                 for tool_call in tool_calls {
                     if let Some(tool_call) = tool_call.as_object() {
                         let function = tool_call.get("function").and_then(Value::as_object);
+                        let index =
+                            tool_call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        if let Some(name) = function
+                            .and_then(|function| function.get("name"))
+                            .and_then(Value::as_str)
+                            .filter(|name| !name.is_empty())
+                        {
+                            state
+                                .pending_chat_tool_names
+                                .entry(index)
+                                .or_default()
+                                .push_str(name);
+                        }
+                        let arguments_delta = function
+                            .and_then(|function| function.get("arguments"))
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned);
                         out.push(LlmResponseChunk::ToolCallDelta {
-                            index: tool_call.get("index").and_then(Value::as_u64).unwrap_or(0)
-                                as usize,
+                            index,
                             id: tool_call
                                 .get("id")
                                 .and_then(Value::as_str)
                                 .map(ToOwned::to_owned),
-                            name: function
-                                .and_then(|function| function.get("name"))
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
-                            arguments_delta: function
-                                .and_then(|function| function.get("arguments"))
-                                .and_then(Value::as_str)
-                                .map(ToOwned::to_owned),
+                            // Names may continue after arguments begin; emit them at finish_reason.
+                            name: None,
+                            arguments_delta,
                         });
                     }
                 }
             }
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            for (index, name) in std::mem::take(&mut state.pending_chat_tool_names) {
+                out.push(LlmResponseChunk::ToolCallDelta {
+                    index,
+                    id: None,
+                    name: Some(name),
+                    arguments_delta: None,
+                });
+            }
             out.push(LlmResponseChunk::MessageStop {
                 reason: Some(reason.to_string()),
             });
@@ -214,13 +236,14 @@ fn encode_openai_chat_stream(
             )]
         }
         LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
-            // A Responses decoder announces a reasoning item's provider id ahead of its
-            // payload; that announcement carries nothing a chat client can use.
+            // Chat cannot replay Anthropic signature fragments or an encrypted item's
+            // id announcement without its payload.
             let details: Vec<Value> = details
                 .into_iter()
-                .filter(|detail| {
-                    detail.get("type").and_then(Value::as_str) != Some("reasoning.encrypted")
-                        || detail.get("data").is_some()
+                .filter(|detail| match detail.get("type").and_then(Value::as_str) {
+                    Some("anthropic.signature_delta") => false,
+                    Some("reasoning.encrypted") => detail.get("data").is_some(),
+                    _ => true,
                 })
                 .collect();
             if details.is_empty() && text.is_empty() {
@@ -238,13 +261,34 @@ fn encode_openai_chat_stream(
             id,
             name,
             arguments_delta,
-        } => vec![openai_tool_call_chunk(
-            state,
-            index,
-            id,
-            name,
-            arguments_delta,
-        )],
+        } => {
+            let tool = state.tool_states.entry(index).or_default();
+            // Repeated full names would be concatenated by Chat clients as new fragments.
+            let name = name.filter(|name| tool.name.as_ref() != Some(name));
+            if name.is_some() {
+                tool.name = name.clone();
+            }
+            // The source index counts every content block (Anthropic) or output item
+            // (Responses), so text ahead of the first tool call shifts it. Chat clients use
+            // the index as a subscript into `tool_calls`, so number calls in that array
+            // instead, in order of first appearance.
+            let chat_index = match tool.chat_tool_index {
+                Some(chat_index) => chat_index,
+                None => {
+                    let chat_index = state.next_chat_tool_index;
+                    state.next_chat_tool_index += 1;
+                    state.tool_states.entry(index).or_default().chat_tool_index = Some(chat_index);
+                    chat_index
+                }
+            };
+            vec![openai_tool_call_chunk(
+                state,
+                chat_index,
+                id,
+                name,
+                arguments_delta,
+            )]
+        }
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;

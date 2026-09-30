@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "nemo-switchyard"
-version = "0.2.0"
+version = "0.3.0"
 description = "Typed, composable LLM routing with request/response translation and multi-backend orchestration"
 readme = "README.md"
 license = "Apache-2.0"
@@ -83,6 +83,11 @@ python-packages = ["switchyard", "switchyard_rust"]
 include = [
     { path = "LICENSE", format = "sdist" },
     { path = "NOTICE", format = "sdist" },
+    { path = "rust-toolchain.toml", format = "sdist" },
+    { path = "crates/prefill-router/Cargo.toml", format = "sdist" },
+    { path = "crates/prefill-router/build.rs", format = "sdist" },
+    { path = "crates/prefill-router/python/**/*", format = "sdist" },
+    { path = "crates/prefill-router/src/**/*", format = "sdist" },
 ]
 
 [tool.pytest.ini_options]
@@ -95,7 +100,7 @@ markers = [
 ]
 # For integration/production tests, recommend using -x to stop on first failure:
 #   pytest tests/offline_production_tests/ -v -x
-addopts = "-x"  # Stop on first failure by default (use --no-x to override)
+addopts = "-x"  # Stop on first failure by default (use -o addopts= to override)
 
 [tool.mypy]
 python_version = "3.10"

@@ -51,12 +51,25 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `format` | Yes | — | `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | `base_url` | Yes | — | Upstream base URL. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
-| `forward_auth` | No | `false` | Forward the caller's provider credential to this upstream. |
+| `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. All backends reachable through the route must use the same provider. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
+| `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
+
+`timeout_ms` applies separately to every call through the client, including judge
+verdicts and answers. To give a judge a short deadline without limiting the
+answering models, put the judge on its own `[llm_clients]` entry; two entries may
+share a `base_url`. When the deadline expires, the server returns `504` without
+trying another target. If the final answer has already started streaming, the
+server sends a framed error and ends the stream without a success marker.
+
+The Rust runner collects streams used during routing before the algorithm
+continues, preserving provider events for replay. After the configured retries,
+an HTTP client failure stops routing. This also applies when `timeout_ms` is
+unset or an advisor has `fail_open = true`.
 
 Set `forward_auth = true` to use each caller's credential instead of a
 server-owned key:
@@ -76,11 +89,13 @@ values.
 
 This setting gives `base_url` the caller's login. Enable it only when that
 upstream should receive the credential, and use HTTPS unless the upstream runs
-on loopback. Forwarding clients do not follow HTTP redirects. Check every
-forwarding client used by a route, including classifier and judge targets. The
-server rejects an Anthropic forwarding route called through an OpenAI endpoint,
-or an OpenAI forwarding route called through an Anthropic endpoint, before it
-calls an upstream.
+on loopback. All backends reachable through the route must use the same
+provider because other application headers are preserved and may contain
+provider-specific credentials. Forwarding clients do not follow HTTP redirects.
+Check every forwarding client used by a route, including classifier and judge
+targets. The server rejects an Anthropic forwarding route called through an
+OpenAI endpoint, or an OpenAI forwarding route called through an Anthropic
+endpoint, before it calls an upstream.
 
 ## `[targets.<name>]`
 
@@ -90,7 +105,12 @@ calls an upstream.
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
-| `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Two targets for the same model id on the same `llm_client` collapse into one, so give each effort tier its own `llm_clients` entry (same endpoint, different name). |
+| `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate `llm_clients` entries (same endpoint, different name). |
+
+Within one route, callable targets with the same model ID must use the same `llm_client`.
+This includes completion targets and targets used for judging or classification. Switchyard rejects
+same-model targets on different clients within a route because execution is keyed by model ID.
+Separate routes may use the same model ID on different clients.
 
 Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.
@@ -111,10 +131,10 @@ Every route takes the common keys below, plus the keys for its type.
 |---|:---:|---|---|
 | `id` | Yes | — | Public model ID that callers send in requests. |
 | `type` | Yes | — | Routing algorithm for this route. |
-| `context_window` | No | unset | Positive token count advertised for this route by `GET /v1/models`. Unset values appear as `null`. This does not enforce a request limit. |
-| `tool_calling` | No | unset | Whether `GET /v1/models` advertises tool-calling support for this route. Unset values appear as `null`. |
-| `reasoning` | No | unset | Whether `GET /v1/models` advertises reasoning support to Codex direct-provider discovery. Unset routes are advertised as non-reasoning. |
-| `vision` | No | unset | Whether `GET /v1/models` advertises **image input** to Codex direct-provider discovery. Unset routes are advertised as text-only. This is not cosmetic: Codex reads `input_modalities` from the model card and, when it reads text-only, replaces an attached image with the text `image content omitted because you do not support image input` **before sending**, so a route whose target can see but which does not declare `vision = true` loses the image in the client. Declare it only when every target the route can select accepts images. |
+| `context_window` | No | unset | Positive token count that `GET /v1/models` advertises for this route as `data[].context_length`. Unset values appear as `null`. This does not enforce a request limit. |
+| `tool_calling` | No | unset | Tool-calling support advertised by `GET /v1/models`. When `false`, the server rejects tool definitions, tool controls, and tool history with HTTP 400 before dispatch. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. |
+| `reasoning` | No | unset | When `false`, the server rejects reasoning controls with HTTP 400 before dispatch. Explicit `true` and unset values do not restrict requests. The server does not include this declaration in `GET /v1/models`. |
+| `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. When `false`, the server rejects images with HTTP 400 before dispatch, including images in tool results. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. Declare `true` only when every target the route can select accepts images. |
 
 ### `noop`
 
@@ -155,7 +175,28 @@ Splits traffic across targets. See
 | `weights` | No | equal | Finite, non-negative relative weights in `targets` order, with at least one positive value. Invalid weights are rejected at load time. |
 | `seed` | No | unset | Reproduces the selection sequence. |
 
+### `plan_execute`
+
+Plans on a capable target, then switches to an efficient target after the first
+file mutation. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `capable_target` | Yes | - | Target used for read-only inspection and planning. |
+| `efficient_target` | Yes | - | Target used after the first edit or write. |
+| `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
+| `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
+| `planner_reasoning_as_text` | No | `false` | Converts visible planner reasoning summaries to assistant text at handoff. |
+
 ### `prefill_router`
+
+!!! warning "Experimental in v0.3.0"
+
+    Switchyard v0.3.0 does not provide or support a router checkpoint, an
+    exporter, or compatible encoder assets. You must obtain or train a compatible
+    checkpoint and obtain its encoder and tokenizer yourself. There is no
+    supported end-to-end checkpoint export and compatibility contract.
+    The example below shows configuration syntax, not a ready-to-run deployment.
 
 Routes the latest non-empty user message with a checkpoint-backed prefill classifier. Build
 `switchyard-server` with `--features prefill-router` and make the prefill router's Python
@@ -181,12 +222,12 @@ checkpoint = "/models/router.pt"
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
-`classifier_target` and `max_output_tokens` apply to all three.
+`max_output_tokens` applies to all three.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
-| `classifier_target` | Yes | — | Target the judge is called through. Not a routing destination. |
+| `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
@@ -200,7 +241,7 @@ Capability mode classifies before serving. See
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
 | `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
-| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
+| `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
 
@@ -219,18 +260,34 @@ Escalation mode serves the weak target first and judges the completed turn. See
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 
 Custom mode validates the judge's JSON against `response_schema`, resolves the
-policy selector, and routes to any configured target label.
+policy selector, and routes to a runtime model group. A verdict names a group and
+the first model in it serves the turn. An eligible non-timeout failure tries the
+rest of that group, then any remaining models in `models.any`. A timeout stops
+the request without trying another model.
+
+The `[routes.<name>.models]` table takes any group name you choose. `any` and
+`judge` are reserved and required; `capable` and `efficient` are reserved for the
+tier meaning the other algorithms give them. Every other key is yours, which is
+how one route chooses between more than two models.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `targets` | Yes | — | Two or more target names available to the policy. |
-| `default_target` | Yes | — | Target used when the judge fails or its verdict cannot be routed. |
+| `models.any` | Yes | — | Every selectable completion target, in fallback order for eligible non-timeout failures. Every other group's targets must also appear here; one that does not is rejected at configuration load. |
+| `models.judge` | Yes | — | One or more ordered judge candidates. The Rust runner calls the first and stops on a client error after retries. Not a completion destination. |
+| `models.capable` | No | — | Ordered capable-tier models. A `capable` verdict selects the first; eligible non-timeout failures try the rest in order. |
+| `models.efficient` | No | — | Ordered efficient-tier models. An `efficient` verdict selects the first; eligible non-timeout failures try the rest in order. |
+| `models.<your name>` | No | — | A group you name. A verdict naming it selects its first model; eligible non-timeout failures try the rest in order. |
+| `default_target` | Yes | — | Group used when the judge's verdict cannot be parsed or routed. HTTP client failures stop the request after retries. Any group except `judge`, and it must contain at least one target. |
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
-| `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `classify_trigger = "new_session"`. |
+| `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+
+The selected JSON label must name a configured group. A label naming a target
+rather than a group, or a group you did not configure, falls back to
+`default_target`. `judge` is not routable.
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`
@@ -249,6 +306,7 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
+| `capable_hold_turns` | No | `2` | Requests kept on the capable tier after escalation. A clean test pass clears the hold early; `0` disables it. |
 | `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
 | `tool_semantics.mutate` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as state-changing production. |
 | `tool_semantics.plan` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as planning or task decomposition. |
@@ -282,23 +340,31 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 |---|:---:|---|---|
 | `classifier.target` | Yes | — | Target the tier judge is called through. Not a routing destination. |
 | `classifier.base_threshold` | Yes | — | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. |
+| `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
-| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the `llm_classifier` route, this works on either trigger. Conversations opening with the same text share a tier. |
+| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
+| `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
+| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
+| `stage.capable_hold_turns` | No | `2` | Requests kept on the capable tier after escalation. A clean test pass clears the hold early; `0` disables it. |
 | `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
 | `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
 | `stage.tool_semantics.plan` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as planning. |
 | `stage.tool_semantics.new` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as neutral forward activity. |
+| `stage.handoff_notes` | No | unset | Optional guidance appended to forwarded requests. Uses the same fields and behavior as [stage-router handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes). |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message
-instead. The stage table takes no `picker`: the classifier supplies that tier per turn. A turn the
-classifier cannot reach falls open to the efficient tier. Leaving out
-`classifier` is recommended: that judge runs ahead of the fall-open tier.
+instead. The outer `[routes.<name>.classifier]` table is required. The nested
+`[routes.<name>.stage]` table accepts neither `picker` nor a second `classifier`.
+The outer classifier supplies the default tier. A turn the classifier cannot
+reach falls open to the efficient tier.
 
 ### `advisor`
 

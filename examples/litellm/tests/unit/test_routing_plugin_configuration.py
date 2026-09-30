@@ -48,7 +48,7 @@ async def test_loads_stage_prompt_and_handoff_rewrites(tmp_path: Path) -> None:
     config_path.write_text(
         'algorithm = "stage"\n'
         'picker = "capable_first"\n'
-        "confidence_threshold = 0.5\n"
+        "confidence_threshold = 0.4\n"
         'escalation_note = "The efficient tier failed."\n'
         'deescalation_note = "The capable tier recovered."\n'
         'capable_system_prompt = "Use the capable tier."\n'

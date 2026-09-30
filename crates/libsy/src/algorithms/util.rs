@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub mod affinity;
+pub(crate) mod buffered_response;
 pub(crate) mod classifier_contract;
 pub mod escalation;
 pub(crate) mod llm_judge;
@@ -23,6 +24,7 @@ pub(crate) fn decisive(target: &ModelId) -> Classification {
     Classification::Scores(vec![Score {
         target: target.clone(),
         confidence: 1.0,
+        category: None,
     }])
 }
 

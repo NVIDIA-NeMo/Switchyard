@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 import json
 import os
 import shlex
@@ -124,7 +122,7 @@ def _write_fake_harbor_patch(tmp_path: Path) -> Path:
     return patch_file
 
 
-def _write_fake_harbor_python(tmp_path: Path, *, patched: bool = True) -> Path:
+def _write_fake_harbor_python(tmp_path: Path, patched: bool = True) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     harbor_site = tmp_path / "fake-site-packages" / "harbor"
     base = harbor_site / "agents" / "installed" / "base.py"
@@ -756,6 +754,32 @@ def test_dry_run_opencode_closed_book_disables_webfetch(tmp_path: Path) -> None:
     assert _option_value(harbor, "--model") == "nvidia/tb-lite-random-routing"
     assert "version=1.18.3" in _option_values(harbor, "--ak")
     assert "OPENCODE_DISABLE_WEBFETCH=1" in _option_values(harbor, "--ae")
+
+
+def test_dry_run_pi_uses_switchyard_label_pin_and_thinking(tmp_path: Path) -> None:
+    profile = _write_server_config(tmp_path / "routes.toml")
+
+    result = _run_baseline(
+        tmp_path,
+        "--server-config",
+        str(profile),
+        "--model",
+        "tb-lite-random-routing",
+        "--agent",
+        "pi",
+        "--reasoning-effort",
+        "high",
+        "--dry-run",
+    )
+
+    assert result.returncode == 0, result.stderr
+    harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
+    assert _option_value(harbor, "--model") == "switchyard/tb-lite-random-routing"
+    kwargs = _option_values(harbor, "--ak")
+    assert "version=0.84.3" in kwargs
+    # Harbor's pi agent has a --thinking flag, not reasoning_effort.
+    assert "thinking=high" in kwargs
+    assert not any(kwarg.startswith("reasoning_effort=") for kwarg in kwargs)
 
 
 def test_task_list_file_expands_to_include_task_name(tmp_path: Path) -> None:

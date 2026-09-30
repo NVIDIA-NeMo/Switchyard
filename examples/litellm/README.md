@@ -14,7 +14,7 @@ roles: before deployment selection it narrows the candidate set to the model sel
 Switchyard; after selection it applies any supported Switchyard request rewrite before LiteLLM
 translates and sends the provider request.
 
-The integration pins LiteLLM 1.97.0. Model inventory and routing policy are both owned by the
+The integration pins LiteLLM 1.102.0. Model inventory and routing policy are both owned by the
 deployer:
 
 - LiteLLM YAML defines the public model group, candidate models, credentials, and provider options.
@@ -93,7 +93,7 @@ service intermediate model calls. Stage's system prompts and handoff notes do no
 intermediate call, so the dual-role Stage plugin supports them. Unsupported behavior fails closed
 before LiteLLM sends inference.
 
-LiteLLM 1.97.0's routing context exposes structured messages but does not expose the caller's tools,
+LiteLLM 1.102.0's routing context exposes structured messages but does not expose the caller's tools,
 sampling controls, output controls, or provider-specific arguments. The adapter therefore uses
 delta semantics: a field explicitly changed by Switchyard overrides the corresponding LiteLLM
 argument, while a field Switchyard leaves at the adapter default does not clear or replace the
@@ -209,7 +209,7 @@ efficient_system_prompt = "Handle this request as the efficient tier."
 | `capable_system_prompt` | no | nonempty system instruction used for the capable tier |
 | `efficient_system_prompt` | no | nonempty system instruction used for the efficient tier |
 
-Stage requires exactly two unique candidate model IDs. In pinned LiteLLM 1.97.0, the routing context
+Stage requires exactly two unique candidate model IDs. In pinned LiteLLM 1.102.0, the routing context
 preserves the matching `model_list` declaration order. Declare the capable model first and the
 efficient model second, as in the checked-in profile; an integration test locks this ordering
 contract. `picker` controls which tier is chosen without an escalation signal; it does not change
@@ -315,7 +315,7 @@ PYTHONPATH=/absolute/path/to/switchyard-new/examples/litellm/src \
   /absolute/path/to/switchyard-new/examples/litellm/deployment/profiles/stage/litellm.yaml
 ```
 
-Keep LiteLLM at v1.97.0 when reproducing this example's verified behavior.
+Keep LiteLLM at v1.102.0 when reproducing this example's verified behavior.
 
 ## Tests
 

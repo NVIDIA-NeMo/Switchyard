@@ -17,10 +17,9 @@ pub type Result<T> = std::result::Result<T, LlmClientError>;
 /// and a substring phrase list.
 ///
 /// Parses the body once, runs the structured check (e.g. against `error.code`),
-/// then falls back to matching phrases against `error.message` or — when the
-/// body is not JSON — the raw body. Centralizing the shape means each new
-/// provider-wrap of the canonical error is a one-line phrase entry, not a fork
-/// of the parsing logic.
+/// then falls back to matching phrases against `error.message` (or `message`
+/// for a top-level `object: "error"`) or, when the body is not JSON, the raw body.
+/// Other JSON fields do not contribute to overflow detection.
 pub(crate) fn is_overflow_body<F>(body: &str, structured_check: F, phrases: &[&str]) -> bool
 where
     F: Fn(&Value) -> bool,
@@ -29,14 +28,13 @@ where
         if structured_check(&value) {
             return true;
         }
-        if let Some(message) = value
-            .get("error")
+        let error = value.get("error").or_else(|| {
+            (value.get("object").and_then(Value::as_str) == Some("error")).then_some(&value)
+        });
+        return error
             .and_then(|err| err.get("message"))
             .and_then(Value::as_str)
-            && contains_any(message, phrases)
-        {
-            return true;
-        }
+            .is_some_and(|message| contains_any(message, phrases));
     }
     // Some upstream proxies return plain-text bodies; fall through to a string
     // match on the raw body.

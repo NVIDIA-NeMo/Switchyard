@@ -58,6 +58,7 @@ class PackageBundleTest(unittest.TestCase):
                 self.assertEqual({path.name for path in output.iterdir()}, expected)
                 manifest = (output / "relay-plugin.toml").read_text(encoding="utf-8")
                 self.assertIn(f'artifact = "{library.name}"', manifest)
+                self.assertIn('relay = ">=0.8.0, <1.0.0"', manifest)
                 self.assertIn(hashlib.sha256(library.read_bytes()).hexdigest(), manifest)
                 self.assertNotIn("<platform-library-file>", manifest)
                 self.assertNotIn("<artifact-sha256>", manifest)

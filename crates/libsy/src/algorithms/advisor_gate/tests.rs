@@ -3,6 +3,7 @@
 
 //! Behavior tests for the advisor review gate.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use switchyard_protocol::{ResponseOutput, ToolCall, ToolResult, completion_text};
@@ -15,19 +16,36 @@ use switchyard_protocol::{
 
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
 use super::*;
-use crate::core::testing::{reply, test_drive};
+use crate::RuntimeModels;
+use crate::core::testing::{Serve, reply, test_drive_with_models};
 
 const EXECUTOR: &str = "executor";
 const ADVISOR: &str = "advisor";
+const EXECUTOR_FALLBACK: &str = "executor-fallback";
+const ADVISOR_FALLBACK: &str = "advisor-fallback";
 
 fn target(name: &str) -> ModelId {
     ModelId::new(name)
 }
 
 fn gate(config: AdvisorGateConfig) -> Arc<dyn Algorithm> {
-    Arc::new(
-        AdvisorGate::new(target(EXECUTOR), target(ADVISOR), config).expect("test config is valid"),
-    )
+    Arc::new(AdvisorGate::new(config).expect("test config is valid"))
+}
+
+fn runtime_models() -> HashMap<Category, Vec<ModelId>> {
+    [
+        (Category::Efficient, vec![target(EXECUTOR)]),
+        (Category::Judge, vec![target(ADVISOR)]),
+    ]
+    .into()
+}
+
+async fn test_drive(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    serve: impl Serve,
+) -> Result<(ModelId, Response)> {
+    test_drive_with_models(algorithm, request, runtime_models(), serve).await
 }
 
 fn request(messages: Vec<Message>) -> Request {
@@ -72,11 +90,13 @@ fn tool_call_turn() -> Response {
                     name: "bash".to_string(),
                     arguments: serde_json::json!({}),
                 })],
+                url_citations: Vec::new(),
                 stop_reason: None,
             }],
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -88,11 +108,13 @@ fn tool_use_stop_turn() -> Response {
                 content: vec![ContentBlock::Text {
                     text: "calling a tool".to_string(),
                 }],
+                url_citations: Vec::new(),
                 stop_reason: Some(StopReason::ToolUse),
             }],
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -106,11 +128,13 @@ fn reasoning_only_turn() -> Response {
                     signature: None,
                     details: Vec::new(),
                 }],
+                url_citations: Vec::new(),
                 stop_reason: None,
             }],
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -120,11 +144,13 @@ fn empty_turn() -> Response {
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
                 content: Vec::new(),
+                url_citations: Vec::new(),
                 stop_reason: None,
             }],
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -134,6 +160,7 @@ fn streamed(events: Vec<LlmResponseStreamEvent>) -> Response {
             events.into_iter().map(Ok),
         ))),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     }
 }
 
@@ -269,7 +296,14 @@ async fn tool_call_turn_replays_without_review() {
 async fn approved_terminal_turn_returns_buffered_body() {
     let script = Script::new();
     let gate = gate(AdvisorGateConfig::default());
-    let serve = script.serve("APPROVE", |_| reply("all done"));
+    let serve = script.serve("APPROVE", |_| {
+        let mut response = reply("all done");
+        response.upstream_headers.insert(
+            "x-upstream-trace",
+            "trace-123".parse().expect("valid test header"),
+        );
+        response
+    });
     let (selected_model, response) = test_drive(gate, task_request(), serve)
         .await
         .expect("routes");
@@ -277,8 +311,68 @@ async fn approved_terminal_turn_returns_buffered_body() {
         script.models(),
         vec![EXECUTOR.to_string(), ADVISOR.to_string()]
     );
+    assert_eq!(
+        response
+            .upstream_headers
+            .get("x-upstream-trace")
+            .and_then(|value| value.to_str().ok()),
+        Some("trace-123")
+    );
     assert_eq!(completion_text(&agg_of(response).await), "all done");
     assert_eq!(selected_model, EXECUTOR);
+}
+
+#[tokio::test]
+async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
+    let gate = gate(AdvisorGateConfig::default());
+    let models = RuntimeModels::new(
+        [
+            (
+                Category::Efficient,
+                vec![target(EXECUTOR), target(EXECUTOR_FALLBACK)],
+            ),
+            (
+                Category::Judge,
+                vec![target(ADVISOR), target(ADVISOR_FALLBACK)],
+            ),
+        ]
+        .into(),
+    );
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&calls);
+    let outcome = crate::drive(gate, task_request(), Arc::new(models), move |call| {
+        let observed = Arc::clone(&observed);
+        async move {
+            let candidates = call.models.clone();
+            observed.lock().push(candidates.clone());
+            let (text, served) = if candidates[0] == target(EXECUTOR) {
+                ("all done", target(EXECUTOR_FALLBACK))
+            } else {
+                ("APPROVE", target(ADVISOR_FALLBACK))
+            };
+            let mut response = reply(text);
+            response.set_served_model(&served);
+            call.respond(Ok(response))
+        }
+    })
+    .await
+    .expect("routes");
+
+    assert_eq!(
+        *calls.lock(),
+        vec![
+            vec![target(EXECUTOR), target(EXECUTOR_FALLBACK)],
+            vec![target(ADVISOR), target(ADVISOR_FALLBACK)],
+        ]
+    );
+    assert_eq!(
+        outcome.selected_model_id().expect("selected model"),
+        &target(EXECUTOR_FALLBACK)
+    );
+    assert_eq!(
+        outcome.request.model_id().as_deref(),
+        Some(EXECUTOR_FALLBACK)
+    );
 }
 
 #[tokio::test]
@@ -747,11 +841,13 @@ async fn pattern_trigger_matches_on_tool_call_turns() {
                         arguments: serde_json::json!({}),
                     }),
                 ],
+                url_citations: Vec::new(),
                 stop_reason: Some(StopReason::ToolUse),
             }],
             ..AggLlmResponse::default()
         }),
         metadata: None,
+        upstream_headers: http::HeaderMap::new(),
     };
     let serve = script.serve("APPROVE", {
         let turn = parking_lot::Mutex::new(Some(turn));
@@ -856,6 +952,109 @@ async fn stall_checkpoint_reviews_mid_task_once() {
     });
     test_drive(gate, grinding(), serve).await.expect("routes");
     assert_eq!(script.advisor_consults(), 1);
+}
+
+/// Serve that answers the executor with a tool-call turn — keeping the
+/// terminal trigger quiet so only the stall checkpoint can fire — and the
+/// advisor with `verdict` (`Err` = advisor down), recording every call.
+fn stalled_serve(
+    script: &Script,
+    verdict: std::result::Result<&'static str, ()>,
+) -> impl Fn(
+    ModelId,
+    Request,
+) -> futures::future::BoxFuture<'static, std::result::Result<Response, LlmClientError>>
++ Send
++ Sync
++ 'static {
+    let calls = Arc::clone(&script.calls);
+    move |model: ModelId, request: Request| {
+        let calls = Arc::clone(&calls);
+        Box::pin(async move {
+            let model = model.to_string();
+            calls.lock().push((model.clone(), request));
+            if model != ADVISOR {
+                Ok(tool_call_turn())
+            } else if let Ok(verdict) = verdict {
+                Ok(reply(verdict))
+            } else {
+                Err(LlmClientError::General("advisor down".to_string()))
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn refunded_stall_review_rearms_the_checkpoint() {
+    // A stall review that is refunded — unparseable verdict, fail-open error,
+    // or fail-closed error — must re-arm the conversation's stall latch too;
+    // otherwise every later eligible turn silently bypasses the advisor.
+    let config = |fail_open| AdvisorGateConfig {
+        gate_stall_turns: 1,
+        max_reviews: 2,
+        fail_open,
+        ..AdvisorGateConfig::default()
+    };
+    let grinding = || {
+        request(vec![
+            Message::text(Role::User, "build X"),
+            Message::text(Role::Assistant, "step 1"),
+        ])
+    };
+
+    // Fail-open gate: an unparseable verdict, then an advisor error.
+    let script = Script::new();
+    let open_gate = gate(config(true));
+    test_drive(
+        Arc::clone(&open_gate),
+        grinding(),
+        stalled_serve(&script, Ok("MAYBE")),
+    )
+    .await
+    .expect("routes");
+    assert_eq!(script.advisor_consults(), 1);
+    test_drive(
+        Arc::clone(&open_gate),
+        grinding(),
+        stalled_serve(&script, Err(())),
+    )
+    .await
+    .expect("fail-open run");
+    assert_eq!(script.advisor_consults(), 2);
+    // Each refund re-armed the checkpoint: the next eligible turn is reviewed.
+    test_drive(
+        Arc::clone(&open_gate),
+        grinding(),
+        stalled_serve(&script, Ok("APPROVE")),
+    )
+    .await
+    .expect("routes");
+    assert_eq!(script.advisor_consults(), 3);
+    // A completed review latches the checkpoint as before.
+    test_drive(open_gate, grinding(), stalled_serve(&script, Ok("APPROVE")))
+        .await
+        .expect("routes");
+    assert_eq!(script.advisor_consults(), 3);
+
+    // Fail-closed gate: the error propagates, and the checkpoint re-arms.
+    let script = Script::new();
+    let closed_gate = gate(config(false));
+    let result = test_drive(
+        Arc::clone(&closed_gate),
+        grinding(),
+        stalled_serve(&script, Err(())),
+    )
+    .await;
+    assert!(result.is_err(), "fail-closed surfaces the advisor error");
+    assert_eq!(script.advisor_consults(), 1);
+    test_drive(
+        closed_gate,
+        grinding(),
+        stalled_serve(&script, Ok("APPROVE")),
+    )
+    .await
+    .expect("routes");
+    assert_eq!(script.advisor_consults(), 2);
 }
 
 #[tokio::test]
@@ -1153,9 +1352,7 @@ fn transcript_middle_drop() {
 #[test]
 fn new_validation_errors() {
     let invalid = |config: AdvisorGateConfig, needle: &str| {
-        let error = AdvisorGate::new(target(EXECUTOR), target(ADVISOR), config)
-            .err()
-            .expect("config rejected");
+        let error = AdvisorGate::new(config).err().expect("config rejected");
         assert!(error.to_string().contains(needle), "{error}");
     };
     invalid(

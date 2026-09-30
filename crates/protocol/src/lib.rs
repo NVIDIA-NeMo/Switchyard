@@ -4,7 +4,9 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+pub mod category;
 pub mod client;
+pub mod codex_namespaces;
 pub mod envelope;
 pub mod format;
 pub mod llm;
@@ -12,6 +14,7 @@ pub mod metadata;
 pub mod model_id;
 pub mod stream;
 
+pub use category::*;
 pub use client::*;
 pub use envelope::*;
 pub use format::*;
@@ -54,6 +57,7 @@ pub fn text_response(model: Option<String>, completion: impl Into<String>) -> Ag
     AggLlmResponse {
         model,
         outputs: vec![ResponseOutput {
+            url_citations: Vec::new(),
             role: Role::Assistant,
             content: vec![ContentBlock::Text {
                 text: completion.into(),

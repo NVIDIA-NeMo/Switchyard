@@ -37,7 +37,8 @@ class RandomRoutingPlugin(LiteLLMRequestRewriter):
         plugin = self._plugins.get(candidates)
         if plugin is None:
             plugin = SwitchyardRoutingPlugin(
-                algorithms.random(candidates, weights=self._weights, seed=self._seed)
+                algorithms.random(weights=self._weights, seed=self._seed),
+                models={"any": candidates},
             )
             self._plugins[candidates] = plugin
         return await plugin.run(context)
