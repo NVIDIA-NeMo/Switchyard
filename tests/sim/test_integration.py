@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from switchyard.runner import Runner
-from switchyard.sim import Dataset, evaluate, load_harbor
+from switchyard.sim import Dataset, evaluate, load_harbor, score
 from switchyard.sim.__main__ import main
 from tests.test_runner_bindings import JudgeStub, deployment
 from tests.test_runner_bindings import judge as judge
@@ -91,6 +91,64 @@ async def test_harbor_to_classifier_scoring_and_matched_metrics(judge: JudgeStub
     assert all(row.evidence["source"] == "llm-classifier" and row.decision_id for row in rows)
     assert all(row.fallbacks for row in rows)
     assert not report.complete
+
+
+@pytest.mark.parametrize("prompt_target", ["weak", "strong"])
+async def test_native_completion_prompt_only_invalidates_its_selected_recording(
+    judge: JudgeStub, tmp_path: Path, prompt_target: str
+):
+    for target in ("weak", "strong"):
+        write_trial(tmp_path / target, "task", f"{target}/model", 1)
+    dataset = Dataset.from_runs(
+        {target: load_harbor(tmp_path / target, target=target) for target in ("weak", "strong")},
+        input_target="weak",
+    )
+    prompt = "ADDED_COMPLETION_PROMPT"
+    config = deployment(judge.url).replace(
+        f"[targets.{prompt_target}]", f'[targets.{prompt_target}]\nsystem_prompt = "{prompt}"'
+    )
+    task = dataset.tasks[0]
+    decision = await Runner.from_toml(config).decide(
+        {"model": "auto", "messages": list(task.messages)}
+    )
+    rejected = prompt_target == "weak"
+    assert decision.selected.target == "weak"
+    assert (prompt in json.dumps(decision.outcome.request)) is rejected
+    if rejected:
+        with pytest.raises(ValueError, match="rewritten task request"):
+            score(task, decision)
+    else:
+        assert score(task, decision).outcome == task.outcomes["weak"]
+
+    rows = []
+    report = await evaluate(
+        dataset,
+        Runner.from_toml(config),
+        route="auto",
+        on_result=rows.append,
+        price_call=lambda _: 0.01,
+    )
+    (row,) = rows
+    assert row.target == "weak" and row.model == "weak/model"
+    assert (row.outcome is None) is rejected
+    assert (row.error is not None) is rejected
+    assert row.decision_id and row.evidence["source"] == "llm-classifier"
+    assert row.fallbacks == ("strong",)
+    assert row.algorithm == decision.outcome.metadata.algorithm
+    if rejected:
+        assert row.error == "recorded task outcomes cannot score a rewritten task request"
+    assert row.routing_calls == 1 and row.routing_failed_calls == 0
+    assert row.routing_cost_usd == 0.01
+    assert row.routing_usage["input_tokens"] == 12
+    assert row.routing_usage["output_tokens"] == 8
+    summary = report.to_dict()
+    assert summary["counts"]["scored"] == int(not rejected)
+    assert summary["counts"]["errors"] == int(rejected)
+    assert summary["comparison"]["tasks"] == int(not rejected)
+    assert summary["cost_comparison"]["tasks"] == int(not rejected)
+    assert summary["routing"]["cost_usd"]["total"] == 0.01
+    assert [call["model"] for call in judge.calls] == ["judge/model", "judge/model"]
+    assert prompt not in json.dumps(judge.calls)
 
 
 def test_cli_writes_flushed_rows_manifest_and_report_without_copying_config(
