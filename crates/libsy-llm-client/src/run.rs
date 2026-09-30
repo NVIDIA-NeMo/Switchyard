@@ -131,23 +131,57 @@ pub async fn decide(
     request: Request,
     models: Arc<RuntimeModels>,
 ) -> Result<RoutingOutcome> {
+    decide_with_observer(algorithm, clients, request, models, None).await
+}
+
+/// Resolve a decision and report its completed calls and elapsed routing time.
+///
+/// Observations belong to this invocation, including calls completed before a failure.
+/// A routing-time response is reported as an answer call when it becomes the outcome.
+pub async fn decide_with_observer(
+    algorithm: Arc<dyn Algorithm>,
+    clients: ClientRouter,
+    request: Request,
+    models: Arc<RuntimeModels>,
+    observer: Option<RunObserver>,
+) -> Result<RoutingOutcome> {
+    let started = Instant::now();
     let routing_clients = clients.clone();
-    let mut outcome = match clients.stored_state_owner(&request) {
-        Some(owner) => continue_on(owner, algorithm.name(), request),
+    let observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
+    let outcome = match clients.stored_state_owner(&request) {
+        Some(owner) => Ok(continue_on(owner, algorithm.name(), request)),
         None => {
-            drive(algorithm, request, models, move |call| {
-                serve(routing_clients.clone(), call, None)
+            drive(algorithm, request, models, {
+                let observations = observations.clone();
+                move |call| serve(routing_clients.clone(), call, observations.clone())
             })
-            .await?
+            .await
         }
     };
-    let selected_model_id = outcome.selected_model_id()?.clone();
-    outcome.request = clients.prepare_completion_request(outcome.request, &selected_model_id);
-    outcome.response = outcome
-        .response
-        .map(|response| clients.remember_state_owner(&outcome.request, response))
-        .transpose()?;
-    Ok(outcome)
+    let answered_model = outcome
+        .as_ref()
+        .ok()
+        .and_then(|outcome| outcome.response.as_ref())
+        .and_then(Response::served_model);
+    emit_routing_observations(&observer, &observations, answered_model);
+    let outcome = outcome.and_then(|mut outcome| {
+        let selected_model_id = outcome.selected_model_id()?.clone();
+        outcome.request = clients.prepare_completion_request(outcome.request, &selected_model_id);
+        outcome.response = outcome
+            .response
+            .map(|response| clients.remember_state_owner(&outcome.request, response))
+            .transpose()?;
+        Ok(outcome)
+    });
+    if let Some(observer) = observer {
+        if let Ok(outcome) = &outcome
+            && let Some(metadata) = &outcome.metadata
+        {
+            observer(RunObservation::Outcome(metadata.clone()));
+        }
+        observer(RunObservation::RoutingOverhead(started.elapsed()));
+    }
+    outcome
 }
 
 /// Emits completed routing calls after the outcome reveals whether one response became the answer.
@@ -566,6 +600,11 @@ enum Routing {
 }
 
 impl ClientRouter {
+    /// Configured target that may produce an answer during routing.
+    pub fn routing_answer_target(&self) -> Option<&ModelId> {
+        self.inner.routing_answer_target.as_ref()
+    }
+
     /// Build a router over `model name -> client`, for targets spread across providers.
     pub fn new(by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
         Self::new_with_target_prompts(by_model, HashMap::new(), None)
@@ -1815,6 +1854,70 @@ mod tests {
         assert_eq!(instruction_text(&calls[0]), ["weak prompt"]);
         assert_eq!(instruction_text(&calls[1]), ["strong prompt"]);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn observed_decision_does_not_call_a_selected_completion() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        });
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&observations);
+        let observer: RunObserver = Arc::new(move |event| captured.lock().push(event));
+
+        let outcome = decide_with_observer(
+            Arc::new(CandidateAlgorithm {}),
+            ClientRouter::single(client.clone()),
+            request(),
+            to_category_map(&["weak", "strong"]),
+            Some(observer),
+        )
+        .await?;
+
+        assert_eq!(outcome.selected_model_id()?, "weak");
+        assert!(outcome.response.is_none());
+        assert!(client.calls.lock().is_empty());
+        assert!(matches!(
+            &observations.lock()[..],
+            [
+                RunObservation::Outcome(_),
+                RunObservation::RoutingOverhead(_)
+            ]
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn observed_decision_reports_completed_calls_on_failure() {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::Unauthorized,
+        });
+        let observations = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&observations);
+        let observer: RunObserver = Arc::new(move |event| captured.lock().push(event));
+
+        let result = decide_with_observer(
+            Arc::new(AnsweredAlgorithm {
+                model: "weak".into(),
+            }),
+            ClientRouter::single(client.clone()),
+            request(),
+            to_category_map(&["weak", "strong"]),
+            Some(observer),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(&*client.calls.lock(), &[ModelId::from("weak")]);
+        assert!(matches!(
+            &observations.lock()[..],
+            [RunObservation::LlmCall(call), RunObservation::RoutingOverhead(_)]
+                if call.selected_model == "weak" && !call.is_success && call.usage.is_none()
+        ));
     }
 
     #[tokio::test]

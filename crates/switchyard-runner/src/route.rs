@@ -156,6 +156,16 @@ impl Route {
         self.algorithm.name()
     }
 
+    /// Configured target that may produce an answer during routing.
+    pub fn routing_answer_target(&self) -> Option<&ModelId> {
+        self.clients.routing_answer_target()
+    }
+
+    /// Configured completion targets available to routing decisions.
+    pub fn decision_targets(&self) -> &[DecisionTarget] {
+        &self.decision_targets
+    }
+
     /// Returns model-list capability metadata.
     pub fn capabilities(&self) -> ModelCapabilities {
         self.capabilities
@@ -211,11 +221,21 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        switchyard_llm_client::decide(
+        self.decide_with_observer(request, None).await
+    }
+
+    /// Completes routing-time calls with request-scoped observations.
+    pub async fn decide_with_observer(
+        &self,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> Result<RoutingOutcome, RunnerError> {
+        switchyard_llm_client::decide_with_observer(
             Arc::clone(&self.algorithm),
             self.clients.clone(),
             request,
             Arc::clone(&self.models),
+            observer,
         )
         .await
         .map_err(Into::into)

@@ -448,6 +448,8 @@ impl DeploymentConfig {
         let response = self.targets.get(response_name).ok_or_else(|| {
             RunnerError::configuration(format!("route references unknown target {response_name}"))
         })?;
+        // Keep execution metadata even when this target has no prompt override.
+        policy.routing_answer_target = Some(response.id.clone());
         if !policy.prompts.contains_key(&response.id) {
             return Ok(policy);
         }
@@ -460,7 +462,6 @@ impl DeploymentConfig {
                 response.id,
             )));
         }
-        policy.routing_answer_target = Some(response.id.clone());
         Ok(policy)
     }
 
@@ -1164,7 +1165,14 @@ new = ["send_message"]
             "base_threshold = 0.5",
             "base_threshold = 0.5\nescalation = { confirmations = 2 }",
         );
-        runner_from_toml(&escalating)?;
+        let runner = runner_from_toml(&escalating)?;
+        assert_eq!(
+            runner
+                .route("switchyard/classifier")
+                .and_then(Route::routing_answer_target)
+                .map(ModelId::as_str),
+            Some("weak/model")
+        );
 
         let reversible = VALID_CONFIG.replace(
             "base_threshold = 0.5",

@@ -19,11 +19,13 @@ crate-type = ["cdylib", "rlib"]
 futures.workspace = true
 http.workspace = true
 switchyard-libsy.workspace = true
+switchyard-llm-client.workspace = true
 pyo3 = { version = "0.28.3", features = ["abi3-py310"] }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 pythonize = "0.28.0"
 serde.workspace = true
 serde_json.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
 switchyard-server.workspace = true
 tokio.workspace = true

@@ -22,7 +22,7 @@ pub struct LlmCallObservation {
     pub usage: Option<Usage>,
 }
 
-/// Events emitted inline while [`crate::run`] serves a routing request.
+/// Events emitted inline by [`crate::run`] and [`crate::decide_with_observer`].
 #[derive(Clone, Debug)]
 pub enum RunObservation {
     /// Metadata attached to the completed routing outcome.
@@ -31,7 +31,7 @@ pub enum RunObservation {
     LlmCall(LlmCallObservation),
     /// A completed terminal model call made from the routing outcome.
     AnswerCall(LlmCallObservation),
-    /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.
+    /// Elapsed routing time, including model calls required by the algorithm.
     RoutingOverhead(Duration),
 }
 

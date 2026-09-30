@@ -6,12 +6,14 @@ use pyo3::prelude::*;
 mod errors;
 mod libsy_bindings;
 mod py_serde;
+mod runner_bindings;
 mod server_bindings;
 
 #[pymodule]
 fn _switchyard_rust(module: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(module)?;
     libsy_bindings::register(module)?;
+    runner_bindings::register(module)?;
     server_bindings::register(module)?;
     Ok(())
 }
