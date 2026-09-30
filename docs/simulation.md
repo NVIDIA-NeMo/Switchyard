@@ -272,6 +272,20 @@ and means are `null`; `observed_total` retains the known portion. `complete`
 means every expected task has a scored reward and no evaluation error. Inspect
 each cost and usage field's coverage separately.
 
+For tasks processed by `evaluate`, the counters distinguish these cases:
+
+| Result | `routed` | `scored` | `errors` |
+| --- | --- | --- | --- |
+| Valid selection with a known outcome reward, including zero | 1 | 1 | 0 |
+| Valid selection with an unknown outcome reward | 1 | 0 | 0 |
+| Target selected, but scoring rejects the decision, such as a rewritten task input | 1 | 0 | 1 |
+| Routing fails before returning a selection | 0 | 0 | 1 |
+
+The last three cases also increment `unscored`. A zero reward is an observed
+outcome; a missing reward is not a failed routing decision. A task with unknown
+reward can still enter the cost comparison when the selected outcome and every
+fixed target have known costs.
+
 Signed rewards are supported. Totals preserve small values when larger positive
 and negative rewards cancel, regardless of task completion order. Published
 aggregates remain floating-point numbers. `Report.to_dict()` raises `ValueError`
@@ -282,6 +296,9 @@ Native routing failures retain `routing_error_kind`, `routing_error_status`, and
 when available; the target identifies the failing model, such as the classifier.
 These fields distinguish failures such as HTTP 401 and 503 without storing
 provider response bodies. Other exception details remain suppressed.
+A whole-decision timeout returns no completed-call observations, so its call
+counts and routing cost remain unknown. The provider may already have received
+or completed work.
 
 Reward comparisons use one common cohort where the routed outcome and every
 fixed-target reward are observed. The empirical recorded-outcome oracle selects
