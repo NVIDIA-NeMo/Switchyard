@@ -217,8 +217,9 @@ print(dataset.coverage)
 
 The intersection excludes a task from every target if any target is missing or
 has an invalid trial for it. Issues and excluded task IDs remain in the report.
-An invalid result with no recoverable task identity must be repaired before
-pairing; otherwise a failed repeat could silently disappear from a task's mean.
+An issue with a missing or blank task ID must be repaired before pairing;
+otherwise a failed repeat could silently disappear from a task's mean. Custom
+importers should use `None` when a rejected record's task cannot be identified.
 For a missing trajectory or copied continuation context, callers can supply
 `task_inputs={task_id: original_instruction}` to `load_harbor`.
 Invalid JSON, unsupported ATIF versions, and invalid fields read during input
