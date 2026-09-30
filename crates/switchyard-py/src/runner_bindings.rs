@@ -13,6 +13,7 @@ use std::task::{Context, Poll};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyMapping};
 use pyo3_async_runtimes::TaskLocals;
 use pyo3_async_runtimes::generic::{ContextExt, Runtime};
 use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
@@ -292,9 +293,16 @@ impl PyRunner {
         slf: PyRef<'py, Self>,
         py: Python<'py>,
         request: &Bound<'py, PyAny>,
-        headers: Option<HashMap<String, String>>,
+        headers: Option<&Bound<'py, PyMapping>>,
         allow_response: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let headers = headers
+            .map(|mapping| {
+                let owned = PyDict::new(py);
+                owned.update(mapping)?;
+                owned.extract::<HashMap<String, String>>()
+            })
+            .transpose()?;
         // Start routing only when the coroutine runs, so cancellation before its
         // first step cannot leave an unowned native request running.
         py.import("switchyard_rust.runner")?

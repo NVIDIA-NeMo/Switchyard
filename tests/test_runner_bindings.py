@@ -9,11 +9,13 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Iterator
+from collections import UserDict
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Event, Thread
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -323,6 +325,23 @@ async def test_affinity_and_observations_are_isolated_across_sessions_and_runner
     assert retained.outcome.metadata.evidence["source"] == "retained"
     assert [len(decision.calls) for decision in (first, weak, strong, fresh)] == [1, 1, 1, 1]
     assert len(judge.calls) == 4
+
+
+@pytest.mark.parametrize("wrap", [MappingProxyType, UserDict])
+async def test_mapping_headers_are_copied_before_await(
+    judge: JudgeStub, wrap: Callable[[dict[str, str]], Mapping[str, str]]
+) -> None:
+    runner = Runner.from_toml(deployment(judge.url))
+    values = {**session("snapshot"), "x-request-id": "original"}
+    headers = wrap(values)
+    pending = runner.decide(MappingProxyType(request()), headers=headers)
+    mutable_headers = headers.data if isinstance(headers, UserDict) else values
+    mutable_headers["x-request-id"] = "changed"
+
+    decision = await pending
+    assert decision.selected.target == "weak"
+    assert len(judge.calls) == 1
+    assert judge.request_headers[0]["x-request-id"] == "original"
 
 
 @pytest.mark.parametrize("forward_auth", [False, True])
