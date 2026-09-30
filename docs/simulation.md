@@ -268,6 +268,8 @@ This CLI imports Harbor layouts. Use the Python API for custom formats.
 The output directory must be new. The CLI writes a `manifest.json` with the
 configuration hash, inputs, package version, and coverage, then flushes each
 completed row to `results.jsonl`. It writes `report.json` after evaluation returns.
+The hash covers the exact TOML bytes loaded. Invalid routes and recorded-model
+mismatches fail before output creation, leaving the path available for a corrected run.
 The deployment source and credentials are not copied.
 Use `--skip-invalid --intersection` to retain import issues and explicitly
 evaluate the common valid subset. Exit status is 0 for complete reward coverage,

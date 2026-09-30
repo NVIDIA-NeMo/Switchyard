@@ -179,6 +179,29 @@ def _validate_options(concurrency: int, timeout: float) -> None:
         raise ValueError("timeout must be finite and positive")
 
 
+def _validate_route(
+    dataset: Dataset, runner: Runner, route: str, aliases: Mapping[str, str]
+) -> dict[str, dict[str, object]]:
+    """Check route compatibility before workers or CLI artifacts are created."""
+    if not dataset.tasks or len({task.task_id for task in dataset.tasks}) != len(dataset.tasks):
+        raise ValueError("dataset must contain non-empty, unique tasks")
+    targets = runner.validate_decision_route(route, allow_response=False)
+    configured = {target.target for target in targets}
+    if not configured or not configured.issubset(dataset.targets):
+        raise ValueError(
+            f"configured targets {sorted(configured)!r} do not match available recorded targets {sorted(dataset.targets)!r}"
+        )
+    return {
+        target.target: _validate_models(
+            (trial for task in dataset.tasks for trial in task.trials[target.target]),
+            target.target,
+            target.model,
+            aliases,
+        )
+        for target in targets
+    }
+
+
 async def evaluate(
     dataset: Dataset,
     runner: Runner,
@@ -207,24 +230,8 @@ async def evaluate(
     from switchyard.runner import DecisionError
 
     _validate_options(concurrency, timeout)
-    if not dataset.tasks or len({task.task_id for task in dataset.tasks}) != len(dataset.tasks):
-        raise ValueError("dataset must contain non-empty, unique tasks")
-    targets = runner.validate_decision_route(route, allow_response=False)
-    configured = {target.target for target in targets}
-    if not configured or not configured.issubset(dataset.targets):
-        raise ValueError(
-            f"configured targets {sorted(configured)!r} do not match available recorded targets {sorted(dataset.targets)!r}"
-        )
     aliases = _aliases(model_aliases)
-    model_validation = {
-        target.target: _validate_models(
-            (trial for task in dataset.tasks for trial in task.trials[target.target]),
-            target.target,
-            target.model,
-            aliases,
-        )
-        for target in targets
-    }
+    model_validation = _validate_route(dataset, runner, route, aliases)
     run_id = uuid.uuid4().hex
     report = Report(
         len(dataset.tasks),
