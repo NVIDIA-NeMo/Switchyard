@@ -1592,9 +1592,10 @@ llm_client = "primary"
                 "{ALIASED_TARGETS}\n[routes.shared]\nid = \"switchyard/shared\"\n{algorithm}"
             );
             let runner = runner_from_toml(&configured)?;
-            let message = runner
+            let route = runner
                 .route("switchyard/shared")
-                .expect("shared route should load")
+                .expect("shared route should load");
+            let message = route
                 .validate_decision_targets()
                 .expect_err("aliased completion targets cannot identify a named decision")
                 .to_string();
@@ -1603,6 +1604,10 @@ llm_client = "primary"
                     && message.contains("shared/model")
                     && message.contains("distinct model ids"),
                 "{algorithm}: {message}"
+            );
+            assert_eq!(
+                route.validate_decision_targets().unwrap_err().to_string(),
+                message
             );
         }
         Ok(())
@@ -1617,6 +1622,7 @@ llm_client = "primary"
         let route = runner
             .route("switchyard/passthrough")
             .expect("passthrough route should exist");
+        route.validate_decision_targets()?;
         route.validate_decision_targets()?;
         assert_eq!(
             route

@@ -118,6 +118,8 @@ pub struct Route {
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
+    // Targets are immutable; only named-decision consumers surface this error.
+    decision_target_error: Option<String>,
     models: Arc<RuntimeModels>,
 }
 
@@ -140,6 +142,18 @@ impl Route {
         decision_targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
+        let decision_target_error = {
+            let mut names_by_model = HashMap::new();
+            decision_targets.iter().find_map(|target| {
+                let first_name = names_by_model.insert(&target.model, &target.target)?;
+                (first_name != &target.target).then(|| {
+                    format!(
+                        "completion targets {first_name} and {} both use model {}; routing decisions identify models, so reuse one target key, use distinct model ids, or put these targets in separate routes",
+                        target.target, target.model
+                    )
+                })
+            })
+        };
         Self {
             algorithm,
             clients,
@@ -148,6 +162,7 @@ impl Route {
             anthropic_auxiliary_target,
             responses_auxiliary_target,
             decision_targets,
+            decision_target_error,
             models: Arc::new(models),
         }
     }
@@ -172,18 +187,10 @@ impl Route {
     /// Serving and raw model-ID decisions may use identical aliases. Consumers
     /// returning named targets must check this before making routing-time calls.
     pub fn validate_decision_targets(&self) -> Result<(), RunnerError> {
-        let mut names_by_model = HashMap::new();
-        for target in &self.decision_targets {
-            if let Some(first_name) = names_by_model.insert(&target.model, &target.target)
-                && first_name != &target.target
-            {
-                return Err(RunnerError::configuration(format!(
-                    "completion targets {first_name} and {} both use model {}; routing decisions identify models, so reuse one target key, use distinct model ids, or put these targets in separate routes",
-                    target.target, target.model
-                )));
-            }
+        match &self.decision_target_error {
+            Some(message) => Err(RunnerError::configuration(message.clone())),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Returns model-list capability metadata.
