@@ -250,3 +250,62 @@ async fn an_unavailable_local_tier_escalates_and_other_failures_surface() -> Res
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> Result<()> {
+    let route = route(|config| config.agentic_handoff = true)?;
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let task = || {
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ])
+    };
+    for _ in 0..2 {
+        let sent = Arc::clone(&sent);
+        test_drive_with_models(
+            Arc::clone(&route),
+            task(),
+            models(),
+            move |target: ModelId, request: Request| {
+                let sent = Arc::clone(&sent);
+                async move {
+                    Ok(match target.as_str() {
+                        "local" => reply("the build passes"),
+                        "judge" => scored(0.0),
+                        "cloud" => {
+                            let text = serde_json::to_string(&request.llm_request.messages)
+                                .unwrap_or_default();
+                            sent.lock().map(|mut sent| sent.push(text)).ok();
+                            reply("cloud answer")
+                        }
+                        _ => reply("no"),
+                    })
+                }
+            },
+        )
+        .await?;
+    }
+    let sent = sent.lock().map(|sent| sent.clone()).unwrap_or_default();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].contains("Routing notice") && sent[0].contains("the build passes"));
+    assert!(
+        !sent[1].contains("Routing notice"),
+        "sent once per user turn"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_spent_local_turn_budget_skips_the_local_attempt() -> Result<()> {
+    let route = route(|config| config.local_turn_budget = Some(std::time::Duration::ZERO))?;
+    let calls = Arc::new(Calls::default());
+    let task = session(vec![Message::text(Role::User, "fix the build")]);
+    assert_eq!(
+        drive(&route, task, calls.clone(), complete_call, 0.0).await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 0);
+    Ok(())
+}

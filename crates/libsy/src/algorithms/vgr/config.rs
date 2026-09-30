@@ -61,6 +61,15 @@ pub struct VgrConfig {
     /// Lets a long agentic run with earlier tool errors commit on a capable-tier
     /// confirmation once it ends in this many consecutive clean tool results.
     pub confirmed_recovery_min_clean_tail: Option<u32>,
+    /// Tells the capable tier, once per user turn, that it inherits unverified
+    /// tool-using work.
+    pub agentic_handoff: bool,
+    /// Condenses the local tier's work into a digest at handoff. Requires
+    /// `agentic_handoff`.
+    pub compact_handoff: bool,
+    /// Wall-clock budget for the local tier within one user turn, including the
+    /// client's tool execution.
+    pub local_turn_budget: Option<Duration>,
 }
 
 impl VgrConfig {
@@ -80,6 +89,9 @@ impl VgrConfig {
             task_typing: true,
             local_supports_images: false,
             confirmed_recovery_min_clean_tail: None,
+            agentic_handoff: false,
+            compact_handoff: false,
+            local_turn_budget: None,
         }
     }
 
