@@ -456,9 +456,13 @@ explicit `allow_response=True`; task simulation rejects them.
 task evidence. `Dataset.from_runs` validates and pairs it.
 `score(task, decision)` is a pure scorer for a saved native decision.
 `evaluate` owns bounded scheduling and calls that scorer. `Report.add` accumulates
-results without retaining full trajectories or result rows. Import processes
-one trajectory file at a time; paired task inputs and small outcome records stay
-in memory.
+results without retaining full trajectories or result rows. Harbor import decodes
+one complete trajectory JSON file at a time, then keeps each accepted trial's initial
+input and metadata. A dataset retains those trials for every included task, across
+targets and repeats. `input_target` chooses the routing input without discarding the
+other trial inputs.
+Memory therefore depends on both the largest trajectory being decoded and the
+retained trial inputs. Concurrency bounds in-flight decisions, not the loaded dataset size.
 
 Treat projected `Trial`, `Task`, and `Dataset` records as read-only. Their frozen
 dataclasses still contain mutable nested mappings. If you change recorded input,
