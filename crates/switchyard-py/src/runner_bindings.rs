@@ -157,7 +157,11 @@ impl PyRunner {
         let request = Request {
             llm_request: from_python(request)?,
             raw_request: None,
-            metadata: headers.map(|headers| Metadata::from_headers(&headers)),
+            metadata: headers.map(|headers| {
+                let mut metadata = Metadata::from_headers(&headers);
+                metadata.http_headers = Some(headers);
+                metadata
+            }),
         };
         let model = request
             .llm_request

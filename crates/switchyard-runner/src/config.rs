@@ -4,6 +4,7 @@
 //! Version-1 TOML deployment loading for the shared runner.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::env::VarError;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -680,8 +681,12 @@ fn build_backend(
                 )));
             }
             let api_key = std::env::var(variable).map_err(|error| {
+                let reason = match error {
+                    VarError::NotPresent => "environment variable not found",
+                    VarError::NotUnicode(_) => "environment variable was not valid Unicode",
+                };
                 RunnerError::configuration(format!(
-                    "llm client {client_name} could not read api_key_env {variable}: {error}"
+                    "llm client {client_name} could not read api_key_env {variable}: {reason}"
                 ))
             })?;
             if api_key.trim().is_empty() {
