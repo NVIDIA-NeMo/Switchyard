@@ -1185,8 +1185,8 @@ impl RequestLogContext {
                     requested_model = self.requested_model.as_deref().unwrap_or(""),
                     selected_model,
                     streaming = self.streaming,
-                    session_id = self.session_id.as_deref().unwrap_or(""),
-                    correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+                    session_id = self.session_id.as_deref(),
+                    correlation_id = self.correlation_id.as_deref(),
                     handling_duration_ms = duration_ms,
                     error,
                     $message
@@ -1213,8 +1213,8 @@ impl RequestLogContext {
             requested_model = self.requested_model.as_deref().unwrap_or(""),
             selected_model = "",
             streaming = self.streaming,
-            session_id = self.session_id.as_deref().unwrap_or(""),
-            correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+            session_id = self.session_id.as_deref(),
+            correlation_id = self.correlation_id.as_deref(),
             handling_duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0,
             error = "client disconnected before a response was written",
             "LLM request cancelled"
@@ -1906,7 +1906,12 @@ mod tests {
 
     // Collects the terminal request events emitted while it is the active subscriber.
     #[derive(Clone, Default)]
-    struct CapturedEvents(Arc<Mutex<Vec<(Level, String)>>>);
+    struct CapturedEvents(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    struct CapturedEvent {
+        level: Level,
+        message: String,
+    }
 
     impl tracing_subscriber::Layer<tracing_subscriber::Registry> for CapturedEvents {
         fn on_event(
@@ -1923,7 +1928,10 @@ mod tests {
                     message.push_str(&format!("{}={value:?} ", field.name()));
                 },
             );
-            self.0.lock().push((*event.metadata().level(), message));
+            self.0.lock().push(CapturedEvent {
+                level: *event.metadata().level(),
+                message,
+            });
         }
     }
 
@@ -1938,13 +1946,13 @@ mod tests {
         }
     }
 
-    fn captured_events(run: impl FnOnce()) -> Vec<(Level, String)> {
+    fn captured_events(run: impl FnOnce()) -> Vec<CapturedEvent> {
         use tracing_subscriber::layer::SubscriberExt;
 
         let captured = CapturedEvents::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
         tracing::subscriber::with_default(subscriber, run);
-        captured.0.lock().clone()
+        std::mem::take(&mut *captured.0.lock())
     }
 
     // A dropped handler future is the only trace an abandoned buffered request leaves,
@@ -1956,8 +1964,12 @@ mod tests {
         });
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, Level::WARN);
-        assert!(events[0].1.contains("cancelled"), "{:?}", events[0].1);
+        assert_eq!(events[0].level, Level::WARN);
+        assert!(
+            events[0].message.contains("cancelled"),
+            "{:?}",
+            events[0].message
+        );
     }
 
     // A request that reached a response is not a cancellation, even though the guard
@@ -1970,8 +1982,49 @@ mod tests {
         });
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, Level::INFO);
-        assert!(events[0].1.contains("handled"), "{:?}", events[0].1);
+        assert_eq!(events[0].level, Level::INFO);
+        assert!(
+            events[0].message.contains("handled"),
+            "{:?}",
+            events[0].message
+        );
+    }
+
+    // An operator has to be able to tell "no session was sent" from "a blank one was
+    // sent": an absent id omits the field, an empty one records an empty value.
+    #[test]
+    fn request_log_distinguishes_absent_ids_from_empty_ones() {
+        let rows = [
+            (None, None),
+            (Some(String::new()), Some("\"\"")),
+            (Some("abc".to_string()), Some("\"abc\"")),
+        ];
+
+        for (id, expected) in rows {
+            let context = || {
+                let mut context = request_log_context();
+                context.session_id = id.clone();
+                context.correlation_id = id.clone();
+                context
+            };
+
+            let answered = captured_events(|| {
+                let mut guard = RequestLogGuard(Some(context()));
+                guard.emit(&StatusCode::OK.into_response());
+            });
+            let cancelled = captured_events(|| drop(RequestLogGuard(Some(context()))));
+
+            for events in [answered, cancelled] {
+                assert_eq!(events.len(), 1);
+                for field in ["session_id", "correlation_id"] {
+                    let rendered = events[0]
+                        .message
+                        .split_whitespace()
+                        .find_map(|part| part.strip_prefix(&format!("{field}=")));
+                    assert_eq!(rendered, expected, "{field} {id:?}: {}", events[0].message);
+                }
+            }
+        }
     }
 
     // Terminal request severity follows HTTP status instead of error-path bookkeeping.
@@ -2023,8 +2076,12 @@ mod tests {
             let response = render_error_response(client_error(&error), wire_format);
             let events = captured_events(|| request_log_context().emit(&response));
             assert_eq!(events.len(), 1);
-            assert!(!events[0].1.contains(LEAKED), "{}", events[0].1);
-            assert!(events[0].1.contains("upstream_error"), "{}", events[0].1);
+            assert!(!events[0].message.contains(LEAKED), "{}", events[0].message);
+            assert!(
+                events[0].message.contains("upstream_error"),
+                "{}",
+                events[0].message
+            );
             let api_error = response
                 .extensions()
                 .get::<ApiError>()
