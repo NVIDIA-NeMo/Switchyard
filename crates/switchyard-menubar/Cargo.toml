@@ -17,13 +17,17 @@ publish = false
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 serde.workspace = true
 serde_json.workspace = true
+tempfile = "3"
 toml = "0.9"
+toml_edit = "0.25"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
+security-framework = "3"
 tray-icon = "0.25"
 
 [dev-dependencies]
-tempfile = "3"
+# The tests check each edited config with the server's own config parser.
+switchyard-runner.workspace = true
