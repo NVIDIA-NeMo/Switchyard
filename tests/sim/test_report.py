@@ -5,6 +5,7 @@
 
 import json
 from dataclasses import replace
+from itertools import permutations
 
 import pytest
 
@@ -50,6 +51,70 @@ def result(task_id, *, fast=None, strong=None, target="fast", **kwargs):
 
 def report(expected):
     return Report(expected, ("fast", "strong"), run_id="run", concurrency=2)
+
+
+def test_repeat_means_remain_finite_when_intermediate_sum_overflows():
+    value = outcome([1e308, 1e308], cost=1e308, duration=1e308)
+    assert value.reward == value.cost_usd == value.duration_seconds == 1e308
+    assert outcome([1e308, 1e308, -1e308]).reward == pytest.approx(1e308 / 3)
+
+
+@pytest.mark.parametrize("scale,residual", [(1e16, 1.0), (1e308, 1e-300), (1.0, 5e-324)])
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+def test_signed_reward_totals_preserve_residual_independent_of_completion_order(
+    scale, residual, order
+):
+    summary = report(3)
+    rewards = (scale, residual, -scale)
+    for index in order:
+        reward = rewards[index]
+        recorded = outcome([reward])
+        summary.add(result(str(index), fast=recorded, strong=recorded))
+    data = summary.to_dict()
+    assert data["recorded"]["reward"]["total"] == residual
+    assert data["recorded"]["reward"]["mean"] == residual / 3
+    assert data["comparison"] == {
+        "tasks": 3,
+        "routed_mean_reward": residual / 3,
+        "targets": {"fast": residual / 3, "strong": residual / 3},
+        "empirical_oracle_mean_reward": residual / 3,
+    }
+    json.dumps(data, allow_nan=False)
+
+
+def test_unrepresentable_snapshot_is_explicit_and_does_not_corrupt_later_totals():
+    summary = report(3)
+    for index in range(2):
+        recorded = outcome([1e308])
+        summary.add(result(str(index), fast=recorded, strong=recorded))
+    with pytest.raises(ValueError, match="aggregate exceeds finite"):
+        summary.to_dict()
+    recorded = outcome([-1e308])
+    summary.add(result("last", fast=recorded, strong=recorded))
+    data = summary.to_dict()
+    assert data["recorded"]["reward"]["total"] == 1e308
+    assert data["comparison"]["routed_mean_reward"] == pytest.approx(1e308 / 3)
+    assert data["complete"]
+    json.dumps(data, allow_nan=False)
+
+
+def test_comparison_means_do_not_require_representable_baseline_totals():
+    summary = report(2)
+    for index in range(2):
+        summary.add(result(str(index), strong=outcome([1e308], cost=1e308)))
+    data = summary.to_dict()
+    assert data["comparison"]["targets"]["strong"] == 1e308
+    assert data["comparison"]["empirical_oracle_mean_reward"] == 1e308
+    assert data["cost_comparison"]["targets"]["strong"] == 1e308
+    json.dumps(data, allow_nan=False)
+
+
+def test_combined_cost_overflow_is_reported_at_snapshot_without_rejecting_result():
+    summary = report(1)
+    summary.add(replace(result("one", fast=outcome([1], cost=1e308)), routing_cost_usd=1e308))
+    assert summary.processed == 1 and summary.complete
+    with pytest.raises(ValueError, match="aggregate exceeds finite"):
+        summary.to_dict()
 
 
 def test_repeats_are_averaged_within_task_and_comparisons_share_cohort():

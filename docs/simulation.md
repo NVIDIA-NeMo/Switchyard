@@ -252,6 +252,11 @@ and means are `null`; `observed_total` retains the known portion. `complete`
 means every expected task has a scored reward and no evaluation error. Inspect
 each cost and usage field's coverage separately.
 
+Signed rewards are supported. Totals preserve small values when larger positive
+and negative rewards cancel, regardless of task completion order. Published
+aggregates remain floating-point numbers. `Report.to_dict()` raises `ValueError`
+if an exposed aggregate exceeds the finite floating-point range.
+
 Native routing failures retain `routing_error_kind`, `routing_error_status`, and
 `routing_error_target` on each result row. The status is an upstream HTTP code
 when available; the target identifies the failing model, such as the classifier.
