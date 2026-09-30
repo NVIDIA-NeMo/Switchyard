@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, Random};
@@ -50,6 +50,7 @@ impl MockUpstream {
     async fn start() -> TestResult<Self> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
+            .route("/props", get(upstream_props))
             .route("/v1/chat/completions", post(upstream_chat))
             .route("/buffered/responses", post(upstream_buffered_responses))
             .route(
@@ -116,6 +117,10 @@ fn has_system_prompt(call: &Value, expected: &str) -> bool {
             message["role"] == "system" && message["content"].as_str() == Some(expected)
         })
     })
+}
+
+async fn upstream_props() -> Json<Value> {
+    Json(json!({"default_generation_settings": {"n_ctx": 98_304}}))
 }
 
 async fn upstream_chat(
@@ -414,6 +419,10 @@ async fn upstream_chat(
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
+    } else if model == "model/vgr-judge" {
+        "yes".to_string()
+    } else if model == "model/vgr-reject" {
+        "no".to_string()
     } else {
         "ok".to_string()
     };
@@ -1442,6 +1451,66 @@ impl Response {
     fn text(&self) -> TestResult<&str> {
         Ok(std::str::from_utf8(&self.bytes)?)
     }
+}
+
+#[tokio::test]
+async fn vgr_serves_verified_attempts_locally_and_escalates_rejected_ones() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for (judge, served) in [
+        ("model/vgr-judge", "model/vgr-local"),
+        ("model/vgr-reject", "model/vgr-cloud"),
+    ] {
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+
+[targets.local]
+id = "model/vgr-local"
+llm_client = "primary"
+
+[targets.cloud]
+id = "model/vgr-cloud"
+llm_client = "primary"
+
+[targets.judge]
+id = "{judge}"
+llm_client = "primary"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#,
+            upstream.base_url
+        ))?);
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": "answer the question"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_str(served)?)
+        );
+        let models = send(&app, "GET", "/v1/models", None).await?.json()?;
+        assert_eq!(models["data"][0]["context_length"], 98_304);
+    }
+    Ok(())
 }
 
 fn metric_line<'a>(metrics: &'a str, name: &str, labels: &[(&str, &str)]) -> Option<&'a str> {

@@ -1452,12 +1452,28 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .runner
-            .models()
-            .map(|model| (model.id.as_str(), model.capabilities)),
-    ))
+    let mut entries = Vec::new();
+    for model in state.runner.models() {
+        let mut capabilities = model.capabilities;
+        // A VGR route serves its local tier's context, which llama.cpp reports live.
+        if model.algorithm == "vgr"
+            && let Some(context) = discover_context_window(&state.runner, model.id).await
+        {
+            capabilities.context_window = Some(context);
+        }
+        entries.push((model.id.as_str(), capabilities));
+    }
+    Json(model_list_payload(entries))
+}
+
+async fn discover_context_window(runner: &Runner, model: &ModelId) -> Option<u32> {
+    let body = runner
+        .model_properties(model.as_str(), Duration::from_secs(2))
+        .await?;
+    let context = body
+        .pointer("/default_generation_settings/n_ctx")?
+        .as_u64()?;
+    u32::try_from(context).ok().filter(|context| *context > 0)
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {

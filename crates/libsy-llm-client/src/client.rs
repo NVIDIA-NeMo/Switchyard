@@ -183,6 +183,51 @@ impl TranslatingLlmClient {
         self.backend_for(model, operation.wire_format()).is_some()
     }
 
+    /// Reads llama.cpp model properties through the backend's configured auth and headers.
+    ///
+    /// Redirects are disabled so credentials cannot move to another origin.
+    pub async fn get_model_properties(
+        &self,
+        model: &ModelId,
+        format: WireFormat,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let backend =
+            self.backend_for(model, format)
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model} has no backend for {format:?}"),
+                })?;
+        let mut url = reqwest::Url::parse(backend.base_url()).map_err(|error| {
+            LlmClientError::Configuration {
+                message: format!("model {model} has an invalid backend URL: {error}"),
+            }
+        })?;
+        let root = url
+            .path()
+            .trim_end_matches('/')
+            .strip_suffix("/v1")
+            .unwrap_or_else(|| url.path().trim_end_matches('/'))
+            .to_string();
+        url.set_path(&format!("{}/props", root.trim_end_matches('/')));
+        url.set_query(None);
+
+        let builder = self.forward_auth_client.get(url).timeout(timeout);
+        let builder = apply_extra_headers(builder, backend);
+        let response = backend
+            .apply_auth(builder)
+            .send()
+            .await
+            .map_err(convert_reqwest_error)?
+            .error_for_status()
+            .map_err(convert_reqwest_error)?;
+        response
+            .json()
+            .await
+            .map_err(|source| LlmClientError::InvalidResponse {
+                source: Box::new(source),
+            })
+    }
+
     /// Calls a model-bearing auxiliary provider operation.
     ///
     /// Returns an error when the model has no compatible backend or the upstream
@@ -259,6 +304,9 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::Anthropic(_)) {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
+            if nvidia_inference_api_backend(backend) {
+                strip_anthropic_tool_strict(&mut body);
+            }
         }
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
@@ -1047,6 +1095,24 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     }
 }
 
+// NVIDIA Inference API's Anthropic-compatible schema rejects the strict tool-use
+// extension that native Anthropic accepts.
+fn nvidia_inference_api_backend(backend: &Backend) -> bool {
+    reqwest::Url::parse(backend.base_url())
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .is_some_and(|host| host.eq_ignore_ascii_case("inference-api.nvidia.com"))
+}
+
+fn strip_anthropic_tool_strict(body: &mut Value) {
+    let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for tool in tools.iter_mut().filter_map(Value::as_object_mut) {
+        tool.remove("strict");
+    }
+}
+
 // Removes replayed `thinking` blocks that carry no signature.
 //
 // Anthropic requires signed thinking blocks on replay. A router can serve earlier
@@ -1446,6 +1512,33 @@ mod tests {
         )]
     }
 
+    #[tokio::test]
+    async fn model_properties_uses_the_backends_configured_auth()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/props"))
+            .and(wiremock::matchers::header("authorization", "Bearer secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "default_generation_settings": {"n_ctx": 65_536}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+
+        let properties = client
+            .get_model_properties(
+                &ModelId::from("gpt"),
+                WireFormat::OpenAiChat,
+                Duration::from_secs(1),
+            )
+            .await?;
+
+        assert_eq!(properties["default_generation_settings"]["n_ctx"], 65_536);
+        Ok(())
+    }
+
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
         vec![ModelConfig::new(
             "gpt",
@@ -1537,6 +1630,18 @@ mod tests {
             .expect_err("closed port");
 
         assert!(!convert_reqwest_error(error).to_string().contains("CANARY"));
+    }
+
+    #[test]
+    fn nvidia_anthropic_tools_drop_unsupported_strict_field() {
+        let backend = Backend::Anthropic(config("https://inference-api.nvidia.com"));
+        assert!(nvidia_inference_api_backend(&backend));
+        assert!(!nvidia_inference_api_backend(&Backend::Anthropic(config(
+            "https://inference-api.nvidia.com.example.test"
+        ))));
+        let mut body = json!({"tools": [{"name": "a", "input_schema": {}, "strict": true}]});
+        strip_anthropic_tool_strict(&mut body);
+        assert!(body["tools"][0].get("strict").is_none());
     }
 
     #[test]
@@ -2630,12 +2735,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_overflow_400_is_mapped()
+    async fn llama_cpp_context_overflow_400_is_mapped()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-                "error": {"code": "context_length_exceeded", "message": "too big"}
+                "error": {
+                    "message": "request (6016 tokens) exceeds the available context size (4096 tokens), try increasing it"
+                }
             })))
             .mount(&server)
             .await;
