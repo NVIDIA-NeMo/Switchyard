@@ -4,6 +4,9 @@ Add routing to your existing Rust gateway or agent harness with **libsy**, Switc
 
 Start with a local routing decision. Then add tool history or send the selected request through your own model client. Python bindings are covered [separately](reference/host_integration.md#python-bindings).
 
+For Python, use the [configured decision API](simulation.md#use-the-python-decision-api)
+or [evaluate task routing against recorded runs](simulation.md).
+
 ## Install
 
 You need Rust 1.96.1+ with Cargo and a native build toolchain. See [installation requirements](../INSTALLATION.md#requirements). These examples use the Switchyard 0.4.0 Rust API.
