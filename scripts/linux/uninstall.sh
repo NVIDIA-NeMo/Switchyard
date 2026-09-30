@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Removes what install.sh added: the systemd user service, the `sy` Codex
-# profile, and the codex alias. Your config, routing log, and binaries stay
+# profile, and any codex alias from an older install. Config and binaries stay
 # put; the paths are printed so you can delete them yourself.
 #
 # Run with --dry-run to print what would happen.
@@ -13,7 +13,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+case "$#:${1:-}" in
+  0:) ;;
+  1:--dry-run) DRY_RUN=1 ;;
+  *) printf 'Usage: %s [--dry-run]\n' "$0" >&2; exit 2 ;;
+esac
 
 # shellcheck source=scripts/linux/common.sh
 source "$SCRIPT_DIR/common.sh"
@@ -31,6 +35,18 @@ remove_file() {
   fi
 }
 
+step "Removing the sy Codex profile"
+remove_file "$CODEX_PROFILE_CONFIG"
+
+step "Removing the codex alias"
+for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+  if [[ -f "$rc" ]] && grep -qF "$ALIAS_START" "$rc"; then
+    strip_block "$rc" "$ALIAS_START" "$ALIAS_END" "the codex alias"
+  else
+    say "  no alias in $rc"
+  fi
+done
+
 step "Stopping the systemd user service"
 if (( DRY_RUN )); then
   say "  would run: systemctl --user disable --now $SERVICE_NAME"
@@ -42,16 +58,7 @@ else
   say "  stopped and removed $SERVICE_NAME"
 fi
 
-step "Removing the sy Codex profile"
-remove_file "$CODEX_PROFILE_CONFIG"
-
-step "Removing the codex alias"
-for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-  strip_block "$rc" "$ALIAS_START" "$ALIAS_END" "the codex alias" ||
-    say "  no alias in $rc"
-done
-
 step "Done"
 say "Left in place, delete them if you want:"
-say "  $SY_HOME (binary, config, routing log, logs)"
+say "  $SY_HOME (binary, config, routing log)"
 say "  $CODEX_PROFILE_CONFIG.switchyard-backup.* (backups taken at install time)"

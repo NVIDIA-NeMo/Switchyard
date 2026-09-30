@@ -1,7 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: install-linux install-linux-dry-run uninstall-linux
+.DEFAULT_GOAL := help
+.PHONY: help install-linux install-linux-dry-run uninstall-linux
+
+help:
+	@echo "install-linux          Install the systemd user service and Codex profile"
+	@echo "install-linux-dry-run  Preview installation without changes"
+	@echo "uninstall-linux        Remove the service and Codex profile"
 
 ## Install the Switchyard background server as a systemd user service.
 install-linux:
