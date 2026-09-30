@@ -783,8 +783,8 @@ mod tests {
 
     use super::*;
     use switchyard_protocol::{
-        ContentBlock, InstructionBlock, LlmClientError, LlmRequest, Metadata, ModelId, ToolCall,
-        ToolResult, completion_text, text_request, text_response,
+        ContentBlock, ImageSource, InstructionBlock, LlmClientError, LlmRequest, Metadata, ModelId,
+        ToolCall, ToolResult, completion_text, text_request, text_response,
     };
 
     use crate::algorithms::util::llm_judge::Judge;
@@ -1697,6 +1697,52 @@ mod tests {
                 .filter_map(|message| message.text_content("\n"))
                 .any(|text| text.contains(TRAILING_ROUTING_INSTRUCTION))
         );
+        Ok(())
+    }
+
+    /// The judge sees attachments as short markers; the serving request keeps the payload.
+    #[test]
+    fn capability_judge_receives_a_text_projection_of_attachments() -> Result<()> {
+        let judge = capability_judge(None)?;
+        let image = ContentBlock::Image {
+            source: ImageSource::Base64 {
+                media_type: Some("image/png".into()),
+                data: "private-payload".into(),
+            },
+        };
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentBlock::Text {
+                            text: "what is in this screenshot?".into(),
+                        },
+                        image.clone(),
+                    ],
+                }],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+
+        let judge_request = judge.build_request(&State::default(), &request);
+
+        let encoded = serde_json::to_string(&judge_request.llm_request.messages)
+            .expect("judge messages serialize");
+        assert!(encoded.contains("what is in this screenshot?"), "{encoded}");
+        assert!(encoded.contains("[image attachment]"), "{encoded}");
+        assert!(!encoded.contains("private-payload"), "{encoded}");
+        assert!(
+            judge_request.llm_request.messages[0]
+                .content
+                .iter()
+                .all(|block| matches!(block, ContentBlock::Text { .. })),
+            "judge messages must be text only"
+        );
+        // The request that goes on to serve the turn is untouched.
+        assert_eq!(request.llm_request.messages[0].content[1], image);
         Ok(())
     }
 

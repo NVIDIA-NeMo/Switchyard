@@ -156,7 +156,10 @@ where
     type Verdict = D::Verdict;
 
     fn build_request(&self, state: &State, request: &Request) -> Request {
-        let messages = self.input.build_messages(state, request);
+        let mut messages = self.input.build_messages(state, request);
+        for message in &mut messages {
+            super::judge_text::project(&mut message.content);
+        }
         Request {
             llm_request: LlmRequest {
                 model: request.llm_request.model.clone(),
