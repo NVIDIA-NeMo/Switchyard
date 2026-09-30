@@ -87,6 +87,49 @@ def test_unsupported_schema_version_is_rejected(
         replay_module.replay(fixture_document)
 
 
+def test_boolean_schema_version_is_rejected_but_integral_float_is_accepted(
+    replay_module: ModuleType, fixture_document: dict[str, object]
+) -> None:
+    """Keep JSON Booleans out of the numeric schema-version contract."""
+    fixture_document["schema_version"] = True
+    with pytest.raises(replay_module.FixtureError, match="schema_version must be 1"):
+        replay_module.replay(fixture_document)
+
+    fixture_document["schema_version"] = 1.0
+    assert replay_module.replay(fixture_document)["schema_version"] == 1
+
+
+def test_missing_costs_keep_quality_metrics_and_deterministic_output(
+    tmp_path: Path, replay_module: ModuleType, fixture_document: dict[str, object]
+) -> None:
+    """Evaluate quality without inventing cost totals or cost-based tie breaks."""
+    document = deepcopy(fixture_document)
+    document["candidates"].reverse()
+    for case in document["cases"]:
+        for outcome in case["outcomes"].values():
+            outcome["quality"] = 1.0
+            outcome.pop("cost")
+
+    report = replay_module.replay(document)
+    assert report["routed"] == {"quality": 3.0, "cost": None}
+    assert report["fixed_targets"] == {
+        "efficient": {"quality": 3.0, "cost": None},
+        "capable": {"quality": 3.0, "cost": None},
+    }
+    assert report["best_fixed_target"] == "efficient"
+    assert report["quality_regret_vs_best_fixed"] == 0.0
+    assert report["cost_delta_vs_best_fixed"] is None
+
+    path = tmp_path / "cost-free.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    command = [sys.executable, str(SCRIPT), str(path)]
+    first = subprocess.run(command, check=False, capture_output=True, env={})
+    second = subprocess.run(command, check=False, capture_output=True, env={})
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == b""
+    assert first.stdout == second.stdout
+
+
 def test_invalid_probability_distribution_is_rejected(
     replay_module: ModuleType, fixture_document: dict[str, object]
 ) -> None:

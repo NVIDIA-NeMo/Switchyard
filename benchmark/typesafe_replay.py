@@ -85,8 +85,9 @@ def rounded(value: float) -> float:
 
 def replay(document: dict[str, Any]) -> dict[str, Any]:
     """Validate one fixture document and return its deterministic replay report."""
+    schema_version = document.get("schema_version")
     require(
-        document.get("schema_version") == SCHEMA_VERSION,
+        type(schema_version) in (int, float) and schema_version == SCHEMA_VERSION,
         f"schema_version must be {SCHEMA_VERSION}",
     )
     suite = string_value(document.get("suite"), "suite")
@@ -109,10 +110,11 @@ def replay(document: dict[str, Any]) -> dict[str, Any]:
     case_rows = document.get("cases")
     require(isinstance(case_rows, list) and bool(case_rows), "cases must be a non-empty list")
 
-    fixed = {label: {"quality": 0.0, "cost": 0.0} for label in labels}
+    fixed_quality = dict.fromkeys(labels, 0.0)
+    fixed_cost: dict[str, float | None] = dict.fromkeys(labels, 0.0)
     selected_counts = dict.fromkeys(labels, 0)
     routed_quality = 0.0
-    routed_cost = 0.0
+    routed_cost: float | None = 0.0
     fallback_count = 0
     order_sensitive_count = 0
     maximum_movement = 0.0
@@ -184,19 +186,29 @@ def replay(document: dict[str, Any]) -> dict[str, Any]:
             set(outcomes) == set(labels),
             f"case {case_id!r}.outcomes must contain every candidate exactly once",
         )
-        parsed_outcomes: dict[str, dict[str, float]] = {}
+        parsed_quality: dict[str, float] = {}
+        parsed_cost: dict[str, float | None] = {}
         for label in labels:
             outcome = object_value(outcomes[label], f"case {case_id!r}.outcomes.{label}")
             quality = number_value(
                 outcome.get("quality"), f"case {case_id!r}.outcomes.{label}.quality", maximum=1.0
             )
-            cost = number_value(outcome.get("cost"), f"case {case_id!r}.outcomes.{label}.cost")
-            parsed_outcomes[label] = {"quality": quality, "cost": cost}
-            fixed[label]["quality"] += quality
-            fixed[label]["cost"] += cost
+            cost_value = outcome.get("cost")
+            cost = (
+                None
+                if cost_value is None
+                else number_value(cost_value, f"case {case_id!r}.outcomes.{label}.cost")
+            )
+            parsed_quality[label] = quality
+            parsed_cost[label] = cost
+            fixed_quality[label] += quality
+            if fixed_cost[label] is not None:
+                fixed_cost[label] = None if cost is None else fixed_cost[label] + cost
 
-        routed_quality += parsed_outcomes[final_target]["quality"]
-        routed_cost += parsed_outcomes[final_target]["cost"]
+        routed_quality += parsed_quality[final_target]
+        selected_cost = parsed_cost[final_target]
+        if routed_cost is not None:
+            routed_cost = None if selected_cost is None else routed_cost + selected_cost
         case_reports.append(
             {
                 "id": case_id,
@@ -210,17 +222,25 @@ def replay(document: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    best_fixed = min(
-        labels,
-        key=lambda label: (-fixed[label]["quality"], fixed[label]["cost"], labels.index(label)),
-    )
+    best_quality = max(fixed_quality.values())
+    quality_ties = [label for label in labels if fixed_quality[label] == best_quality]
+    if all(fixed_cost[label] is not None for label in quality_ties):
+        best_fixed = min(quality_ties, key=lambda label: fixed_cost[label])
+    else:
+        best_fixed = quality_ties[0]
     fixed_report = {
         label: {
-            "quality": rounded(fixed[label]["quality"]),
-            "cost": rounded(fixed[label]["cost"]),
+            "quality": rounded(fixed_quality[label]),
+            "cost": None if fixed_cost[label] is None else rounded(fixed_cost[label]),
         }
         for label in labels
     }
+    best_fixed_cost = fixed_cost[best_fixed]
+    cost_delta = (
+        None
+        if routed_cost is None or best_fixed_cost is None
+        else rounded(routed_cost - best_fixed_cost)
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "suite": suite,
@@ -232,11 +252,14 @@ def replay(document: dict[str, Any]) -> dict[str, Any]:
         "fallback_count": fallback_count,
         "order_sensitive_case_count": order_sensitive_count,
         "maximum_probability_movement": rounded(maximum_movement),
-        "routed": {"quality": rounded(routed_quality), "cost": rounded(routed_cost)},
+        "routed": {
+            "quality": rounded(routed_quality),
+            "cost": None if routed_cost is None else rounded(routed_cost),
+        },
         "fixed_targets": fixed_report,
         "best_fixed_target": best_fixed,
-        "quality_regret_vs_best_fixed": rounded(fixed[best_fixed]["quality"] - routed_quality),
-        "cost_delta_vs_best_fixed": rounded(routed_cost - fixed[best_fixed]["cost"]),
+        "quality_regret_vs_best_fixed": rounded(fixed_quality[best_fixed] - routed_quality),
+        "cost_delta_vs_best_fixed": cost_delta,
         "cases": case_reports,
     }
 

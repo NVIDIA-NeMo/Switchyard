@@ -16,25 +16,31 @@ always produces the same bytes.
 
 ## Fixture format
 
-Every fixture is one JSON document with `schema_version: 1`. It records:
+Every fixture is one JSON document with numeric `schema_version: 1`; JSON Booleans are not valid
+versions. It records:
 
 - a suite name and pinned Jev model identifier;
 - two or more candidate labels and descriptions;
 - the confidence threshold and fallback target;
 - one or more unique candidate orders per case, with a complete probability distribution for each;
-- measured quality in `[0, 1]` and nonnegative cost for every candidate outcome.
+- measured quality in `[0, 1]` for every candidate outcome;
+- optional nonnegative cost for each candidate outcome.
 
 The replay averages the recorded distributions, normalizes the average, and chooses the largest
 probability. Configured candidate order breaks an exact tie. Confidence is the selected
 probability's improvement over a uniform distribution, scaled to `[0, 1]`. A result below
 `base_threshold` selects `default_target`.
 
-`best_fixed_target` is the candidate with the highest total quality when used for every case. Lower
-cost and then configured candidate order break ties. The report compares the routed totals with
-that fixed baseline. Positive `quality_regret_vs_best_fixed` means routing lost quality; a negative
-value means it beat every fixed target. `cost_delta_vs_best_fixed` uses the same sign convention.
-`order_sensitive_case_count` counts cases whose per-order top candidate changes, while
-`maximum_probability_movement` reports the largest probability shift seen across orders.
+`best_fixed_target` is the candidate with the highest total quality when used for every case. When
+every quality-tied candidate has complete costs, lower cost breaks the tie. If any tied candidate
+has incomplete costs, configured candidate order breaks the tie instead of treating an unknown
+cost as zero. The report compares the routed totals with that fixed baseline. Positive
+`quality_regret_vs_best_fixed` means routing lost quality; a negative value means it beat every
+fixed target. A cost total is `null` if any outcome contributing to it has no cost, and
+`cost_delta_vs_best_fixed` is `null` unless both compared totals are available. Otherwise the cost
+delta uses the same sign convention. `order_sensitive_case_count` counts cases whose per-order top
+candidate changes, while `maximum_probability_movement` reports the largest probability shift
+seen across orders.
 
 ## Sanitization boundary
 
