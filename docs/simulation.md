@@ -170,6 +170,10 @@ full history. The generator above therefore releases each full trajectory before
 reading the next record; `Run` retains only the trials. `HarborRun` is a
 compatibility alias for `Run`. Neither path requires Harbor to be installed.
 
+When a recording has no nonblank initial user message, `task_input` appends the
+original task text after any recorded initial system and user messages. Without
+that fallback, projection fails.
+
 Copied continuation context can contain earlier answers or progress summaries.
 If an initial step has `is_copied_context=true`, projection rejects it unless you
 provide the original task text with `to_trial(task_input=...)` or

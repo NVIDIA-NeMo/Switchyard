@@ -93,6 +93,39 @@ async def test_harbor_to_classifier_scoring_and_matched_metrics(judge: JudgeStub
     assert not report.complete
 
 
+async def test_missing_task_prompt_keeps_system_constraints_in_native_routing(
+    judge: JudgeStub, tmp_path: Path
+):
+    for target in ("weak", "strong"):
+        write_trial(tmp_path / target, "task", f"{target}/model", float(target == "strong"))
+    path = tmp_path / "weak" / "task__attempt" / "agent" / "trajectory.json"
+    trajectory = json.loads(path.read_text())
+    trajectory["steps"] = [
+        {"source": "system", "message": "TASK_REQUIRES_STRONG"},
+        {"source": "agent", "message": "FUTURE_ANSWER_MUST_NOT_LEAK"},
+    ]
+    path.write_text(json.dumps(trajectory))
+    dataset = Dataset.from_runs(
+        {
+            target: load_harbor(tmp_path / target, target=target, task_inputs={"task": "easy task"})
+            for target in ("weak", "strong")
+        },
+        input_target="weak",
+    )
+    rows = []
+    config = deployment(judge.url).replace(
+        'type = "llm_classifier"', 'type = "llm_classifier"\nrecent_turn_window = 0'
+    )
+    report = await evaluate(dataset, Runner.from_toml(config), route="auto", on_result=rows.append)
+    assert report.complete
+    assert rows[0].target == "strong"
+    assert rows[0].outcome.reward == 1
+    assert [call["model"] for call in judge.calls] == ["judge/model"]
+    assert "TASK_REQUIRES_STRONG" in json.dumps(judge.calls)
+    assert "easy task" in json.dumps(judge.calls)
+    assert "FUTURE_ANSWER_MUST_NOT_LEAK" not in json.dumps(judge.calls)
+
+
 @pytest.mark.parametrize("prompt_target", ["weak", "strong"])
 async def test_native_completion_prompt_only_invalidates_its_selected_recording(
     judge: JudgeStub, tmp_path: Path, prompt_target: str

@@ -38,9 +38,9 @@ class Trajectory:
     def initial_messages(self, *, task_input: str | None = None) -> tuple[dict[str, object], ...]:
         """Extract text input before the first agent step, without later evidence.
 
-        ``task_input`` supplies original task text when the recording lacks it
-        or contains copied continuation context. Copied context may summarize
-        earlier execution, so it is never used as task-routing input.
+        ``task_input`` appends missing original task text to the initial context.
+        Copied continuation context may summarize earlier execution, so it is
+        replaced entirely by ``task_input`` and never used as task-routing input.
         """
         return _initial_messages(self._data, task_input)
 
@@ -133,7 +133,9 @@ def _initial_messages(
         if blocks:
             messages.append({"role": role, "content": blocks})
             has_user_input |= role == "user" and any(block["text"].strip() for block in blocks)
-    return tuple(messages) if has_user_input else _task_messages(task_input)
+    if not has_user_input:
+        messages.extend(_task_messages(task_input))
+    return tuple(messages)
 
 
 def _task_messages(text: str | None) -> tuple[dict[str, object], ...]:
