@@ -133,3 +133,6 @@ class Result:
     routing_cost_usd: float | None = None
     routing_usage: Mapping[str, int | None] = field(default_factory=dict)
     error: str | None = None
+    routing_error_kind: str | None = None
+    routing_error_status: int | None = None
+    routing_error_target: str | None = None
