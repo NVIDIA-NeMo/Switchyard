@@ -262,6 +262,52 @@ the actual model and native usage. Return `None` for unknown rates or usage.
 Without it, zero-call routes cost zero and other routing costs remain unknown.
 Backend retries and failed calls may incur unreported spend.
 
+## Compare and tune policies
+
+Reuse one paired dataset to compare configurations. Keep the target keys, recorded
+model identities, and route ID the same. For example, keep `routes.toml` as the
+fixed baseline above and put a candidate policy in `candidate.toml`:
+
+```python
+import asyncio
+import json
+
+from switchyard.runner import Runner
+from switchyard.sim import evaluate
+
+async def compare(dataset):
+    summaries = {}
+    for name, path in {"fixed": "routes.toml", "candidate": "candidate.toml"}.items():
+        report = await evaluate(
+            dataset, Runner.load(path), route="auto", concurrency=1,
+        )
+        summaries[name] = report.to_dict()
+    return summaries
+
+summaries = asyncio.run(compare(dataset))
+for name, summary in summaries.items():
+    print(json.dumps({
+        "policy": name,
+        "complete": summary["complete"],
+        "counts": summary["counts"],
+        "reward_comparison": summary["comparison"],
+        "cost_comparison": summary["cost_comparison"],
+    }, indent=2))
+```
+
+Each configuration gets a fresh runner. The reward comparison includes routed,
+fixed-target, and empirical-oracle means. Before ranking policies, check that all
+runs are complete and the reward comparison covers every task. For a cost ranking,
+also require full cost-comparison coverage. Unknown routing cost stays `null`;
+supply the same `price_call` function to each evaluation to include classifier
+cost estimates. If coverage is partial, use `on_result` rows to compare the same
+task IDs across policies; matching counts alone do not establish a common cohort.
+
+Split recordings by task ID before tuning, keeping every repeat of a task in the
+same split. Use the development split to choose prompts, thresholds, or routing
+rules. Freeze that choice before evaluating a separate held-out dataset. Reusing
+held-out rewards to select the next policy makes them tuning data.
+
 ## Save progressive results
 
 ```sh
