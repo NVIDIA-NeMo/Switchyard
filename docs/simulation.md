@@ -88,6 +88,12 @@ to `evaluate` or `score` when the two systems name the same model differently. A
 the library does not guess equivalence by trimming model names. Missing model
 metadata remains visible as unverified coverage.
 
+Distinct completion targets in one route must have distinct model IDs. Native
+decisions identify models, so two target keys sharing an ID cannot be scored
+separately; configuration loading rejects that ambiguity. Reuse one target key
+for the same candidate, or configure distinct served model IDs. Separate routes
+can still use different target keys for the same model.
+
 ## Use ATIF or custom recordings
 
 `Trajectory.from_dict(data)` takes an owned copy of an ATIF document.

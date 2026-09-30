@@ -239,11 +239,22 @@ impl DeploymentConfig {
                 self.build_anthropic_auxiliary_target(config, &clients);
             let responses_auxiliary_target =
                 self.build_responses_auxiliary_target(config, &clients);
-            let decision_targets = config
+            let decision_targets: Vec<_> = config
                 .routing_target_names()
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
+            let mut names_by_model = HashMap::new();
+            for target in &decision_targets {
+                if let Some(first_name) = names_by_model.insert(&target.model, &target.target)
+                    && first_name != &target.target
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} completion targets {first_name} and {} both use model {}; routing decisions identify models, so use distinct model ids within this route or put these targets in separate routes",
+                        target.target, target.model
+                    )));
+                }
+            }
             let names = config
                 .algorithm
                 .runtime_model_names(route_name)
@@ -1562,6 +1573,81 @@ target = "smart"
                 .collect::<Vec<_>>(),
             ["switchyard/fast", "switchyard/smart"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_target_aliases_in_one_route_are_rejected() {
+        const ALIASED_TARGETS: &str = r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+[targets.first]
+id = "shared/model"
+llm_client = "primary"
+[targets.second]
+id = "shared/model"
+llm_client = "primary"
+[targets.judge]
+id = "judge/model"
+llm_client = "primary"
+"#;
+        for algorithm in [
+            "type = \"random\"\ntargets = [\"first\", \"second\"]\nweights = [1, 99]",
+            "type = \"random\"\ntargets = [\"first\", \"second\"]\nweights = [0, 1]",
+            "type = \"llm_classifier\"\nclassifier_target = \"judge\"\nstrong_target = \"second\"\nweak_target = \"first\"\nbase_threshold = 0.5",
+            "type = \"passthrough\"\ntarget = \"first\"\n[routes.shared.subagents]\ntype = \"passthrough\"\ntarget = \"second\"",
+        ] {
+            let configured = format!(
+                "{ALIASED_TARGETS}\n[routes.shared]\nid = \"switchyard/shared\"\n{algorithm}"
+            );
+            let message = error_message(&configured);
+            assert!(
+                message.contains("route shared")
+                    && message.contains("completion targets first and second")
+                    && message.contains("shared/model")
+                    && message.contains("distinct model ids"),
+                "{algorithm}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_target_can_be_reused_by_parent_and_subagent() -> RunnerResult<()> {
+        let configured = format!(
+            "{VALID_CONFIG}\n[routes.passthrough.subagents]\ntype = \"passthrough\"\ntarget = \"weak\""
+        );
+        let runner = runner_from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("passthrough route should exist");
+        assert_eq!(
+            route
+                .decision_targets()
+                .iter()
+                .map(|target| target.target.as_str())
+                .collect::<Vec<_>>(),
+            ["weak", "weak"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn routing_judge_can_share_a_completion_model_id() -> RunnerResult<()> {
+        let configured = VALID_CONFIG.replace(
+            "id = \"classifier/model\"\nllm_client = \"primary\"",
+            "id = \"weak/model\"\nllm_client = \"anthropic\"",
+        );
+        let runner = runner_from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/classifier")
+            .expect("classifier route should exist");
+        assert_eq!(
+            route.models().models_for(&Category::Judge),
+            route.models().models_for(&Category::Efficient)
+        );
+        assert_eq!(route.decision_targets().len(), 2);
         Ok(())
     }
 

@@ -112,6 +112,12 @@ This includes completion targets and targets used for judging or classification.
 same-model targets on different clients within a route because execution is keyed by model ID.
 Separate routes may use the same model ID on different clients.
 
+Distinct completion target keys within one route must have distinct model IDs.
+Routing decisions identify models, so aliases sharing an ID would make selected
+and fallback target identity ambiguous. The same target key may be reused by the
+parent and subagent routes. Judge-only targets may share a completion model ID
+when the client and prompt rules below permit it.
+
 Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.
 Judge-only, classifier-only, and reviewer-only targets are not completion destinations and do not

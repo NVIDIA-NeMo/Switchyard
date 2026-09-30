@@ -268,6 +268,57 @@ async def test_caller_headers_are_request_scoped_and_respect_configured_auth(
     assert "private prompt" not in str(caught.value)
 
 
+@pytest.mark.parametrize("kind", ["classifier", "random", "random-zero", "random-reversed"])
+def test_ambiguous_completion_target_aliases_fail_before_calls(
+    judge: JudgeStub, tmp_path: Path, kind: str
+) -> None:
+    source = deployment(judge.url).replace('id = "strong/model"', 'id = "weak/model"')
+    if kind != "classifier":
+        targets = '["strong", "weak"]' if kind == "random-reversed" else '["weak", "strong"]'
+        weights = "[0, 1]" if kind == "random-zero" else "[1, 99]"
+        source = (
+            source.split("[routes.classifier]")[0]
+            + f"""
+[routes.random]
+id = "auto"
+type = "random"
+targets = {targets}
+weights = {weights}
+seed = 1
+"""
+        )
+    path = tmp_path / "routes.toml"
+    path.write_text(source)
+    for load in (lambda: Runner.from_toml(source), lambda: Runner.load(path)):
+        with pytest.raises(ValueError, match="completion targets.*model"):
+            load()
+    assert judge.calls == []
+
+
+async def test_same_model_aliases_in_separate_fixed_routes_keep_target_identity(
+    judge: JudgeStub,
+) -> None:
+    source = deployment(judge.url).split("[routes.classifier]")[0]
+    source = source.replace('id = "strong/model"', 'id = "weak/model"')
+    for target in ("weak", "strong"):
+        source += f"""
+[routes.{target}]
+id = "route-{target}"
+type = "passthrough"
+target = "{target}"
+"""
+    runner = Runner.from_toml(source)
+    for target in ("weak", "strong"):
+        selected = await runner.decide(request(model=f"route-{target}"))
+        assert selected.selected.target == target
+        assert selected.selected.model == "weak/model"
+        assert [entry.target for entry in runner.validate_decision_route(f"route-{target}")] == [
+            target
+        ]
+        assert selected.calls == []
+    assert judge.calls == []
+
+
 @pytest.mark.parametrize("advisor", [False, True])
 async def test_response_based_route_requires_opt_in_before_calls(
     judge: JudgeStub, advisor: bool

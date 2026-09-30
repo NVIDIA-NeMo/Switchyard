@@ -176,12 +176,16 @@ impl Route {
         self.caller_auth
     }
 
-    /// Resolves a selected model to this route's non-secret target metadata.
+    /// Resolves a selected model when its configured target name is unambiguous.
     pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.decision_targets
+        let mut matches = self
+            .decision_targets
             .iter()
-            .find(|target| target.model == *model)
-            .cloned()
+            .filter(|target| target.model == *model);
+        let target = matches.next()?;
+        matches
+            .all(|candidate| candidate.target == target.target)
+            .then(|| target.clone())
     }
 
     /// Returns the models grouped for one algorithm execution.
@@ -260,5 +264,86 @@ impl Route {
             .call_auxiliary(&target.model, request, operation)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libsy::Passthrough;
+    use switchyard_protocol::Category;
+
+    use super::*;
+    use crate::{DecisionDescription, Runner};
+
+    async fn describe_programmatic_decision(
+        targets: &[(&str, &str)],
+    ) -> Result<Option<DecisionDescription>, RunnerError> {
+        let route = Route::new(
+            Arc::new(Passthrough),
+            ClientRouter::new(Default::default()),
+            None,
+            ModelCapabilities::default(),
+            None,
+            None,
+            targets
+                .iter()
+                .map(|(target, model)| DecisionTarget {
+                    target: (*target).to_string(),
+                    model: (*model).into(),
+                    format: WireFormat::OpenAiChat,
+                    base_url: "http://localhost/v1".to_string(),
+                    extra_body: Default::default(),
+                })
+                .collect(),
+            RuntimeModels::new(
+                [(
+                    Category::Any,
+                    vec!["selected/model".into(), "fallback/model".into()],
+                )]
+                .into(),
+            ),
+        );
+        let runner = Runner::new(vec![("auto".into(), route)]);
+        let outcome = runner
+            .route("auto")
+            .unwrap()
+            .decide(Request::default())
+            .await?;
+        Ok(runner.describe_decision(&"auto".into(), &outcome))
+    }
+
+    #[tokio::test]
+    async fn programmatic_decision_rejects_ambiguous_selected_and_fallback_targets()
+    -> Result<(), RunnerError> {
+        for model in ["selected/model", "fallback/model"] {
+            let description = describe_programmatic_decision(&[
+                ("selected", "selected/model"),
+                ("fallback", "fallback/model"),
+                ("alias", model),
+            ])
+            .await?;
+            assert!(
+                description.is_none(),
+                "ambiguous model {model} must not resolve to its first target"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn programmatic_decision_accepts_repeated_references_to_one_target()
+    -> Result<(), RunnerError> {
+        let description = describe_programmatic_decision(&[
+            ("unrelated", "other/model"),
+            ("selected", "selected/model"),
+            ("selected", "selected/model"),
+            ("fallback", "fallback/model"),
+        ])
+        .await?
+        .expect("each selected model identifies one target");
+        assert_eq!(description.selected.target, "selected");
+        assert_eq!(description.fallbacks.len(), 1);
+        assert_eq!(description.fallbacks[0].target, "fallback");
+        Ok(())
     }
 }

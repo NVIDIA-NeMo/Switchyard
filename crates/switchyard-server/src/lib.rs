@@ -760,9 +760,9 @@ async fn decision(
     };
     match state.decision_response(&route_model, &outcome, response) {
         Some(response) => Json(response).into_response(),
-        None => {
-            server_error("routing outcome contains a model with no callable target configuration")
-        }
+        None => server_error(
+            "routing outcome contains a model with no unambiguous callable target configuration",
+        ),
     }
 }
 
