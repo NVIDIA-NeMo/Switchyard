@@ -10,6 +10,17 @@ public `switchyard.runner` Python interface. Switchyard's native bindings load
 the existing TOML configuration and execute routing calls. No local server or
 Harbor installation is needed.
 
+In an active Python 3.10+ virtual environment, install from the root of a source
+checkout containing `switchyard/sim`:
+
+```bash
+python -m pip install .
+```
+
+This builds the native extension using the Rust toolchain pinned in
+[`rust-toolchain.toml`](../rust-toolchain.toml). See the
+[installation requirements](../INSTALLATION.md#requirements) for CPU requirements.
+
 ## Start with paired recordings
 
 Each target names a complete recorded model and agent configuration. Its name
@@ -45,6 +56,12 @@ This route always selects `fast`; the unused client is never called. `auto` is t
 route ID passed to `evaluate` or `--route`. `fast` and `strong` are target keys used
 by the dataset and `--run`; their `id` fields name the actual models. For a live
 classifier, use the [Task routing configuration](routing_algorithms/llm_classifier_routing.md).
+
+For `llm_classifier`, the default judge input contains only the opening and latest
+user messages. In the native Python path, set `recent_turn_window = 0` to keep
+recorded system messages alongside the opening user task. See the
+[classifier input rules](routing_algorithms/llm_classifier_routing.md#tuning-options)
+when choosing which context the judge should use.
 
 ```python
 import asyncio
