@@ -6,13 +6,14 @@
 import hashlib
 import json
 import weakref
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
 from switchyard.runner import Runner
-from switchyard.sim import Dataset, evaluate, load_harbor, score
-from switchyard.sim.__main__ import main
+from switchyard.sim import Dataset, Outcome, Result, evaluate, load_harbor, score
+from switchyard.sim.__main__ import _json_record, main
 from tests.test_runner_bindings import JudgeStub, deployment
 from tests.test_runner_bindings import judge as judge
 
@@ -183,6 +184,52 @@ async def test_native_completion_prompt_only_invalidates_its_selected_recording(
     assert summary["routing"]["cost_usd"]["total"] == 0.01
     assert [call["model"] for call in judge.calls] == ["judge/model", "judge/model"]
     assert prompt not in json.dumps(judge.calls)
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failure"])
+def test_cli_json_rows_preserve_exact_serialization(failed):
+    selected = Outcome(
+        trials=2,
+        reward=-0.0,
+        cost_usd=None,
+        duration_seconds=5e-324,
+        reward_trials=2,
+        cost_trials=1,
+        duration_trials=2,
+    )
+    ungraded = Outcome(
+        trials=1,
+        reward=None,
+        cost_usd=1e308,
+        duration_seconds=None,
+        reward_trials=0,
+        cost_trials=1,
+        duration_trials=0,
+    )
+    result = Result(
+        task_id="benchmark/\u03c0",
+        baselines={"weak": selected, "strong": ungraded},
+        target=None if failed else "weak",
+        model=None if failed else "weak/model",
+        outcome=None if failed else selected,
+        decision_id=None if failed else "decision-1",
+        algorithm=None if failed else "llm-classifier",
+        evidence=None
+        if failed
+        else {"verdict": {"label": "\u590d\u6742", "values": [True, None, -0.0, 5e-324, 1e308]}},
+        fallbacks=() if failed else ("strong",),
+        routing_seconds=0.125,
+        routing_calls=1,
+        routing_failed_calls=int(failed),
+        routing_usage={"input_tokens": None, "output_tokens": 0},
+        error="routing failed: DecisionError" if failed else None,
+        routing_error_kind="upstream_http" if failed else None,
+        routing_error_status=503 if failed else None,
+        routing_error_target="judge/model" if failed else None,
+    )
+    assert json.dumps(result, default=_json_record, allow_nan=False) == json.dumps(
+        asdict(result), allow_nan=False
+    )
 
 
 @pytest.mark.parametrize("namespace", [None, "benchmark/v1"])
