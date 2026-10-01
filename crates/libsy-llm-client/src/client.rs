@@ -20,9 +20,8 @@ use switchyard_protocol::{
     ModelId, Request, Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    TranslationError, WireFormat, decode_aggregated_response, decode_request,
-    decode_stream_with_event_limit, encode_aggregated_response_with_extensions, encode_request,
-    encode_stream_with_extensions,
+    TranslationError, WireFormat, decode_aggregated_response, decode_request, decode_stream,
+    encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
 };
 use tokio::time::Instant;
 use tracing::Instrument;
@@ -34,6 +33,8 @@ use crate::raw::RawResponse;
 
 // Caller headers safe to send when caller auth forwarding is disabled.
 const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id"];
+
+const ERROR_BODY_LIMIT: usize = 64 * 1024;
 
 // Headers tied to the inbound connection, destination, or body. The HTTP client
 // must rebuild these for the upstream request, even when forwarding auth.
@@ -145,7 +146,7 @@ impl TranslatingLlmClient {
                 .chain(config.other_backends.iter().flatten())
             {
                 backend.validate_configured_headers(&config.model_name)?;
-                backend.validate_response_limits(&config.model_name)?;
+                backend.validate_response_limit(&config.model_name)?;
             }
             unavailable_until.insert(config.model_name.clone(), AtomicU64::new(0));
         }
@@ -467,10 +468,7 @@ impl TranslatingLlmClient {
                 let chunks = match prepare_response_stream(response, backend, model).await {
                     Ok(chunks) => chunks,
                     Err(error) => {
-                        metrics::record_upstream_attempt(
-                            matches!(&error, LlmClientError::UpstreamResponseTooLarge { .. })
-                                .then_some(status.as_u16()),
-                        );
+                        metrics::record_upstream_attempt(None);
                         return Err(AttemptFailure {
                             error,
                             status: Some(status),
@@ -489,10 +487,7 @@ impl TranslatingLlmClient {
             let body = match read_response_body(response, backend.max_response_bytes()).await {
                 Ok(body) => body,
                 Err(error) => {
-                    metrics::record_upstream_attempt(
-                        matches!(&error, LlmClientError::UpstreamResponseTooLarge { .. })
-                            .then_some(status.as_u16()),
-                    );
+                    metrics::record_upstream_attempt(None);
                     return Err(AttemptFailure {
                         error,
                         status: Some(status),
@@ -509,24 +504,23 @@ impl TranslatingLlmClient {
         }
 
         let retry_after = retry_after_delay(response.headers());
-        let (body, truncated) =
-            match read_error_body(response, backend.max_error_body_bytes()).await {
-                Ok(body) => body,
-                Err(error) => {
-                    metrics::record_upstream_attempt(None);
-                    return Err(AttemptFailure {
-                        error,
-                        status: Some(status),
-                        retry_after,
-                    });
-                }
-            };
+        let (body, truncated) = match read_error_body(response, ERROR_BODY_LIMIT).await {
+            Ok(body) => body,
+            Err(error) => {
+                metrics::record_upstream_attempt(None);
+                return Err(AttemptFailure {
+                    error,
+                    status: Some(status),
+                    retry_after,
+                });
+            }
+        };
         let mut body =
             redact_forwarded_headers(body, metadata, backend.is_forwarding_auth(), truncated);
         if truncated {
             body.push_str(&format!(
                 "\n[upstream error body truncated at {} bytes]",
-                backend.max_error_body_bytes()
+                ERROR_BODY_LIMIT
             ));
         }
         metrics::record_upstream_attempt(Some(status.as_u16()));
@@ -830,11 +824,7 @@ async fn prepare_response_stream(
             .map(|bytes| bytes.to_vec())
             .map_err(convert_reqwest_error)
     });
-    let mut chunks = decode_stream_with_event_limit(
-        bytes,
-        backend.wire_format(),
-        backend.max_stream_event_bytes(),
-    )?;
+    let mut chunks = decode_stream(bytes, backend.wire_format(), backend.max_response_bytes())?;
     match chunks.next().await {
         None => Ok(stream::empty().boxed()),
         // Nothing has reached the caller, so transport failures can still be retried.
@@ -1420,10 +1410,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::backend::{
-        DEFAULT_MAX_ERROR_BODY_BYTES, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_STREAM_EVENT_BYTES,
-        HttpBackendConfig,
-    };
+    use crate::backend::HttpBackendConfig;
 
     fn config(base_url: &str) -> HttpBackendConfig {
         HttpBackendConfig {
@@ -1438,8 +1425,6 @@ mod tests {
             failure_cooldown: Duration::ZERO,
             timeout: None,
             max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
-            max_error_body_bytes: crate::DEFAULT_MAX_ERROR_BODY_BYTES,
-            max_stream_event_bytes: crate::DEFAULT_MAX_STREAM_EVENT_BYTES,
         }
     }
 
@@ -1570,16 +1555,9 @@ mod tests {
         )]
     }
 
-    fn chat_map_with_limits(
-        base_url: &str,
-        max_response_bytes: usize,
-        max_error_body_bytes: usize,
-        max_stream_event_bytes: usize,
-    ) -> Vec<ModelConfig> {
+    fn chat_map_with_limit(base_url: &str, max_response_bytes: usize) -> Vec<ModelConfig> {
         let mut config = config(base_url);
         config.max_response_bytes = max_response_bytes;
-        config.max_error_body_bytes = max_error_body_bytes;
-        config.max_stream_event_bytes = max_stream_event_bytes;
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(config), None)]
     }
 
@@ -1685,31 +1663,20 @@ mod tests {
     }
 
     #[test]
-    fn direct_client_configuration_rejects_zero_response_limits() {
-        for field in [
-            "max_response_bytes",
-            "max_error_body_bytes",
-            "max_stream_event_bytes",
-        ] {
-            let mut config = config("https://example.test/v1");
-            match field {
-                "max_response_bytes" => config.max_response_bytes = 0,
-                "max_error_body_bytes" => config.max_error_body_bytes = 0,
-                "max_stream_event_bytes" => config.max_stream_event_bytes = 0,
-                _ => unreachable!(),
-            }
-            let Err(error) = TranslatingLlmClient::new(&[ModelConfig::new(
-                "gpt",
-                Backend::OpenAiChat(config),
-                None,
-            )]) else {
-                panic!("zero response limit must fail");
-            };
-            assert!(matches!(
-                error,
-                LlmClientError::Configuration { message } if message.contains(field)
-            ));
-        }
+    fn direct_client_configuration_rejects_zero_response_limit() {
+        let mut config = config("https://example.test/v1");
+        config.max_response_bytes = 0;
+        let Err(error) = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(config),
+            None,
+        )]) else {
+            panic!("zero response limit must fail");
+        };
+        assert!(matches!(
+            error,
+            LlmClientError::Configuration { message } if message.contains("max_response_bytes")
+        ));
     }
 
     #[test]
@@ -1962,12 +1929,7 @@ mod tests {
             .await;
         let base_url = format!("{}/v1", server.uri());
 
-        let exact = TranslatingLlmClient::new(&chat_map_with_limits(
-            &base_url,
-            body.len(),
-            DEFAULT_MAX_ERROR_BODY_BYTES,
-            DEFAULT_MAX_STREAM_EVENT_BYTES,
-        ))?;
+        let exact = TranslatingLlmClient::new(&chat_map_with_limit(&base_url, body.len()))?;
         let response = exact
             .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await?;
@@ -1976,12 +1938,7 @@ mod tests {
             "bounded"
         );
 
-        let too_small = TranslatingLlmClient::new(&chat_map_with_limits(
-            &base_url,
-            body.len() - 1,
-            DEFAULT_MAX_ERROR_BODY_BYTES,
-            DEFAULT_MAX_STREAM_EVENT_BYTES,
-        ))?;
+        let too_small = TranslatingLlmClient::new(&chat_map_with_limit(&base_url, body.len() - 1))?;
         let Err(error) = too_small
             .call_rewrite_model(request_for(Some("gpt"), false), None)
             .await
@@ -1999,17 +1956,14 @@ mod tests {
     async fn error_body_limit_truncates_on_a_utf8_boundary()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
-        let body = format!("{}é-sensitive-tail", "a".repeat(7));
+        let retained = "a".repeat(ERROR_BODY_LIMIT - 1);
+        let body = format!("{retained}é-sensitive-tail");
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(500).set_body_string(body))
             .mount(&server)
             .await;
-        let client = TranslatingLlmClient::new(&chat_map_with_limits(
-            &format!("{}/v1", server.uri()),
-            DEFAULT_MAX_RESPONSE_BYTES,
-            8,
-            DEFAULT_MAX_STREAM_EVENT_BYTES,
-        ))?;
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_limit(&format!("{}/v1", server.uri()), 8))?;
 
         let Err(error) = client
             .call_rewrite_model(request_for(Some("gpt"), false), None)
@@ -2020,7 +1974,10 @@ mod tests {
         let LlmClientError::UpstreamHttp { body, .. } = error else {
             panic!("expected an upstream HTTP error");
         };
-        assert_eq!(body, "aaaaaaa\n[upstream error body truncated at 8 bytes]");
+        assert_eq!(
+            body,
+            format!("{retained}\n[upstream error body truncated at {ERROR_BODY_LIMIT} bytes]")
+        );
         assert!(!body.contains('�'));
         assert!(!body.contains("sensitive-tail"));
         Ok(())
@@ -2030,16 +1987,12 @@ mod tests {
     async fn error_body_at_the_exact_limit_is_not_marked_as_truncated()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
+        let body = "a".repeat(ERROR_BODY_LIMIT);
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("12345678"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(body.clone()))
             .mount(&server)
             .await;
-        let client = TranslatingLlmClient::new(&chat_map_with_limits(
-            &format!("{}/v1", server.uri()),
-            DEFAULT_MAX_RESPONSE_BYTES,
-            8,
-            DEFAULT_MAX_STREAM_EVENT_BYTES,
-        ))?;
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
 
         let Err(error) = client
             .call_rewrite_model(request_for(Some("gpt"), false), None)
@@ -2047,10 +2000,10 @@ mod tests {
         else {
             panic!("upstream HTTP error expected");
         };
-        let LlmClientError::UpstreamHttp { body, .. } = error else {
+        let LlmClientError::UpstreamHttp { body: received, .. } = error else {
             panic!("expected an upstream HTTP error");
         };
-        assert_eq!(body, "12345678");
+        assert_eq!(received, body);
         Ok(())
     }
 
@@ -2058,16 +2011,16 @@ mod tests {
     async fn truncated_error_body_redacts_a_partial_forwarded_credential()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
-        let retained = "denied: super-sec";
+        let prefix = "a".repeat(ERROR_BODY_LIMIT - "denied: super-sec".len());
+        let retained = format!("{prefix}denied: super-sec");
         Mock::given(method("POST"))
             .respond_with(
                 ResponseTemplate::new(500)
-                    .set_body_string("denied: super-secret-credential was rejected"),
+                    .set_body_string(format!("{retained}ret-credential was rejected")),
             )
             .mount(&server)
             .await;
-        let mut config = forwarding_config(&format!("{}/v1", server.uri()));
-        config.max_error_body_bytes = retained.len();
+        let config = forwarding_config(&format!("{}/v1", server.uri()));
         let client = TranslatingLlmClient::new(&[ModelConfig::new(
             "gpt",
             Backend::OpenAiChat(config),
@@ -2088,8 +2041,8 @@ mod tests {
         assert_eq!(
             body,
             format!(
-                "denied: [REDACTED]\n[upstream error body truncated at {} bytes]",
-                retained.len()
+                "{prefix}denied: [REDACTED]\n[upstream error body truncated at {} bytes]",
+                ERROR_BODY_LIMIT
             )
         );
         assert!(!body.contains("super-sec"));

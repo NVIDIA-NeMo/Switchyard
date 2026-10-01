@@ -20,8 +20,8 @@ use http_body_util::BodyExt;
 use libsy::{Algorithm, Random};
 use serde_json::{Value, json};
 use switchyard_llm_client::{
-    Backend, ClientRouter, DEFAULT_MAX_ERROR_BODY_BYTES, DEFAULT_MAX_RESPONSE_BYTES,
-    DEFAULT_MAX_STREAM_EVENT_BYTES, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
+    Backend, ClientRouter, DEFAULT_MAX_RESPONSE_BYTES, HttpBackendConfig, ModelConfig,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::RoutedLlmClient;
 use switchyard_protocol::{Category, ModelId, WireFormat};
@@ -790,23 +790,14 @@ fn random_state_with_retries(
     routes: &[(&str, &[&str])],
     max_retries: u32,
 ) -> TestResult<ServerState> {
-    random_state_with_limits(
-        base_url,
-        routes,
-        max_retries,
-        DEFAULT_MAX_RESPONSE_BYTES,
-        DEFAULT_MAX_ERROR_BODY_BYTES,
-        DEFAULT_MAX_STREAM_EVENT_BYTES,
-    )
+    random_state_with_limit(base_url, routes, max_retries, DEFAULT_MAX_RESPONSE_BYTES)
 }
 
-fn random_state_with_limits(
+fn random_state_with_limit(
     base_url: &str,
     routes: &[(&str, &[&str])],
     max_retries: u32,
     max_response_bytes: usize,
-    max_error_body_bytes: usize,
-    max_stream_event_bytes: usize,
 ) -> TestResult<ServerState> {
     let backend = Backend::OpenAiChat(HttpBackendConfig {
         base_url: base_url.to_string(),
@@ -820,8 +811,6 @@ fn random_state_with_limits(
         failure_cooldown: std::time::Duration::ZERO,
         timeout: None,
         max_response_bytes,
-        max_error_body_bytes,
-        max_stream_event_bytes,
     });
     let target_models = routes
         .iter()
@@ -4386,14 +4375,8 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
 #[tokio::test]
 async fn upstream_response_limits_cover_buffered_and_streaming_calls() -> TestResult {
     let upstream = MockUpstream::start().await?;
-    let state = random_state_with_limits(
-        &upstream.base_url,
-        &[(ROUTE_MODEL, &["model/a"])],
-        0,
-        256,
-        DEFAULT_MAX_ERROR_BODY_BYTES,
-        256,
-    )?;
+    let state =
+        random_state_with_limit(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])], 0, 256)?;
     let app = build_switchyard_router(state);
 
     for prompt in ["response-limit-buffered", "response-limit-first-event"] {
