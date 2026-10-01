@@ -408,7 +408,14 @@ impl AdvisorGate {
             Ok(advisor) => {
                 let advisor = advisor.clone();
                 let advisor_models = driver.models_for(&Category::Judge).to_vec();
-                match driver.call_model(consult_request, advisor_models).await {
+                match driver
+                    .call_model_with_error_recovery(
+                        consult_request,
+                        advisor_models,
+                        self.config.fail_open,
+                    )
+                    .await
+                {
                     Ok(response) => {
                         let served_advisor = response
                             .served_model()

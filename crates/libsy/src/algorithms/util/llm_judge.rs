@@ -216,6 +216,7 @@ where
 {
     judge: J,
     policy: P,
+    recover_errors: bool,
     evidence: Option<EvidenceFn<J::Verdict, P>>,
 }
 
@@ -229,8 +230,15 @@ where
         Self {
             judge,
             policy,
+            recover_errors: false,
             evidence: None,
         }
+    }
+
+    /// Lets the judge policy recover from client failures, including deadlines.
+    pub(crate) fn with_error_recovery(mut self, enabled: bool) -> Self {
+        self.recover_errors = enabled;
+        self
     }
 
     /// Enables bounded evidence for built-in judges without widening the public policy trait.
@@ -256,11 +264,9 @@ where
 
     /// Consults the judge, yielding `None` when it is unavailable or unintelligible.
     ///
-    /// A judge is an optimization, not a dependency: failing the caller's request because the
-    /// judge is down would be worse than routing without it, so every failure — transport,
-    /// mid-stream, or unparseable reply — is logged and folded into `None` for the policy's
-    /// fallback branch. A closed driver stream is folded too; the algorithm's next driver
-    /// call surfaces it, so nothing is masked.
+    /// Errors delivered by the host and invalid verdicts are logged and folded into `None`
+    /// for the policy's fallback branch. The HTTP driver delivers client errors here when
+    /// error recovery is enabled; otherwise it stops the run.
     pub(crate) async fn verdict(
         &self,
         state: &mut State,
@@ -272,9 +278,10 @@ where
 
         tracing::info!(target = judge_model, "consulting llm judge");
         let response = driver
-            .call_model(
+            .call_model_with_error_recovery(
                 self.judge.build_request(state, request),
                 judge_models.to_vec(),
+                self.recover_errors,
             )
             .await
             .inspect_err(|error| {

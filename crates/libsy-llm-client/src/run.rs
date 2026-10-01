@@ -11,7 +11,8 @@
 //! libsy owns the stream mechanics; what this module adds is per-target request preparation,
 //! ordered candidate fallback, and the `libsy.client_call` span around each candidate. Each
 //! completion candidate exhausts its backend retry budget before fallback advances. Routing
-//! calls stop on the first candidate's failure. A timeout stops either kind of call.
+//! calls stop on the first candidate's failure unless the algorithm enables error recovery.
+//! A timeout stops completion calls.
 //!
 //! A Responses continuation can refer to state through `previous_response_id` or `conversation`.
 //! [`ClientRouter`] sends native Responses state back to its provider; for Chat or Anthropic
@@ -49,7 +50,7 @@ use crate::{metrics, observability};
 /// a per-call lookup, not one client for the whole run. Use
 /// [`ClientRouter::single`](ClientRouter::single) when one client serves every target.
 ///
-/// Routing calls are buffered; a client failure stops the request before the algorithm continues.
+/// Routing calls are buffered; client failures stop the request unless the call enables recovery.
 /// Once routing completes, non-timeout failures may try the outcome's ordered fallback candidates.
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
@@ -172,7 +173,7 @@ fn emit_routing_observations(
 
 /// Serve one offloaded call and fulfill its promise.
 ///
-/// A client failure stops the driver before the algorithm can issue another call.
+/// A client failure stops the driver unless this call opts into algorithm-level recovery.
 async fn serve(
     clients: ClientRouter,
     call: CallModel,
@@ -198,6 +199,7 @@ async fn serve(
     .await
     {
         Ok(response) => call.respond(Ok(response)),
+        Err(error) if call.recover_errors => call.respond(Err(error)),
         Err(error) => call.fail(error),
     }
 }

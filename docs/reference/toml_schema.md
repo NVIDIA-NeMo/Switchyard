@@ -62,14 +62,18 @@ must exist and be non-empty when the server loads.
 `timeout_ms` applies separately to every call through the client, including judge
 verdicts and answers. To give a judge a short deadline without limiting the
 answering models, put the judge on its own `[llm_clients]` entry; two entries may
-share a `base_url`. When the deadline expires, the server returns `504` without
-trying another target. If the final answer has already started streaming, the
+share a `base_url`. When an answer deadline expires, the server returns `504`.
+If the final answer has already started streaming, the
 server sends a framed error and ends the stream without a success marker.
 
 The Rust runner collects streams used during routing before the algorithm
 continues, preserving provider events for replay. After the configured retries,
-an HTTP client failure stops routing. This also applies when `timeout_ms` is
-unset or an advisor has `fail_open = true`.
+an HTTP client failure stops routing unless the call enables recovery.
+Capability classifiers and advisor gates default to `fail_open = true`.
+A capability classifier routes to the capable tier on judge failures, including
+deadlines. An advisor returns the buffered executor turn when its consult fails.
+Set `fail_open = false` to stop the request on these failures.
+Answer calls keep their usual error behavior.
 
 Set `forward_auth = true` to use each caller's credential instead of a
 server-owned key:
@@ -239,6 +243,7 @@ Capability mode classifies before serving. See
 | `strong_target` | Yes | — | Capable tier. |
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
+| `fail_open` | No | `true` | Capability mode only. When `true`, judge client failures and deadlines route to the capable tier and record fail-open evidence. When `false`, they stop the request. Invalid verdicts use the capable tier with either setting. |
 | `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |

@@ -266,9 +266,11 @@ fn build_multi_format_client(
 `run` and `decide` collect streams used during routing, including answers that an
 algorithm must inspect, before returning them to the algorithm. They retain the
 provider events for replay. After the configured retries, a client failure stops
-`run` or `decide` before the algorithm can choose another routing candidate. This
-also applies when `timeout` is `None` or an advisor has `fail_open = true`.
-`libsy` and custom hosts that drive it directly are unchanged.
+`run` or `decide` by default. Calls with `CallModel::recover_errors` enabled return
+the error to the algorithm so it can apply its fallback policy. Capability
+classifiers and advisor consults default to `fail_open = true`. Set `fail_open = false`
+to stop the request on their client failures. Recovery includes client errors and
+deadlines during stream collection. Custom hosts can honor the same flag when serving calls.
 
 Retries replay the same upstream request to the same model. After routing completes,
 non-timeout failures may try another completion candidate. A timeout stops the call.

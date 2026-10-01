@@ -139,6 +139,11 @@ fn app(
             "type = \"llm_classifier\"\nclassifier_target = \"judge\"\nstrong_target = \"strong\"\nweak_target = \"weak\"\nbase_threshold = 0.5"
         }
     };
+    let route = if mode == "classifier" {
+        format!("{route}\nfail_open = false")
+    } else {
+        route.to_owned()
+    };
     let mut config = tempfile::Builder::new().suffix(".toml").tempfile()?;
     write!(
         config,
@@ -233,6 +238,7 @@ async fn check(
 async fn client_deadline_stops_routing_and_counts_attempts() -> TestResult {
     let upstream = Upstream::start().await?;
     let stalled = app(&upstream, "classifier", "stalled", "weak", 100)?;
+    let fail_open = app(&upstream, "classifier-default", "stalled", "weak", 100)?;
     let streaming = app(&upstream, "terminal", "judge", "streaming", 500)?;
     let slow_stream = app(&upstream, "terminal", "judge", "slow-body", 100)?;
     for endpoint in [
@@ -245,6 +251,13 @@ async fn client_deadline_stops_routing_and_counts_attempts() -> TestResult {
             check(&upstream, &stalled, endpoint, &["stalled"], [0., 0., 1.]).await?;
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
         assert!(body.contains("100 ms"), "{body}");
+        let (calls, counts) = if endpoint == "/v1/decision" {
+            (&["stalled"][..], [0., 0., 1.])
+        } else {
+            (&["stalled", "strong"][..], [1., 0., 1.])
+        };
+        let (status, body) = check(&upstream, &fail_open, endpoint, calls, counts).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
         if endpoint == "/v1/decision" {
             continue;
         }
