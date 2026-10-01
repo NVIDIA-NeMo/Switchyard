@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response as HttpResponse};
 use axum::routing::post;
 use axum::{Json, Router};
 use http_body_util::BodyExt;
-use libsy::{Algorithm, Random};
+use libsy::{Algorithm, Passthrough, Random};
 use serde_json::{Value, json};
 use switchyard_llm_client::{
     Backend, ClientRouter, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
@@ -4714,6 +4714,186 @@ async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult
     );
     Ok(())
 }
+
+/// C06 acceptance: a semantic selection failure must fall through the route's ordered
+/// candidate list and be served by the safe default, not reported as a selector error.
+///
+/// The route is declared with an ordered candidate list, so `model/weak` is tried first and
+/// `model/orca` is the last-resort target. When the first target's upstream rejects the
+/// request, the call must be served by the fallback and the response must say which model
+/// actually served it.
+#[tokio::test]
+async fn c06_unavailable_primary_falls_through_to_the_safe_default() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = ordered_candidate_app(&upstream.base_url, &["model/weak", "model/orca"])?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            // The mock answers this prompt with 503. Only availability-class failures
+            // (transport, timeout, 403/408/429, 5xx) are worth routing around; a 4xx like
+            // the mock's 418 is a client error and is deliberately NOT retried elsewhere.
+            "messages": [{"role": "user", "content": "unavailable"}],
+        })),
+    )
+    .await?;
+
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "an unavailable first candidate must not surface as a client or selector error"
+    );
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/orca"),
+        "the fallback target must be reported as the model that served the turn"
+    );
+    assert!(
+        upstream.calls.lock().await.len() >= 2,
+        "both the failing candidate and the fallback must have been attempted"
+    );
+    Ok(())
+}
+
+/// C06 acceptance: when every candidate fails, the router fails closed.
+///
+/// This is the end of the chain - there is no paid route to fall through to, and inventing
+/// one is exactly the failure mode C06 exists to prevent. The caller must get a typed
+/// upstream error, never a silent substitution.
+#[tokio::test]
+async fn c06_exhausted_candidate_list_fails_closed() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = ordered_candidate_app(&upstream.base_url, &["model/weak"])?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "unavailable"}],
+        })),
+    )
+    .await?;
+
+    // The upstream's own 503 is surfaced rather than rewritten, so the caller learns the
+    // real reason the turn failed instead of a generic "upstream_error".
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .is_none(),
+        "a failed turn must not claim a model served it"
+    );
+    Ok(())
+}
+
+/// C06 acceptance: a model the router does not know must be refused, not guessed at.
+///
+/// An unqualified specialist, a disabled route and a typo'd model name all present the same
+/// way to a caller. None of them may resolve to some other model "close enough" - that is
+/// how an unqualified target would silently start serving traffic.
+#[tokio::test]
+async fn c06_unknown_models_fail_closed_instead_of_substituting() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    for model in [
+        "switchyard/does-not-exist",
+        "switchyard/unqualified-specialist",
+        "totally-invalid-model-xyz",
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": model,
+                "messages": [{"role": "user", "content": "hello"}],
+            })),
+        )
+        .await?;
+
+        assert_eq!(
+            response.status,
+            StatusCode::NOT_FOUND,
+            "{model} must be refused"
+        );
+        let body = response.json()?;
+        assert_eq!(body["error"]["type"], "model_not_found", "{model}");
+        assert_eq!(body["error"]["code"], "model_not_found", "{model}");
+        assert!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .is_none(),
+            "{model} must not be reported as routed to anything"
+        );
+    }
+    Ok(())
+}
+
+/// A deterministic multi-candidate route: first target selected, the rest are fallbacks.
+///
+/// `test_app` builds its routes on `Random`, which picks one target non-deterministically and
+/// therefore cannot express an ordered candidate list. C06's fallback claims are about
+/// ORDER, so the tests that make them need `Passthrough`, whose contract is exactly
+/// "first target selected, the rest are fallbacks, in order".
+fn ordered_candidate_app(base_url: &str, targets: &[&str]) -> TestResult<ServerState> {
+    let backend = Backend::OpenAiChat(HttpBackendConfig {
+        base_url: base_url.to_string(),
+        api_key: Some("test-key".to_string()),
+        forward_auth: false,
+        extra_headers: BTreeMap::new(),
+        extra_body: BTreeMap::new(),
+        omit_body_fields: BTreeSet::new(),
+        reasoning_effort: None,
+        max_retries: 0,
+        timeout: None,
+    });
+    let model_configs = targets
+        .iter()
+        .map(|model| ModelConfig::new(*model, backend.clone(), None))
+        .collect::<Vec<_>>();
+    let client: Arc<dyn RoutedLlmClient> = Arc::new(TranslatingLlmClient::new(&model_configs)?);
+    let decision_targets = targets
+        .iter()
+        .map(|model| DecisionTarget {
+            target: (*model).to_string(),
+            model: ModelId::from(*model),
+            format: WireFormat::OpenAiChat,
+            base_url: base_url.to_string(),
+            extra_body: BTreeMap::new(),
+        })
+        .collect();
+    let route = Route::new(
+        Arc::new(Passthrough),
+        ClientRouter::single(Arc::clone(&client)),
+        None,
+        ModelCapabilities::default(),
+        None,
+        None,
+        decision_targets,
+        RuntimeModels::new(
+            [(
+                Category::Any,
+                targets.iter().map(|model| ModelId::from(*model)).collect(),
+            )]
+            .into(),
+        ),
+    );
+    ServerState::from_runner(Runner::new(vec![(ModelId::from(ROUTE_MODEL), route)]))
+        .map_err(Into::into)
+}
+
 
 /// A `type = "advisor"` deployment: gated executor + reviewer on one mock upstream.
 fn advisor_state(base_url: &str) -> TestResult<ServerState> {
