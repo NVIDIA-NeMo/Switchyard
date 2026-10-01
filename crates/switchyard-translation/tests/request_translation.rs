@@ -2776,6 +2776,170 @@ fn anthropic_structured_output_request(output: Value) -> Value {
     body
 }
 
+#[test]
+fn structured_output_enforcement_survives_translation_or_is_diagnosed() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut optional = city_schema();
+    optional["required"] = json!([]);
+    let mut choices = city_schema();
+    choices["properties"]["city"] = json!({"anyOf": [
+        {"type": "string", "enum": ["Paris", "London"]},
+        {"type": "null", "const": null},
+        {"type": "array", "items": {"type": ["string", "null"]}}
+    ]});
+    let mut sibling_constraints = city_schema();
+    sibling_constraints["properties"]["city"] = json!({
+        "anyOf": [city_schema()],
+        "properties": {"optional": {"type": "string"}}
+    });
+    let mut nested = city_schema();
+    for _ in 1..10 {
+        nested = json!({"type": "object", "properties": {"child": nested},
+            "required": ["child"], "additionalProperties": false});
+    }
+    let too_deep = json!({"type": "object", "properties": {"child": nested},
+        "required": ["child"], "additionalProperties": false});
+    let mut all_of = city_schema();
+    all_of["allOf"] = json!([city_schema()]);
+    for (schema, is_compatible) in [
+        (city_schema(), true),
+        (choices, true),
+        (sibling_constraints, false),
+        (nested, true),
+        (optional, false),
+        (all_of, false),
+        (too_deep, false),
+    ] {
+        let body = anthropic_structured_output_request(json!({
+            "output_config": {"format": {"type": "json_schema", "schema": schema}}
+        }));
+        let mut decoded =
+            engine.decode_request(WireFormat::AnthropicMessages, &body, &normalized_policy())?;
+        assert_eq!(decoded.request.output.is_schema_enforced, Some(true));
+        for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+            let translated =
+                engine.encode_request(target, &decoded.request, &normalized_policy())?;
+            let format = if target == WireFormat::OpenAiChat {
+                &translated.body["response_format"]["json_schema"]
+            } else {
+                &translated.body["text"]["format"]
+            };
+            assert_eq!(format["schema"], schema);
+            assert_eq!(format["strict"].as_bool(), is_compatible.then_some(true));
+            assert_eq!(translated.diagnostics.is_empty(), is_compatible);
+            let policy = TranslationPolicy {
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..normalized_policy()
+            };
+            assert_eq!(
+                engine
+                    .translate_request(WireFormat::AnthropicMessages, target, &body, &policy)
+                    .err()
+                    .map(|error| error.kind()),
+                (!is_compatible).then_some("LossyConversion")
+            );
+        }
+        decoded.request.output.is_schema_enforced = Some(false);
+        let encoded = engine.encode_request(
+            WireFormat::OpenAiChat,
+            &decoded.request,
+            &normalized_policy(),
+        )?;
+        assert_eq!(
+            encoded.body["response_format"]["json_schema"]["strict"],
+            false
+        );
+    }
+    let mut request = switchyard_translation::LlmRequest::default();
+    request.output.is_schema_enforced = Some(true);
+    for format in [
+        None,
+        Some(json!({"type": "json_schema"})),
+        Some(json!({"type": "json_object"})),
+    ] {
+        request.output.response_format = format;
+        for target in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            let encoded = engine.encode_request(target, &request, &normalized_policy())?;
+            assert_eq!(encoded.diagnostics.len(), 1);
+            let policy = TranslationPolicy {
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..normalized_policy()
+            };
+            assert_eq!(
+                engine
+                    .encode_request(target, &request, &policy)
+                    .err()
+                    .map(|error| error.kind()),
+                Some("LossyConversion")
+            );
+        }
+    }
+    for strict in [None, Some(false), Some(true)] {
+        let mut body = json!({
+            "model": "model", "messages": [{"role": "user", "content": "ping"}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "response", "schema": city_schema()
+            }}
+        });
+        if let Some(strict) = strict {
+            body["response_format"]["json_schema"]["strict"] = json!(strict);
+        }
+        let responses = engine.translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &normalized_policy(),
+        )?;
+        for (source, body) in [
+            (WireFormat::OpenAiChat, &body),
+            (WireFormat::OpenAiResponses, &responses.body),
+        ] {
+            let mut decoded = engine.decode_request(source, body, &normalized_policy())?;
+            assert_eq!(
+                decoded.request.output.is_schema_enforced,
+                Some(strict == Some(true))
+            );
+            let translated = engine.encode_request(
+                WireFormat::AnthropicMessages,
+                &decoded.request,
+                &normalized_policy(),
+            )?;
+            assert_eq!(
+                translated.body["output_config"]["format"]["schema"],
+                city_schema()
+            );
+            assert_eq!(translated.diagnostics.is_empty(), strict == Some(true));
+            let policy = TranslationPolicy {
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..normalized_policy()
+            };
+            assert_eq!(
+                engine
+                    .encode_request(WireFormat::AnthropicMessages, &decoded.request, &policy)
+                    .err()
+                    .map(|error| error.kind()),
+                (strict != Some(true)).then_some("LossyConversion")
+            );
+            // The explicit IR setting overrides an existing provider flag.
+            decoded.request.output.is_schema_enforced = Some(strict != Some(true));
+            let encoded = engine.encode_request(
+                WireFormat::OpenAiChat,
+                &decoded.request,
+                &normalized_policy(),
+            )?;
+            assert_eq!(
+                encoded.body["response_format"]["json_schema"]["strict"],
+                strict != Some(true)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn city_schema() -> Value {
     json!({
         "type": "object",

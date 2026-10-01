@@ -169,6 +169,7 @@ where
                 output: OutputParams {
                     max_output_tokens: Some(self.runtime.max_output_tokens),
                     response_format: Some(self.contract.response_format().clone()),
+                    ..OutputParams::default()
                 },
                 ..LlmRequest::default()
             },
