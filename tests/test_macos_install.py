@@ -74,6 +74,19 @@ def test_install_escapes_switchyard_path_in_launch_agent(setup):
     assert values["StandardOutPath"].text == str(switchyard_home / "logs" / "server.log")
     assert values["StandardErrorPath"].text == str(switchyard_home / "logs" / "server.err.log")
 
+    menubar = home / "Library" / "LaunchAgents" / "com.nvidia.switchyard.menubar.plist"
+    menubar_root = ET.parse(menubar).getroot()
+    menubar_entries = list(menubar_root.find("dict"))
+    menubar_values = {
+        menubar_entries[index].text: menubar_entries[index + 1]
+        for index in range(0, len(menubar_entries), 2)
+    }
+    menubar_arguments = [element.text for element in menubar_values["ProgramArguments"]]
+    assert menubar_arguments == [
+        str(switchyard_home / "bin" / "switchyard-menubar"),
+        str(switchyard_home / "menubar.toml"),
+    ]
+
 
 def test_missing_codex_config_creates_routed_config_and_empty_backup(setup):
     _, home, _, _ = setup

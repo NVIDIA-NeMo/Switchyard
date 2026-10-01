@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Removes what install.sh added: the LaunchAgent, the `sy` Codex profile,
+# Removes what install.sh added: the two LaunchAgents, the `sy` Codex profile,
 # and the codex alias. Your config, routing log, and binaries stay put; the
 # paths are printed so you can delete them yourself.
 #
@@ -19,13 +19,15 @@ DRY_RUN=0
 source "$SCRIPT_DIR/common.sh"
 
 step "Unloading LaunchAgents"
-if (( DRY_RUN )); then
-  say "  would unload gui/$UID/$SERVER_LABEL and delete its plist"
-else
-  launchctl bootout "gui/$UID/$SERVER_LABEL" 2>/dev/null || true
-  rm -f "$LAUNCH_AGENTS/$SERVER_LABEL.plist"
-  say "  unloaded $SERVER_LABEL"
-fi
+for label in "$SERVER_LABEL" "$MENUBAR_LABEL"; do
+  if (( DRY_RUN )); then
+    say "  would unload gui/$UID/$label and delete its plist"
+  else
+    launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+    rm -f "$LAUNCH_AGENTS/$label.plist"
+    say "  unloaded $label"
+  fi
+done
 
 step "Removing the sy Codex profile"
 remove_file "$CODEX_PROFILE_CONFIG"
