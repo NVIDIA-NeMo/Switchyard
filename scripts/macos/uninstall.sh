@@ -13,7 +13,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+case "$#:${1:-}" in
+  0:) ;;
+  1:--dry-run) DRY_RUN=1 ;;
+  *) printf 'Usage: %s [--dry-run]\n' "$0" >&2; exit 2 ;;
+esac
 
 # shellcheck source=scripts/macos/common.sh
 source "$SCRIPT_DIR/common.sh"
@@ -50,15 +54,17 @@ strip_block "$CODEX_CONFIG" "$PROFILE_START" "$PROFILE_END" "the legacy sy profi
 step "Unrouting Codex.app"
 # Leaving a routed config.toml behind would point Codex.app at a server that
 # is no longer running, so put the snapshot back before the agents go away.
-if [[ -f "$CODEX_CONFIG" ]] && grep -qE '^[[:space:]]*model_provider[[:space:]]*=[[:space:]]*"sy"' "$CODEX_CONFIG"; then
+if codex_config_uses_switchyard "$CODEX_CONFIG"; then
   if [[ ! -f "$CODEX_DIRECT_CONFIG" ]]; then
     say "  config.toml is routed but $CODEX_DIRECT_CONFIG is missing; edit it by hand"
   elif (( DRY_RUN )); then
-    say "  would restore $CODEX_DIRECT_CONFIG over config.toml"
+    say "  would preserve $CODEX_CONFIG before restoring $CODEX_DIRECT_CONFIG"
   else
+    backup="$(mktemp "$CODEX_CONFIG.switchyard-current.XXXXXX")"
+    cp "$CODEX_CONFIG" "$backup"
     cp "$CODEX_DIRECT_CONFIG" "$CODEX_CONFIG"
     rm -f "$CODEX_DIRECT_CONFIG"
-    say "  restored the unrouted config.toml"
+    say "  restored the unrouted config.toml; preserved the current file at $backup"
   fi
 else
   remove_file "$CODEX_DIRECT_CONFIG"
