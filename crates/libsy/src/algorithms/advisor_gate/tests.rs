@@ -340,21 +340,31 @@ async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
     );
     let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let observed = Arc::clone(&calls);
-    let outcome = crate::drive(gate, task_request(), Arc::new(models), move |call| {
-        let observed = Arc::clone(&observed);
-        async move {
-            let candidates = call.models.clone();
-            observed.lock().push(candidates.clone());
-            let (text, served) = if candidates[0] == target(EXECUTOR) {
-                ("all done", target(EXECUTOR_FALLBACK))
-            } else {
-                ("APPROVE", target(ADVISOR_FALLBACK))
-            };
-            let mut response = reply(text);
-            response.set_served_model(&served);
-            call.respond(Ok(response))
-        }
-    })
+    let outcome = crate::drive(
+        gate,
+        task_request(),
+        Arc::new(models),
+        move |call| {
+            let observed = Arc::clone(&observed);
+            async move {
+                let candidates = call.models.clone();
+                observed.lock().push(candidates.clone());
+                let (text, served) = if candidates[0] == target(EXECUTOR) {
+                    ("all done", target(EXECUTOR_FALLBACK))
+                } else {
+                    ("APPROVE", target(ADVISOR_FALLBACK))
+                };
+                let mut response = reply(text);
+                response.set_served_model(&served);
+                call.respond(Ok(response))
+            }
+        },
+        |call| async move {
+            call.fail(crate::LibsyError::AlgorithmError {
+                message: "unexpected decision call in LLM test".to_string(),
+            })
+        },
+    )
     .await
     .expect("routes");
 

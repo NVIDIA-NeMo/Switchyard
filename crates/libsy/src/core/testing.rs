@@ -78,9 +78,17 @@ pub(crate) async fn test_drive_with_models(
 ) -> Result<(ModelId, Response)> {
     let serve = Arc::new(serve);
     let routing_serve = Arc::clone(&serve);
-    let outcome = crate::drive(algorithm, request, Arc::new(models.into()), move |call| {
-        fulfill(Arc::clone(&routing_serve), call)
-    })
+    let outcome = crate::drive(
+        algorithm,
+        request,
+        Arc::new(models.into()),
+        move |call| fulfill(Arc::clone(&routing_serve), call),
+        |call| async move {
+            call.fail(LibsyError::AlgorithmError {
+                message: "unexpected decision call in LLM test".to_string(),
+            })
+        },
+    )
     .await?;
     let selected_model = outcome.selected_model_id()?.clone();
     let response = match outcome.response {

@@ -79,6 +79,11 @@ async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<
                 upstream_headers: Default::default(),
             }))
         },
+        |call| async move {
+            call.fail(libsy::LibsyError::AlgorithmError {
+                message: "unexpected decision call in prefill router".to_string(),
+            })
+        },
     )
     .await?;
     Ok(outcome.selected_model_id()?.to_string())

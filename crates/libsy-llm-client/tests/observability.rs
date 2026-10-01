@@ -1619,6 +1619,7 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
             Ok(Step::CallModel(call)) => {
                 call.respond(Err(test_error("synthetic upstream failure")))?;
             }
+            Ok(Step::CallDecision(_)) => return Err(test_error("unexpected decision call")),
             Ok(Step::Done(_)) => {
                 return Err(test_error("expected the failed call to fail the run"));
             }

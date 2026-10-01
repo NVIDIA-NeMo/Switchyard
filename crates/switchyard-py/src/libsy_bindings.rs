@@ -9,7 +9,9 @@ use std::sync::Arc;
 use futures::StreamExt;
 use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
-use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyBaseException, PyNotImplementedError, PyStopAsyncIteration, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use serde_json::Value;
 use switchyard_libsy::{
@@ -764,6 +766,9 @@ impl PyAlgorithm {
 
 fn step_to_python(step: RustStep) -> PyResult<PyStep> {
     match step {
+        RustStep::CallDecision(_) => Err(PyNotImplementedError::new_err(
+            "decision calls are not supported by the Python bindings",
+        )),
         RustStep::CallModel(call) => Python::attach(|py| {
             Ok(PyStep::CallModel {
                 call: Py::new(py, PyModelCall::new(py, *call)?)?,

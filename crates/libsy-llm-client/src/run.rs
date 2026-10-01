@@ -27,7 +27,8 @@ use http::StatusCode;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use switchyard_libsy::{
-    Algorithm, CallModel, LibsyError, OutcomeMetadata, Result, RoutingOutcome, RuntimeModels, drive,
+    Algorithm, CallDecision, CallModel, LibsyError, OutcomeMetadata, Result, RoutingOutcome,
+    RuntimeModels, drive,
 };
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
@@ -68,10 +69,16 @@ pub async fn run(
     let outcome = match clients.stored_state_owner(&request) {
         Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
         None => {
-            drive(algorithm, request, models, {
-                let routing_observations = routing_observations.clone();
-                move |call| serve(routing_clients.clone(), call, routing_observations.clone())
-            })
+            drive(
+                algorithm,
+                request,
+                models,
+                {
+                    let routing_observations = routing_observations.clone();
+                    move |call| serve(routing_clients.clone(), call, routing_observations.clone())
+                },
+                unsupported_decision,
+            )
             .await
         }
     };
@@ -136,9 +143,13 @@ pub async fn decide(
     let mut outcome = match clients.stored_state_owner(&request) {
         Some(owner) => continue_on(owner, algorithm.name(), request),
         None => {
-            drive(algorithm, request, models, move |call| {
-                serve(routing_clients.clone(), call, None)
-            })
+            drive(
+                algorithm,
+                request,
+                models,
+                move |call| serve(routing_clients.clone(), call, None),
+                unsupported_decision,
+            )
             .await?
         }
     };
@@ -149,6 +160,14 @@ pub async fn decide(
         .map(|response| clients.remember_state_owner(&outcome.request, response))
         .transpose()?;
     Ok(outcome)
+}
+
+async fn unsupported_decision(call: CallDecision) -> Result<()> {
+    let model = call.model.clone();
+    call.respond(Err(LibsyError::client_call(
+        model,
+        LlmClientError::General("decision calls are not supported by this client".to_string()),
+    )))
 }
 
 /// Emits completed routing calls after the outcome reveals whether one response became the answer.

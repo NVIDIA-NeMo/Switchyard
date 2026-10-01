@@ -633,6 +633,11 @@ mod tests {
                     call.respond(response)
                 }
             },
+            |call| async move {
+                call.fail(LibsyError::AlgorithmError {
+                    message: "unexpected decision call in LLM test".to_string(),
+                })
+            },
         )
         .await?;
 
