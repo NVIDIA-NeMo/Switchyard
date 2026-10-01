@@ -1897,13 +1897,17 @@ must exist and be non-empty when the server loads.</p>
 <p><code>timeout_ms</code> applies separately to every call through the client, including judge
 verdicts and answers. To give a judge a short deadline without limiting the
 answering models, put the judge on its own <code>[llm_clients]</code> entry; two entries may
-share a <code>base_url</code>. When the deadline expires, the server returns <code>504</code> without
-trying another target. If the final answer has already started streaming, the
+share a <code>base_url</code>. When an answer deadline expires, the server returns <code>504</code>.
+If the final answer has already started streaming, the
 server sends a framed error and ends the stream without a success marker.</p>
 <p>The Rust runner collects streams used during routing before the algorithm
 continues, preserving provider events for replay. After the configured retries,
-an HTTP client failure stops routing. This also applies when <code>timeout_ms</code> is
-unset or an advisor has <code>fail_open = true</code>.</p>
+an HTTP client failure stops routing unless the call enables recovery.
+Capability classifiers and advisor gates default to <code>fail_open = true</code>.
+A capability classifier routes to the capable tier on judge failures, including
+deadlines. An advisor returns the buffered executor turn when its consult fails.
+Set <code>fail_open = false</code> to stop the request on these failures.
+Answer calls keep their usual error behavior.</p>
 <p>Set <code>forward_auth = true</code> to use each caller's credential instead of a
 server-owned key:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[llm_clients.claude]</span>
@@ -2280,6 +2284,12 @@ dependencies available in the active virtual environment.</p>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
 <td>Lowest solve probability that routes to the weak target. In <code>[0, 1]</code>.</td>
+</tr>
+<tr>
+<td><code>fail_open</code></td>
+<td style="text-align: center;">No</td>
+<td><code>true</code></td>
+<td>Capability mode only. When <code>true</code>, judge client failures and deadlines route to the capable tier and record fail-open evidence. When <code>false</code>, they stop the request. Invalid verdicts use the capable tier with either setting.</td>
 </tr>
 <tr>
 <td><code>threshold_step</code></td>
