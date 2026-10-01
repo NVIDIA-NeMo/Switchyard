@@ -3283,6 +3283,176 @@ target = "openai"
     Ok(())
 }
 
+/// Serves `/v1/responses` and `/v1/messages` for a stub gateway on one host. For each call, it
+/// records every value of the `authorization`, `x-api-key`, `chatgpt-account-id`, and
+/// `anthropic-version` headers, so a header sent twice shows up as two values. Every
+/// `/v1/responses` call returns a judge verdict that picks the efficient tier.
+async fn upstream_gateway_records_auth(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    let header = |name: &str| {
+        headers
+            .get_all(name)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .collect::<Vec<_>>()
+    };
+    calls.lock().await.push(json!({
+        "path": uri.path(),
+        "authorization": header("authorization"),
+        "x_api_key": header("x-api-key"),
+        "chatgpt_account_id": header("chatgpt-account-id"),
+        "anthropic_version": header("anthropic-version"),
+    }));
+    let model = body["model"].as_str().unwrap_or_default();
+    if uri.path() == "/v1/responses" {
+        let verdict = json!({
+            "crux": "bounded task", "primary_rule": "SUP-1",
+            "capability_boundary": "supported", "p_solve": 0.9,
+        });
+        return Json(responses_body("resp_judge", model, &verdict.to_string())).into_response();
+    }
+    Json(json!({
+        "id": "msg_gateway", "type": "message", "role": "assistant", "model": model,
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn", "stop_sequence": null,
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .into_response()
+}
+
+#[tokio::test]
+async fn route_on_one_host_forwards_the_bearer_token_to_responses_and_messages() -> TestResult {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gateway = Router::new()
+        .route("/v1/responses", post(upstream_gateway_records_auth))
+        .route("/v1/messages", post(upstream_gateway_records_auth))
+        .with_state(Arc::clone(&calls));
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}/v1", listener.local_addr()?);
+    tokio::spawn(async move { axum::serve(listener, gateway).await });
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.gateway_responses]
+format = "openai_responses"
+base_url = "{base_url}"
+forward_auth = true
+max_retries = 0
+
+[llm_clients.gateway_messages]
+format = "anthropic_messages"
+base_url = "{base_url}"
+forward_auth = true
+max_retries = 0
+
+[targets]
+judge = {{ id = "model/judge", llm_client = "gateway_responses" }}
+capable = {{ id = "model/capable", llm_client = "gateway_messages" }}
+efficient = {{ id = "model/efficient", llm_client = "gateway_messages" }}
+
+[routes.agent]
+id = "switchyard/agent"
+type = "composite"
+classifier = {{ target = "judge", base_threshold = 0.5, classify_trigger = "user_turn" }}
+stage = {{ capable_target = "capable", efficient_target = "efficient", confidence_threshold = 0.5 }}
+
+[routes.claude]
+id = "switchyard/claude"
+type = "passthrough"
+target = "efficient"
+"#
+    ))?;
+    let app = build_switchyard_router(state);
+    let bearer = [
+        ("authorization", "Bearer gateway-key"),
+        ("chatgpt-account-id", "account-1"),
+    ];
+
+    for (path, body) in [
+        (
+            "/v1/chat/completions",
+            json!({"model": "switchyard/agent", "messages": [{"role": "user", "content": "hello"}]}),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": "switchyard/agent", "input": "hi there"}),
+        ),
+    ] {
+        let response = send_with_headers(&app, "POST", path, Some(body), &bearer).await?;
+        assert_eq!(
+            response.status,
+            StatusCode::OK,
+            "{path}: {}",
+            response.text()?
+        );
+        assert_eq!(
+            response.headers["x-model-router-selected-model"],
+            "model/efficient"
+        );
+    }
+    // Both endpoints receive exactly one copy of the caller's bearer token and no `x-api-key`.
+    // Only the Messages call gets `anthropic-version`.
+    let judge = json!({
+        "path": "/v1/responses", "authorization": ["Bearer gateway-key"], "x_api_key": [],
+        "chatgpt_account_id": ["account-1"], "anthropic_version": []
+    });
+    let answer = json!({
+        "path": "/v1/messages", "authorization": ["Bearer gateway-key"], "x_api_key": [],
+        "chatgpt_account_id": ["account-1"], "anthropic_version": ["2023-06-01"]
+    });
+    assert_eq!(
+        *calls.lock().await,
+        [judge.clone(), answer.clone(), judge, answer]
+    );
+
+    // The mixed route serves OpenAI callers only, so a Messages caller gets 400 before any call.
+    let messages_body = |model: &str| {
+        json!({
+            "model": model,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hello"}]
+        })
+    };
+    let wrong_api = send_with_headers(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(messages_body("switchyard/agent")),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(wrong_api.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        wrong_api.json()?["error"]["message"],
+        "route switchyard/agent forwards an OpenAI login; call it through /v1/chat/completions or /v1/responses"
+    );
+    assert_eq!(calls.lock().await.len(), 4);
+
+    // A route that uses only the Messages client still serves Messages callers.
+    let claude = send_with_headers(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(messages_body("switchyard/claude")),
+        &[("authorization", "Bearer gateway-key")],
+    )
+    .await?;
+    assert_eq!(claude.status, StatusCode::OK, "{}", claude.text()?);
+    assert_eq!(
+        calls.lock().await[4..],
+        [json!({
+            "path": "/v1/messages", "authorization": ["Bearer gateway-key"], "x_api_key": [],
+            "chatgpt_account_id": [], "anthropic_version": ["2023-06-01"]
+        })]
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
     let (upstream, app) = test_app(&[

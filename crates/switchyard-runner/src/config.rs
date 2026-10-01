@@ -363,6 +363,8 @@ impl DeploymentConfig {
         let mut by_model = HashMap::new();
         let mut targets_by_model: HashMap<&str, (&str, &TargetConfig)> = HashMap::new();
         let mut caller_auth = None;
+        let mut mixes_families = false;
+        let mut forwarding_origins = BTreeSet::new();
         for name in route.callable_target_names() {
             let target = self.targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
@@ -386,15 +388,25 @@ impl DeploymentConfig {
             })?;
             if client_config.forward_auth {
                 let target_auth = client_config.format.caller_auth_kind();
-                if caller_auth.is_some_and(|kind| kind != target_auth) {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name} cannot forward both Anthropic and OpenAI caller credentials"
-                    )));
-                }
+                mixes_families |= caller_auth.is_some_and(|kind| kind != target_auth);
                 caller_auth = Some(target_auth);
+                forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
             }
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
+        }
+        // A route may mix credential families only when all of its forwarding clients use the
+        // same scheme, host, and port, so the caller's credential reaches only that host. Such a
+        // route serves Chat Completions and Responses callers because Anthropic clients forward
+        // the caller's `authorization` header unchanged.
+        if mixes_families {
+            if forwarding_origins.len() > 1 {
+                let origins = Vec::from_iter(forwarding_origins).join(", ");
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host"
+                )));
+            }
+            caller_auth = Some(CallerAuthKind::OpenAi);
         }
         let completion_targets = route
             .routing_target_names()
@@ -1903,6 +1915,93 @@ confidence_threshold = 0.5
                     .contains(&format!("extra_headers cannot set \"{header}\""))
             );
         }
+    }
+
+    // Builds a classifier route whose judge uses a Responses client and whose tiers use a
+    // Messages client, plus a passthrough route that uses only the Messages client.
+    fn mixed_forwarding_config(messages_url: &str) -> String {
+        format!(
+            r#"
+schema_version = 1
+
+[llm_clients.responses]
+format = "openai_responses"
+base_url = "https://gateway.example.test/v1"
+forward_auth = true
+
+[llm_clients.messages]
+format = "anthropic_messages"
+base_url = "{messages_url}"
+forward_auth = true
+
+[targets.judge]
+id = "judge/model"
+llm_client = "responses"
+
+[targets.capable]
+id = "capable/model"
+llm_client = "messages"
+
+[targets.efficient]
+id = "efficient/model"
+llm_client = "messages"
+
+[routes.hub]
+id = "switchyard/hub"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "capable"
+weak_target = "efficient"
+base_threshold = 0.5
+
+[routes.claude]
+id = "switchyard/claude"
+type = "passthrough"
+target = "capable"
+"#
+        )
+    }
+
+    #[test]
+    fn forwarding_route_mixes_credential_families_only_on_one_host() -> RunnerResult<()> {
+        // The URL path does not count, so both base URLs name one host.
+        for messages_url in [
+            "https://gateway.example.test",
+            "https://gateway.example.test/v1",
+        ] {
+            let runner = runner_from_toml(&mixed_forwarding_config(messages_url))?;
+            let caller_auth = |id| runner.route(id).and_then(Route::caller_auth);
+            assert_eq!(caller_auth("switchyard/hub"), Some(CallerAuthKind::OpenAi));
+            assert_eq!(
+                caller_auth("switchyard/claude"),
+                Some(CallerAuthKind::Anthropic)
+            );
+        }
+
+        // A different host, port, or scheme is a different origin.
+        for (messages_url, origins) in [
+            (
+                "https://api.anthropic.test",
+                "https://api.anthropic.test, https://gateway.example.test",
+            ),
+            (
+                "https://gateway.example.test:8443",
+                "https://gateway.example.test, https://gateway.example.test:8443",
+            ),
+            (
+                "http://gateway.example.test",
+                "http://gateway.example.test, https://gateway.example.test",
+            ),
+        ] {
+            let error = error_message(&mixed_forwarding_config(messages_url));
+            assert!(
+                error.contains(&format!(
+                    "route hub cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host"
+                )),
+                "{error}"
+            );
+        }
+        Ok(())
     }
 
     const ADVISOR_CONFIG: &str = r#"

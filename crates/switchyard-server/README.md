@@ -91,10 +91,14 @@ A client can set `forward_auth = true` instead of `api_key_env` to send the
 caller's credential to the configured upstream. OpenAI clients forward
 `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
 forward `authorization` or `x-api-key`. Enable this only when every forwarding
-client's `base_url` should receive the caller's login. All backends reachable
-through the route must use the same provider. Other application headers are
-preserved and may contain provider-specific credentials. A forwarding route
-must be called through the matching provider API.
+client's `base_url` should receive the caller's login. Other application headers
+are preserved and may contain provider-specific credentials. A route's
+forwarding clients must use one credential family: all OpenAI formats or all
+`anthropic_messages`. A route may mix the two families only when all of its
+forwarding clients use the same scheme, host, and port. Such a route serves
+Chat Completions and Responses callers and forwards the caller's bearer token to
+every client.
+The server returns 400 to a caller whose API the route does not serve.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
 Target-level `system_prompt` values are prepended when that target serves a completion.
