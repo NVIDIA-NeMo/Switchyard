@@ -6,7 +6,7 @@
 //! These traits describe separate workflow steps. They do not call one another or
 //! decide when distillation runs or when a candidate becomes the active skill.
 
-use async_trait::async_trait;
+use std::future::Future;
 
 use crate::error::Result;
 use crate::ids::{SkillNamespace, SkillVersionId};
@@ -15,46 +15,55 @@ use crate::model::{
 };
 
 /// Loads normalized trajectories for a target namespace.
-#[async_trait]
 pub trait TrajectorySource: Send + Sync {
     /// Loads all trajectories currently available for `namespace`.
-    async fn load(&self, namespace: &SkillNamespace) -> Result<Vec<Trajectory>>;
+    fn load(
+        &self,
+        namespace: &SkillNamespace,
+    ) -> impl Future<Output = Result<Vec<Trajectory>>> + Send;
 }
 
 /// Converts normalized trajectories into a candidate skill.
-#[async_trait]
 pub trait SkillDistiller: Send + Sync {
     /// Produces a candidate without implicitly activating it.
-    async fn distill(&self, request: &DistillationRequest) -> Result<SkillCandidate>;
+    fn distill(
+        &self,
+        request: &DistillationRequest,
+    ) -> impl Future<Output = Result<SkillCandidate>> + Send;
 }
 
 /// Evaluates a candidate against optional evaluation trajectories.
-#[async_trait]
 pub trait SkillValidator: Send + Sync {
     /// Returns validation evidence; activation remains a caller decision.
-    async fn validate(
+    fn validate(
         &self,
         candidate: &SkillCandidate,
         evaluation: &[Trajectory],
-    ) -> Result<ValidationReport>;
+    ) -> impl Future<Output = Result<ValidationReport>> + Send;
 }
 
 /// Persists candidates and controls the active skill version.
-#[async_trait]
 pub trait SkillStore: Send + Sync {
     /// Returns the active candidate for `namespace`, when one exists.
-    async fn active(&self, namespace: &SkillNamespace) -> Result<Option<SkillCandidate>>;
+    fn active(
+        &self,
+        namespace: &SkillNamespace,
+    ) -> impl Future<Output = Result<Option<SkillCandidate>>> + Send;
 
     /// Persists a candidate without activating it.
-    async fn save_candidate(&self, candidate: &SkillCandidate) -> Result<()>;
+    fn save_candidate(&self, candidate: &SkillCandidate)
+    -> impl Future<Output = Result<()>> + Send;
 
     /// Activates a previously saved version.
-    async fn activate(
+    fn activate(
         &self,
         namespace: &SkillNamespace,
         version: &SkillVersionId,
-    ) -> Result<ActivationRecord>;
+    ) -> impl Future<Output = Result<ActivationRecord>> + Send;
 
     /// Restores the immediately preceding active version.
-    async fn rollback(&self, namespace: &SkillNamespace) -> Result<ActivationRecord>;
+    fn rollback(
+        &self,
+        namespace: &SkillNamespace,
+    ) -> impl Future<Output = Result<ActivationRecord>> + Send;
 }
