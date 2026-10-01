@@ -263,6 +263,8 @@ fn build_multi_format_client(
   after an exhausted transient failure. Zero disables it. State is shared per model
   within the client. Calls resume when the cooldown expires. Deployment TOML defaults
   `failure_cooldown_ms` to `5000` (5 seconds); set it to `0` to disable cooldown.
+  With `forward_auth`, HTTP 429 keeps its request-local retries and fallback while
+  leaving shared cooldown state unchanged.
 - `HttpBackendConfig::timeout` bounds one complete response, including retries,
   retry delays, and every stream read. Expiry returns `LlmClientError::Timeout`,
   either from the call or from the returned stream, which then ends. `None` leaves

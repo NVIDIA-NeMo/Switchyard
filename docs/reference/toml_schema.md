@@ -65,7 +65,9 @@ The cooldown starts after retries are exhausted.
 
 `failure_cooldown_ms` tracks transport failures, timeouts, HTTP 408/429, and 5xx
 responses after retries. State is shared across callers per model within the client,
-including callers using forwarded credentials. During cooldown,
+including callers using forwarded credentials. With `forward_auth = true`, HTTP 429
+only triggers request-local retries and fallback; other callers keep trying the model.
+For shared credentials, HTTP 429 also triggers cooldown. During cooldown,
 ordered fallback tries the next candidate. A terminal cooldown error returns HTTP
 503. Calls resume together after expiry. Auxiliary calls and errors after a stream
 is returned leave cooldown state unchanged.
