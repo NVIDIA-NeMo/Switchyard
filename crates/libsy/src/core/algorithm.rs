@@ -495,8 +495,8 @@ where
     loop {
         tokio::select! {
             Some(result) = in_flight.next() => match result {
-                Ok(()) => {},
-                Err(err) => return Err(err),
+                Ok(()) => {}, // Call completed successfully
+                Err(err) => return Err(err), // Call failed, propagate the error
             },
             step = stream.next() => {
                 match step {
