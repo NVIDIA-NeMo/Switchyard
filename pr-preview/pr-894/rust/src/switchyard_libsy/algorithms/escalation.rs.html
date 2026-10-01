@@ -444,7 +444,7 @@
 <a href=#444 id=444 data-nosnippet>444</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#445 id=445 data-nosnippet>445</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
 <a href=#446 id=446 data-nosnippet>446</a>    <span class="kw">use </span><span class="kw">crate</span>::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
-<a href=#447 id=447 data-nosnippet>447</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reject_decision, reply, test_drive_with_models};
+<a href=#447 id=447 data-nosnippet>447</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, reply, serve_decision, test_drive_with_models};
 <a href=#448 id=448 data-nosnippet>448</a>
 <a href=#449 id=449 data-nosnippet>449</a>    <span class="doccomment">/// A queue of replies, drained in order.
 <a href=#450 id=450 data-nosnippet>450</a>    </span><span class="kw">struct </span>Queue(Mutex&lt;VecDeque&lt;String&gt;&gt;);
@@ -633,7 +633,7 @@
 <a href=#633 id=633 data-nosnippet>633</a>                    call.respond(response)
 <a href=#634 id=634 data-nosnippet>634</a>                }
 <a href=#635 id=635 data-nosnippet>635</a>            },
-<a href=#636 id=636 data-nosnippet>636</a>            reject_decision,
+<a href=#636 id=636 data-nosnippet>636</a>            serve_decision,
 <a href=#637 id=637 data-nosnippet>637</a>        )
 <a href=#638 id=638 data-nosnippet>638</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#639 id=639 data-nosnippet>639</a>
