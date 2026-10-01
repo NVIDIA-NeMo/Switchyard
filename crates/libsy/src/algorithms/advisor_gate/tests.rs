@@ -17,7 +17,7 @@ use switchyard_protocol::{
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
 use super::*;
 use crate::RuntimeModels;
-use crate::core::testing::{Serve, reply, test_drive_with_models};
+use crate::core::testing::{Serve, reject_decision, reply, test_drive_with_models};
 
 const EXECUTOR: &str = "executor";
 const ADVISOR: &str = "advisor";
@@ -359,11 +359,7 @@ async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
                 call.respond(Ok(response))
             }
         },
-        |call| async move {
-            call.fail(crate::LibsyError::AlgorithmError {
-                message: "unexpected decision call in LLM test".to_string(),
-            })
-        },
+        reject_decision,
     )
     .await
     .expect("routes");

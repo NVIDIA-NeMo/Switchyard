@@ -444,7 +444,7 @@ mod tests {
     use super::*;
     use crate::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
     use crate::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
-    use crate::core::testing::{Serve, reply, test_drive_with_models};
+    use crate::core::testing::{Serve, reject_decision, reply, test_drive_with_models};
 
     /// A queue of replies, drained in order.
     struct Queue(Mutex<VecDeque<String>>);
@@ -633,11 +633,7 @@ mod tests {
                     call.respond(response)
                 }
             },
-            |call| async move {
-                call.fail(LibsyError::AlgorithmError {
-                    message: "unexpected decision call in LLM test".to_string(),
-                })
-            },
+            reject_decision,
         )
         .await?;
 

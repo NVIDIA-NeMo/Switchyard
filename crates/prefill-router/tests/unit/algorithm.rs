@@ -65,6 +65,12 @@ fn forward() -> (
     )
 }
 
+async fn reject_decision(call: libsy::CallDecision) -> libsy::Result<()> {
+    call.fail(LibsyError::AlgorithmError {
+        message: "unexpected decision call in prefill router".to_string(),
+    })
+}
+
 async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<String> {
     let outcome = libsy::drive(
         route,
@@ -79,11 +85,7 @@ async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<
                 upstream_headers: Default::default(),
             }))
         },
-        |call| async move {
-            call.fail(libsy::LibsyError::AlgorithmError {
-                message: "unexpected decision call in prefill router".to_string(),
-            })
-        },
+        reject_decision,
     )
     .await?;
     Ok(outcome.selected_model_id()?.to_string())

@@ -22,7 +22,7 @@ use switchyard_protocol::{
     Category, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
 };
 
-use crate::core::algorithm::{Algorithm, CallModel, Driver, RuntimeModels};
+use crate::core::algorithm::{Algorithm, CallDecision, CallModel, Driver, RuntimeModels};
 use crate::{LibsyError, Result};
 
 /// Builds one runtime model category for a test.
@@ -83,11 +83,7 @@ pub(crate) async fn test_drive_with_models(
         request,
         Arc::new(models.into()),
         move |call| fulfill(Arc::clone(&routing_serve), call),
-        |call| async move {
-            call.fail(LibsyError::AlgorithmError {
-                message: "unexpected decision call in LLM test".to_string(),
-            })
-        },
+        reject_decision,
     )
     .await?;
     let selected_model = outcome.selected_model_id()?.clone();
@@ -99,6 +95,12 @@ pub(crate) async fn test_drive_with_models(
             .map_err(|source| LibsyError::client_call(selected_model.clone(), source))?,
     };
     Ok((selected_model, response))
+}
+
+pub(crate) async fn reject_decision(call: CallDecision) -> Result<()> {
+    call.fail(LibsyError::AlgorithmError {
+        message: "unexpected decision call in LLM test".to_string(),
+    })
 }
 
 /// Serve one call and fulfill its promise, mapping failures the way a host does so
