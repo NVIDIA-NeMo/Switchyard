@@ -1617,9 +1617,6 @@ and <a href="#custom-multi-target-routing">custom routing</a> across two or more
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
 decision for later requests in the same conversation.</p>
-<blockquote>
-<p>Requires unreleased features. <a href="../../getting_started/#build-from-source">Build from source</a> to run this example.</p>
-</blockquote>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.openrouter]</span>
@@ -1704,7 +1701,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ee44fbcca0adfe5cae58f473c7ee0a612320db7b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3e9a724ce607d1c079bfaf84fd5b5428f0201b68/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>

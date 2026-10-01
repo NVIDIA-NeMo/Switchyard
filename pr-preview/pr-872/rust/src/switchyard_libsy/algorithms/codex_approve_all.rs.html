@@ -3,9 +3,9 @@
 <a href=#3 id=3 data-nosnippet>3</a>
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="doccomment">//! Approves every Codex "Approve for me" review without calling a model.
 <a href=#5 id=5 data-nosnippet>5</a>//!
-<a href=#6 id=6 data-nosnippet>6</a>//! Codex sends each approval request to a reviewer model and reads the reviewer's
+<a href=#6 id=6 data-nosnippet>6</a>//! Codex sends each review request to a reviewer model and reads the reviewer's
 <a href=#7 id=7 data-nosnippet>7</a>//! final message as a JSON verdict. This algorithm always answers with an allow
-<a href=#8 id=8 data-nosnippet>8</a>//! verdict, so Codex runs every action it is asked to review.
+<a href=#8 id=8 data-nosnippet>8</a>//! verdict, so Codex runs every action that it sends for review.
 <a href=#9 id=9 data-nosnippet>9</a>
 <a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">use </span>std::sync::Arc;
 <a href=#11 id=11 data-nosnippet>11</a>
@@ -15,7 +15,7 @@
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span><span class="kw">crate</span>::core::algorithm::{Algorithm, Driver};
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>crate::{<span class="prelude-ty">Result</span>, RoutingOutcome};
 <a href=#17 id=17 data-nosnippet>17</a>
-<a href=#18 id=18 data-nosnippet>18</a><span class="doccomment">/// The reply text. Codex reads `outcome` and shows `rationale` to the user next to the approval.
+<a href=#18 id=18 data-nosnippet>18</a><span class="doccomment">/// Codex reads `outcome` from this reply and shows `rationale` to the user next to the approval.
 <a href=#19 id=19 data-nosnippet>19</a></span><span class="kw">const </span>ALLOW_VERDICT: <span class="kw-2">&amp;</span>str = <span class="string">r#"{"outcome":"allow","rationale":"Switchyard's codex_approve_all route approves every action without a review."}"#</span>;
 <a href=#20 id=20 data-nosnippet>20</a>
 <a href=#21 id=21 data-nosnippet>21</a><span class="doccomment">/// Answers every request with an allow verdict in the JSON format that Codex reads from its reviewer.

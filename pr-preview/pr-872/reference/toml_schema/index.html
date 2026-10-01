@@ -1980,18 +1980,21 @@ table, which can be empty:</p>
 </span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
 </span></code></pre></div>
 <h3 id="codex_approve_all"><code>codex_approve_all</code><a class="headerlink" href="#codex_approve_all" title="Permanent link">&para;</a></h3>
-<p>Approves every Codex "Approve for me" review without calling an upstream model.
-When Codex is logged in with ChatGPT, it sends these reviews to the model ID
-<code>codex-auto-review</code> and reads the reply as a JSON verdict. This route always
-replies with an <code>allow</code> verdict, so Codex runs every action that needs approval,
-including commands that ask to run outside the sandbox. The route takes only the
-common keys:</p>
+<p>Approves every Codex "Approve for me" review request without calling an upstream
+model. Unless Codex is logged in with an OpenAI API key, it sends these review
+requests to the model ID <code>codex-auto-review</code> and reads the reply as a JSON
+verdict. This route always replies with an <code>allow</code> verdict, so Codex runs every
+action that needs approval, including commands that ask to run outside the
+sandbox. The route takes only the common keys:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[routes.codex_auto_review]</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;codex-auto-review&quot;</span>
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;codex_approve_all&quot;</span>
 </span></code></pre></div>
+<p>The routing log records each review under the route's <code>id</code>, with zero tokens.
+The macOS menu bar still needs a price for that ID in <code>menubar.toml</code>. Without
+one, it hides the Saved row for every period that includes a review.</p>
 <p>To send the reviews to a model instead, see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ee44fbcca0adfe5cae58f473c7ee0a612320db7b/crates/switchyard-server/README.md#codex-approve-for-me">Codex "Approve for me"</a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3e9a724ce607d1c079bfaf84fd5b5428f0201b68/crates/switchyard-server/README.md#codex-approve-for-me">Codex "Approve for me"</a>.</p>
 <h3 id="passthrough"><code>passthrough</code><a class="headerlink" href="#passthrough" title="Permanent link">&para;</a></h3>
 <p>Sends parent requests to one target. It can also route delegated sub-agent work;
 see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing</a>.</p>
@@ -2564,6 +2567,12 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>p_solve</code> floor that still routes to the efficient tier. In <code>[0, 1]</code>.</td>
 </tr>
 <tr>
+<td><code>classifier.threshold_step</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0.0</code></td>
+<td>Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. <code>base_threshold + 2 * threshold_step</code> must be at most <code>1</code>.</td>
+</tr>
+<tr>
 <td><code>classifier.classify_trigger</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
@@ -2573,7 +2582,31 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>classifier.message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the <code>llm_classifier</code> route, this works on either trigger. Conversations opening with the same text share a tier.</td>
+<td>Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier.</td>
+</tr>
+<tr>
+<td><code>classifier.recent_turn_window</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns.</td>
+</tr>
+<tr>
+<td><code>classifier.prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>packaged prompt</td>
+<td>Replaces the classifier judge prompt. The verdict schema is unchanged.</td>
+</tr>
+<tr>
+<td><code>classifier.response_format_type</code></td>
+<td style="text-align: center;">No</td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for the judge. Use <code>json_object</code> when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally.</td>
+</tr>
+<tr>
+<td><code>classifier.max_output_tokens</code></td>
+<td style="text-align: center;">No</td>
+<td><code>4096</code></td>
+<td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
 </tr>
 <tr>
 <td><code>stage.capable_target</code></td>
@@ -2628,6 +2661,12 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td style="text-align: center;">No</td>
 <td><code>[]</code></td>
 <td>Additional exact ASCII case-insensitive tool names that count as neutral forward activity.</td>
+</tr>
+<tr>
+<td><code>stage.handoff_notes</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Optional guidance appended to forwarded requests. Uses the same fields and behavior as <a href="../../routing_algorithms/stage_router_routing/#optional-handoff-notes">stage-router handoff notes</a>.</td>
 </tr>
 <tr>
 <td><code>subagents</code></td>
