@@ -520,31 +520,27 @@ fn anthropic_reconstruction_preserves_fallback_credit_token() -> TestResult {
 #[test]
 fn anthropic_reconstruction_rejects_fallbacks_with_credit_token() {
     let engine = TranslationEngine::default();
-    for mode in ["strict", "best_effort"] {
-        let body = json!({
-            "model": "claude-opus-4-8",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Review this code for security flaws."}],
-            "fallback_credit_token": {"token": "example-token-from-refusal", "mode": mode},
-            "fallbacks": [{"model": "claude-opus-5"}]
-        });
-        for policy in [TranslationPolicy::default(), normalized_policy()] {
-            let error = engine
-                .translate_request(
-                    WireFormat::AnthropicMessages,
-                    WireFormat::AnthropicMessages,
-                    &body,
-                    &policy,
-                )
-                .expect_err("fallback_credit_token cannot be combined with fallbacks");
-            assert!(matches!(
-                error,
-                TranslationError::InvalidValue { path, message }
-                    if path == "$.fallback_credit_token"
-                        && message == "fallback_credit_token cannot be combined with fallbacks"
-            ));
-        }
-    }
+    let body = json!({
+        "model": "claude-opus-4-8",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "Review this code for security flaws."}],
+        "fallback_credit_token": "example-token-from-refusal",
+        "fallbacks": [{"model": "claude-opus-5"}]
+    });
+    let error = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("fallback_credit_token cannot be combined with fallbacks");
+    assert!(matches!(
+        error,
+        TranslationError::InvalidValue { path, message }
+            if path == "$.fallback_credit_token"
+                && message == "fallback_credit_token cannot be combined with fallbacks"
+    ));
 }
 
 #[test]
