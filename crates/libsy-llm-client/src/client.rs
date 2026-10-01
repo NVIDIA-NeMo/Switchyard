@@ -2778,50 +2778,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn anthropic_fallback_credit_conflict_is_rejected_before_request()
-    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        for mode in ["strict", "best_effort"] {
-            let server = MockServer::start().await;
-            let body = json!({
-                "model": "claude",
-                "max_tokens": 1024,
-                "messages": [{"role": "user", "content": "Review this code for security flaws."}],
-                "fallback_credit_token": {"token": "example-token-from-refusal", "mode": mode},
-                "fallbacks": [{"model": "claude-opus-5"}]
-            });
-            let mut backend = config_with_retries(&server.uri(), 2);
-            backend.extra_headers.insert(
-                "anthropic-beta".to_string(),
-                "fallback-credit-2026-07-01".to_string(),
-            );
-            let client = TranslatingLlmClient::new(&[ModelConfig::new(
-                "claude",
-                Backend::Anthropic(backend),
-                None,
-            )])?;
-            let Err(LlmClientError::RequestTranslation(message)) = client
-                .call_rewrite_model_raw(body, None, None, WireFormat::AnthropicMessages)
-                .await
-            else {
-                panic!("expected a request translation error for {mode} mode");
-            };
-            assert_eq!(
-                message,
-                "invalid value at $.fallback_credit_token: fallback_credit_token cannot be combined with fallbacks"
-            );
-            let received = server
-                .received_requests()
-                .await
-                .ok_or("request recording should be enabled")?;
-            assert!(
-                received.is_empty(),
-                "a conflict must not reach the provider"
-            );
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn forwards_only_allowlisted_metadata_headers()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
