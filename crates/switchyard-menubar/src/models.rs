@@ -67,10 +67,14 @@ pub struct Loaded {
 pub enum ListError {
     /// The client needs a key, and none is set or saved.
     NoKey,
+    /// The client reads its key from this `api_key_env` variable, which this
+    /// process does not have, and no key is saved.
+    NoEnv(String),
     /// The Keychain did not return the saved key.
     Keychain(String),
-    /// The server answered 401 or 403.
+    /// The models endpoint answered 401 or 403.
     Rejected(u16),
+    /// The request failed, or the answer was not a model list.
     Failed(String),
     /// The list was fetched, but the cache file could not be written.
     NotCached(String),
@@ -80,35 +84,73 @@ impl ListError {
     /// Says what went wrong, in one sentence.
     pub fn reason(&self) -> String {
         match self {
-            Self::NoKey => "This client needs a key to list models, and none is saved.".to_string(),
-            Self::Keychain(error) => {
-                format!("Could not read the saved key from the Keychain: {error}.")
+            Self::NoKey => {
+                "This LLM client needs an API key to list models, and the app does not have one."
+                    .to_string()
             }
-            Self::Rejected(status) => format!("The server rejected the key (HTTP {status})."),
+            Self::NoEnv(variable) => missing_env_note(variable),
+            Self::Keychain(error) => {
+                format!("Could not read the saved key from your login Keychain: {error}.")
+            }
+            Self::Rejected(status) => {
+                format!("The models endpoint rejected the key (HTTP {status}).")
+            }
             Self::Failed(error) => format!("Could not list models: {error}."),
             Self::NotCached(error) => format!("Could not save the list: {error}."),
         }
     }
 
     /// Says what the user can do while the window has no list to show. The
-    /// window always accepts a typed model ID, so every answer offers that.
+    /// window accepts a typed model ID, so most answers offer that. A missing
+    /// variable also stops Apply, so that answer offers only the key field.
     pub fn advice(&self) -> &'static str {
-        if self.needs_key() {
-            "Paste the key below and click Save key, or type a model ID."
-        } else {
-            "Click Refresh models to try again, or type a model ID."
+        match self {
+            Self::NoEnv(_) => "Or paste the key below to list models.",
+            _ if self.needs_key() => {
+                "Paste a valid API key below and click Save key, or type a model ID."
+            }
+            _ => "Click Refresh models to try again, or type a model ID.",
         }
     }
 
     /// Returns whether saving a key could fix this error.
     pub fn needs_key(&self) -> bool {
-        matches!(self, Self::NoKey | Self::Keychain(_) | Self::Rejected(_))
+        matches!(
+            self,
+            Self::NoKey | Self::NoEnv(_) | Self::Keychain(_) | Self::Rejected(_)
+        )
     }
 }
+
+/// Says that this process lacks a client's `api_key_env` variable. Apply's
+/// `--dry-run` check runs in this process's environment, so the check cannot
+/// read the key either.
+pub fn missing_env_note(variable: &str) -> String {
+    format!(
+        "The app's environment has no {variable}, which Apply needs: add it to the menu bar \
+         app's LaunchAgent."
+    )
+}
+
+/// Returns the client's `api_key_env` variable when this process does not
+/// have it set.
+pub fn missing_env(client: &Client) -> Option<&str> {
+    client
+        .api_key_env
+        .as_deref()
+        .filter(|_| env_key(client).is_none())
+}
+
+/// The Keychain's answer for each `base_url`. The threads of one [`load`]
+/// share it.
+type SavedKeys = Mutex<HashMap<String, Result<Option<String>, String>>>;
 
 /// Returns the model list at each URL that `clients` use, in the order the
 /// URLs first appear. Clients whose models share a URL share one list and
 /// one request.
+///
+/// Each URL loads on its own thread, so a slow URL does not hold back the
+/// others. `loaded` gets each URL's result as soon as it is ready.
 ///
 /// Without `refresh`, a list in the cache file comes back without a
 /// request, and only a URL with no cached list is fetched. With `refresh`,
@@ -125,54 +167,73 @@ pub fn load(
     clients: &[Client],
     refresh: bool,
     typed_key: Option<&str>,
+    loaded: &(dyn Fn(&Loaded) + Sync),
 ) -> Vec<Loaded> {
-    let mut cached = read_cache(cache);
-    let mut saved_keys = HashMap::new();
-    let mut fetched = BTreeMap::new();
-    let mut loaded = Vec::new();
-    for (url, client) in by_url(clients) {
-        let old = cached.remove(&url);
-        if old.is_some() && !refresh {
-            loaded.push(Loaded {
+    let cached = read_cache(cache);
+    let saved_keys = SavedKeys::default();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = by_url(clients)
+            .into_iter()
+            .map(|(url, client)| {
+                let old = cached.get(&url).cloned();
+                let saved_keys = &saved_keys;
+                scope.spawn(move || {
+                    let entry = load_url(cache, url, client, old, refresh, typed_key, saved_keys);
+                    loaded(&entry);
+                    entry
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    })
+}
+
+/// Loads the list at one URL: from the cache file, or fetched with the
+/// client's key and then added to the cache file.
+fn load_url(
+    cache: &Path,
+    url: String,
+    client: &Client,
+    old: Option<ModelList>,
+    refresh: bool,
+    typed_key: Option<&str>,
+    saved_keys: &SavedKeys,
+) -> Loaded {
+    if old.is_some() && !refresh {
+        return Loaded {
+            url,
+            list: old,
+            error: None,
+        };
+    }
+    match key(client, typed_key, saved_keys).and_then(|key| list(client, key.as_deref())) {
+        Ok(models) => {
+            let new = ModelList {
+                models,
+                fetched_at: now(),
+            };
+            let error = write_cache(cache, &url, &new)
+                .err()
+                .map(ListError::NotCached);
+            Loaded {
                 url,
-                list: old,
-                error: None,
-            });
-            continue;
-        }
-        let result =
-            key(client, typed_key, &mut saved_keys).and_then(|key| list(client, key.as_deref()));
-        loaded.push(match result {
-            Ok(models) => {
-                let new = ModelList {
-                    models,
-                    fetched_at: now(),
-                };
-                fetched.insert(url.clone(), new.clone());
-                Loaded {
-                    url,
-                    list: Some(new),
-                    error: None,
-                }
+                list: Some(new),
+                error,
             }
-            Err(error) => Loaded {
-                url,
-                list: old,
-                error: Some(error),
-            },
-        });
-    }
-    if !fetched.is_empty()
-        && let Err(error) = write_cache(cache, &fetched)
-    {
-        for entry in loaded
-            .iter_mut()
-            .filter(|entry| fetched.contains_key(&entry.url))
-        {
-            entry.error = Some(ListError::NotCached(error.clone()));
         }
+        Err(error) => Loaded {
+            url,
+            list: old,
+            error: Some(error),
+        },
     }
-    loaded
 }
 
 /// Returns the URL that serves the client's model list. It is also the
@@ -182,12 +243,14 @@ pub fn list_url(client: &Client) -> String {
 }
 
 /// Lists the client's model IDs, sorted. When the client needs a key and
-/// `key` is `None`, returns [`ListError::NoKey`] without sending a request.
+/// `key` is `None`, returns [`ListError::NoEnv`] or [`ListError::NoKey`]
+/// without sending a request.
 fn list(client: &Client, key: Option<&str>) -> Result<Vec<String>, ListError> {
-    if sends_key(client) && key.is_none() {
-        return Err(ListError::NoKey);
+    match (key, &client.api_key_env) {
+        (None, Some(variable)) => Err(ListError::NoEnv(variable.clone())),
+        (None, None) if client.forward_auth => Err(ListError::NoKey),
+        _ => fetch(&list_url(client), &client.format, key),
     }
-    fetch(&list_url(client), &client.format, key)
 }
 
 /// Returns the models that contain every word of `query`, ignoring case.
@@ -205,9 +268,9 @@ pub fn matching<'a>(models: &'a [String], query: &str) -> Vec<&'a str> {
 }
 
 /// Returns the models endpoint for a client. It builds the URL the way the
-/// server builds its request URLs: OpenAI clients drop a trailing
-/// `/chat/completions` or `/responses`, and Anthropic clients use
-/// `/v1/models`.
+/// server builds its request URLs. OpenAI clients drop a trailing
+/// `/chat/completions` or `/responses`. Anthropic clients drop a trailing
+/// `/v1/messages` to `/v1`, and add `/v1` to any other path.
 fn models_url(format: &str, base_url: &str) -> String {
     let (base, query) = match base_url.split_once('?') {
         Some((base, query)) => (base, format!("?{query}")),
@@ -215,7 +278,10 @@ fn models_url(format: &str, base_url: &str) -> String {
     };
     let base = base.trim_end_matches('/');
     let path = if format == "anthropic_messages" {
-        let root = base.strip_suffix("/messages").unwrap_or(base);
+        let root = base
+            .strip_suffix("/messages")
+            .filter(|root| root.ends_with("/v1"))
+            .unwrap_or(base);
         if root.ends_with("/v1") {
             format!("{root}/models")
         } else {
@@ -257,12 +323,13 @@ fn sends_key(client: &Client) -> bool {
 ///
 /// The typed key comes first, then the client's `api_key_env` variable when
 /// this process has it, then the Keychain item for the client's `base_url`.
-/// `saved` remembers each Keychain answer, so macOS asks at most once per
-/// `base_url` when it needs the user's permission to hand over a key.
+/// `saved` stores each Keychain answer, and a thread holds its lock while
+/// it reads the Keychain. So macOS asks at most once per `base_url` when it
+/// needs the user's permission to hand over a key.
 fn key(
     client: &Client,
     typed_key: Option<&str>,
-    saved: &mut HashMap<String, Result<Option<String>, String>>,
+    saved: &SavedKeys,
 ) -> Result<Option<String>, ListError> {
     if !sends_key(client) {
         return Ok(None);
@@ -271,6 +338,8 @@ fn key(
         return Ok(Some(key));
     }
     saved
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
         .entry(client.base_url.clone())
         .or_insert_with(|| saved_key(&client.base_url))
         .clone()
@@ -296,7 +365,7 @@ fn saved_key(base_url: &str) -> Result<Option<String>, String> {
             .map(|key| Some(key).filter(|key| !key.trim().is_empty()))
             .map_err(|_| "the saved key is not text".to_string()),
         Err(error) if error.code() == NOT_FOUND => Ok(None),
-        Err(error) => Err(error.to_string()),
+        Err(error) => Err(keychain_error(&error)),
     }
 }
 
@@ -313,7 +382,20 @@ pub fn save_key(base_url: &str, key: &str) -> Result<(), String> {
         base_url,
         key.trim().as_bytes(),
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| keychain_error(&error))
+}
+
+/// Returns the Keychain's message without its final period, so the window
+/// can end its own sentence after it.
+#[cfg(target_os = "macos")]
+fn keychain_error(error: &security_framework::base::Error) -> String {
+    error.to_string().trim_end_matches('.').to_string()
+}
+
+/// Returns whether a key has a line break, which would end the header that
+/// carries the key and start another one.
+pub fn has_line_break(key: &str) -> bool {
+    key.contains(['\r', '\n'])
 }
 
 /// Reads the cache file. A missing or unreadable file reads as empty, so the
@@ -325,21 +407,21 @@ fn read_cache(path: &Path) -> BTreeMap<String, ModelList> {
         .unwrap_or_default()
 }
 
-/// Adds `lists` to the cache file. A list replaces the one at the same URL
-/// unless that one is newer: two loads can overlap, and the load that
-/// fetched a list first can write it last. The text goes to a temporary file
-/// that is renamed over the cache file, so a reader never sees half a file.
-fn write_cache(path: &Path, lists: &BTreeMap<String, ModelList>) -> Result<(), String> {
+/// Adds the list at `url` to the cache file. The list replaces the one at
+/// the same URL unless that one is newer: two loads can overlap, and the
+/// load that fetched a list first can write it last. The text goes to a
+/// temporary file that is renamed over the cache file, so a reader never
+/// sees half a file.
+fn write_cache(path: &Path, url: &str, list: &ModelList) -> Result<(), String> {
     let _writing = CACHE_WRITE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut all = read_cache(path);
-    for (url, list) in lists {
-        if all
-            .get(url)
-            .is_none_or(|cached| cached.fetched_at <= list.fetched_at)
-        {
-            all.insert(url.clone(), list.clone());
-        }
+    if all
+        .get(url)
+        .is_some_and(|cached| cached.fetched_at > list.fetched_at)
+    {
+        return Ok(());
     }
+    all.insert(url.to_string(), list.clone());
     let text = serde_json::to_string_pretty(&all)
         .map_err(|error| format!("write {}: {error}", path.display()))?;
     let dir = path
@@ -365,6 +447,11 @@ pub fn now() -> u64 {
 
 fn fetch(url: &str, format: &str, key: Option<&str>) -> Result<Vec<String>, ListError> {
     let failed = |error: String| ListError::Failed(error);
+    if key.is_some_and(has_line_break) {
+        return Err(failed(
+            "the key has a line break, so the app did not send it".to_string(),
+        ));
+    }
     let mut child = Command::new("curl")
         // curl honors `-q` only as its first argument. `-q` makes curl ignore
         // ~/.curlrc, where a `verbose` line would print the key into the
@@ -378,7 +465,9 @@ fn fetch(url: &str, format: &str, key: Option<&str>) -> Result<Vec<String>, List
         ])
         // Read request headers from stdin, one per line.
         .args(["--header", "@-"])
-        .args(["--write-out", "\n%{http_code}", url])
+        // `--url` keeps a URL that starts with `-` from being read as an
+        // option.
+        .args(["--write-out", "\n%{http_code}", "--url", url])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -529,9 +618,9 @@ mod tests {
             client("gateway_chat", "openai_chat", &stub.url),
         ];
 
-        let first = load(&cache, &clients, false, Some("test-key"));
+        let first = load(&cache, &clients, false, Some("test-key"), &|_| {});
         // No key this time: a cached list needs neither a request nor a key.
-        let second = load(&cache, &clients, false, None);
+        let second = load(&cache, &clients, false, None, &|_| {});
 
         let requests = stub.requests();
         assert_eq!(requests.len(), 1, "{requests:?}");
@@ -555,11 +644,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cache = dir.path().join(CACHE_FILE);
         let clients = [client("gateway", "openai_chat", &stub.url)];
-        load(&cache, &clients, false, Some("test-key"));
+        load(&cache, &clients, false, Some("test-key"), &|_| {});
         stub.answer(listing(&["new-model"]));
 
-        let refreshed = load(&cache, &clients, true, Some("test-key"));
-        let later = load(&cache, &clients, false, None);
+        let refreshed = load(&cache, &clients, true, Some("test-key"), &|_| {});
+        let later = load(&cache, &clients, false, None, &|_| {});
 
         assert_eq!(stub.requests().len(), 2);
         assert_eq!(models(&refreshed), ["new-model"]);
@@ -573,13 +662,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cache = dir.path().join(CACHE_FILE);
         let clients = [client("gateway", "openai_chat", &stub.url)];
-        let first = load(&cache, &clients, false, Some("test-key"));
+        let first = load(&cache, &clients, false, Some("test-key"), &|_| {});
         stub.answer(
             "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n{}".to_string(),
         );
 
-        let refreshed = load(&cache, &clients, true, Some("test-key"));
-        let later = load(&cache, &clients, false, None);
+        let refreshed = load(&cache, &clients, true, Some("test-key"), &|_| {});
+        let later = load(&cache, &clients, false, None, &|_| {});
 
         assert_eq!(stub.requests().len(), 2);
         assert_eq!(refreshed[0].list, first[0].list);
@@ -610,6 +699,7 @@ mod tests {
             &clients,
             false,
             Some("test-key"),
+            &|_| {},
         );
 
         let requests = stub.requests();
@@ -630,7 +720,7 @@ mod tests {
         let cache = dir.path().join("missing").join(CACHE_FILE);
         let clients = [client("gateway", "openai_chat", &stub.url)];
 
-        let loaded = load(&cache, &clients, false, Some("test-key"));
+        let loaded = load(&cache, &clients, false, Some("test-key"), &|_| {});
 
         assert_eq!(models(&loaded), ["model-a"]);
         assert!(
@@ -641,18 +731,54 @@ mod tests {
     }
 
     #[test]
+    fn the_cache_file_keeps_the_newer_of_two_lists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = dir.path().join(CACHE_FILE);
+        let url = "https://api.example/v1/models";
+        let list = |model: &str, fetched_at| ModelList {
+            models: vec![model.to_string()],
+            fetched_at,
+        };
+
+        // The load that fetched first writes last.
+        write_cache(&cache, url, &list("new", 200)).expect("write");
+        write_cache(&cache, url, &list("old", 100)).expect("write");
+
+        assert_eq!(read_cache(&cache).get(url), Some(&list("new", 200)));
+    }
+
+    #[test]
     fn reports_a_rejected_key_and_a_missing_key() {
         let stub =
             Stub::start("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n{}".to_string());
         let gateway = client("gateway", "openai_chat", &stub.url);
+        let from_env = Client {
+            api_key_env: Some("SWITCHYARD_MENUBAR_TEST_UNSET_KEY".to_string()),
+            forward_auth: false,
+            ..gateway.clone()
+        };
 
         assert_eq!(list(&gateway, Some("wrong")), Err(ListError::Rejected(401)));
         assert_eq!(list(&gateway, None), Err(ListError::NoKey));
-        assert_eq!(stub.requests().len(), 1, "a missing key sends no request");
+        assert_eq!(
+            list(&from_env, None),
+            Err(ListError::NoEnv(
+                "SWITCHYARD_MENUBAR_TEST_UNSET_KEY".to_string()
+            ))
+        );
+        assert!(matches!(
+            list(&gateway, Some("key\r\nX-Injected: yes")),
+            Err(ListError::Failed(_))
+        ));
+        assert_eq!(
+            stub.requests().len(),
+            1,
+            "a missing key or a key with a line break sends no request"
+        );
     }
 
     #[test]
-    fn builds_the_models_url_like_the_server_builds_request_urls() {
+    fn builds_the_models_url_with_the_servers_url_rules() {
         for (format, base_url, expected) in [
             (
                 "openai_chat",
@@ -673,6 +799,12 @@ mod tests {
                 "anthropic_messages",
                 "https://api.example/v1/messages",
                 "https://api.example/v1/models",
+            ),
+            // The server sends messages to /foo/messages/v1/messages here.
+            (
+                "anthropic_messages",
+                "https://api.example/foo/messages",
+                "https://api.example/foo/messages/v1/models",
             ),
             (
                 "openai_chat",

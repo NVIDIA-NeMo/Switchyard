@@ -164,6 +164,19 @@ const COMMON_ROUTE_KEYS: [&str; 6] = [
     "vision",
 ];
 
+/// Target settings that change the request body. The server keeps one
+/// target per model on a client, so it rejects two targets that name the
+/// same model on the same client with different values for these.
+const REQUEST_SETTINGS: [&str; 3] = ["omit_body_fields", "reasoning_effort", "extra_body"];
+
+/// Target settings that a route takes on when it uses the target.
+const TARGET_SETTINGS: [&str; 4] = [
+    "system_prompt",
+    "reasoning_effort",
+    "extra_body",
+    "omit_body_fields",
+];
+
 /// One entry under `[routes]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Route {
@@ -208,6 +221,26 @@ enum Slot {
     Listed(usize),
 }
 
+impl Slot {
+    /// Returns the slot's key path under the route, such as
+    /// `stage.capable_target`.
+    fn path(&self) -> String {
+        match self {
+            Self::Key(path) => path.join("."),
+            Self::Listed(_) => "targets".to_string(),
+        }
+    }
+}
+
+/// The result of [`ServerConfig::edit`].
+#[derive(Debug)]
+pub struct Edited {
+    /// The new config text.
+    pub text: String,
+    /// What the user should know about the edit, one sentence each.
+    pub notes: Vec<String>,
+}
+
 /// A parsed server config that keeps the original text's layout.
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -218,7 +251,12 @@ impl ServerConfig {
     pub fn parse(text: &str) -> Result<Self, String> {
         text.parse::<DocumentMut>()
             .map(|doc| Self { doc })
-            .map_err(|error| format!("parse the server config: {error}"))
+            .map_err(|error| {
+                format!(
+                    "Could not parse the server config. Fix this TOML error and try again:\n\
+                     {error}"
+                )
+            })
     }
 
     pub fn routes(&self) -> Vec<Route> {
@@ -246,8 +284,9 @@ impl ServerConfig {
             .collect()
     }
 
-    /// The algorithm a route uses now, or `None` when the picker cannot show
-    /// it, such as a custom-mode classifier whose groups are free-form.
+    /// Returns the algorithm a route uses now, or `None` when the picker
+    /// cannot show it, such as a custom-mode classifier whose groups are
+    /// free-form.
     pub fn algorithm(&self, route: &str) -> Option<&'static Algorithm> {
         let route = self.route(route)?;
         if text(route, "mode") == Some("custom") {
@@ -257,8 +296,8 @@ impl ServerConfig {
         ALGORITHMS.iter().find(|algorithm| algorithm.kind == kind)
     }
 
-    /// The roles `algorithm` needs on `route`. A random route keeps its
-    /// number of targets, and has at least two.
+    /// Returns the roles that `algorithm` needs on `route`. A random route
+    /// keeps its number of targets, and has at least two.
     pub fn roles(&self, route: &str, algorithm: &Algorithm) -> Vec<Role> {
         if algorithm.kind != RANDOM {
             return algorithm
@@ -290,8 +329,8 @@ impl ServerConfig {
             .collect()
     }
 
-    /// The model each role of the route's current algorithm uses. A role
-    /// whose target is missing gets an empty choice.
+    /// Returns the model that each role of the route's current algorithm
+    /// uses. A role whose target is missing gets an empty choice.
     pub fn choices(&self, route: &str) -> Vec<Choice> {
         let Some(algorithm) = self.algorithm(route) else {
             return Vec::new();
@@ -307,24 +346,25 @@ impl ServerConfig {
     }
 
     /// Returns the config text with `route` switched to `algorithm`, using
-    /// one choice per role.
+    /// one choice per role, and notes about the edit.
     ///
     /// For each role, in order of preference: keep the route's target when it
     /// already names the model; use another target that names exactly this
-    /// model on this client; change the route's target in place when no other
-    /// route or role uses it, including a role earlier in this edit; otherwise
-    /// add a new target that copies it. A changed or copied target keeps
-    /// settings such as `extra_body` and `omit_body_fields`, including
-    /// settings meant for the old model. Targets no route uses any more are
-    /// left in the file.
+    /// model on this client when the route would get the same target
+    /// settings from it, or when the server would reject a second target for
+    /// that model; change the route's target in place when no other route or
+    /// role uses it, including a role earlier in this edit; otherwise add a
+    /// new target that copies it. A changed or copied target keeps settings
+    /// such as `extra_body` and `omit_body_fields`, including settings meant
+    /// for the old model. Targets no route uses any more are left in the file.
     pub fn edit(
         &self,
         route: &str,
         algorithm: &Algorithm,
         choices: &[Choice],
-    ) -> Result<String, String> {
+    ) -> Result<Edited, String> {
         if self.route(route).is_none() {
-            return Err(format!("The config has no route {route}."));
+            return Err(format!("The config has no [routes.{route}] table."));
         }
         let roles = self.roles(route, algorithm);
         if roles.len() != choices.len() {
@@ -338,29 +378,35 @@ impl ServerConfig {
         let clients = self.clients();
         for (role, choice) in roles.iter().zip(choices) {
             if choice.model.trim().is_empty() {
-                return Err(format!("Choose a model for {}.", role.label));
+                return Err(format!("Pick a model for {}.", role.label));
+            }
+            if choice.client.is_empty() {
+                return Err(format!("Pick an LLM client for {}.", role.label));
             }
             if !clients.iter().any(|client| client.name == choice.client) {
-                return Err(format!("The config has no llm client {}.", choice.client));
+                return Err(format!(
+                    "The config has no LLM client named \"{}\".",
+                    choice.client
+                ));
             }
         }
 
         let current = self.algorithm(route);
         let same_type = current.is_some_and(|current| current.kind == algorithm.kind);
+        let old_roles = current
+            .map(|current| self.roles(route, current))
+            .unwrap_or_default();
         // When the type changes, each new role starts from the old role with
         // the same tier, so a composite's capable target stays the capable one.
-        let by_tier: Vec<(Option<Tier>, &str)> = current
-            .map(|current| {
-                self.roles(route, current)
-                    .iter()
-                    .filter_map(|role| Some((role.tier, self.target_at(route, &role.slot)?)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut references = self.target_references();
+        let by_tier: Vec<(Option<Tier>, &str)> = old_roles
+            .iter()
+            .filter_map(|role| Some((role.tier, self.target_at(route, &role.slot)?)))
+            .collect();
+        let mut users = self.target_users();
 
         let mut doc = self.doc.clone();
         let mut names = Vec::with_capacity(roles.len());
+        let mut notes = Vec::new();
         for (role, choice) in roles.iter().zip(choices) {
             let existing = if same_type {
                 self.target_at(route, &role.slot)
@@ -376,14 +422,30 @@ impl ServerConfig {
                 client: choice.client.clone(),
                 model: choice.model.trim().to_string(),
             };
-            names.push(choose_target(
-                &mut doc,
-                &mut references,
-                route,
-                role,
-                &choice,
-                existing,
-            )?);
+            let (name, moved_from) =
+                choose_target(&mut doc, &mut users, route, role, &choice, existing)?;
+            if let Some(old) = moved_from
+                && let Some(note) = kept_settings_note(&doc, &clients, &name, &old, &choice)
+            {
+                notes.push(note);
+            }
+            let mut others: Vec<&str> = users
+                .get(name.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|other| *other != route)
+                .collect();
+            others.dedup();
+            if Some(name.as_str()) != existing && !others.is_empty() {
+                let plural = if others.len() == 1 { "" } else { "s" };
+                notes.push(format!(
+                    "{} now shares [targets.{name}] with route{plural} {}.",
+                    role.label,
+                    others.join(", ")
+                ));
+            }
+            names.push(name);
         }
 
         let table = doc
@@ -391,9 +453,18 @@ impl ServerConfig {
             .and_then(Item::as_table_like_mut)
             .and_then(|routes| routes.get_mut(route))
             .and_then(Item::as_table_like_mut)
-            .ok_or_else(|| format!("The config has no route {route}."))?;
+            .ok_or_else(|| format!("The config has no [routes.{route}] table."))?;
         if !same_type {
-            reset_route(table, algorithm);
+            let old_slots: Vec<String> = old_roles.iter().map(|role| role.slot.path()).collect();
+            let removed = reset_route(table, algorithm, &old_slots);
+            if !removed.is_empty() {
+                notes.push(format!(
+                    "Switching to {} removed these settings from [routes.{route}]: {}. The \
+                     backup still has them.",
+                    algorithm.kind,
+                    removed.join(", ")
+                ));
+            }
         }
         for (role, name) in roles.iter().zip(&names) {
             set_slot(table, &role.slot, name);
@@ -403,7 +474,10 @@ impl ServerConfig {
                 set_at(table, path, setting.value());
             }
         }
-        Ok(doc.to_string())
+        Ok(Edited {
+            text: doc.to_string(),
+            notes,
+        })
     }
 
     fn table(&self, name: &str) -> Option<&dyn TableLike> {
@@ -437,62 +511,73 @@ impl ServerConfig {
         }
     }
 
-    /// Counts how many times each target name appears in any route, nested
-    /// policies included. A name that appears once belongs to one role.
-    fn target_references(&self) -> HashMap<&str, usize> {
-        let mut counts: HashMap<&str, usize> = entries(self.table("targets"))
-            .map(|(name, _)| (name, 0))
+    /// Returns, for each target name, the routes that name it: one entry per
+    /// mention in any route, nested policies included. A target with one
+    /// entry belongs to one role.
+    fn target_users(&self) -> HashMap<&str, Vec<&str>> {
+        let mut users: HashMap<&str, Vec<&str>> = entries(self.table("targets"))
+            .map(|(name, _)| (name, Vec::new()))
             .collect();
-        if let Some(routes) = self.doc.get("routes") {
-            visit_strings(routes, &mut |text| {
-                if let Some(count) = counts.get_mut(text) {
-                    *count += 1;
+        for (route, item) in self
+            .table("routes")
+            .into_iter()
+            .flat_map(|routes| routes.iter())
+        {
+            visit_strings(item, &mut |text| {
+                if let Some(routes) = users.get_mut(text) {
+                    routes.push(route);
                 }
             });
         }
-        counts
+        users
     }
 }
 
-/// Picks or writes the target that serves `choice` for one role, and returns
-/// its name. Reusing a target adds one to its reference count, so a later
-/// role in the same edit copies that target instead of changing it in place.
-fn choose_target(
+/// Picks or writes the target that serves `choice` for one role. Returns its
+/// name, and the model that the target named before when the edit changed
+/// the target in place or copied it. Reusing a target adds the route to the
+/// target's users, so a later role in the same edit copies that target
+/// instead of changing it in place.
+fn choose_target<'a>(
     doc: &mut DocumentMut,
-    references: &mut HashMap<&str, usize>,
-    route: &str,
+    users: &mut HashMap<&'a str, Vec<&'a str>>,
+    route: &'a str,
     role: &Role,
     choice: &Choice,
     existing: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, Option<Choice>), String> {
     let targets = doc
         .get_mut("targets")
         .and_then(Item::as_table_like_mut)
         .ok_or("The config has no [targets] table.")?;
 
+    let current = existing
+        .and_then(|name| targets.get(name))
+        .and_then(Item::as_table_like);
     if let Some(name) = existing
-        && targets
-            .get(name)
-            .is_some_and(|target| names_choice(target, choice))
+        && current.is_some_and(|target| names_choice(target, choice))
     {
-        return Ok(name.to_string());
+        return Ok((name.to_string(), None));
     }
-    if let Some((name, _)) = targets
-        .iter()
-        .find(|(_, target)| names_choice(target, choice))
-    {
-        if let Some(count) = references.get_mut(name) {
-            *count += 1;
+    let old = current.and_then(|target| {
+        Some(Choice {
+            client: text(target, "llm_client")?.to_string(),
+            model: text(target, "id")?.to_string(),
+        })
+    });
+    if let Some(name) = reusable(&*targets, current, choice).map(str::to_string) {
+        if let Some(routes) = users.get_mut(name.as_str()) {
+            routes.push(route);
         }
-        return Ok(name.to_string());
+        return Ok((name, None));
     }
     if let Some(name) = existing
-        && references.get(name) == Some(&1)
+        && users.get(name).is_some_and(|routes| routes.len() == 1)
         && let Some(target) = targets.get_mut(name).and_then(Item::as_table_like_mut)
     {
-        set_value(target, "llm_client", Value::from(choice.client.as_str()));
         set_value(target, "id", Value::from(choice.model.as_str()));
-        return Ok(name.to_string());
+        set_value(target, "llm_client", Value::from(choice.client.as_str()));
+        return Ok((name.to_string(), old));
     }
 
     let mut table = Table::new();
@@ -501,15 +586,17 @@ fn choose_target(
         .and_then(Item::as_table_like)
     {
         for (key, item) in source.iter() {
-            table.insert(key, item.clone());
+            let mut item = item.clone();
+            unplace(&mut item);
+            table.insert(key, item);
         }
     }
+    set_value(&mut table, "id", Value::from(choice.model.as_str()));
     set_value(
         &mut table,
         "llm_client",
         Value::from(choice.client.as_str()),
     );
-    set_value(&mut table, "id", Value::from(choice.model.as_str()));
     let base = format!("{route}_{}", role.label.to_lowercase().replace(' ', "_"));
     let mut name = base.clone();
     let mut suffix = 1;
@@ -518,19 +605,136 @@ fn choose_target(
         name = format!("{base}_{suffix}");
     }
     targets.insert(&name, Item::Table(table));
-    Ok(name)
+    Ok((name, old))
 }
 
-/// Whether a target names exactly this model on this client.
-fn names_choice(target: &Item, choice: &Choice) -> bool {
-    target.as_table_like().is_some_and(|target| {
-        text(target, "llm_client") == Some(choice.client.as_str())
-            && text(target, "id") == Some(choice.model.as_str())
+/// Returns a note about the request settings that a target kept when the
+/// edit moved it from `old` to `new`, a model of another family or on a
+/// client with another request format. A setting meant for the old model can
+/// make the provider reject the new model's requests, and `--dry-run` does
+/// not catch that. So the note lists the kept settings, or says that the
+/// target has none, and the user decides.
+fn kept_settings_note(
+    doc: &DocumentMut,
+    clients: &[Client],
+    name: &str,
+    old: &Choice,
+    new: &Choice,
+) -> Option<String> {
+    let format = |name: &str| {
+        clients
+            .iter()
+            .find(|client| client.name == name)
+            .map(|client| client.format.as_str())
+    };
+    if family(&old.model) == family(&new.model) && format(&old.client) == format(&new.client) {
+        return None;
+    }
+    let target = doc
+        .get("targets")?
+        .as_table_like()?
+        .get(name)?
+        .as_table_like()?;
+    let kept: Vec<String> = REQUEST_SETTINGS
+        .iter()
+        .filter_map(|key| Some(format!("{key} = {}", setting(target, key)?)))
+        .collect();
+    Some(if kept.is_empty() {
+        format!(
+            "[targets.{name}] now names {} and has no omit_body_fields, reasoning_effort, or \
+             extra_body. Check whether the new model needs one of them.",
+            new.model
+        )
+    } else {
+        format!(
+            "[targets.{name}] now names {} and kept {} from {}. Check that the new model \
+             accepts these settings.",
+            new.model,
+            kept.join(", "),
+            old.model
+        )
     })
 }
 
-/// Removes the old type's settings and sets the new `type`.
-fn reset_route(route: &mut dyn TableLike, algorithm: &Algorithm) {
+/// Returns a model's family: the first word of the last part of its ID,
+/// such as `gpt` for `openai/gpt-5.6-sol`.
+fn family(model: &str) -> String {
+    let name = model.rsplit('/').next().unwrap_or(model);
+    name.split(['-', '.', '_', ':'])
+        .next()
+        .unwrap_or(name)
+        .to_lowercase()
+}
+
+/// Returns another target that names `choice` and that a role whose target
+/// is `current` may use. The role takes on that target's settings. So it
+/// uses a target with the same settings as `current`, or else a target whose
+/// request settings differ from `current`, because the server would reject a
+/// second target for this model with other request settings.
+fn reusable<'t>(
+    targets: &'t dyn TableLike,
+    current: Option<&dyn TableLike>,
+    choice: &Choice,
+) -> Option<&'t str> {
+    let same = |target: &dyn TableLike, keys: &[&str]| {
+        keys.iter()
+            .all(|key| setting(target, key) == current.and_then(|current| setting(current, key)))
+    };
+    let candidates: Vec<(&str, &dyn TableLike)> = targets
+        .iter()
+        .filter_map(|(name, target)| Some((name, target.as_table_like()?)))
+        .filter(|(_, target)| names_choice(*target, choice))
+        .collect();
+    candidates
+        .iter()
+        .find(|(_, target)| same(*target, &TARGET_SETTINGS))
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|(_, target)| !same(*target, &REQUEST_SETTINGS))
+        })
+        .map(|(name, _)| *name)
+}
+
+/// Returns a target's setting as plain data, so the same value written in
+/// another layout compares equal.
+fn setting(target: &dyn TableLike, key: &str) -> Option<toml::Value> {
+    let mut table = Table::new();
+    table.insert(key, target.get(key)?.clone());
+    DocumentMut::from(table)
+        .to_string()
+        .parse::<toml::Table>()
+        .ok()?
+        .remove(key)
+}
+
+/// Clears the file position of every table in `item`. A copied sub-table
+/// then follows the header of the table it is copied into, not the header
+/// of the table it came from.
+fn unplace(item: &mut Item) {
+    if let Some(table) = item.as_table_mut() {
+        table.set_position(None);
+        for (_, child) in table.iter_mut() {
+            unplace(child);
+        }
+    }
+}
+
+/// Returns whether a target names exactly this model on this client.
+fn names_choice(target: &dyn TableLike, choice: &Choice) -> bool {
+    text(target, "llm_client") == Some(choice.client.as_str())
+        && text(target, "id") == Some(choice.model.as_str())
+}
+
+/// Removes the old type's settings and sets the new `type`. Returns the
+/// removed settings as key paths, such as `classifier.base_threshold`. The
+/// list leaves out `old_slots`, the old roles' targets, which the new roles
+/// replace.
+fn reset_route(
+    route: &mut dyn TableLike,
+    algorithm: &Algorithm,
+    old_slots: &[String],
+) -> Vec<String> {
     let kept =
         |key: &str| COMMON_ROUTE_KEYS.contains(&key) || (algorithm.subagents && key == "subagents");
     let stale: Vec<String> = route
@@ -539,10 +743,27 @@ fn reset_route(route: &mut dyn TableLike, algorithm: &Algorithm) {
         .filter(|key| !kept(key))
         .map(str::to_string)
         .collect();
+    let mut removed = Vec::new();
     for key in stale {
-        route.remove(&key);
+        if let Some(item) = route.remove(&key) {
+            key_paths(&key, &item, &mut removed);
+        }
     }
+    removed.retain(|path| !old_slots.contains(path));
     set_value(route, "type", Value::from(algorithm.kind));
+    removed
+}
+
+/// Adds the key path of every value in `item` to `paths`.
+fn key_paths(path: &str, item: &Item, paths: &mut Vec<String>) {
+    match item.as_table_like() {
+        Some(table) => {
+            for (key, child) in table.iter() {
+                key_paths(&format!("{path}.{key}"), child, paths);
+            }
+        }
+        None => paths.push(path.to_string()),
+    }
 }
 
 fn set_slot(route: &mut dyn TableLike, slot: &Slot, name: &str) {
@@ -691,15 +912,22 @@ confidence_threshold = 0.5
     }
 
     /// Edits the config and checks the result with the server's parser.
-    fn edit(text: &str, route: &str, kind: &str, choices: &[Choice]) -> String {
+    fn edit(text: &str, route: &str, kind: &str, choices: &[Choice]) -> Edited {
         let edited = ServerConfig::parse(text)
             .expect("parse")
             .edit(route, algorithm(kind), choices)
             .expect("edit");
-        if let Err(error) = switchyard_runner::Runner::from_toml(&edited) {
-            panic!("the server rejects the edited config: {error}\n{edited}");
+        if let Err(error) = switchyard_runner::Runner::from_toml(&edited.text) {
+            panic!(
+                "the server rejects the edited config: {error}\n{}",
+                edited.text
+            );
         }
         edited
+    }
+
+    fn capable_target(config: &ServerConfig) -> Option<&str> {
+        config.target_at("gateway", &Slot::Key(&["stage", "capable_target"]))
     }
 
     #[test]
@@ -715,7 +943,7 @@ confidence_threshold = 0.5
 
             let edited = edit(GATEWAY, "gateway", algorithm.kind, &models[3 - roles..]);
 
-            let config = ServerConfig::parse(&edited).expect("parse");
+            let config = ServerConfig::parse(&edited.text).expect("parse");
             assert_eq!(
                 config.algorithm("gateway").map(|a| a.kind),
                 Some(algorithm.kind)
@@ -736,7 +964,7 @@ confidence_threshold = 0.5
         let edited = edit(GATEWAY, "gateway", "composite", &chosen);
 
         assert_eq!(
-            ServerConfig::parse(&edited)
+            ServerConfig::parse(&edited.text)
                 .expect("parse")
                 .choices("gateway"),
             chosen
@@ -754,7 +982,8 @@ confidence_threshold = 0.5
                 choice("gateway", "gpt-5.6-sol"),
                 choice("gateway", "gpt-5.6-luna"),
             ],
-        );
+        )
+        .text;
 
         let config = ServerConfig::parse(&gpt).expect("parse");
         assert_eq!(
@@ -782,7 +1011,7 @@ confidence_threshold = 0.5
                 choice("gateway_chat", "claude-sonnet-5"),
             ],
         );
-        assert_eq!(claude, GATEWAY);
+        assert_eq!(claude.text, GATEWAY);
     }
 
     #[test]
@@ -797,7 +1026,7 @@ confidence_threshold = 0.5
             ],
         );
 
-        let config = ServerConfig::parse(&edited).expect("parse");
+        let config = ServerConfig::parse(&edited.text).expect("parse");
         assert_eq!(
             config.algorithm("gateway").map(|a| a.kind),
             Some("stage_router")
@@ -813,16 +1042,26 @@ confidence_threshold = 0.5
         assert_eq!(text(route, "picker"), Some("efficient_first"));
         assert!(route.get("classifier").is_none() && route.get("stage").is_none());
         assert!(
-            edited.contains("[targets.gateway_judge]"),
+            edited.text.contains("[targets.gateway_judge]"),
             "unused targets stay in the file"
+        );
+        let removed = edited.notes.join("\n");
+        assert!(
+            removed.contains("classifier.message_hash_fallback")
+                && !removed.contains("stage.capable_target"),
+            "the result lists the removed settings, not the replaced targets: {removed}"
         );
     }
 
     #[test]
     fn a_target_another_route_uses_is_copied_not_changed() {
-        let shared = format!(
-            "{GATEWAY}\n[routes.direct]\nid = \"direct\"\ntype = \"passthrough\"\ntarget = \"gateway_capable\"\n"
-        );
+        // The shared target has a sub-table, which the copy must keep under
+        // its own header.
+        let shared = GATEWAY.replace(
+            "omit_body_fields = [\"reasoning_effort\"]\n\n[targets.gateway_efficient]",
+            "omit_body_fields = [\"reasoning_effort\"]\n\n[targets.gateway_capable.extra_body]\n\
+             top_k = 5\n\n[targets.gateway_efficient]",
+        ) + "\n[routes.direct]\nid = \"direct\"\ntype = \"passthrough\"\ntarget = \"gateway_capable\"\n";
 
         let edited = edit(
             &shared,
@@ -835,32 +1074,142 @@ confidence_threshold = 0.5
             ],
         );
 
-        let config = ServerConfig::parse(&edited).expect("parse");
+        let config = ServerConfig::parse(&edited.text).expect("parse");
         assert_eq!(
             config.choices("direct"),
             [choice("gateway_chat", "claude-opus-5-5")]
         );
         assert_eq!(
-            config.target_at("gateway", &Slot::Key(&["stage", "capable_target"])),
-            Some("gateway_capable_2")
+            config.choices("gateway")[1],
+            choice("gateway", "gpt-5.6-sol")
         );
+        let copy = capable_target(&config).expect("capable target");
+        assert_ne!(copy, "gateway_capable");
+        let targets = config.table("targets").expect("targets");
+        let (source, copied) = (
+            targets.get("gateway_capable").and_then(Item::as_table_like),
+            targets.get(copy).and_then(Item::as_table_like),
+        );
+        for key in TARGET_SETTINGS {
+            assert_eq!(
+                source.and_then(|target| setting(target, key)),
+                copied.and_then(|target| setting(target, key)),
+                "the copy keeps {key}"
+            );
+        }
+        let header = |name: &str| edited.text.find(&format!("[{name}]")).expect(name);
         assert!(
-            edited.contains(
-                "[targets.gateway_capable_2]\nid = \"gpt-5.6-sol\"\nllm_client = \"gateway\"  # chat, for caching\nomit_body_fields = [\"reasoning_effort\"]"
-            ),
-            "the copy keeps the shared target's settings:\n{edited}"
+            header(&format!("targets.{copy}")) < header(&format!("targets.{copy}.extra_body")),
+            "the copied sub-table follows the copy's header:\n{}",
+            edited.text
         );
+    }
+
+    #[test]
+    fn uses_another_routes_target_only_when_the_route_keeps_its_settings_or_must_share() {
+        // `prompted` names the model that Capable moves to, and has a
+        // system prompt that the gateway route does not have.
+        for (omit, shared) in [
+            // Same request settings: the server accepts a second target for
+            // the model, so Capable keeps its own target.
+            ("omit_body_fields = [\"reasoning_effort\"]\n", false),
+            // Other request settings: the server would reject a second
+            // target, so Capable shares `prompted`, and the result says so.
+            ("", true),
+        ] {
+            let text = format!(
+                "{GATEWAY}\n[targets.prompted]\nid = \"gpt-5.6-sol\"\nllm_client = \"gateway\"\n\
+                 system_prompt = \"You answer for route other.\"\n{omit}\n[routes.other]\n\
+                 id = \"other\"\ntype = \"passthrough\"\ntarget = \"prompted\"\n"
+            );
+
+            let edited = edit(
+                &text,
+                "gateway",
+                "composite",
+                &[
+                    choice("gateway", "gpt-5.6-terra"),
+                    choice("gateway", "gpt-5.6-sol"),
+                    choice("gateway_chat", "claude-sonnet-5"),
+                ],
+            );
+
+            let config = ServerConfig::parse(&edited.text).expect("parse");
+            assert_eq!(
+                config.choices("gateway")[1],
+                choice("gateway", "gpt-5.6-sol")
+            );
+            assert_eq!(
+                capable_target(&config) == Some("prompted"),
+                shared,
+                "{omit}"
+            );
+            assert_eq!(
+                edited
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("prompted") && note.contains("other")),
+                shared,
+                "{:?}",
+                edited.notes
+            );
+        }
+    }
+
+    #[test]
+    fn a_move_to_another_model_family_reports_the_settings_the_target_kept() {
+        let gpt = edit(
+            GATEWAY,
+            "gateway",
+            "composite",
+            &[
+                choice("gateway", "gpt-5.6-terra"),
+                choice("gateway", "gpt-5.6-sol"),
+                choice("gateway", "gpt-5.6-luna"),
+            ],
+        )
+        .text;
+
+        // The judge target has no request settings, and the capable target
+        // keeps omit_body_fields from its GPT model. Efficient stays.
+        let edited = edit(
+            &gpt,
+            "gateway",
+            "composite",
+            &[
+                choice("gateway_chat", "claude-haiku-4-5"),
+                choice("gateway_chat", "claude-opus-5-5"),
+                choice("gateway", "gpt-5.6-luna"),
+            ],
+        );
+
+        let note = |target: &str| {
+            edited
+                .notes
+                .iter()
+                .find(|note| note.contains(&format!("[targets.{target}]")))
+                .cloned()
+        };
+        let capable = note("gateway_capable").expect("a note for the capable target");
+        assert!(
+            capable.contains("claude-opus-5-5")
+                && capable.contains(r#"omit_body_fields = ["reasoning_effort"]"#),
+            "{capable}"
+        );
+        let judge = note("gateway_judge").expect("a note for the judge target");
+        assert!(
+            judge.contains("claude-haiku-4-5") && !judge.contains(" = "),
+            "{judge}"
+        );
+        assert_eq!(note("gateway_efficient"), None);
     }
 
     #[test]
     fn rejects_a_missing_model_or_an_unknown_client() {
         let config = ServerConfig::parse(GATEWAY).expect("parse");
-        for (capable, expected) in [
-            (choice("gateway", " "), "Choose a model for Capable."),
-            (
-                choice("typo", "gpt-5.6-sol"),
-                "The config has no llm client typo.",
-            ),
+        for (capable, named) in [
+            (choice("gateway", " "), "Capable"),
+            (choice("typo", "gpt-5.6-sol"), "typo"),
         ] {
             let error = config
                 .edit(
@@ -874,7 +1223,7 @@ confidence_threshold = 0.5
                 )
                 .expect_err("invalid choice");
 
-            assert_eq!(error, expected);
+            assert!(error.contains(named), "{error}");
         }
     }
 }

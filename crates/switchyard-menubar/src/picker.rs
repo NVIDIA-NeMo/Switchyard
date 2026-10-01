@@ -19,9 +19,10 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSButton, NSColor, NSComboBox, NSComboBoxDelegate,
-    NSControl, NSControlTextEditingDelegate, NSFont, NSPopUpButton, NSSecureTextField, NSTextField,
-    NSTextFieldDelegate, NSView, NSWindow, NSWindowStyleMask,
+    NSAccessibility, NSApplication, NSBackingStoreType, NSButton, NSColor, NSComboBox,
+    NSComboBoxDelegate, NSControl, NSControlTextEditingDelegate, NSFont, NSPopUpButton,
+    NSResponder, NSScreen, NSScrollView, NSSecureTextField, NSTextField, NSTextFieldDelegate,
+    NSTextView, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -41,6 +42,7 @@ const ALGORITHM_TAG: isize = 2;
 const SAVE_KEY_TAG: isize = 3;
 const APPLY_TAG: isize = 4;
 const REFRESH_TAG: isize = 5;
+const CLOSE_TAG: isize = 6;
 const CLIENT_TAG: isize = 100;
 const MODEL_TAG: isize = 200;
 const SELECTED_TAG: isize = 300;
@@ -56,11 +58,11 @@ const MODEL_WIDTH: f64 = WIDTH - MODEL_X - MARGIN;
 /// three lines under them.
 const ROLE_HEIGHT: f64 = 80.0;
 const NOTE_HEIGHT: f64 = 44.0;
-/// Height of the key area: two lines of text above the key field.
-const KEY_HEIGHT: f64 = 64.0;
+/// Height of the key area: three lines of text above the key field.
+const KEY_HEIGHT: f64 = 80.0;
 /// Height of the algorithm's description: up to two lines, then its roles.
 const SUMMARY_HEIGHT: f64 = 60.0;
-/// Height of the result area, which fits a wrapped `--dry-run` error.
+/// Height of the result area. A longer result scrolls.
 const STATUS_HEIGHT: f64 = 124.0;
 
 define_class!(
@@ -125,16 +127,47 @@ impl ControlTarget {
     }
 }
 
+define_class!(
+    /// A model box that scrolls itself into view when it gets keyboard
+    /// focus, so Tab can reach a role row that the scroll view hides.
+    // SAFETY: NSComboBox has no subclassing requirements, and `ModelBox`
+    // does not implement `Drop`.
+    #[unsafe(super(NSComboBox, NSTextField, NSControl, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "SwitchyardPickerModelBox"]
+    struct ModelBox;
+
+    impl ModelBox {
+        // SAFETY: the signature matches NSResponder's method.
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            // SAFETY: NSResponder's `becomeFirstResponder` takes no
+            // arguments and returns a BOOL.
+            let became: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            if became {
+                self.scrollRectToVisible(self.bounds());
+            }
+            became
+        }
+    }
+);
+
+impl ModelBox {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        // SAFETY: NSComboBox's `initWithFrame:` has this signature.
+        unsafe { msg_send![Self::alloc(mtm), initWithFrame: frame] }
+    }
+}
+
 /// A result that a worker thread sends back to the window.
 enum Done {
-    /// Model lists that load number `load` found. `status`, when set, is the
-    /// outcome to show in the result area, because the user asked for this
-    /// load.
+    /// The model list at one URL, from load number `load`.
     Listed {
         load: u64,
-        lists: Vec<Loaded>,
-        status: Option<String>,
+        loaded: Loaded,
     },
+    /// The outcome of a load that the user asked for, for the result area.
+    Status(String),
     Applied(Result<String, String>),
 }
 
@@ -180,7 +213,7 @@ impl ListState {
 /// The controls of one role row.
 struct RoleRow {
     client: Retained<NSPopUpButton>,
-    model: Retained<NSComboBox>,
+    model: Retained<ModelBox>,
     note: Retained<NSTextField>,
 }
 
@@ -192,7 +225,7 @@ struct Controls {
     key_label: Retained<NSTextField>,
     key: Retained<NSSecureTextField>,
     save_key: Retained<NSButton>,
-    status: Retained<NSTextField>,
+    status: Retained<NSTextView>,
     apply: Retained<NSButton>,
 }
 
@@ -309,7 +342,12 @@ impl Picker {
     fn load(&mut self, route: Option<&str>) {
         let path = &self.settings.config_file;
         let loaded = std::fs::read_to_string(path)
-            .map_err(|error| format!("read {}: {error}", path.display()))
+            .map_err(|error| {
+                format!(
+                    "Could not read {}: {error}. Check config_file in the menu bar settings.",
+                    path.display()
+                )
+            })
             .and_then(|text| ServerConfig::parse(&text));
         match loaded {
             Ok(config) => {
@@ -361,9 +399,10 @@ impl Picker {
                 self.roles = config.roles(&route.key, &ALGORITHMS[0]);
                 self.choices = vec![Choice::default(); self.roles.len()];
                 self.status = format!(
-                    "{} is a {} route, which this window cannot show. Applying replaces its \
-                     settings with the algorithm you choose.",
-                    route.id, route.kind
+                    "This window cannot show the current settings of route {}: its type is not \
+                     in the Algorithm list, or it is a custom-mode llm_classifier. Apply replaces \
+                     those settings with the algorithm and models you pick.",
+                    route.id
                 );
             }
         }
@@ -455,11 +494,13 @@ impl Picker {
         clients
     }
 
-    /// Loads the lists that `clients` use on a worker thread. With
-    /// `refresh`, the worker fetches them even when the cache file has
+    /// Loads the lists that `clients` use on a worker thread, which loads
+    /// each URL on its own thread and reports each list as it arrives. With
+    /// `refresh`, the worker fetches the lists even when the cache file has
     /// them, and the outcome replaces the result area's text, because the
     /// user asked for it. `key` is a key the user just typed, with its
-    /// `base_url`; the worker saves it in the Keychain before it fetches.
+    /// `base_url`. The worker lists the models with it first, and saves it in
+    /// the Keychain only when the models endpoint did not reject it.
     fn load_lists(&mut self, clients: Vec<Client>, refresh: bool, key: Option<(String, String)>) {
         self.loads += 1;
         let load = self.loads;
@@ -473,27 +514,22 @@ impl Picker {
         let cache = self.cache.clone();
         let sender = self.sender.clone();
         std::thread::spawn(move || {
+            let typed_key = key.as_ref().map(|(_, key)| key.as_str());
+            let lists = models::load(&cache, &clients, refresh, typed_key, &|loaded| {
+                let _ = sender.send(Done::Listed {
+                    load,
+                    loaded: loaded.clone(),
+                });
+            });
+            if !refresh {
+                return;
+            }
             let mut status = Vec::new();
             if let Some((base_url, key)) = &key {
-                status.push(match models::save_key(base_url, key) {
-                    Ok(()) => format!("Saved the key for {base_url} in your login Keychain."),
-                    Err(error) => format!(
-                        "Could not save the key in your login Keychain: {error}. The window \
-                         used the key for this list only."
-                    ),
-                });
+                status.push(keep_key(base_url, key, &lists));
             }
-            let typed_key = key.as_ref().map(|(_, key)| key.as_str());
-            let lists = models::load(&cache, &clients, refresh, typed_key);
-            let status = refresh.then(|| {
-                status.extend(lists.iter().map(outcome));
-                status.join("\n")
-            });
-            let _ = sender.send(Done::Listed {
-                load,
-                lists,
-                status,
-            });
+            status.extend(lists.iter().map(outcome));
+            let _ = sender.send(Done::Status(status.join("\n")));
         });
     }
 
@@ -525,6 +561,7 @@ impl Picker {
             SAVE_KEY_TAG => self.save_key(),
             REFRESH_TAG => self.refresh_models(),
             APPLY_TAG => self.apply(),
+            CLOSE_TAG => self.window.close(),
             _ if (CLIENT_TAG..MODEL_TAG).contains(&tag) => {
                 let row = tag.abs_diff(CLIENT_TAG);
                 let client = controls
@@ -536,7 +573,9 @@ impl Picker {
                 if let (Some(client), Some(choice)) = (client, self.choices.get_mut(row)) {
                     choice.client = client;
                     self.list_models();
-                    self.update_row(row);
+                    // A new client can show or hide the key field and
+                    // enable or disable Apply.
+                    self.update_rows();
                 }
             }
             _ if (MODEL_TAG..SELECTED_TAG).contains(&tag) => {
@@ -570,17 +609,12 @@ impl Picker {
         match done {
             Done::Listed {
                 load,
-                lists,
-                status,
+                loaded: Loaded { url, list, error },
             } => {
-                for Loaded { url, list, error } in lists {
-                    self.lists.entry(url).or_default().finish(load, list, error);
-                }
+                self.lists.entry(url).or_default().finish(load, list, error);
                 self.update_rows();
-                if let Some(status) = status {
-                    self.set_status(status);
-                }
             }
+            Done::Status(status) => self.set_status(status),
             Done::Applied(result) => {
                 self.busy = false;
                 match result {
@@ -606,16 +640,17 @@ impl Picker {
             if !self.settings.prices.contains_key(model) && !seen.contains(&model) {
                 seen.push(model);
                 notes.push_str(&format!(
-                    "\nmenubar.toml has no price for {model}, so savings stay hidden until you \
-                     add one."
+                    "\nmenubar.toml has no price for {model}. Savings stay hidden until you add \
+                     one and restart the menu bar app."
                 ));
             }
         }
         notes
     }
 
-    /// Saves the typed key for the key field's `base_url`, then fetches the
-    /// lists of every client with that `base_url` using the typed key.
+    /// Lists the models of every client with the key field's `base_url`
+    /// using the typed key, and then saves the key unless the models
+    /// endpoint rejected it.
     fn save_key(&mut self) {
         let (Some(controls), Some(base_url)) = (&self.controls, self.key_url().map(str::to_string))
         else {
@@ -627,6 +662,14 @@ impl Picker {
             self.set_status("Paste a key into the field first.".to_string());
             return;
         }
+        if models::has_line_break(&key) {
+            self.set_status(
+                "Could not use the key, because it has a line break. Paste the key again \
+                 without line breaks."
+                    .to_string(),
+            );
+            return;
+        }
         let clients: Vec<Client> = self
             .clients
             .iter()
@@ -634,7 +677,7 @@ impl Picker {
             .cloned()
             .collect();
         self.set_status(format!(
-            "Saving the key for {base_url} and listing its models…"
+            "Checking the key by listing the models at {base_url}…"
         ));
         self.load_lists(clients, true, Some((base_url, key)));
     }
@@ -674,13 +717,20 @@ impl Picker {
     fn set_status(&mut self, status: String) {
         self.status = status;
         if let Some(controls) = &self.controls {
-            controls
-                .status
-                .setStringValue(&NSString::from_str(&self.status));
-            controls
-                .apply
-                .setEnabled(!self.busy && self.config.is_some());
+            controls.status.setString(&NSString::from_str(&self.status));
+            controls.apply.setEnabled(self.can_apply());
         }
+    }
+
+    /// Returns whether Apply can run: no Apply is running, the config has
+    /// loaded, and every role names an LLM client from the config.
+    fn can_apply(&self) -> bool {
+        !self.busy
+            && self.config.is_some()
+            && self
+                .choices
+                .iter()
+                .all(|choice| self.client(&choice.client).is_some())
     }
 
     fn update_rows(&self) {
@@ -690,6 +740,7 @@ impl Picker {
         let Some(controls) = &self.controls else {
             return;
         };
+        controls.apply.setEnabled(self.can_apply());
         let key_url = self.key_url();
         let hidden = key_url.is_none();
         controls.key_label.setHidden(hidden);
@@ -699,9 +750,13 @@ impl Picker {
             controls
                 .key_label
                 .setStringValue(&NSString::from_str(&format!(
-                    "To list the models at {url}, paste its key here and click Save key. The \
-                     app keeps the key in your login Keychain, not in a file."
+                    "To list the models at {url}, paste the API key for that address and click \
+                     Save key. The app uses the key only to list models there and keeps it in \
+                     your login Keychain, not in a file."
                 )));
+            controls
+                .key
+                .setAccessibilityLabel(Some(&NSString::from_str(&format!("API key for {url}"))));
         }
     }
 
@@ -729,15 +784,17 @@ impl Picker {
         let state = client.and_then(|client| self.lists.get(&models::list_url(client)));
         let loading = state.is_some_and(ListState::loading);
         let note = match (client, state) {
-            (None, _) if choice.client.is_empty() => {
-                "The config has no llm clients. Type a model ID.".to_string()
-            }
+            (None, _) if self.clients.is_empty() => "The config has no [llm_clients] entries. \
+                                                     Add an LLM client to the server config, \
+                                                     then open this window again."
+                .to_string(),
             (None, _) => format!(
-                "The config has no llm client named \"{}\". Type a model ID.",
+                "The config has no LLM client named \"{}\". Pick an LLM client from the list on \
+                 the left.",
                 choice.client
             ),
             (
-                Some(_),
+                Some(client),
                 Some(ListState {
                     list: Some(list),
                     error,
@@ -750,6 +807,12 @@ impl Picker {
                 } else if let Some(error) = error {
                     note.push('\n');
                     note.push_str(&error.reason());
+                }
+                // A cached list loads without a key, so the note must name
+                // the missing variable that Apply needs.
+                if let Some(variable) = models::missing_env(client) {
+                    note.push('\n');
+                    note.push_str(&models::missing_env_note(variable));
                 }
                 note
             }
@@ -770,16 +833,23 @@ impl Picker {
     }
 
     /// Rebuilds the window's controls for the current route and algorithm.
+    /// The role rows sit in a scroll view. It is as tall as the rows when the
+    /// screen has room, and shorter when it does not, so the buttons under
+    /// the rows stay on the screen.
     fn layout(&mut self) {
         let mtm = self.mtm;
-        let height = 2.0 * MARGIN
-            + 34.0
-            + 32.0
-            + SUMMARY_HEIGHT
-            + ROLE_HEIGHT * self.roles.len() as f64
-            + KEY_HEIGHT
-            + STATUS_HEIGHT
-            + 32.0;
+        let fixed = 2.0 * MARGIN + 34.0 + 32.0 + SUMMARY_HEIGHT + KEY_HEIGHT + STATUS_HEIGHT + 32.0;
+        let rows_height = ROLE_HEIGHT * self.roles.len() as f64;
+        let screen = self.window.screen().or_else(|| NSScreen::mainScreen(mtm));
+        let room = screen.as_ref().map_or(f64::INFINITY, |screen| {
+            self.window
+                .contentRectForFrameRect(screen.visibleFrame())
+                .size
+                .height
+                - fixed
+        });
+        let rows_shown = rows_height.min(room.max(ROLE_HEIGHT));
+        let height = fixed + rows_shown;
         let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, WIDTH, height));
         // Controls are placed from the top; AppKit's origin is bottom left.
         let mut top = MARGIN;
@@ -794,10 +864,11 @@ impl Picker {
         let routes: Vec<String> = self.routes.iter().map(|route| route.id.clone()).collect();
         let route = self.popup(
             &routes,
-            self.route,
+            Some(self.route),
             rect(FIELD_X, y + 8.0, FIELD_WIDTH, 26.0),
         );
         route.setTag(ROUTE_TAG);
+        route.setAccessibilityLabel(Some(ns_string!("Route")));
         view.addSubview(&route);
 
         let y = next(32.0);
@@ -805,10 +876,11 @@ impl Picker {
         let kinds: Vec<String> = ALGORITHMS.iter().map(|a| a.kind.to_string()).collect();
         let algorithm = self.popup(
             &kinds,
-            self.algorithm,
+            Some(self.algorithm),
             rect(FIELD_X, y + 6.0, FIELD_WIDTH, 26.0),
         );
         algorithm.setTag(ALGORITHM_TAG);
+        algorithm.setAccessibilityLabel(Some(ns_string!("Algorithm")));
         view.addSubview(&algorithm);
 
         let y = next(SUMMARY_HEIGHT);
@@ -829,38 +901,46 @@ impl Picker {
             .iter()
             .map(|client| format!("{} ({})", client.name, client.format))
             .collect();
+        let rows_y = next(rows_shown);
+        let rows_view =
+            NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, WIDTH, rows_height));
         let mut rows = Vec::with_capacity(self.roles.len());
         for (row, (role, choice)) in self.roles.iter().zip(&self.choices).enumerate() {
-            let y = next(ROLE_HEIGHT);
+            let y = rows_height - ROLE_HEIGHT * (row + 1) as f64;
             let tag = isize::try_from(row).unwrap_or(0);
             // The popup and the combo box sit above the note.
             let controls_y = y + NOTE_HEIGHT + 8.0;
-            view.addSubview(&self.label(&role.label, rect(MARGIN, controls_y + 4.0, 86.0, 18.0)));
+            rows_view
+                .addSubview(&self.label(&role.label, rect(MARGIN, controls_y + 4.0, 86.0, 18.0)));
+            // When the config has no client with the choice's name, the
+            // popup selects nothing, and the note names the missing client.
             let selected = self
                 .clients
                 .iter()
-                .position(|client| client.name == choice.client)
-                .unwrap_or(0);
+                .position(|client| client.name == choice.client);
             let client = self.popup(
                 &clients,
                 selected,
                 rect(FIELD_X, controls_y, CLIENT_WIDTH, 26.0),
             );
             client.setTag(CLIENT_TAG + tag);
-            view.addSubview(&client);
+            client.setAccessibilityLabel(Some(&NSString::from_str(&format!(
+                "{} LLM client",
+                role.label
+            ))));
+            rows_view.addSubview(&client);
 
-            let model = NSComboBox::initWithFrame(
-                NSComboBox::alloc(mtm),
-                rect(MODEL_X, controls_y, MODEL_WIDTH, 26.0),
-            );
+            let model = ModelBox::new(mtm, rect(MODEL_X, controls_y, MODEL_WIDTH, 26.0));
             model.setStringValue(&NSString::from_str(&choice.model));
-            model.setPlaceholderString(Some(ns_string!("Type to search, or enter a model ID")));
+            model.setPlaceholderString(Some(ns_string!("Type to filter, or type any model ID")));
             model.setNumberOfVisibleItems(14);
             model.setCompletes(false);
             model.setTag(MODEL_TAG + tag);
+            model
+                .setAccessibilityLabel(Some(&NSString::from_str(&format!("{} model", role.label))));
             // SAFETY: the target lives as long as the window.
             unsafe { model.setDelegate(Some(ProtocolObject::from_ref(&*self.target))) };
-            view.addSubview(&model);
+            rows_view.addSubview(&model);
 
             let note = self.wrapping(
                 "",
@@ -870,22 +950,34 @@ impl Picker {
                 NSFont::smallSystemFontSize(),
             )));
             note.setTextColor(Some(&NSColor::secondaryLabelColor()));
-            view.addSubview(&note);
+            rows_view.addSubview(&note);
             rows.push(RoleRow {
                 client,
                 model,
                 note,
             });
         }
+        let scroll = NSScrollView::initWithFrame(
+            NSScrollView::alloc(mtm),
+            rect(0.0, rows_y, WIDTH, rows_shown),
+        );
+        scroll.setHasVerticalScroller(true);
+        scroll.setAutohidesScrollers(true);
+        scroll.setDrawsBackground(false);
+        scroll.setDocumentView(Some(&rows_view));
+        view.addSubview(&scroll);
+        // The rows view's origin is its bottom left, so the scroll view
+        // starts at the last role. Show the first role instead.
+        rows_view.scrollPoint(NSPoint::new(0.0, rows_height - rows_shown));
 
         let y = next(KEY_HEIGHT);
-        let key_label = self.wrapping("", rect(FIELD_X, y + 30.0, FIELD_WIDTH, 32.0));
+        let key_label = self.wrapping("", rect(FIELD_X, y + 30.0, FIELD_WIDTH, 48.0));
         view.addSubview(&key_label);
         let key = NSSecureTextField::initWithFrame(
             NSSecureTextField::alloc(mtm),
             rect(FIELD_X, y + 4.0, FIELD_WIDTH - 110.0, 22.0),
         );
-        key.setPlaceholderString(Some(ns_string!("Paste the key")));
+        key.setPlaceholderString(Some(ns_string!("Paste the API key")));
         view.addSubview(&key);
         let save_key = self.button(
             "Save key",
@@ -895,12 +987,32 @@ impl Picker {
         view.addSubview(&save_key);
 
         let y = next(STATUS_HEIGHT);
-        let status = self.wrapping(
-            &self.status,
+        // The result can be longer than the area, such as a long --dry-run
+        // error, so the area scrolls.
+        let status_scroll = NSScrollView::initWithFrame(
+            NSScrollView::alloc(mtm),
             rect(MARGIN, y + 4.0, WIDTH - 2.0 * MARGIN, STATUS_HEIGHT - 8.0),
         );
-        status.setSelectable(true);
-        view.addSubview(&status);
+        status_scroll.setHasVerticalScroller(true);
+        status_scroll.setAutohidesScrollers(true);
+        status_scroll.setDrawsBackground(false);
+        let size = status_scroll.contentSize();
+        let status = NSTextView::initWithFrame(
+            NSTextView::alloc(mtm),
+            rect(0.0, 0.0, size.width, size.height),
+        );
+        // The text view grows down as the text gets longer, and wraps at the
+        // area's width.
+        status.setMinSize(size);
+        status.setMaxSize(NSSize::new(size.width, f64::MAX));
+        status.setVerticallyResizable(true);
+        status.setHorizontallyResizable(false);
+        status.setEditable(false);
+        status.setDrawsBackground(false);
+        status.setFont(Some(&NSFont::systemFontOfSize(NSFont::systemFontSize())));
+        status.setString(&NSString::from_str(&self.status));
+        status_scroll.setDocumentView(Some(&status));
+        view.addSubview(&status_scroll);
 
         let refresh = self.button(
             "Refresh models",
@@ -909,12 +1021,21 @@ impl Picker {
         );
         refresh.setEnabled(!self.choices.is_empty());
         view.addSubview(&refresh);
+        let close = self.button(
+            "Close",
+            CLOSE_TAG,
+            rect(WIDTH - MARGIN - 210.0, MARGIN - 4.0, 100.0, 32.0),
+        );
+        // Escape closes the window, as in a macOS dialog.
+        close.setKeyEquivalent(&NSString::from_str("\u{1b}"));
+        view.addSubview(&close);
         let apply = self.button(
             "Apply",
             APPLY_TAG,
             rect(WIDTH - MARGIN - 100.0, MARGIN - 4.0, 100.0, 32.0),
         );
-        apply.setEnabled(!self.busy && self.config.is_some());
+        // Return runs Apply, the window's default button.
+        apply.setKeyEquivalent(ns_string!("\r"));
         view.addSubview(&apply);
 
         // Keep the window's top edge in place as its height changes.
@@ -922,7 +1043,27 @@ impl Picker {
         let top_left = NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height);
         self.window.setContentSize(NSSize::new(WIDTH, height));
         self.window.setContentView(Some(&view));
+        // Tab moves between the controls in the order they appear, including
+        // the controls inside the scroll view.
+        self.window.recalculateKeyViewLoop();
         self.window.setFrameTopLeftPoint(top_left);
+        // A taller window can reach past the bottom of the screen. Move it
+        // back onto the screen, so that Apply stays in reach.
+        if let Some(screen) = &screen {
+            let visible = screen.visibleFrame();
+            let mut frame = self.window.frame();
+            frame.origin.x = frame
+                .origin
+                .x
+                .min(visible.origin.x + visible.size.width - frame.size.width)
+                .max(visible.origin.x);
+            frame.origin.y = frame
+                .origin
+                .y
+                .max(visible.origin.y)
+                .min(visible.origin.y + visible.size.height - frame.size.height);
+            self.window.setFrameOrigin(frame.origin);
+        }
 
         self.controls = Some(Controls {
             route,
@@ -949,13 +1090,24 @@ impl Picker {
         label
     }
 
-    fn popup(&self, items: &[String], selected: usize, frame: NSRect) -> Retained<NSPopUpButton> {
+    /// Returns a popup that lists `items` with `selected` chosen, or with no
+    /// item chosen when `selected` is `None`.
+    fn popup(
+        &self,
+        items: &[String],
+        selected: Option<usize>,
+        frame: NSRect,
+    ) -> Retained<NSPopUpButton> {
         let popup =
             NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(self.mtm), frame, false);
         for item in items {
             popup.addItemWithTitle(&NSString::from_str(item));
         }
-        popup.selectItemAtIndex(isize::try_from(selected).unwrap_or(0));
+        popup.selectItemAtIndex(
+            selected
+                .and_then(|index| isize::try_from(index).ok())
+                .unwrap_or(-1),
+        );
         // SAFETY: `ControlTarget` implements `controlChanged:` and lives as
         // long as the window.
         unsafe {
@@ -1008,7 +1160,7 @@ fn fill(ui: &RoleRow, list: &ModelList, query: &str) -> String {
     }
     if query.is_empty() || shown.len() == listed.len() {
         format!(
-            "{} models, listed {}. Type to filter.",
+            "{} models, fetched {}. Type to filter.",
             listed.len(),
             age(list.fetched_at)
         )
@@ -1019,12 +1171,32 @@ fn fill(ui: &RoleRow, list: &ModelList, query: &str) -> String {
     }
 }
 
+/// Saves a typed key in the Keychain unless the models endpoint rejected
+/// it while the app listed `lists` with it, and says what happened.
+fn keep_key(base_url: &str, key: &str, lists: &[Loaded]) -> String {
+    if lists
+        .iter()
+        .any(|loaded| matches!(loaded.error, Some(ListError::Rejected(_))))
+    {
+        return format!(
+            "Did not save the key for {base_url}, because the models endpoint rejected it."
+        );
+    }
+    match models::save_key(base_url, key) {
+        Ok(()) => format!("Saved the key for {base_url} in your login Keychain."),
+        Err(error) => format!(
+            "Could not save the key in your login Keychain: {error}. The app used the key this \
+             time only and did not keep it. To try again, paste the key and click Save key."
+        ),
+    }
+}
+
 /// Describes one loaded list for the result area.
 fn outcome(loaded: &Loaded) -> String {
     let mut line = format!("{}:", loaded.url);
     if let Some(list) = &loaded.list {
         line.push_str(&format!(
-            " {} models, listed {}.",
+            " {} models, fetched {}.",
             list.models.len(),
             age(list.fetched_at)
         ));

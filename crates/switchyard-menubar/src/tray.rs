@@ -38,10 +38,11 @@ pub fn run(config: Config, settings: &Path) -> Result<(), String> {
     let ns_app = NSApplication::sharedApplication(mtm);
     // Accessory keeps the process out of the Dock and the app switcher.
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    // An accessory app shows no menu bar, but text fields still find copy
-    // and paste shortcuts through the app's main menu.
-    let edit_menu = edit_menu()?;
-    edit_menu.init_for_nsapp();
+    // An accessory app shows no menu bar, but AppKit still finds keyboard
+    // shortcuts, such as Cmd-C in a text field and Cmd-W in the picker
+    // window, through the app's main menu.
+    let main_menu = main_menu()?;
+    main_menu.init_for_nsapp();
 
     let glyph = Icon::from_rgba(icon::glyph(), icon::SIZE, icon::SIZE)
         .map_err(|error| format!("build icon: {error}"))?;
@@ -128,8 +129,9 @@ fn menu(rows: &[Row]) -> Result<Menu, String> {
     Ok(menu)
 }
 
-/// The app's hidden main menu, which gives text fields their Edit shortcuts.
-fn edit_menu() -> Result<Menu, String> {
+/// Builds the app's hidden main menu, which gives text fields their Edit
+/// shortcuts and windows their Cmd-W shortcut.
+fn main_menu() -> Result<Menu, String> {
     let edit = Submenu::with_items(
         "Edit",
         true,
@@ -144,7 +146,9 @@ fn edit_menu() -> Result<Menu, String> {
         ],
     )
     .map_err(|error| format!("build the Edit menu: {error}"))?;
-    Menu::with_items(&[&edit]).map_err(|error| format!("build the main menu: {error}"))
+    let window = Submenu::with_items("Window", true, &[&PredefinedMenuItem::close_window(None)])
+        .map_err(|error| format!("build the Window menu: {error}"))?;
+    Menu::with_items(&[&edit, &window]).map_err(|error| format!("build the main menu: {error}"))
 }
 
 /// Drains pending AppKit events, blocking briefly when there are none.

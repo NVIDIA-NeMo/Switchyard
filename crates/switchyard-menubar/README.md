@@ -59,25 +59,41 @@ named by `config_file`.
 3. For each role, pick an LLM client from the config, then a model. The model
    box lists the models from the client's `GET /models` endpoint. Type to
    filter the list, or type a model ID that is not listed.
-4. Click **Apply**.
+4. Click **Apply**, or press Return. Escape or Cmd-W closes the window.
+
+When a route has more roles than the screen can show, such as a `random`
+route with many models, the roles scroll, and the buttons stay on the screen.
 
 Apply checks the new config with
 `switchyard-server --config <file> --dry-run`, using the `switchyard-server`
 installed next to the menu bar app. If the check fails, the window shows the
 server's error and the file does not change. If it passes, the app saves the
-file, keeps the old one as `<file>.switchyard-backup.<timestamp>`, restarts
-the server with `launchctl kickstart -k gui/<uid>/<launchd_label>`, and says
-whether the server answers `/health`. If `config_file` is a symlink, the app
-writes the file that the link points to, puts the backup next to that file,
-and leaves the link in place.
+file, keeps the old one as `<file>.switchyard-backup.<timestamp>`, and
+restarts the server with `launchctl kickstart -k gui/<uid>/<launchd_label>`.
+A second backup in the same second gets `-2` added to its name, so a backup
+never replaces another one. If another program changes the file while the
+check runs, Apply saves nothing and asks you to click Apply again. If
+`config_file` is a symlink, the app writes the file that the link points to,
+puts the backup next to that file, and leaves the link in place.
+
+The result area lists what happened, most important first: the saved file
+and its backup, the restart and whether the server answers `/health` within
+10 seconds, notes about the change, and how many routes passed the check. If
+the server does not answer, the result says how to put the backup back.
 
 The app changes as little of the file as it can:
 
 - Comments, formatting, and every table the change does not touch stay as
   they were.
 - A role keeps its target when that target already names the chosen model.
-  If another target names that model on that client, the route uses it.
-  Otherwise the app changes the route's own target in place, so settings such
+- If another target names that model on that client, the route uses it when
+  the route would get the same `system_prompt`, `reasoning_effort`,
+  `extra_body`, and `omit_body_fields` from it. The route also uses it when
+  `reasoning_effort`, `extra_body`, or `omit_body_fields` differ, because the
+  server rejects two targets that name one model on one client with
+  different values for those. When the role then shares the target with
+  another route, the result says so.
+- Otherwise the app changes the route's own target in place, so settings such
   as `extra_body` and `omit_body_fields` stay.
 - The app copies a target instead of changing it when another route uses it,
   or when an earlier role in the same Apply already took it. For example, if
@@ -86,26 +102,48 @@ The app changes as little of the file as it can:
   target with the new model.
 - A changed or copied target also keeps its model-specific settings. For
   example, a target with `omit_body_fields = ["reasoning_effort"]` keeps that
-  setting when it switches from a Claude model to a GPT model. Check these
-  settings after you move a role to another model family.
+  setting when it switches from a Claude model to a GPT model. `--dry-run`
+  does not catch a setting that the new model rejects. So when a target moves
+  to another model family, such as from `gpt-…` to `claude-…`, or to a client
+  with another `format`, the result lists the `omit_body_fields`,
+  `reasoning_effort`, and `extra_body` that the target kept, or says that it
+  has none. The app does not change them; edit the file if the new model
+  needs other values.
 - Switching algorithms keeps the route's `id`, `context_window`,
   `tool_calling`, `reasoning`, and `vision`, and keeps `subagents` when the new
   algorithm accepts it (`passthrough`, `stage_router`, and `composite`). It
   removes the old type's other settings and writes the settings the new type
   requires with the values from the routing docs, such as
-  `confidence_threshold = 0.5`. Edit the file to tune them.
+  `confidence_threshold = 0.5`. The result lists the settings it removed, and
+  the backup still has them. Edit the file to tune them.
 - Targets that no route uses any more stay in the file.
 
-The window cannot show a custom-mode `llm_classifier` route or a route of
-another type. Applying to such a route replaces its settings with the
-algorithm you pick.
+The window cannot show the settings of a custom-mode `llm_classifier` route
+or of a route whose `type` is not in the Algorithm list. Applying to such a
+route replaces its settings with the algorithm and models you pick.
 
-The check runs with the menu bar app's environment. If a client reads its
-key from `api_key_env`, the menu bar's LaunchAgent needs that variable too.
-Otherwise the check fails and the app saves nothing.
+The check runs with the menu bar app's environment, not your shell's. If a
+client reads its key from `api_key_env`, the menu bar app's LaunchAgent needs
+that variable too. Otherwise the check fails and the app saves nothing. The
+window says so under each role that uses such a client, and again in the
+result when the check fails. To add the variable, put it under
+`EnvironmentVariables` in
+`~/Library/LaunchAgents/com.nvidia.switchyard.menubar.plist`, then load the
+agent again:
 
-If a chosen model has no price in `menubar.toml`, the window says so.
-Savings stay hidden until you add the price and restart the menu bar app.
+```sh
+launchctl bootout gui/$UID/com.nvidia.switchyard.menubar
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.nvidia.switchyard.menubar.plist
+```
+
+That puts the key in the plist file as plain text, and `make install-macos`
+writes the plist again without it. A client with `forward_auth = true` needs
+no key in the config, because the server sends each caller's own key.
+
+Apply does not add prices, because the app has no price source besides
+`menubar.toml`. If a chosen model has no price there, the result names the
+model. Savings stay hidden until you add the price and restart the menu bar
+app.
 
 ### Model lists
 
@@ -126,31 +164,40 @@ If the app cannot write `model-lists.json`, the window still uses the fetched
 list and shows "Could not save the list" with the error. Because the list is
 not in the file, the app fetches it again after a restart.
 
-Click **Refresh models** to fetch the lists that the window's roles use again,
-one request per URL. The result area then shows each list's model count or
-error. If a fetch fails, the window keeps the list it has and shows the error
-under it.
+Click **Refresh models** to fetch every list that the window's roles use,
+even a cached one. The app sends one request per URL, and fetches the URLs at
+the same time, so a slow URL does not hold back the others. Each role's note
+changes as its list arrives, and the result area then shows each list's
+model count or error. If a fetch fails, the window keeps the list it has and
+shows the error under it.
 
 When a role's model box is empty or holds a listed model ID, the note under
-it shows the list's model count and age, such as "10 models, listed 2 minutes
-ago. Type to filter." While you type, the note says how many models match,
-such as "2 of 10 models match." When nothing matches, it says "No listed
-model matches. Apply uses the ID as typed."
+it shows the list's model count and age, such as "10 models, fetched 2
+minutes ago. Type to filter." While you type, the note says how many models
+match, such as "2 of 10 models match." When nothing matches, it says "No
+listed model matches. Apply uses the ID as typed."
 
 ### Keys for model lists
 
-The app never writes a key to a file. For a client with `api_key_env`, it
-reads that variable from its own environment. A client with `forward_auth`
-stores no key, and a LaunchAgent does not get the variables from your shell
-profile. So when a list needs a key and none is available, the role's note
-says so, and the window shows a key field under the roles. Paste the key and
-click **Save key**. The app saves the key in your login Keychain as
-"Switchyard model list", with the client's `base_url` as the account, and
-fetches the list with it. Clients with the same `base_url` share the key.
+The app never writes a key to a file. To list a client's models, it uses the
+first key it finds: the key you just typed, then the variable named by the
+client's `api_key_env` in the menu bar app's own environment, then the login
+Keychain item for the client's `base_url`. A LaunchAgent does not load your
+shell profile, so a key you export in `~/.zshrc` is not in the app's
+environment. A `forward_auth` client has no key in the config, because the
+server sends each caller's own key upstream.
 
-If macOS cannot save the key, or cannot hand over a saved one, the window
-shows the Keychain's error. You can always type a model ID that is not
-listed.
+When the app finds no key, the role's note says so and a key field appears
+under the roles. Paste the API key for the `base_url` that the field names,
+and click **Save key**. The app first lists the models with the key. If the
+models endpoint rejects it, the app does not save it. Otherwise the app saves
+the key in your login Keychain as "Switchyard model list", with the client's
+`base_url` as the account. Clients with the same `base_url` share the key.
+The app uses a saved key only to list models at that `base_url`. It refuses
+a key with a line break, because a line break would add a request header.
+
+If macOS cannot save the key, or cannot read a saved one, the window shows
+the Keychain's error. You can always type a model ID that is not listed.
 
 The app lists models with the system `curl`. It writes the key to curl's
 stdin, never to its command line, and runs curl with `-q`, so curl ignores
