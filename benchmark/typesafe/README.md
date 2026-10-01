@@ -19,12 +19,19 @@ always produces the same bytes.
 Every fixture is one JSON document with numeric `schema_version: 1`; JSON Booleans are not valid
 versions. It records:
 
-- a suite name and pinned Jev model identifier;
+- a suite name and requested Jev model identifier, which may be an alias;
 - two or more candidate labels and descriptions;
 - the confidence threshold and fallback target;
-- one or more unique candidate orders per case, with a complete probability distribution for each;
+- one or more unique candidate orders per case, each with the provider-reported `resolved_model`
+  and a complete probability distribution;
 - measured quality in `[0, 1]` for every candidate outcome;
 - optional nonnegative cost for each candidate outcome.
+
+The `resolved_model` must be the provider-reported model version that answered each order probe,
+not a copy of the requested alias. If the provider only echoes an alias and does not identify the
+resolved version, the case cannot establish same-version order sensitivity. All orders in a case
+must have the same resolved model; otherwise the replay rejects the case because model drift could
+be mistaken for candidate-order sensitivity. The report includes that identity for each case.
 
 The replay averages the recorded distributions, normalizes the average, and chooses the largest
 probability. Configured candidate order breaks an exact tie. Confidence is the selected

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "suite": "synthetic-two-target-routing",
-  "model": "jev-pinned-example",
+  "model": "jev-requested-example",
   "candidates": [
     {
       "label": "capable",
@@ -19,10 +19,12 @@
       "id": "simple-request",
       "orders": [
         {
+          "resolved_model": "jev-resolved-example-r1",
           "candidate_order": ["capable", "efficient"],
           "probabilities": {"capable": 0.1, "efficient": 0.9}
         },
         {
+          "resolved_model": "jev-resolved-example-r1",
           "candidate_order": ["efficient", "capable"],
           "probabilities": {"capable": 0.2, "efficient": 0.8}
         }
@@ -36,10 +38,12 @@
       "id": "complex-request",
       "orders": [
         {
+          "resolved_model": "jev-resolved-example-r1",
           "candidate_order": ["capable", "efficient"],
           "probabilities": {"capable": 0.8, "efficient": 0.2}
         },
         {
+          "resolved_model": "jev-resolved-example-r1",
           "candidate_order": ["efficient", "capable"],
           "probabilities": {"capable": 0.6, "efficient": 0.4}
         }
@@ -53,10 +57,12 @@
       "id": "order-sensitive-request",
       "orders": [
         {
+          "resolved_model": "jev-resolved-example-r1",
           "candidate_order": ["capable", "efficient"],
           "probabilities": {"capable": 0.7, "efficient": 0.3}
         },
         {
+          "resolved_model": "jev-resolved-example-r1",
           "candidate_order": ["efficient", "capable"],
           "probabilities": {"capable": 0.3, "efficient": 0.7}
         }

@@ -55,6 +55,7 @@ def test_synthetic_fixture_reports_routing_quality_cost_and_order_sensitivity(
     assert report["cost_delta_vs_best_fixed"] == -16.0
     assert report["cases"][2] == {
         "id": "order-sensitive-request",
+        "resolved_model": "jev-resolved-example-r1",
         "average_probabilities": {"capable": 0.5, "efficient": 0.5},
         "classifier_target": "capable",
         "confidence": 0.0,
@@ -154,3 +155,28 @@ def test_duplicate_candidate_order_is_rejected(
 
     with pytest.raises(replay_module.FixtureError, match="repeats a candidate order"):
         replay_module.replay(document)
+
+
+def test_mixed_resolved_models_are_rejected(
+    replay_module: ModuleType, fixture_document: dict[str, object]
+) -> None:
+    """Do not attribute a model revision change to candidate order."""
+    fixture_document["model"] = "jev-latest"
+    orders = fixture_document["cases"][0]["orders"]
+    orders[0]["resolved_model"] = "jev-revision-a"
+    orders[1]["resolved_model"] = "jev-revision-b"
+
+    with pytest.raises(replay_module.FixtureError, match="mixed resolved models"):
+        replay_module.replay(fixture_document)
+
+
+def test_missing_resolved_model_is_rejected(
+    replay_module: ModuleType, fixture_document: dict[str, object]
+) -> None:
+    """Require provenance for every order probe, not just the first one."""
+    fixture_document["cases"][0]["orders"][1].pop("resolved_model")
+
+    with pytest.raises(
+        replay_module.FixtureError, match="resolved_model must be a non-empty string"
+    ):
+        replay_module.replay(fixture_document)

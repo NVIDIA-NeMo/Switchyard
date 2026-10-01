@@ -135,8 +135,18 @@ def replay(document: dict[str, Any]) -> dict[str, Any]:
         seen_orders: set[tuple[str, ...]] = set()
         distributions: list[dict[str, float]] = []
         order_winners: list[str] = []
+        resolved_model: str | None = None
         for order_index, order_value in enumerate(order_rows):
             order = object_value(order_value, f"case {case_id!r} order {order_index}")
+            order_model = string_value(
+                order.get("resolved_model"), f"case {case_id!r} order {order_index}.resolved_model"
+            )
+            if resolved_model is None:
+                resolved_model = order_model
+            else:
+                require(
+                    order_model == resolved_model, f"case {case_id!r} has mixed resolved models"
+                )
             order_labels = string_list(
                 order.get("candidate_order"),
                 f"case {case_id!r} order {order_index}.candidate_order",
@@ -212,6 +222,7 @@ def replay(document: dict[str, Any]) -> dict[str, Any]:
         case_reports.append(
             {
                 "id": case_id,
+                "resolved_model": resolved_model,
                 "average_probabilities": {label: rounded(averaged[label]) for label in labels},
                 "classifier_target": classifier_target,
                 "confidence": rounded(confidence),
