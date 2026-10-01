@@ -116,48 +116,7 @@ run mkdir -p "$SY_HOME/bin"
 run install -m 755 "$REPO_ROOT/target/release/switchyard-server" "$SY_HOME/bin/switchyard-server"
 
 step "Writing server config"
-# The composite router from examples/run_codex.sh: Terra classifies each user
-# turn and sets the tier, Stage drives the tool loop underneath it.
-write_once "$SY_HOME/composite.toml" <<'EOF'
-schema_version = 1
-
-[llm_clients.chatgpt_backend]
-format = "openai_responses"
-base_url = "https://chatgpt.com/backend-api/codex"
-forward_auth = true
-
-[targets.capable]
-id = "gpt-5.6-sol"
-llm_client = "chatgpt_backend"
-
-[targets.efficient]
-id = "gpt-5.6-luna"
-llm_client = "chatgpt_backend"
-
-# chatgpt.com/backend-api/codex is Codex CLI's own private endpoint, not the
-# public OpenAI Responses API. It 400s unless store=false and stream=true are
-# set explicitly, and it rejects max_output_tokens outright, so the
-# classifier's own token cap has to be dropped before the request goes out.
-[targets.terra]
-id = "gpt-5.6-terra"
-llm_client = "chatgpt_backend"
-extra_body = { store = false, stream = true }
-omit_body_fields = ["max_output_tokens"]
-
-[routes.switchyard]
-id = "switchyard"
-type = "composite"
-
-[routes.switchyard.classifier]
-target = "terra"
-base_threshold = 0.5
-classify_trigger = "user_turn"
-
-[routes.switchyard.stage]
-capable_target = "capable"
-efficient_target = "efficient"
-confidence_threshold = 0.5
-EOF
+write_once "$SY_HOME/composite.toml" < "$REPO_ROOT/scripts/config/composite.toml"
 
 step "Validating the server config"
 if (( DRY_RUN )); then
@@ -195,16 +154,7 @@ step "Adding the sy Codex profile"
 # This profile only changes which router answers. Approval and sandbox
 # settings are deliberately left out, so the profile cannot loosen how Codex
 # asks before it acts. Set those yourself if you want them.
-write_with_backup "$CODEX_PROFILE_CONFIG" <<EOF
-model = "switchyard"
-model_provider = "sy"
-
-[model_providers.sy]
-name = "Switchyard"
-base_url = "http://127.0.0.1:$SY_PORT/v1"
-wire_api = "responses"
-requires_openai_auth = true
-EOF
+sed "s/@SY_PORT@/$SY_PORT/g" "$REPO_ROOT/scripts/config/codex.sy.toml" | write_with_backup "$CODEX_PROFILE_CONFIG"
 
 step "Done"
 say "Server: http://127.0.0.1:$SY_PORT"

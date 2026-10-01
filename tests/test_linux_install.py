@@ -18,6 +18,7 @@ RC = f"before\n{START}\nalias codex='codex -p sy'\n{END}\nafter\n"
 def setup(tmp_path):
     scripts = tmp_path / "repo" / "scripts" / "linux"
     shutil.copytree(REPO / "scripts" / "linux", scripts)
+    shutil.copytree(REPO / "scripts" / "config", scripts.parent / "config")
     home = tmp_path / "home"
     home.mkdir()
     bin_dir = tmp_path / "bin"

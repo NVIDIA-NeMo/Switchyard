@@ -1,0 +1,40 @@
+schema_version = 1
+
+[llm_clients.chatgpt_backend]
+format = "openai_responses"
+base_url = "https://chatgpt.com/backend-api/codex"
+forward_auth = true
+
+[targets.capable]
+id = "gpt-6-sol"
+llm_client = "chatgpt_backend"
+
+[targets.efficient]
+id = "gpt-6-luna"
+llm_client = "chatgpt_backend"
+extra_body = { store = false, stream = true }
+omit_body_fields = ["max_output_tokens"]
+
+# chatgpt.com/backend-api/codex is Codex CLI's own private endpoint, not the
+# public OpenAI Responses API. It 400s unless store=false and stream=true are
+# set explicitly, and it rejects max_output_tokens outright, so the
+# classifier's own token cap has to be dropped before the request goes out.
+[targets.terra]
+id = "gpt-6-luna"
+llm_client = "chatgpt_backend"
+extra_body = { store = false, stream = true }
+omit_body_fields = ["max_output_tokens"]
+
+[routes.switchyard]
+id = "switchyard"
+type = "composite"
+
+[routes.switchyard.classifier]
+target = "terra"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[routes.switchyard.stage]
+capable_target = "capable"
+efficient_target = "efficient"
+confidence_threshold = 0.5
