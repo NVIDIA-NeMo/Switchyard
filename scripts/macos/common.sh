@@ -8,6 +8,7 @@
 source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 
 SERVER_LABEL="com.nvidia.switchyard.server"
+MENUBAR_LABEL="com.nvidia.switchyard.menubar"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 CODEX_CONFIG="$CODEX_DIR/config.toml"
 # Codex reads `--profile sy` from its own file next to config.toml. A

@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-menubar"
+version.workspace = true
+description = "macOS menu bar companion for a locally running Switchyard server"
+authors.workspace = true
+edition.workspace = true
+homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+tray-icon = "0.25"
+
+[dev-dependencies]
+tempfile = "3"
