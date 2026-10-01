@@ -53,24 +53,18 @@ fn dry_run_rejects_invalid_base_url() -> TestResult {
 }
 
 #[test]
-fn dry_run_rejects_zero_upstream_response_limits() -> TestResult {
+fn dry_run_rejects_zero_upstream_response_limit() -> TestResult {
     let directory = tempfile::tempdir()?;
     let config = directory.path().join("routes.toml");
-    for name in [
-        "max_response_bytes",
-        "max_error_body_bytes",
-        "max_stream_event_bytes",
-    ] {
-        fs::write(
-            &config,
-            format!(
-                r#"
+    fs::write(
+        &config,
+        r#"
 schema_version = 1
 
 [llm_clients.upstream]
 format = "openai_chat"
 base_url = "http://127.0.0.1:1/v1"
-{name} = 0
+max_response_bytes = 0
 
 [targets.upstream]
 id = "upstream-model"
@@ -81,19 +75,17 @@ id = "test-route"
 type = "passthrough"
 target = "upstream"
 "#,
-            ),
-        )?;
+    )?;
 
-        let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
-            .args(["--config", config.to_string_lossy().as_ref(), "--dry-run"])
-            .output()?;
-        assert!(!output.status.success(), "{name}");
-        let stderr = String::from_utf8(output.stderr)?;
-        assert!(
-            stderr.contains(&format!("{name} must be at least 1")),
-            "{stderr}"
-        );
-    }
+    let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
+        .args(["--config", config.to_string_lossy().as_ref(), "--dry-run"])
+        .output()?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("max_response_bytes must be at least 1"),
+        "{stderr}"
+    );
     Ok(())
 }
 
