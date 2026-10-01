@@ -1420,6 +1420,12 @@ make a classifier call.</p>
 The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.</p>
+<p>For Responses requests using <code>previous_response_id</code>, Switchyard restores locally
+cached messages before checking for edits. This supports handoff across providers
+and formats, including after a completed stream. Responses with <code>store: false</code>
+are not cached. The cache belongs to the running route and does not survive a
+restart. Provider-managed <code>conversation</code> IDs and responses without local history
+keep their existing routing behavior.</p>
 <p>Optional settings:</p>
 <table>
 <thead>
@@ -1444,12 +1450,6 @@ Without a session ID, the first mutation must remain in the request history.</p>
 </tbody>
 </table>
 <p>Use a stable session ID with handoff processing or history compaction.</p>
-<p>Responses requests must include the full message history needed for routing.
-Plan/execute rejects <code>previous_response_id</code> and <code>conversation</code> continuations with
-HTTP 400. Stored continuations can hide the edit or write call and pin the request
-to the model that owns the state, bypassing handoff. Send the history in <code>input</code>
-without either field, including the assistant tool call and its result. Set
-<code>store = false</code> if the provider does not need to retain the response.</p>
 
 
 
