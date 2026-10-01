@@ -666,7 +666,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::core::testing::{Serve, ServeResult, echo, reply, test_drive};
+    use crate::core::testing::{Serve, ServeResult, echo, reply, serve_decision, test_drive};
     use futures::StreamExt;
     use switchyard_protocol::{
         LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
@@ -911,6 +911,12 @@ mod tests {
                         Some("llm reply".into())
                     );
                     match self.0 {
+                        "mock" => assert_eq!(decision?, DecisionResponse {
+                            id: None,
+                            model: Some("decision".into()),
+                            answers: Default::default(),
+                            usage: Default::default(),
+                        }),
                         "reply" => assert_eq!(decision?, decision_response()),
                         "error" => assert!(matches!(
                             decision,
@@ -927,7 +933,7 @@ mod tests {
                 }
             }
 
-            for mode in ["reply", "error", "drop", "abort"] {
+            for mode in ["mock", "reply", "error", "drop", "abort"] {
                 // Neither handler can finish until both call types are being served.
                 let barrier = Arc::new(tokio::sync::Barrier::new(2));
                 let llm_barrier = barrier.clone();
@@ -951,6 +957,7 @@ mod tests {
                             assert_eq!(call.request.context, decision_request().context);
                             barrier.wait().await;
                             match mode {
+                                "mock" => serve_decision(call).await,
                                 "reply" => call.respond(Ok(decision_response())),
                                 "error" => call.respond(Err(LibsyError::AlgorithmError {
                                     message: "provider failed".into(),

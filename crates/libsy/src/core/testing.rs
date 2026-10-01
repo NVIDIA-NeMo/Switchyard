@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use switchyard_protocol::{
-    Category, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
+    Category, DecisionResponse, LlmClientError, LlmResponse, ModelId, Request, Response,
+    text_response,
 };
 
 use crate::core::algorithm::{Algorithm, CallDecision, CallModel, Driver, RuntimeModels};
@@ -83,7 +84,7 @@ pub(crate) async fn test_drive_with_models(
         request,
         Arc::new(models.into()),
         move |call| fulfill(Arc::clone(&routing_serve), call),
-        reject_decision,
+        serve_decision,
     )
     .await?;
     let selected_model = outcome.selected_model_id()?.clone();
@@ -97,10 +98,15 @@ pub(crate) async fn test_drive_with_models(
     Ok((selected_model, response))
 }
 
-pub(crate) async fn reject_decision(call: CallDecision) -> Result<()> {
-    call.fail(LibsyError::AlgorithmError {
-        message: "unexpected decision call in LLM test".to_string(),
-    })
+/// Return an empty decision response from the selected model.
+pub(crate) async fn serve_decision(call: CallDecision) -> Result<()> {
+    let response = DecisionResponse {
+        id: None,
+        model: Some(call.model.clone()),
+        answers: Default::default(),
+        usage: Default::default(),
+    };
+    call.respond(Ok(response))
 }
 
 /// Serve one call and fulfill its promise, mapping failures the way a host does so

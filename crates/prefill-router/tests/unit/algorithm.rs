@@ -65,10 +65,14 @@ fn forward() -> (
     )
 }
 
-async fn reject_decision(call: libsy::CallDecision) -> libsy::Result<()> {
-    call.fail(LibsyError::AlgorithmError {
-        message: "unexpected decision call in prefill router".to_string(),
-    })
+async fn serve_decision(call: libsy::CallDecision) -> libsy::Result<()> {
+    let response = switchyard_protocol::DecisionResponse {
+        id: None,
+        model: Some(call.model.clone()),
+        answers: Default::default(),
+        usage: Default::default(),
+    };
+    call.respond(Ok(response))
 }
 
 async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<String> {
@@ -85,7 +89,7 @@ async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<
                 upstream_headers: Default::default(),
             }))
         },
-        reject_decision,
+        serve_decision,
     )
     .await?;
     Ok(outcome.selected_model_id()?.to_string())
