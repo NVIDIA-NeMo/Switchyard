@@ -7,7 +7,6 @@
 SY_HOME="${SY_HOME:-$HOME/.switchyard}"
 SY_PORT="${SY_PORT:-4123}"
 SERVER_LABEL="com.nvidia.switchyard.server"
-MENUBAR_LABEL="com.nvidia.switchyard.menubar"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG="$CODEX_DIR/config.toml"
