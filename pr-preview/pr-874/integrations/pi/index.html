@@ -704,14 +704,64 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Which request API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
+</li>
+      
+        <li class="md-nav__item">
   <a href="#claude-targets-behind-an-openai-compatible-gateway" class="md-nav__link">
     <span class="md-ellipsis">
       
         Claude targets behind an OpenAI-compatible gateway
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude targets behind an OpenAI-compatible gateway">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prompt-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prompt caching
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prompt caching">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#estimate-the-cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimate the cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thinking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thinking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forwarded-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forwarded keys
       
     </span>
   </a>
@@ -1521,14 +1571,64 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Which request API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
+</li>
+      
+        <li class="md-nav__item">
   <a href="#claude-targets-behind-an-openai-compatible-gateway" class="md-nav__link">
     <span class="md-ellipsis">
       
         Claude targets behind an OpenAI-compatible gateway
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude targets behind an OpenAI-compatible gateway">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prompt-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prompt caching
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prompt caching">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#estimate-the-cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimate the cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thinking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thinking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forwarded-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forwarded keys
       
     </span>
   </a>
@@ -1598,7 +1698,9 @@ with route id <code>switchyard</code>.</p>
 <ul>
 <li><code>models[].id</code> must equal a route <code>id</code> from your TOML file. Add one entry per route.</li>
 <li><code>apiKey</code> is a placeholder. Switchyard ignores client keys unless an LLM client sets
-  <code>forward_auth = true</code>. pi still needs some value here before it lists the model.</li>
+  <code>forward_auth = true</code>. pi still needs some value here before it lists the model. To
+  send your gateway key through a route that forwards it, see
+  <a href="#forwarded-keys">Forwarded keys</a>.</li>
 <li><code>contextWindow</code> and <code>maxTokens</code> set pi's compaction limit and output cap. pi does not
   read these values from the server. Use the smallest context window among the route's
   targets.</li>
@@ -1660,61 +1762,171 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/dd145220aefb6361d68d208e790f915125dac440/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/18d388a33647de0289b9649de40a3cfe4380ea23/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
-<h3 id="claude-targets-behind-an-openai-compatible-gateway">Claude targets behind an OpenAI-compatible gateway<a class="headerlink" href="#claude-targets-behind-an-openai-compatible-gateway" title="Permanent link">&para;</a></h3>
+<h2 id="claude-targets-behind-an-openai-compatible-gateway">Claude targets behind an OpenAI-compatible gateway<a class="headerlink" href="#claude-targets-behind-an-openai-compatible-gateway" title="Permanent link">&para;</a></h2>
 <p>Some gateways, such as a LiteLLM proxy, serve Claude models on <code>/v1/chat/completions</code>,
-<code>/v1/responses</code>, and <code>/v1/messages</code> with one API key. The target's LLM client <code>format</code>
-decides which endpoint Switchyard calls. That choice can change prompt caching and
-thinking for Claude.</p>
-<p><strong>Prompt caching.</strong> On the LiteLLM gateway tested for this page, a repeated Claude prompt
-was read from the cache on <code>/v1/chat/completions</code> and <code>/v1/messages</code>, but never on
-<code>/v1/responses</code>. Every request to <code>/v1/responses</code> paid for the whole prompt again. Use
-<code>format = "openai_chat"</code> or <code>"anthropic_messages"</code> for Claude targets. To check your
-gateway, start the server with <code>--routing-log-file PATH</code> and send the same long prompt
-twice. Claude does not cache short prompts. A prompt of at least 5,000 tokens is a safe
-size; it is not Claude's exact minimum. Then read the records:</p>
+<code>/v1/responses</code>, and <code>/v1/messages</code> with one API key. Switchyard calls the endpoint that
+matches the target's LLM client <code>format</code>, whatever <code>api</code> pi uses. On the gateway tested
+for this page, the <code>format</code> decided whether Claude prompts were cached and whether pi's
+<code>--thinking</code> level worked.</p>
+<p>Choose the Claude LLM client by who holds the gateway key:</p>
+<table>
+<thead>
+<tr>
+<th>Who holds the gateway key</th>
+<th>Claude LLM client</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The server, through <code>api_key_env</code></td>
+<td><code>format = "anthropic_messages"</code></td>
+<td>Prompt caching and pi's <code>--thinking</code> level both work. Every caller's Claude requests use the server-owned key.</td>
+</tr>
+<tr>
+<td>pi sends it as <code>apiKey</code>, and the Claude LLM client forwards it with <code>forward_auth = true</code></td>
+<td><code>format = "openai_chat"</code>, with <code>omit_body_fields = ["reasoning_effort"]</code> on the target</td>
+<td>Prompt caching works. pi's <code>--thinking</code> level has no effect, and Claude thinks at its default effort.</td>
+</tr>
+</tbody>
+</table>
+<p>Do not use <code>format = "openai_responses"</code> for Claude targets on such a gateway. The
+gateway tested for this page never cached Claude prompts on <code>/v1/responses</code>, and it
+returned HTTP 400 when thinking was on (see <a href="#thinking">Thinking</a>). In both setups, a GPT
+judge on <code>openai_responses</code> can still use pi's forwarded key (see
+<a href="#forwarded-keys">Forwarded keys</a>).</p>
+<h3 id="prompt-caching">Prompt caching<a class="headerlink" href="#prompt-caching" title="Permanent link">&para;</a></h3>
+<p>On the LiteLLM gateway tested for this page, a repeated Claude prompt was read from the
+cache on <code>/v1/chat/completions</code> and <code>/v1/messages</code>, but never on <code>/v1/responses</code>. Every
+<code>/v1/responses</code> request counted the whole prompt as uncached input.</p>
+<p>To check your gateway, start the server with <code>--routing-log-file PATH</code> and send the same
+prompt twice. Claude does not cache short prompts, so use a prompt of at least 5,000
+tokens. In the tests for this page, prompts of about 5,000 tokens were cached on Claude
+Opus 5.5 and Sonnet 5; the tests did not find Claude's exact minimum. Then read the
+records:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, prompt_tokens, cached_tokens, cache_creation_tokens}&#39;</span><span class="w"> </span>PATH
 </span></code></pre></div>
 <p>If the gateway caches the prompt, the first record shows it in <code>cache_creation_tokens</code>
-and the second shows <code>cached_tokens</code> close to <code>prompt_tokens</code>. Writing the cache makes
-the first request cost more, and each later request that reuses the prompt costs much
-less. If the second record shows <code>"cached_tokens": 0</code>, the gateway billed the whole
-prompt again.</p>
-<p><strong>Thinking.</strong> Claude Opus 5.5 and Sonnet 5 accept only adaptive thinking. Some gateways
-turn the Chat Completions <code>reasoning_effort</code> field into Anthropic's older
-<code>thinking: {type: "enabled"}</code>, and the model then returns HTTP 400:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>&quot;thinking.type.enabled&quot; is not supported for this model. Use &quot;thinking.type.adaptive&quot; and &quot;output_config.effort&quot; to control thinking behavior.
+and the second shows <code>cached_tokens</code> close to <code>prompt_tokens</code>. If the second record shows
+<code>"cached_tokens": 0</code>, the gateway read nothing from the cache, and the whole prompt
+counts as uncached input again.</p>
+<h4 id="estimate-the-cost">Estimate the cost<a class="headerlink" href="#estimate-the-cost" title="Permanent link">&para;</a></h4>
+<p>The routing log records token counts, not prices. To estimate what a request cost,
+multiply each token count in its record by the matching price, and add the results:</p>
+<table>
+<thead>
+<tr>
+<th>Tokens in the record</th>
+<th>Price</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Uncached input: <code>prompt_tokens - cached_tokens - cache_creation_tokens</code></td>
+<td>Input price</td>
+</tr>
+<tr>
+<td><code>cached_tokens</code></td>
+<td>Cache-read price</td>
+</tr>
+<tr>
+<td><code>cache_creation_tokens</code></td>
+<td>Cache-write price</td>
+</tr>
+<tr>
+<td><code>completion_tokens</code></td>
+<td>Output price</td>
+</tr>
+</tbody>
+</table>
+<p>Anthropic's published pricing sets the cache-read price at 0.1 times the input price. It
+sets the cache-write price at 1.25 times the input price for a 5-minute cache, or 2 times
+for a 1-hour cache. The routing log does not record which cache lifetime the gateway
+used, and a gateway may charge its own prices, so the result is an estimate, not the
+gateway's bill.</p>
+<p>Put your prices in a <code>prices.json</code> file, in USD per million tokens. Key each entry by the
+<code>model</code> value from the routing log. The rates below are illustrative: they only follow
+Anthropic's published ratios, with cache reads at 0.1 times and 5-minute cache writes at
+1.25 times the input price. Replace them with your provider's current prices.</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;claude-opus-5-5&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">12.50</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.00</span><span class="p">}</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>With <code>reasoning: true</code>, pi sends <code>reasoning_effort</code>, and Switchyard passes it to an
-<code>openai_chat</code> target. You have two options:</p>
+<p>The command below prints one estimated cost per record. For a record whose model has no
+entry in <code>prices.json</code>, it prints a warning instead of a cost:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>jq<span class="w"> </span>-r<span class="w"> </span>--slurpfile<span class="w"> </span>prices<span class="w"> </span>prices.json<span class="w"> </span><span class="s1">&#39;</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="s1">  . as $r</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="s1">  | ($prices[0][$r.model // &quot;&quot;]) as $p</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="s1">  | if $p == null then</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="s1">      &quot;warning: no price for model \($r.model); add it to prices.json&quot;</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="s1">    else</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="s1">      ((($r.prompt_tokens // 0) - ($r.cached_tokens // 0) - ($r.cache_creation_tokens // 0)) * $p.input</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="s1">       + ($r.cached_tokens // 0) * $p.cache_read</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="s1">       + ($r.cache_creation_tokens // 0) * $p.cache_write</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="s1">       + ($r.completion_tokens // 0) * $p.output) / 1000000</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="s1">      | &quot;\($r.route_id) \($r.model) estimated $\(. * 1000000 | round / 1000000)&quot;</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="s1">    end&#39;</span><span class="w"> </span>PATH
+</span></code></pre></div>
+<h3 id="thinking">Thinking<a class="headerlink" href="#thinking" title="Permanent link">&para;</a></h3>
+<p>Claude Opus 5.5 and Sonnet 5 accept only adaptive thinking. With <code>reasoning: true</code>, pi
+sends <code>reasoning_effort</code>, even when you do not pass <code>--thinking</code>, and Switchyard
+passes that field unchanged to an <code>openai_chat</code> target. Some gateways, including the one
+tested for this page, turn <code>reasoning_effort</code> into Anthropic's older
+<code>thinking: {type: "enabled"}</code> and return HTTP 400:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>&quot;thinking.type.enabled&quot; is not supported for this model. Use &quot;thinking.type.adaptive&quot; and &quot;output_config.effort&quot; to control thinking behavior.
+</span></code></pre></div>
+<p>An <code>openai_responses</code> target fails the same way. Switchyard sends the effort to it as
+<code>reasoning.effort</code>, and the gateway returns the same error.</p>
+<p>You have two options:</p>
 <ul>
-<li>Use an <code>anthropic_messages</code> target. Switchyard turns the requested effort into
-  <code>thinking: {type: "adaptive"}</code> and <code>output_config.effort</code>.</li>
-<li>Keep the <code>openai_chat</code> target and drop the field:</li>
+<li>Use an <code>anthropic_messages</code> LLM client. Switchyard turns pi's effort into
+  <code>thinking: {type: "adaptive"}</code> and <code>output_config.effort</code>, so pi's <code>--thinking</code> level
+  still applies.</li>
+<li>Keep the OpenAI-format LLM client and remove the effort field from requests to the
+  target with <a href="../../reference/toml_schema/#targetsname"><code>omit_body_fields</code></a>. Use the
+  field name of the target's format: <code>reasoning_effort</code> on <code>openai_chat</code>, or <code>reasoning</code>
+  on <code>openai_responses</code>.</li>
 </ul>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[targets.claude]</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_chat&quot;</span><span class="w">  </span><span class="c1"># format = &quot;openai_chat&quot;</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning_effort&quot;</span><span class="p">]</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">[targets.claude]</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_chat&quot;</span><span class="w">  </span><span class="c1"># format = &quot;openai_chat&quot;</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning_effort&quot;</span><span class="p">]</span>
 </span></code></pre></div>
-<p>The request then succeeds, and the model thinks at its default effort. pi's
-  <code>--thinking</code> level has no effect on this target.</p>
-<p><strong>Forwarded keys.</strong> Every LLM client in one route that sets <code>forward_auth = true</code> must
-use the same API family: <code>openai_chat</code> and <code>openai_responses</code>, or <code>anthropic_messages</code>.
-Otherwise the server does not start and prints
-<code>route &lt;name&gt; cannot forward both Anthropic and OpenAI caller credentials</code>, where
-<code>&lt;name&gt;</code> is the route's <code>[routes.&lt;name&gt;]</code> table key, not its <code>id</code>. A route that
-forwards the caller's key to an <code>anthropic_messages</code> client also accepts requests only
-on <code>/v1/messages</code>, and pi should not use that API. So when Switchyard forwards pi's key
-to the Claude targets, use <code>openai_chat</code> Claude targets with <code>omit_body_fields</code>.</p>
-<p>An <code>anthropic_messages</code> client that reads the key from <code>api_key_env</code> works with every
-request API, as long as no other LLM client in the route sets <code>forward_auth = true</code>. If
-one does, the forwarded client limits the route's endpoints. For example, a route with a
-forwarded <code>openai_responses</code> client accepts only <code>/v1/chat/completions</code> and
-<code>/v1/responses</code>, and returns HTTP 400 on <code>/v1/messages</code>. pi uses those APIs, so such a
-route can forward pi's key to a GPT judge on <code>openai_responses</code> while its Claude targets
-use <code>anthropic_messages</code> with a key that the server holds.</p>
+<p>The request then succeeds, and Claude thinks at its default effort. pi's <code>--thinking</code>
+  level has no effect on this target.</p>
+<h3 id="forwarded-keys">Forwarded keys<a class="headerlink" href="#forwarded-keys" title="Permanent link">&para;</a></h3>
+<p>An LLM client with <code>forward_auth = true</code> sends the caller's key to the gateway. An LLM
+client with <code>api_key_env</code> sends a server-owned key, which the server reads from an
+environment variable (see
+<a href="../../reference/toml_schema/#llm_clientsname"><code>[llm_clients.&lt;name&gt;]</code></a>). To forward pi's
+key, replace the <code>apiKey</code> placeholder with the name of an environment variable that holds
+your gateway key, with a leading <code>$</code>: <code>"apiKey": "$GATEWAY_API_KEY"</code>. Without the <code>$</code>,
+pi sends the name itself as the key.</p>
+<p>Two rules limit forwarding in one route:</p>
+<ul>
+<li>Every LLM client in the route that sets <code>forward_auth = true</code> must use the same API
+  family: <code>openai_chat</code> and <code>openai_responses</code>, or <code>anthropic_messages</code>. Otherwise the
+  server does not start and prints
+  <code>route &lt;name&gt; cannot forward both Anthropic and OpenAI caller credentials</code>. <code>&lt;name&gt;</code> is
+  the route's <code>[routes.&lt;name&gt;]</code> table key, not its <code>id</code>.</li>
+<li>A route that forwards the key to an <code>anthropic_messages</code> client accepts requests only on
+  <code>/v1/messages</code>, and pi should not use that API (see <a href="#which-request-api">Which request API</a>).</li>
+</ul>
+<p>So if the route forwards pi's key to its Claude targets, put them on <code>openai_chat</code> with
+<code>omit_body_fields</code>.</p>
+<p>To keep pi's <code>--thinking</code> level, give the Claude targets an <code>anthropic_messages</code> client
+with <code>api_key_env</code>. Which endpoints the route accepts then depends on the route's other
+LLM clients:</p>
+<ul>
+<li>If no LLM client in the route sets <code>forward_auth = true</code>, the route accepts every
+  request API.</li>
+<li>If an OpenAI-format LLM client forwards the key, for example a GPT judge on
+  <code>openai_responses</code>, the route accepts only <code>/v1/chat/completions</code> and <code>/v1/responses</code>
+  and returns HTTP 400 on <code>/v1/messages</code>. pi uses those two APIs, so this setup works
+  with pi.</li>
+</ul>
 
 
 
