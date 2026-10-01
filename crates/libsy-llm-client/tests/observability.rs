@@ -34,9 +34,10 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    Algorithm, ClassifierContractConfig, ClassifyTrigger, DeescalationConfig, Driver,
-    EscalationJudgeConfig, LibsyError, LlmClassifierConfig, LlmTaskClassifier, PickerMode,
-    RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
+    Algorithm, CapabilityJudgeConfig, ClassifierContractConfig, ClassifyTrigger,
+    DeescalationConfig, Driver, EscalationJudgeConfig, LibsyError, LlmCapabilityConfig,
+    LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, RuntimeModels, StageRouter,
+    StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{Category, ModelId};
@@ -606,7 +607,10 @@ fn classifier_router() -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
     Ok(Arc::new(LlmTaskClassifier::new(
         LlmClassifierConfig::Capability {
             config: TaskClassifierConfig {
-                base_threshold: 0.5,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..LlmCapabilityConfig::default()
+                }),
                 fail_open: false,
                 ..TaskClassifierConfig::default()
             },
@@ -869,7 +873,10 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
     });
     let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
         config: TaskClassifierConfig {
-            base_threshold: 0.5,
+            judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                base_threshold: 0.5,
+                ..LlmCapabilityConfig::default()
+            }),
             classify_trigger: ClassifyTrigger::NewSession,
             ..TaskClassifierConfig::default()
         },

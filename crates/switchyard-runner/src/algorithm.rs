@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
-    AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
-    ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
-    PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    AdvisorGate, AdvisorGateConfig, Algorithm, CapabilityJudgeConfig, ClassifierContractConfig,
+    ClassifierResponseFormat, ClassifyTrigger, CompositeRouter, CompositeRouterConfig,
+    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
+    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -526,15 +526,17 @@ pub struct StageTierConfig {
 impl StageClassifierConfig {
     fn task_classifier_config(&self) -> TaskClassifierConfig {
         TaskClassifierConfig {
+            judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                base_threshold: self.base_threshold,
+                threshold_step: self.threshold_step,
+                contract: classifier_contract(self.prompt.as_deref())
+                    .with_response_format_type(self.response_format_type),
+                max_output_tokens: self.max_output_tokens,
+            }),
             fail_open: true,
-            base_threshold: self.base_threshold,
-            threshold_step: self.threshold_step,
             classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
-            contract: classifier_contract(self.prompt.as_deref())
-                .with_response_format_type(self.response_format_type),
-            max_output_tokens: self.max_output_tokens,
         }
     }
 }
@@ -1242,15 +1244,17 @@ fn build_algorithm(
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
                     let classifier_config = TaskClassifierConfig {
+                        judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                            base_threshold: config.base_threshold,
+                            threshold_step: config.threshold_step,
+                            contract: classifier_contract(config.prompt.as_deref())
+                                .with_response_format_type(config.response_format_type),
+                            max_output_tokens: config.max_output_tokens,
+                        }),
                         fail_open: config.fail_open,
-                        base_threshold: config.base_threshold,
-                        threshold_step: config.threshold_step,
                         classify_trigger: config.classify_trigger,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
-                        contract: classifier_contract(config.prompt.as_deref())
-                            .with_response_format_type(config.response_format_type),
-                        max_output_tokens: config.max_output_tokens,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         config: classifier_config,
@@ -1494,7 +1498,7 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 }
 
 fn default_classifier_max_output_tokens() -> u64 {
-    TaskClassifierConfig::default().max_output_tokens
+    LlmCapabilityConfig::default().max_output_tokens
 }
 
 fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig) {

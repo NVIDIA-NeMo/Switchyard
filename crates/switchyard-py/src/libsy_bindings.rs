@@ -15,11 +15,12 @@ use pyo3::exceptions::{
 use pyo3::prelude::*;
 use serde_json::Value;
 use switchyard_libsy::{
-    Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
-    CustomClassifierConfig, CustomClassifierPolicy, DeescalationConfig, EscalationJudgeConfig,
-    HandoffNoteConfig, LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback,
-    LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter,
-    StageRouterConfig, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    Algorithm, CallModel, CapabilityJudgeConfig, ClassifierContractConfig,
+    ClassifierResponseFormat, ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy,
+    DeescalationConfig, EscalationJudgeConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, PickerMode,
+    Random, RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig, Step as RustStep,
+    StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -330,14 +331,16 @@ impl PyTaskClassifierConfig {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: TaskClassifierConfig {
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold,
+                    threshold_step,
+                    contract: classifier_contract(prompt, response_format_type)?,
+                    max_output_tokens,
+                }),
                 fail_open: true,
-                base_threshold,
-                threshold_step,
                 classify_trigger: classify_trigger(session_affinity),
                 message_hash_fallback,
                 recent_turn_window,
-                contract: classifier_contract(prompt, response_format_type)?,
-                max_output_tokens,
             },
         })
     }
