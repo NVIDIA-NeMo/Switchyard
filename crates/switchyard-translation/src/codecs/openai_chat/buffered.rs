@@ -269,8 +269,8 @@ impl FormatCodec for OpenAiChatCodec {
         _policy: &TranslationPolicy,
     ) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
-        // `abort` and `error` mean the generation did not complete.
-        if let Some(reason @ ("abort" | "error")) = object
+        // `abort`, `error` and `repetition` mean the generation did not complete.
+        if let Some(reason @ ("abort" | "error" | "repetition")) = object
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())

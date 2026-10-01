@@ -1057,11 +1057,11 @@ fn failed_responses_return_upstream_failure_with_provider_message() -> TestResul
     Ok(())
 }
 
-// Verifies Chat `abort` and `error` finish reasons fail the turn.
+// Verifies Chat `abort`, `error` and `repetition` finish reasons fail the turn.
 #[test]
-fn abort_and_error_finish_reasons_return_upstream_failure() -> TestResult {
+fn failed_finish_reasons_return_upstream_failure() -> TestResult {
     let engine = TranslationEngine::default();
-    for reason in ["abort", "error"] {
+    for reason in ["abort", "error", "repetition"] {
         let body = json!({
             "id": "chatcmpl-test", "object": "chat.completion", "model": "gpt-4o",
             "choices": [{"index": 0, "finish_reason": reason,

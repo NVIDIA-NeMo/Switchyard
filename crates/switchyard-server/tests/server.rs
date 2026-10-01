@@ -342,8 +342,9 @@ async fn upstream_chat(
         .into_response();
     }
 
-    // A generation that did not complete (`abort` from vLLM or SGLang, `error` from OpenRouter).
-    if let Some(reason @ ("abort" | "error")) = model.strip_prefix("model/finish-") {
+    // A generation that did not complete (`abort` from vLLM or SGLang, `error` from OpenRouter,
+    // `repetition` from vLLM).
+    if let Some(reason @ ("abort" | "error" | "repetition")) = model.strip_prefix("model/finish-") {
         return Json(json!({
             "id": "chatcmpl-finish",
             "object": "chat.completion",
@@ -1150,10 +1151,10 @@ async fn failed_responses_return_errors_and_try_fallback_across_endpoints() -> T
     Ok(())
 }
 
-// A Chat backend that ends a generation with `abort` or `error` did not complete
-// it: every client path gets a 502, and a fallback route moves on.
+// A Chat backend that ends a generation with `abort`, `error` or `repetition` did
+// not complete it: every client path gets a 502, and a fallback route moves on.
 #[tokio::test]
-async fn chat_abort_and_error_finish_reasons_return_errors_and_try_fallback() -> TestResult {
+async fn chat_failed_finish_reasons_return_errors_and_try_fallback() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let requests = [
         (
@@ -1174,7 +1175,7 @@ async fn chat_abort_and_error_finish_reasons_return_errors_and_try_fallback() ->
             json!({"model": ROUTE_MODEL, "input": "hello"}),
         ),
     ];
-    for reason in ["abort", "error"] {
+    for reason in ["abort", "error", "repetition"] {
         let model = format!("model/finish-{reason}");
         let message = format!("provider finished with finish_reason \"{reason}\"");
         for fallback in [false, true] {
