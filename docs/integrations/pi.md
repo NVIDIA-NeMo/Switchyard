@@ -41,7 +41,9 @@ with route id `switchyard`.
 
 - `models[].id` must equal a route `id` from your TOML file. Add one entry per route.
 - `apiKey` is a placeholder. Switchyard ignores client keys unless an LLM client sets
-  `forward_auth = true`. pi still needs some value here before it lists the model.
+  `forward_auth = true`. pi still needs some value here before it lists the model. To
+  send your gateway key through a route that forwards it, see
+  [Forwarded keys](#forwarded-keys).
 - `contextWindow` and `maxTokens` set pi's compaction limit and output cap. pi does not
   read these values from the server. Use the smallest context window among the route's
   targets.
@@ -97,45 +99,119 @@ Set `cost` on the model entry if you want pi to show a non-zero cost.
 [`benchmark/run-baseline.sh`](../../benchmark/README.md) runs Terminal-Bench tasks with
 pi through Switchyard when you pass `--agent pi`.
 
-### Claude targets behind an OpenAI-compatible gateway
+## Claude targets behind an OpenAI-compatible gateway
 
 Some gateways, such as a LiteLLM proxy, serve Claude models on `/v1/chat/completions`,
-`/v1/responses`, and `/v1/messages` with one API key. The target's LLM client `format`
-decides which endpoint Switchyard calls. That choice can change prompt caching and
-thinking for Claude.
+`/v1/responses`, and `/v1/messages` with one API key. Switchyard calls the endpoint that
+matches the target's LLM client `format`, whatever `api` pi uses. On the gateway tested
+for this page, the `format` decided whether Claude prompts were cached and whether pi's
+`--thinking` level worked.
 
-**Prompt caching.** On the LiteLLM gateway tested for this page, a repeated Claude prompt
-was read from the cache on `/v1/chat/completions` and `/v1/messages`, but never on
-`/v1/responses`. Every request to `/v1/responses` paid for the whole prompt again. Use
-`format = "openai_chat"` or `"anthropic_messages"` for Claude targets. To check your
-gateway, start the server with `--routing-log-file PATH` and send the same long prompt
-twice. Claude does not cache short prompts. A prompt of at least 5,000 tokens is a safe
-size; it is not Claude's exact minimum. Then read the records:
+Choose the Claude LLM client by who holds the gateway key:
+
+| Who holds the gateway key | Claude LLM client | Result |
+|---|---|---|
+| The server, through `api_key_env` | `format = "anthropic_messages"` | Prompt caching and pi's `--thinking` level both work. Every caller's Claude requests use the server-owned key. |
+| pi sends it as `apiKey`, and the Claude LLM client forwards it with `forward_auth = true` | `format = "openai_chat"`, with `omit_body_fields = ["reasoning_effort"]` on the target | Prompt caching works. pi's `--thinking` level has no effect, and Claude thinks at its default effort. |
+
+Do not use `format = "openai_responses"` for Claude targets on such a gateway. The
+gateway tested for this page never cached Claude prompts on `/v1/responses`, and it
+returned HTTP 400 when thinking was on (see [Thinking](#thinking)). In both setups, a GPT
+judge on `openai_responses` can still use pi's forwarded key (see
+[Forwarded keys](#forwarded-keys)).
+
+### Prompt caching
+
+On the LiteLLM gateway tested for this page, a repeated Claude prompt was read from the
+cache on `/v1/chat/completions` and `/v1/messages`, but never on `/v1/responses`. Every
+`/v1/responses` request counted the whole prompt as uncached input.
+
+To check your gateway, start the server with `--routing-log-file PATH` and send the same
+prompt twice. Claude does not cache short prompts, so use a prompt of at least 5,000
+tokens. In the tests for this page, prompts of about 5,000 tokens were cached on Claude
+Opus 5.5 and Sonnet 5; the tests did not find Claude's exact minimum. Then read the
+records:
 
 ```bash
 jq -c '{route_id, prompt_tokens, cached_tokens, cache_creation_tokens}' PATH
 ```
 
 If the gateway caches the prompt, the first record shows it in `cache_creation_tokens`
-and the second shows `cached_tokens` close to `prompt_tokens`. Writing the cache makes
-the first request cost more, and each later request that reuses the prompt costs much
-less. If the second record shows `"cached_tokens": 0`, the gateway billed the whole
-prompt again.
+and the second shows `cached_tokens` close to `prompt_tokens`. If the second record shows
+`"cached_tokens": 0`, the gateway read nothing from the cache, and the whole prompt
+counts as uncached input again.
 
-**Thinking.** Claude Opus 5.5 and Sonnet 5 accept only adaptive thinking. Some gateways
-turn the Chat Completions `reasoning_effort` field into Anthropic's older
-`thinking: {type: "enabled"}`, and the model then returns HTTP 400:
+#### Estimate the cost
+
+The routing log records token counts, not prices. To estimate what a request cost,
+multiply each token count in its record by the matching price, and add the results:
+
+| Tokens in the record | Price |
+|---|---|
+| Uncached input: `prompt_tokens - cached_tokens - cache_creation_tokens` | Input price |
+| `cached_tokens` | Cache-read price |
+| `cache_creation_tokens` | Cache-write price |
+| `completion_tokens` | Output price |
+
+Anthropic's published pricing sets the cache-read price at 0.1 times the input price. It
+sets the cache-write price at 1.25 times the input price for a 5-minute cache, or 2 times
+for a 1-hour cache. The routing log does not record which cache lifetime the gateway
+used, and a gateway may charge its own prices, so the result is an estimate, not the
+gateway's bill.
+
+Put your prices in a `prices.json` file, in USD per million tokens. Key each entry by the
+`model` value from the routing log. The rates below are illustrative: they only follow
+Anthropic's published ratios, with cache reads at 0.1 times and 5-minute cache writes at
+1.25 times the input price. Replace them with your provider's current prices.
+
+```json
+{
+  "claude-opus-5-5": {"input": 10.00, "cache_read": 1.00, "cache_write": 12.50, "output": 50.00}
+}
+```
+
+The command below prints one estimated cost per record. For a record whose model has no
+entry in `prices.json`, it prints a warning instead of a cost:
+
+```bash
+jq -r --slurpfile prices prices.json '
+  . as $r
+  | ($prices[0][$r.model // ""]) as $p
+  | if $p == null then
+      "warning: no price for model \($r.model); add it to prices.json"
+    else
+      ((($r.prompt_tokens // 0) - ($r.cached_tokens // 0) - ($r.cache_creation_tokens // 0)) * $p.input
+       + ($r.cached_tokens // 0) * $p.cache_read
+       + ($r.cache_creation_tokens // 0) * $p.cache_write
+       + ($r.completion_tokens // 0) * $p.output) / 1000000
+      | "\($r.route_id) \($r.model) estimated $\(. * 1000000 | round / 1000000)"
+    end' PATH
+```
+
+### Thinking
+
+Claude Opus 5.5 and Sonnet 5 accept only adaptive thinking. With `reasoning: true`, pi
+sends `reasoning_effort`, even when you do not pass `--thinking`, and Switchyard
+passes that field unchanged to an `openai_chat` target. Some gateways, including the one
+tested for this page, turn `reasoning_effort` into Anthropic's older
+`thinking: {type: "enabled"}` and return HTTP 400:
 
 ```text
 "thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.
 ```
 
-With `reasoning: true`, pi sends `reasoning_effort`, and Switchyard passes it to an
-`openai_chat` target. You have two options:
+An `openai_responses` target fails the same way. Switchyard sends the effort to it as
+`reasoning.effort`, and the gateway returns the same error.
 
-- Use an `anthropic_messages` target. Switchyard turns the requested effort into
-  `thinking: {type: "adaptive"}` and `output_config.effort`.
-- Keep the `openai_chat` target and drop the field:
+You have two options:
+
+- Use an `anthropic_messages` LLM client. Switchyard turns pi's effort into
+  `thinking: {type: "adaptive"}` and `output_config.effort`, so pi's `--thinking` level
+  still applies.
+- Keep the OpenAI-format LLM client and remove the effort field from requests to the
+  target with [`omit_body_fields`](../reference/toml_schema.md#targetsname). Use the
+  field name of the target's format: `reasoning_effort` on `openai_chat`, or `reasoning`
+  on `openai_responses`.
 
   ```toml
   [targets.claude]
@@ -144,22 +220,39 @@ With `reasoning: true`, pi sends `reasoning_effort`, and Switchyard passes it to
   omit_body_fields = ["reasoning_effort"]
   ```
 
-  The request then succeeds, and the model thinks at its default effort. pi's
-  `--thinking` level has no effect on this target.
+  The request then succeeds, and Claude thinks at its default effort. pi's `--thinking`
+  level has no effect on this target.
 
-**Forwarded keys.** Every LLM client in one route that sets `forward_auth = true` must
-use the same API family: `openai_chat` and `openai_responses`, or `anthropic_messages`.
-Otherwise the server does not start and prints
-`route <name> cannot forward both Anthropic and OpenAI caller credentials`, where
-`<name>` is the route's `[routes.<name>]` table key, not its `id`. A route that
-forwards the caller's key to an `anthropic_messages` client also accepts requests only
-on `/v1/messages`, and pi should not use that API. So when Switchyard forwards pi's key
-to the Claude targets, use `openai_chat` Claude targets with `omit_body_fields`.
+### Forwarded keys
 
-An `anthropic_messages` client that reads the key from `api_key_env` works with every
-request API, as long as no other LLM client in the route sets `forward_auth = true`. If
-one does, the forwarded client limits the route's endpoints. For example, a route with a
-forwarded `openai_responses` client accepts only `/v1/chat/completions` and
-`/v1/responses`, and returns HTTP 400 on `/v1/messages`. pi uses those APIs, so such a
-route can forward pi's key to a GPT judge on `openai_responses` while its Claude targets
-use `anthropic_messages` with a key that the server holds.
+An LLM client with `forward_auth = true` sends the caller's key to the gateway. An LLM
+client with `api_key_env` sends a server-owned key, which the server reads from an
+environment variable (see
+[`[llm_clients.<name>]`](../reference/toml_schema.md#llm_clientsname)). To forward pi's
+key, replace the `apiKey` placeholder with the name of an environment variable that holds
+your gateway key, with a leading `$`: `"apiKey": "$GATEWAY_API_KEY"`. Without the `$`,
+pi sends the name itself as the key.
+
+Two rules limit forwarding in one route:
+
+- Every LLM client in the route that sets `forward_auth = true` must use the same API
+  family: `openai_chat` and `openai_responses`, or `anthropic_messages`. Otherwise the
+  server does not start and prints
+  `route <name> cannot forward both Anthropic and OpenAI caller credentials`. `<name>` is
+  the route's `[routes.<name>]` table key, not its `id`.
+- A route that forwards the key to an `anthropic_messages` client accepts requests only on
+  `/v1/messages`, and pi should not use that API (see [Which request API](#which-request-api)).
+
+So if the route forwards pi's key to its Claude targets, put them on `openai_chat` with
+`omit_body_fields`.
+
+To keep pi's `--thinking` level, give the Claude targets an `anthropic_messages` client
+with `api_key_env`. Which endpoints the route accepts then depends on the route's other
+LLM clients:
+
+- If no LLM client in the route sets `forward_auth = true`, the route accepts every
+  request API.
+- If an OpenAI-format LLM client forwards the key, for example a GPT judge on
+  `openai_responses`, the route accepts only `/v1/chat/completions` and `/v1/responses`
+  and returns HTTP 400 on `/v1/messages`. pi uses those two APIs, so this setup works
+  with pi.
