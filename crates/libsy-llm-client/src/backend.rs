@@ -72,6 +72,8 @@ pub struct HttpBackendConfig {
     pub reasoning_effort: Option<String>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
+    /// Cooldown after an exhausted transient completion failure. Zero disables it.
+    pub failure_cooldown: Duration,
     /// Deadline for one complete response, including retries, retry delays, and stream reads.
     /// `None` leaves the wait unbounded.
     pub timeout: Option<Duration>,
@@ -88,6 +90,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("omit_body_fields", &self.omit_body_fields)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("max_retries", &self.max_retries)
+            .field("failure_cooldown", &self.failure_cooldown)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -319,6 +322,11 @@ impl Backend {
         self.config().max_retries
     }
 
+    /// Cooldown after an exhausted transient completion failure.
+    pub fn failure_cooldown(&self) -> Duration {
+        self.config().failure_cooldown
+    }
+
     /// Deadline for all attempts and the complete response; `None` leaves the wait unbounded.
     pub fn timeout(&self) -> Option<Duration> {
         self.config().timeout
@@ -431,6 +439,7 @@ mod tests {
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
+            failure_cooldown: Duration::ZERO,
             timeout: None,
         }
     }

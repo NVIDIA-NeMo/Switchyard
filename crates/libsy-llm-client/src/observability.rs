@@ -201,6 +201,7 @@ fn llm_client_error_type(error: &LlmClientError) -> Cow<'static, str> {
         LlmClientError::ResponseTranslation(_) => Cow::Borrowed("response_translation"),
         LlmClientError::Configuration { .. } => Cow::Borrowed("configuration"),
         LlmClientError::Transport { .. } => Cow::Borrowed("transport"),
+        LlmClientError::TemporarilyUnavailable => Cow::Borrowed("temporarily_unavailable"),
         LlmClientError::Timeout { .. } => Cow::Borrowed("timeout"),
         LlmClientError::ContextWindowExceeded { .. } => Cow::Borrowed("context_window_exceeded"),
         LlmClientError::UpstreamHttp { status, .. } => Cow::Owned(status.as_str().to_owned()),

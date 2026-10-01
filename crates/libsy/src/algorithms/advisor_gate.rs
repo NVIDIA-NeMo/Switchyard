@@ -52,6 +52,7 @@ mod trigger;
 mod turn;
 
 use super::util::buffered_response::{BufferedResponse, buffer_response};
+use super::util::robustness::safe_error_summary;
 use budget::{ReviewBudget, ScopeKey, budget_scope, stall_key};
 use signals::{GateSignalProcessor, GateSignals};
 use telemetry::{
@@ -407,7 +408,14 @@ impl AdvisorGate {
             Ok(advisor) => {
                 let advisor = advisor.clone();
                 let advisor_models = driver.models_for(&Category::Judge).to_vec();
-                match driver.call_model(consult_request, advisor_models).await {
+                match driver
+                    .call_model_with_error_recovery(
+                        consult_request,
+                        advisor_models,
+                        self.config.fail_open,
+                    )
+                    .await
+                {
                     Ok(response) => {
                         let served_advisor = response
                             .served_model()
@@ -440,14 +448,17 @@ impl AdvisorGate {
                         "advisor consult failed (fail_open = false): {error}"
                     )));
                 }
+                // An upstream error's Display can quote request content back,
+                // so only its redacted summary reaches logs or the audit trail.
+                let summary = safe_error_summary(&error);
                 tracing::warn!(
                     target: "libsy",
-                    error = %error,
+                    error = %summary,
                     "advisor gate: consult failed; passing the turn through (fail open)"
                 );
                 emit_review_audit(ReviewAudit {
                     verdict: "APPROVE",
-                    error: Some(error.to_string()),
+                    error: Some(summary),
                     latency_ms,
                     reply_head: None,
                     usage: None,
@@ -518,7 +529,7 @@ impl AdvisorGate {
                 },
                 output: OutputParams {
                     max_output_tokens: Some(self.config.advisor_max_tokens),
-                    response_format: None,
+                    ..OutputParams::default()
                 },
                 ..LlmRequest::default()
             },

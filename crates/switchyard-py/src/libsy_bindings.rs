@@ -9,15 +9,17 @@ use std::sync::Arc;
 use futures::StreamExt;
 use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
-use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyBaseException, PyNotImplementedError, PyStopAsyncIteration, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
-    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, HandoffNoteConfig,
-    LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop,
-    PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig,
-    Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    CustomClassifierConfig, CustomClassifierPolicy, DeescalationConfig, EscalationJudgeConfig,
+    HandoffNoteConfig, LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback,
+    LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter,
+    StageRouterConfig, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -93,6 +95,49 @@ impl PyTaskClassifierConfig {
     }
 }
 
+/// Settings for returning an escalated session to the efficient tier.
+///
+/// `strong_min_calls` and `confirmations` must be positive; `strong_max_calls`, when set,
+/// must not be lower than `strong_min_calls`. Classifier construction reports invalid values
+/// as `ValueError`.
+#[pyclass(
+    name = "DeescalationConfig",
+    module = "switchyard.libsy",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+struct PyDeescalationConfig {
+    inner: DeescalationConfig,
+}
+
+#[pymethods]
+impl PyDeescalationConfig {
+    #[new]
+    #[pyo3(signature = (
+        *,
+        strong_min_calls,
+        confirmations,
+        strong_max_calls=None,
+        weak_cooldown_calls=0
+    ))]
+    fn new(
+        strong_min_calls: u32,
+        confirmations: u32,
+        strong_max_calls: Option<u32>,
+        weak_cooldown_calls: u32,
+    ) -> Self {
+        Self {
+            inner: DeescalationConfig {
+                strong_min_calls,
+                strong_max_calls,
+                confirmations,
+                weak_cooldown_calls,
+            },
+        }
+    }
+}
+
 /// Settings for response-based escalation classification.
 #[pyclass(
     name = "EscalationClassifierConfig",
@@ -115,15 +160,18 @@ impl PyEscalationClassifierConfig {
         confirmations=2,
         recent_turn_window=28,
         window_message_chars=500,
+        deescalation=None,
         max_output_tokens=4096,
         prompt=None,
         response_format_type="json_schema"
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         confirmations: u32,
         recent_turn_window: usize,
         window_message_chars: usize,
+        deescalation: Option<Py<PyDeescalationConfig>>,
         max_output_tokens: u64,
         prompt: Option<String>,
         response_format_type: &str,
@@ -134,6 +182,9 @@ impl PyEscalationClassifierConfig {
                 confirmations,
                 recent_turn_window,
                 window_message_chars,
+                deescalation: deescalation
+                    .map(|config| config.bind(py).try_borrow().map(|config| config.inner))
+                    .transpose()?,
             },
             max_output_tokens,
         })
@@ -279,6 +330,7 @@ impl PyTaskClassifierConfig {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: TaskClassifierConfig {
+                fail_open: true,
                 base_threshold,
                 threshold_step,
                 classify_trigger: classify_trigger(session_affinity),
@@ -714,6 +766,9 @@ impl PyAlgorithm {
 
 fn step_to_python(step: RustStep) -> PyResult<PyStep> {
     match step {
+        RustStep::CallDecision(_) => Err(PyNotImplementedError::new_err(
+            "decision calls are not supported by the Python bindings",
+        )),
         RustStep::CallModel(call) => Python::attach(|py| {
             Ok(PyStep::CallModel {
                 call: Py::new(py, PyModelCall::new(py, *call)?)?,
@@ -881,6 +936,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     let libsy_module = PyModule::new(module.py(), "libsy")?;
     libsy_module.add_class::<PyAlgorithm>()?;
     libsy_module.add_class::<PyCustomClassifierConfig>()?;
+    libsy_module.add_class::<PyDeescalationConfig>()?;
     libsy_module.add_class::<PyEscalationClassifierConfig>()?;
     libsy_module.add_class::<PyLlmClassifierConfig>()?;
     libsy_module.add_class::<PyLlmFallback>()?;

@@ -409,7 +409,8 @@ async fn upstream_chat(
         .pointer("/response_format/json_schema/schema/properties/escalate")
         .is_some()
     {
-        r#"{"escalate":false,"reason":"making progress"}"#.to_string()
+        r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"making progress"}"#
+            .to_string()
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
@@ -598,7 +599,12 @@ async fn upstream_responses_silo(
             .get("escalate")
             .is_some()
         {
-            json!({"escalate": strong, "reason": "state probe"})
+            json!({
+                "escalate": strong,
+                "category": if strong { "capability_gap" } else { "none" },
+                "new_evidence": strong,
+                "reason": "state probe",
+            })
         } else {
             json!({
                 "crux": "state probe", "primary_rule": if strong { "LIM-1" } else { "SUP-1" },
@@ -752,6 +758,7 @@ fn random_state_with_retries(
         omit_body_fields: BTreeSet::new(),
         reasoning_effort: None,
         max_retries,
+        failure_cooldown: std::time::Duration::ZERO,
         timeout: None,
     });
     let target_models = routes
@@ -1352,6 +1359,8 @@ schema_version = 1
 format = "openai_chat"
 base_url = "{base_url}"
 max_retries = 0
+# Exercise upstream fallback on every request.
+failure_cooldown_ms = 0
 
 [targets.first]
 id = "{first}"
@@ -4971,7 +4980,7 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
     assert!(feedback.starts_with("A senior reviewer examined your work"));
     assert!(feedback.ends_with("run the tests"));
 
-    // A failed HTTP advisor call stops the request before the algorithm can approve it.
+    // Fail-open returns the buffered executor turn when the HTTP advisor call fails.
     let response = send_with_headers(
         &app,
         "POST",
@@ -4980,8 +4989,8 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
         &[("proxy_x_session_id", "fail-flow")],
     )
     .await?;
-    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.json()?["error"]["type"], "upstream_error");
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
     assert_eq!(
         upstream.models().await,
         [
@@ -4994,8 +5003,8 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
     );
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    // Only the successful redo request returns an executor answer.
-    assert_eq!(stats["models"]["model/executor"]["calls"], 1);
+    // Both requests return an executor answer.
+    assert_eq!(stats["models"]["model/executor"]["calls"], 2);
     assert_eq!(stats["classifier"]["total_errors"], 1);
     // Projection deltas for the metrics only this test emits.
     let redo = gate_count(&stats, &["reviews", "redo", "total"])
@@ -5022,10 +5031,9 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
         gate_count(&stats, &["discarded", "tokens", "output"]),
         gate_count(&before, &["discarded", "tokens", "output"]) + 2
     );
-    // The host stops before the algorithm records a fail-open advisor decision.
     assert_eq!(
         gate_count(&stats, &["consult_failures", "upstream_5xx"]),
-        gate_count(&before, &["consult_failures", "upstream_5xx"])
+        gate_count(&before, &["consult_failures", "upstream_5xx"]) + 1
     );
 
     // Reset re-baselines the projection: the redo/discard counts this test

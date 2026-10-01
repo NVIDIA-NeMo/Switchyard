@@ -31,8 +31,6 @@ with `picker = "efficient_first"`, `confidence_threshold = 0.5`, and no LLM
 judge. It does not compare strategies at runtime. Use `stage_router` directly
 to tune these settings.
 
-> Auto requires a [source build](../getting_started.md#build-from-source) until v0.3.0 is published.
-
 See the [Auto configuration reference](../reference/toml_schema.md#auto) for
 the required targets.
 
