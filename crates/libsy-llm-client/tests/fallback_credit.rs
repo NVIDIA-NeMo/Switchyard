@@ -21,15 +21,19 @@ const TOKEN: &str = "fallback-credit-secret-canary-8f651ed7";
 const CREDIT_BETA: &str = "fallback-credit-2026-07-01";
 const INITIAL_BETAS: &str = "fallback-credit-2026-07-01,server-side-fallback-2026-07-01";
 const TRACE_MARKER: &str = "fallback credit trace capture active";
+const CHILD_MODE_ENV: &str = "SWITCHYARD_FALLBACK_CREDIT_TEST_CHILD";
 
-#[test]
-fn fallback_credit_retry_does_not_leak_token() -> TestResult {
+#[tokio::test]
+async fn fallback_credit_retry_does_not_leak_token() -> TestResult {
+    if std::env::var_os(CHILD_MODE_ENV).is_some() {
+        return fallback_credit_retry_child().await;
+    }
     // A child process captures direct prints as well as logs from every async task.
     let output = Command::new(std::env::current_exe()?)
+        .env(CHILD_MODE_ENV, "1")
         .args([
             "--exact",
-            "fallback_credit_retry_child",
-            "--ignored",
+            "fallback_credit_retry_does_not_leak_token",
             "--nocapture",
         ])
         .output()?;
@@ -56,8 +60,6 @@ fn fallback_credit_retry_does_not_leak_token() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-#[ignore]
 async fn fallback_credit_retry_child() -> TestResult {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
