@@ -495,9 +495,9 @@
 <a href=#495 id=495 data-nosnippet>495</a>    <span class="kw">loop </span>{
 <a href=#496 id=496 data-nosnippet>496</a>        <span class="macro">tokio::select!</span> {
 <a href=#497 id=497 data-nosnippet>497</a>            <span class="prelude-val">Some</span>(result) = in_flight.next() =&gt; <span class="kw">match </span>result {
-<a href=#498 id=498 data-nosnippet>498</a>                <span class="prelude-val">Ok</span>(()) =&gt; {},
-<a href=#499 id=499 data-nosnippet>499</a>                <span class="prelude-val">Err</span>(err) =&gt; <span class="kw">return </span><span class="prelude-val">Err</span>(err),
-<a href=#500 id=500 data-nosnippet>500</a>            },
+<a href=#498 id=498 data-nosnippet>498</a>                <span class="prelude-val">Ok</span>(()) =&gt; {}, <span class="comment">// Call completed successfully
+<a href=#499 id=499 data-nosnippet>499</a>                </span><span class="prelude-val">Err</span>(err) =&gt; <span class="kw">return </span><span class="prelude-val">Err</span>(err), <span class="comment">// Call failed, propagate the error
+<a href=#500 id=500 data-nosnippet>500</a>            </span>},
 <a href=#501 id=501 data-nosnippet>501</a>            step = stream.next() =&gt; {
 <a href=#502 id=502 data-nosnippet>502</a>                <span class="kw">match </span>step {
 <a href=#503 id=503 data-nosnippet>503</a>                    <span class="prelude-val">None </span>=&gt; <span class="kw">break</span>, <span class="comment">// stream has ended, no more steps
