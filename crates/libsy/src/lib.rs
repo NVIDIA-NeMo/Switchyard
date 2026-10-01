@@ -21,8 +21,8 @@ mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{
-    CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, LlmCapabilityConfig,
-    LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
+    CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
