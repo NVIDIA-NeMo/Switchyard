@@ -676,6 +676,85 @@ async fn fail_closed_propagates_refunds_and_counts() {
     assert_eq!(completion_text(&agg_of(response).await), "recovered");
 }
 
+/// Collects everything the `fmt` subscriber renders, so assertions can run
+/// against the final log sink rather than a field mid-pipeline.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn fail_open_logs_redact_the_upstream_error_body() {
+    // A target name unique to this test keys the captured warn line and audit
+    // record to this drive: the process-wide capture also sees parallel
+    // advisor-gate tests' events.
+    const ADVISOR_TARGET: &str = "advisor-redaction-probe";
+    const MARKER: &str = "SECRET-UPSTREAM-QUOTE-the-user-prompt";
+    let gate = gate(AdvisorGateConfig::default());
+    let models: HashMap<Category, Vec<ModelId>> = [
+        (Category::Efficient, vec![target(EXECUTOR)]),
+        (Category::Judge, vec![target(ADVISOR_TARGET)]),
+    ]
+    .into();
+    let serve = move |model: ModelId, _request: Request| {
+        Box::pin(async move {
+            let model = model.to_string();
+            if model == ADVISOR_TARGET {
+                // UpstreamHttp's Display interpolates the raw body, which is
+                // exactly the content that must not reach a sink.
+                Err(LlmClientError::UpstreamHttp {
+                    status: http::StatusCode::INTERNAL_SERVER_ERROR,
+                    body: format!("{MARKER}: validation failed"),
+                })
+            } else {
+                Ok(reply("done"))
+            }
+        })
+    };
+
+    // Installed as the process default so the capture sees events from every
+    // thread the drive touches: the suite runs tests in parallel, and a
+    // thread-local default does not cover them all.
+    let capture = LogCapture::default();
+    let writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_max_level(tracing_subscriber::filter::LevelFilter::INFO)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("unused global subscriber");
+
+    let (_, response) = test_drive_with_models(gate, task_request(), models, serve)
+        .await
+        .expect("fail-open run");
+    assert_eq!(completion_text(&agg_of(response).await), "done");
+
+    let logs = String::from_utf8(capture.0.lock().unwrap().clone()).expect("logs are utf-8");
+    assert!(
+        !logs.contains(MARKER),
+        "the upstream error body reached a log sink: {logs}"
+    );
+    // Only this drive's decision target names the redacted summary, so its
+    // presence proves this drive's warn rendered with the safe summary.
+    let summary = r#"client call to target "advisor-redaction-probe" failed: upstream HTTP 500"#;
+    assert!(logs.contains(summary), "{logs}");
+    // The audit record still renders, keyed to this drive's target, with the
+    // redacted summary rather than the body.
+    let audit = logs
+        .lines()
+        .find(|line| line.contains("advisor_review=") && line.contains(ADVISOR_TARGET));
+    assert!(audit.is_some(), "{logs}");
+}
+
 #[tokio::test]
 async fn unparseable_verdict_refunds_and_approves() {
     let script = Script::new();

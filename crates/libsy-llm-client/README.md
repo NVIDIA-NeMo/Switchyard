@@ -248,6 +248,12 @@ fn build_multi_format_client(
   and `anthropic-version`. Header names are case-insensitive.
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
+- Anthropic reconstruction preserves the caller's native `thinking` settings, including
+  disabled thinking and manual budgets. `output_config.effort` is kept separately.
+  Effort implies adaptive thinking only when native `thinking` is absent.
+  To replace either top-level field for a target, list it in `omit_body_fields` and
+  supply its replacement in `extra_body`. Omission runs before defaults are merged.
+  Target `reasoning_effort` overrides apply to OpenAI backends.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
