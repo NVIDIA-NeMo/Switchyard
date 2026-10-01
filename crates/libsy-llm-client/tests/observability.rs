@@ -34,9 +34,9 @@ use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
 use switchyard_libsy::{
-    Algorithm, ClassifyTrigger, Driver, LibsyError, LlmClassifierConfig, LlmTaskClassifier,
-    PickerMode, RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig, Step,
-    TaskClassifierConfig,
+    Algorithm, ClassifierContractConfig, ClassifyTrigger, DeescalationConfig, Driver,
+    EscalationJudgeConfig, LibsyError, LlmClassifierConfig, LlmTaskClassifier, PickerMode,
+    RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig, Step, TaskClassifierConfig,
 };
 use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
 use switchyard_protocol::{Category, ModelId};
@@ -607,6 +607,7 @@ fn classifier_router() -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
         LlmClassifierConfig::Capability {
             config: TaskClassifierConfig {
                 base_threshold: 0.5,
+                fail_open: false,
                 ..TaskClassifierConfig::default()
             },
         },
@@ -757,6 +758,102 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
     assert!(warnings[0].fields.get("message").is_some_and(|message| {
         message.contains("message-hash fallback with usable first-user text")
     }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn stateful_escalation_warns_once_without_a_session_id() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    let event_count = store.events().len();
+    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+        contract: ClassifierContractConfig::default(),
+        config: EscalationJudgeConfig::default(),
+        max_output_tokens: 64,
+    })?) as Arc<dyn Algorithm>;
+    let client = Arc::new(JudgeClient {
+        judge_model: "warning-judge".into(),
+        outcome: JudgeOutcome::Reply(
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"progressing"}"#,
+        ),
+    }) as Arc<dyn RoutedLlmClient>;
+
+    for _ in 0..2 {
+        switchyard_llm_client::run(
+            router.clone(),
+            ClientRouter::single(client.clone()),
+            classifier_request(),
+            classifier_models("warning-judge", "warning-efficient", "warning-capable"),
+            None,
+        )
+        .await?;
+    }
+
+    let warnings = store.events()[event_count..]
+        .iter()
+        .filter(|event| {
+            event.target == "libsy"
+                && event.level == "WARN"
+                && event.fields.get("message").is_some_and(|message| {
+                    message.contains("stateful escalation has no session ID")
+                })
+        })
+        .count();
+    assert_eq!(warnings, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn deescalation_evidence_stays_pending_until_confirmed() -> switchyard_libsy::Result<()> {
+    // Shares the process-wide request gauge with the metrics tests, so take the same guard.
+    let _guard = serialize_test().lock().await;
+    let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Escalation {
+        contract: ClassifierContractConfig::default(),
+        config: EscalationJudgeConfig {
+            confirmations: 1,
+            deescalation: Some(DeescalationConfig {
+                strong_min_calls: 1,
+                strong_max_calls: None,
+                confirmations: 2,
+                weak_cooldown_calls: 0,
+            }),
+            ..EscalationJudgeConfig::default()
+        },
+        max_output_tokens: 64,
+    })?) as Arc<dyn Algorithm>;
+    let client = |verdict| {
+        Arc::new(JudgeClient {
+            judge_model: "evidence-judge".into(),
+            outcome: JudgeOutcome::Reply(verdict),
+        }) as Arc<dyn RoutedLlmClient>
+    };
+    let request = request_with_metadata("evidence-session", "evidence-correlation");
+
+    switchyard_llm_client::run(
+        router.clone(),
+        ClientRouter::single(client(
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"stuck"}"#,
+        )),
+        request.clone(),
+        classifier_models("evidence-judge", "evidence-efficient", "evidence-capable"),
+        None,
+    )
+    .await?;
+    let outcome = switchyard_llm_client::decide(
+        router,
+        ClientRouter::single(client(
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"recovered"}"#,
+        )),
+        request,
+        classifier_models("evidence-judge", "evidence-efficient", "evidence-capable"),
+    )
+    .await?;
+
+    assert_eq!(outcome.selected_model_id()?.as_str(), "evidence-capable");
+    assert_eq!(
+        outcome.metadata.and_then(|metadata| metadata.evidence),
+        Some(json!({"source": "escalation", "verdict": "pending"}))
+    );
     Ok(())
 }
 
@@ -1522,6 +1619,7 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
             Ok(Step::CallModel(call)) => {
                 call.respond(Err(test_error("synthetic upstream failure")))?;
             }
+            Ok(Step::CallDecision(_)) => return Err(test_error("unexpected decision call")),
             Ok(Step::Done(_)) => {
                 return Err(test_error("expected the failed call to fail the run"));
             }
@@ -1755,6 +1853,101 @@ async fn classifier_stops_on_client_errors_and_records_verdict_fallback()
                 "client failures and valid verdicts must not increment switchyard.classifier_fail_open"
             ),
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn classifier_can_fail_open_on_judge_client_errors() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    assert!(TaskClassifierConfig::default().fail_open);
+    for (judge, reason) in [
+        (
+            Arc::new(TimeoutClient) as Arc<dyn RoutedLlmClient>,
+            "timeout",
+        ),
+        (
+            Arc::new(JudgeClient {
+                judge_model: "judge".into(),
+                outcome: JudgeOutcome::CallFailure,
+            }),
+            "upstream_5xx",
+        ),
+        (
+            Arc::new(JudgeClient {
+                judge_model: "judge".into(),
+                outcome: JudgeOutcome::StreamDecodeFailure,
+            }),
+            "invalid_response",
+        ),
+    ] {
+        let algorithm = |fail_open: Option<bool>| -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
+            let mut config = serde_json::json!({"base_threshold": 0.5});
+            if let Some(fail_open) = fail_open {
+                config["fail_open"] = fail_open.into();
+            }
+            Ok(Arc::new(LlmTaskClassifier::new(
+                LlmClassifierConfig::Capability {
+                    config: serde_json::from_value(config).unwrap(),
+                },
+            )?))
+        };
+        let clients = ClientRouter::new(std::collections::HashMap::from([
+            (ModelId::from("judge"), judge),
+            (
+                ModelId::from("capable"),
+                Arc::new(JudgeClient {
+                    judge_model: "judge".into(),
+                    outcome: JudgeOutcome::CallFailure,
+                }) as Arc<dyn RoutedLlmClient>,
+            ),
+        ]));
+        let models = classifier_models("judge", "efficient", "capable");
+        let stopped = switchyard_llm_client::decide(
+            algorithm(Some(false))?,
+            clients.clone(),
+            classifier_request(),
+            models.clone(),
+        )
+        .await;
+        assert!(
+            matches!(stopped, Err(LibsyError::ClientCall { .. })),
+            "{reason}"
+        );
+
+        let outcome = switchyard_llm_client::decide(
+            algorithm(None)?,
+            clients.clone(),
+            classifier_request(),
+            models.clone(),
+        )
+        .await?;
+        assert_eq!(outcome.selected_model_id()?.as_str(), "capable");
+        assert_eq!(
+            outcome.metadata.and_then(|metadata| metadata.evidence),
+            Some(serde_json::json!({"source": "fail_open", "reason_code": reason})),
+        );
+        let (selected, _) = switchyard_llm_client::run(
+            algorithm(Some(true))?,
+            clients,
+            classifier_request(),
+            models.clone(),
+            None,
+        )
+        .await?;
+        assert_eq!(selected.as_str(), "capable");
+
+        let answer_failure = switchyard_llm_client::run(
+            algorithm(None)?,
+            ClientRouter::single(Arc::new(TimeoutClient)),
+            classifier_request(),
+            models,
+            None,
+        )
+        .await;
+        assert!(matches!(answer_failure, Err(LibsyError::ClientCall {
+            target, source: LlmClientError::Timeout { .. },
+        }) if target.as_str() == "capable"));
     }
     Ok(())
 }

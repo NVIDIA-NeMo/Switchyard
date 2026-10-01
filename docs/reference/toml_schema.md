@@ -54,22 +54,39 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. All backends reachable through the route must use the same provider. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
+| `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
 | `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
 
+Cooldown is enabled by default for 5 seconds. Set `failure_cooldown_ms = 0` to disable it.
+The cooldown starts after retries are exhausted.
+
+`failure_cooldown_ms` tracks transport failures, timeouts, HTTP 408/429, and 5xx
+responses after retries. State is shared across callers per model within the client,
+including callers using forwarded credentials. With `forward_auth = true`, HTTP 429
+only triggers request-local retries and fallback; other callers keep trying the model.
+For shared credentials, HTTP 429 also triggers cooldown. During cooldown,
+ordered fallback tries the next candidate. A terminal cooldown error returns HTTP
+503. Calls resume together after expiry. Auxiliary calls and errors after a stream
+is returned leave cooldown state unchanged.
+
 `timeout_ms` applies separately to every call through the client, including judge
 verdicts and answers. To give a judge a short deadline without limiting the
 answering models, put the judge on its own `[llm_clients]` entry; two entries may
-share a `base_url`. When the deadline expires, the server returns `504` without
-trying another target. If the final answer has already started streaming, the
+share a `base_url`. When an answer deadline expires, the server returns `504`.
+If the final answer has already started streaming, the
 server sends a framed error and ends the stream without a success marker.
 
 The Rust runner collects streams used during routing before the algorithm
 continues, preserving provider events for replay. After the configured retries,
-an HTTP client failure stops routing. This also applies when `timeout_ms` is
-unset or an advisor has `fail_open = true`.
+an HTTP client failure stops routing unless the call enables recovery.
+Capability classifiers and advisor gates default to `fail_open = true`.
+A capability classifier routes to the capable tier on judge failures, including
+deadlines. An advisor returns the buffered executor turn when its consult fails.
+Set `fail_open = false` to stop the request on these failures.
+Answer calls keep their usual error behavior.
 
 Set `forward_auth = true` to use each caller's credential instead of a
 server-owned key:
@@ -239,6 +256,7 @@ Capability mode classifies before serving. See
 | `strong_target` | Yes | — | Capable tier. |
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
+| `fail_open` | No | `true` | Capability mode only. When `true`, judge client failures and deadlines route to the capable tier and record fail-open evidence. When `false`, they stop the request. Invalid verdicts use the capable tier with either setting. |
 | `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
@@ -253,9 +271,14 @@ Escalation mode serves the weak target first and judges the completed turn. See
 | `strong_target` | Yes | — | Target used after the session latches. |
 | `weak_target` | Yes | — | Target served before the latch. |
 | `prompt` | No | packaged prompt | Replaces the trajectory-judge prompt. |
-| `escalation.confirmations` | No | `2` | Consecutive escalate verdicts required to latch. Above `1` needs a session ID. |
+| `escalation.confirmations` | No | `2` | Consecutive fresh-evidence verdicts for the same failure category required to latch. Above `1` needs a stable session ID. |
 | `escalation.recent_turn_window` | No | `28` | Trailing messages shown to the judge. |
 | `escalation.window_message_chars` | No | `500` | Per-message cap inside that window. |
+| `escalation.deescalation` | No | unset | Enables phase-aware de-escalation. Requires a stable session ID. |
+| `escalation.deescalation.strong_min_calls` | With de-escalation | — | Strong-tier turns before release is allowed. Must be at least `1`. |
+| `escalation.deescalation.confirmations` | With de-escalation | — | Consecutive judge declines required to return to weak. Must be at least `1`. |
+| `escalation.deescalation.strong_max_calls` | No | unset | Hard limit on strong-tier turns before forced de-escalation. Must be at least `strong_min_calls`. |
+| `escalation.deescalation.weak_cooldown_calls` | No | `0` | Weak calls served without judging after a hard-limit return. |
 
 Existing configurations that contain `escalation` but omit `mode` remain valid.
 
@@ -340,8 +363,13 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 |---|:---:|---|---|
 | `classifier.target` | Yes | — | Target the tier judge is called through. Not a routing destination. |
 | `classifier.base_threshold` | Yes | — | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. |
+| `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
-| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the `llm_classifier` route, this works on either trigger. Conversations opening with the same text share a tier. |
+| `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
+| `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
+| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
@@ -351,6 +379,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
 | `stage.tool_semantics.plan` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as planning. |
 | `stage.tool_semantics.new` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as neutral forward activity. |
+| `stage.handoff_notes` | No | unset | Optional guidance appended to forwarded requests. Uses the same fields and behavior as [stage-router handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes). |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
 
 The tier is retained per session. A deployment that sends no session ID needs

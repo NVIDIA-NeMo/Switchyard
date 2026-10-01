@@ -63,6 +63,10 @@ pub enum LlmClientError {
     #[error("Responses state ID is already recorded for another model; its owner was not changed")]
     ResponseStateConflict,
 
+    /// The selected backend is temporarily unavailable. Another candidate may serve the request.
+    #[error("backend temporarily unavailable")]
+    TemporarilyUnavailable,
+
     /// The upstream could not be reached or the request could not be sent.
     #[error("upstream transport error: {source}")]
     Transport {

@@ -109,6 +109,10 @@ pub(crate) struct ResponseReasoningState {
     pub(crate) encrypted: Option<String>,
     #[serde(default)]
     pub(crate) anthropic_signature: Option<String>,
+    /// Summary text held back while the item's provider id is still unknown. The item opens
+    /// once that id arrives, or once later output shows none is coming.
+    #[serde(default)]
+    pub(crate) pending_text: String,
 }
 
 // Tracks an in-progress streamed tool call across provider-specific deltas.
