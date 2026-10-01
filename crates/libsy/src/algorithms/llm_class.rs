@@ -186,8 +186,9 @@ struct TaskInput {
     recent_turn_window: Option<usize>,
 }
 
-impl ClassifierInput for TaskInput {
-    fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
+impl TaskInput {
+    /// Selects conversation content without adding judge instructions.
+    fn messages(&self, request: &Request) -> Vec<Message> {
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
         let mut messages = match self.recent_turn_window {
@@ -204,6 +205,13 @@ impl ClassifierInput for TaskInput {
                 .retain(|block| !matches!(block, ContentBlock::Reasoning { .. }));
         }
         messages.retain(|message| !message.content.is_empty());
+        messages
+    }
+}
+
+impl ClassifierInput for TaskInput {
+    fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
+        let mut messages = self.messages(request);
         // Only the windowed path carries assistant turns and tool traffic for the judge
         // to be distracted by. The default path is user task messages only — the anchor
         // and the latest follow-up — so there is nothing there to outrank.
