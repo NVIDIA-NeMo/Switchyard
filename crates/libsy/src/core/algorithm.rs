@@ -222,6 +222,11 @@ pub struct Driver {
     /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
     evidence: Arc<Mutex<Option<Value>>>,
 
+    /// Candidate groups read by this run, shared by driver clones and scopes.
+    considered_model_ids: Arc<Mutex<Option<Vec<ModelId>>>>,
+
+    started: Instant,
+
     /// Every group this run may route over, shared by all driver clones.
     models: Arc<RuntimeModels>,
 
@@ -246,6 +251,8 @@ impl Driver {
                 step_tx,
                 algorithm: algorithm.to_string(),
                 evidence: Arc::new(Mutex::new(None)),
+                considered_model_ids: Arc::new(Mutex::new(None)),
+                started: Instant::now(),
                 models,
                 scope: Scope::Parent,
             },
@@ -320,10 +327,20 @@ impl Driver {
 
     /// The available models for this category, typically ordered best-first.
     pub fn models_for(&self, category: &Category) -> &[ModelId] {
-        match self.scope {
+        let models = match self.scope {
             Scope::Parent => self.models.models_for(category),
             Scope::Subagent => self.models.subagent_models_for(category),
+        };
+        if *category != Category::Judge {
+            let mut considered = self.considered_model_ids.lock();
+            let considered = considered.get_or_insert_with(Vec::new);
+            for model in models {
+                if !considered.contains(model) {
+                    considered.push(model.clone());
+                }
+            }
         }
+        models
     }
 
     /// The first available model for `category`.
@@ -353,11 +370,34 @@ impl Driver {
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
+        let metadata = self.outcome_metadata(&result);
+        // Temporary change do not commit
+        {
+            use std::io::Write;
+
+            let mut record = Self::expand_metadata(&metadata);
+            let selected_models = result
+                .as_ref()
+                .ok()
+                .map(|outcome| outcome.selected_model_ids.as_slice())
+                .unwrap_or_default();
+            record["selected_model_id"] = serde_json::json!(selected_models.first());
+            record["fallback_plan_model_ids"] =
+                serde_json::json!(selected_models.get(1..).unwrap_or_default());
+            let stdout_result = (|| -> std::io::Result<()> {
+                let mut stdout = std::io::stdout().lock();
+                let _ = stdout.write_all(b"\n*****************\n");
+                serde_json::to_writer_pretty(&mut stdout, &record)?;
+                stdout.write_all(b"\n*****************\n")
+            })();
+            if let Err(error) = stdout_result {
+                tracing::warn!(%error, "could not write routing metadata to stdout");
+            }
+        }
+        // Temporary change do not commit
         let result = result.map(|mut outcome| {
-            let metadata = outcome.metadata.get_or_insert_with(|| {
-                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
-            });
-            observability::record_outcome(metadata, &outcome.selected_model_ids);
+            observability::record_outcome(&metadata, &outcome.selected_model_ids);
+            outcome.metadata = Some(metadata);
             outcome
         });
         let selected_model = result
@@ -373,6 +413,53 @@ impl Driver {
             observability::record_decision(&self.algorithm, &selected_model);
         }
         Ok(())
+    }
+
+    fn outcome_metadata(&self, result: &Result<RoutingOutcome>) -> crate::OutcomeMetadata {
+        let mut metadata = result
+            .as_ref()
+            .ok()
+            .and_then(|outcome| outcome.metadata.clone())
+            .unwrap_or_else(|| {
+                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
+            });
+        if metadata.considered_model_ids.is_none() {
+            metadata.considered_model_ids = self.considered_model_ids.lock().take();
+        }
+        metadata.routing_duration_ms = Some(self.started.elapsed().as_millis() as u64);
+        match result {
+            Ok(_) => {
+                metadata.routing_status = Some("success");
+                metadata.no_eligible_target = Some(false);
+                metadata.routing_error_code = None;
+            }
+            Err(error) => {
+                metadata.routing_status = Some("error");
+                metadata.no_eligible_target =
+                    matches!(error, LibsyError::NoTargets).then_some(true);
+                metadata.routing_error_code = Some(match error {
+                    LibsyError::NoTargets => "no_targets",
+                    LibsyError::TargetNotFound { .. } => "target_not_found",
+                    LibsyError::AlgorithmError { .. } => "algorithm_error",
+                    LibsyError::Driver(DriverError::StreamClosed) => "stream_closed",
+                    LibsyError::Driver(DriverError::ResponseDropped) => "response_dropped",
+                    LibsyError::MissingFinalResponse => "missing_final_response",
+                    LibsyError::ClientCall { .. } => "client_call",
+                    LibsyError::External { .. } => "external",
+                });
+            }
+        }
+        metadata
+    }
+
+    // TODO: Move to telemetry handler.
+    // These are fields which are more or less constants that are unrelated to the routing outcome
+    fn expand_metadata(metadata: &crate::OutcomeMetadata) -> Value {
+        let mut record = serde_json::json!(metadata);
+        record["switchyard_version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
+        record["os_family"] = serde_json::json!(std::env::consts::OS);
+        record["cpu_arch"] = serde_json::json!(std::env::consts::ARCH);
+        record
     }
 }
 
@@ -693,6 +780,115 @@ mod tests {
         names.iter().map(|name| ModelId::from(*name)).collect()
     }
 
+    #[test]
+    fn metadata_tracks_candidate_reads_across_scopes_without_judge_models() {
+        let models = Arc::new(
+            RuntimeModels::new(HashMap::from([
+                (Category::Any, target_set(&["second", "first"])),
+                (Category::Capable, target_set(&["first", "third"])),
+                (Category::Judge, target_set(&["judge"])),
+            ]))
+            .with_subagent(HashMap::from([(
+                Category::Any,
+                target_set(&["child", "first"]),
+            )])),
+        );
+        let (mut driver, _) = Driver::new("test", models.clone());
+        driver.started = Instant::now() - std::time::Duration::from_millis(25);
+        driver.models_for(&Category::Any);
+        driver.clone().models_for(&Category::Capable);
+        driver.models_for(&Category::Judge);
+        driver.for_subagent().unwrap().models_for(&Category::Any);
+
+        let original = crate::OutcomeMetadata::new(
+            "custom".to_string(),
+            Some(serde_json::json!({"source": "retained", "confidence": 0.9})),
+        );
+        let mut outcome =
+            RoutingOutcome::route_to("first".into(), target_set(&["second", "third"]), request());
+        outcome.metadata = Some(original.clone());
+        let metadata = driver.outcome_metadata(&Ok(outcome));
+        assert_eq!(metadata.outcome_id(), original.outcome_id());
+        assert_eq!(metadata.algorithm, original.algorithm);
+        assert_eq!(metadata.evidence, original.evidence);
+        assert_eq!(
+            metadata.considered_model_ids,
+            Some(target_set(&["second", "first", "third", "child"]))
+        );
+        assert_eq!(metadata.routing_status, Some("success"));
+        assert_eq!(metadata.no_eligible_target, Some(false));
+        assert_eq!(metadata.routing_error_code, None);
+        assert!(metadata.routing_duration_ms.unwrap() >= 25);
+
+        // Another run over the same configuration has no candidate observations yet.
+        let (other, _) = Driver::new("test", models);
+        let other = other.outcome_metadata(&Ok(RoutingOutcome::route_to(
+            "first".into(),
+            Vec::new(),
+            request(),
+        )));
+        assert_eq!(other.considered_model_ids, None);
+    }
+
+    #[test]
+    fn expanded_failure_metadata_excludes_raw_errors_and_preserves_unknowns() {
+        let (driver, _) = Driver::new("test", Arc::new(RuntimeModels::default()));
+        driver.models_for(&Category::Any);
+        let metadata = driver.outcome_metadata(&Err(LibsyError::NoTargets));
+        let record = Driver::expand_metadata(&metadata);
+        assert_eq!(record["routing_status"], "error");
+        assert_eq!(record["routing_error_code"], "no_targets");
+        assert_eq!(record["no_eligible_target"], true);
+        assert_eq!(record["considered_model_ids"], serde_json::json!([]));
+        assert!(record.get("selected_model_id").is_none());
+        assert!(record.get("fallback_plan_model_ids").is_none());
+        assert_eq!(record["algorithm_version"], Value::Null);
+        assert_eq!(record["feature_flags"], Value::Null);
+        assert_eq!(record["exclusion_reason_codes"], Value::Null);
+
+        let metadata = driver.outcome_metadata(&Err(LibsyError::AlgorithmError {
+            message: "private upstream error".to_string(),
+        }));
+        let record = Driver::expand_metadata(&metadata);
+        assert_eq!(record["routing_error_code"], "algorithm_error");
+        assert_eq!(record["no_eligible_target"], Value::Null);
+        assert!(!record.to_string().contains("private upstream error"));
+    }
+
+    #[test]
+    fn expanded_metadata_preserves_routing_fields_and_adds_only_constants() {
+        let evidence = serde_json::json!({
+            "source": "fail_open", "reason_code": "transport", "score": 0.5,
+        });
+        let (driver, _) = Driver::new("test", Arc::new(RuntimeModels::default()));
+        driver.set_evidence(evidence.clone());
+        let metadata = driver.outcome_metadata(&Ok(RoutingOutcome::route_to(
+            "selected".into(),
+            target_set(&["fallback-b", "fallback-a"]),
+            request(),
+        )));
+        let mut record = Driver::expand_metadata(&metadata);
+        assert_eq!(record["outcome_id"], metadata.outcome_id());
+        assert_eq!(record["evidence"], evidence);
+        assert_eq!(record["switchyard_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(record["os_family"], std::env::consts::OS);
+        assert_eq!(record["cpu_arch"], std::env::consts::ARCH);
+        assert!(record.get("selected_model_id").is_none());
+        assert!(record.get("fallback_plan_model_ids").is_none());
+        for field in [
+            "decision_source",
+            "reason_codes",
+            "selection_score",
+            "fail_open",
+        ] {
+            assert!(record.get(field).is_none(), "duplicated evidence: {field}");
+        }
+        for field in ["switchyard_version", "os_family", "cpu_arch"] {
+            record.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(record, serde_json::json!(metadata));
+    }
+
     #[tokio::test]
     async fn typed_driver_preserves_call_and_stream_boundaries() -> Result<()> {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -906,6 +1102,8 @@ mod tests {
                         .as_ref()
                         .expect("run_stream should attach outcome metadata");
                     assert_eq!(metadata.algorithm, "test");
+                    assert_eq!(metadata.routing_status, Some("success"));
+                    assert!(metadata.routing_duration_ms.is_some());
                     assert_eq!(
                         uuid::Uuid::parse_str(metadata.outcome_id())
                             .expect("outcome id should be a UUID")
