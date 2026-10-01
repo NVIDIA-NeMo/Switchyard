@@ -147,6 +147,7 @@ async fn fallback_credit_retry_child() -> TestResult {
                 omit_body_fields: BTreeSet::new(),
                 reasoning_effort: None,
                 max_retries: 0,
+                failure_cooldown: std::time::Duration::ZERO,
                 timeout: None,
             }),
             None,
