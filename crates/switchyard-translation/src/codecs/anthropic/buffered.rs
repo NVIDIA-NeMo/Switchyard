@@ -263,6 +263,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "container",
                 "speed",
                 "diagnostics",
+                "fallback_credit_token",
             ] {
                 if let Some(value) = request.extensions.fields.get(field) {
                     body.insert(field.to_string(), value.clone());
