@@ -99,6 +99,7 @@ enum LlmClassifierModeConfig {
 #[derive(Clone, Debug)]
 struct CapabilityClassifierRouteConfig {
     classifier_target: String,
+    fail_open: bool,
     strong_target: String,
     weak_target: String,
     base_threshold: f64,
@@ -237,6 +238,9 @@ pub struct LlmClassifierRouteConfig {
     /// Capability mode: how much to raise the threshold when the judge is
     /// uncertain. Added once for an uncertain verdict and twice for unsupported.
     pub threshold_step: Option<f64>,
+    /// Capability mode: routes to the capable tier on judge client failures and deadlines.
+    /// Defaults to true when capability mode is selected.
+    pub fail_open: Option<bool>,
     /// How often the judge runs: every request, once per user turn, or once per session.
     pub classify_trigger: ClassifyTrigger,
     /// Reuses the session's target by hashing the first user message when no
@@ -522,6 +526,7 @@ pub struct StageTierConfig {
 impl StageClassifierConfig {
     fn task_classifier_config(&self) -> TaskClassifierConfig {
         TaskClassifierConfig {
+            fail_open: true,
             base_threshold: self.base_threshold,
             threshold_step: self.threshold_step,
             classify_trigger: self.classify_trigger,
@@ -878,6 +883,7 @@ impl LlmClassifierRouteConfig {
             weak_target,
             base_threshold,
             threshold_step,
+            fail_open,
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
@@ -896,6 +902,12 @@ impl LlmClassifierRouteConfig {
             (None, true) => ClassifierMode::Escalation,
             (None, false) => ClassifierMode::Capability,
         };
+
+        if !matches!(selected_mode, ClassifierMode::Capability) && *fail_open == Some(true) {
+            return Err(AlgorithmConfigError::new(format!(
+                "llm_classifier route {route_name}: fail_open = true requires capability mode"
+            )));
+        }
 
         match selected_mode {
             ClassifierMode::Capability => {
@@ -917,6 +929,7 @@ impl LlmClassifierRouteConfig {
                 Ok(LlmClassifierModeConfig::Capability(
                     CapabilityClassifierRouteConfig {
                         classifier_target: classifier_target.clone(),
+                        fail_open: fail_open.unwrap_or(true),
                         strong_target: required_classifier_field(
                             route_name,
                             "strong_target",
@@ -1229,6 +1242,7 @@ fn build_algorithm(
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
                     let classifier_config = TaskClassifierConfig {
+                        fail_open: config.fail_open,
                         base_threshold: config.base_threshold,
                         threshold_step: config.threshold_step,
                         classify_trigger: config.classify_trigger,

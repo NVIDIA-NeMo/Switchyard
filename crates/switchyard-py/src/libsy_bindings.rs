@@ -328,6 +328,7 @@ impl PyTaskClassifierConfig {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: TaskClassifierConfig {
+                fail_open: true,
                 base_threshold,
                 threshold_step,
                 classify_trigger: classify_trigger(session_affinity),

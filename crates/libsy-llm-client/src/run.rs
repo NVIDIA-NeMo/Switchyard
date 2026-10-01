@@ -11,7 +11,8 @@
 //! libsy owns the stream mechanics; what this module adds is per-target request preparation,
 //! ordered candidate fallback, and the `libsy.client_call` span around each candidate. Each
 //! completion candidate exhausts its backend retry budget before fallback advances. Routing
-//! calls stop on the first candidate's failure. A timeout stops either kind of call.
+//! calls stop on the first candidate's failure unless the algorithm enables error recovery.
+//! A timeout stops completion calls.
 //!
 //! A Responses continuation can refer to state through `previous_response_id` or `conversation`.
 //! [`ClientRouter`] sends native Responses state back to its provider; for Chat or Anthropic
@@ -49,7 +50,7 @@ use crate::{metrics, observability};
 /// a per-call lookup, not one client for the whole run. Use
 /// [`ClientRouter::single`](ClientRouter::single) when one client serves every target.
 ///
-/// Routing calls are buffered; a client failure stops the request before the algorithm continues.
+/// Routing calls are buffered; client failures stop the request unless the call enables recovery.
 /// Once routing completes, non-timeout failures may try the outcome's ordered fallback candidates.
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
@@ -172,7 +173,7 @@ fn emit_routing_observations(
 
 /// Serve one offloaded call and fulfill its promise.
 ///
-/// A client failure stops the driver before the algorithm can issue another call.
+/// A client failure stops the driver unless this call opts into algorithm-level recovery.
 async fn serve(
     clients: ClientRouter,
     call: CallModel,
@@ -198,6 +199,7 @@ async fn serve(
     .await
     {
         Ok(response) => call.respond(Ok(response)),
+        Err(error) if call.recover_errors => call.respond(Err(error)),
         Err(error) => call.fail(error),
     }
 }
@@ -371,7 +373,9 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
     };
     match source {
         LlmClientError::ContextWindowExceeded { .. } => Some(RoutingFallbackReason::ContextWindow),
-        LlmClientError::Transport { .. } => Some(RoutingFallbackReason::Unavailable),
+        LlmClientError::Transport { .. } | LlmClientError::TemporarilyUnavailable => {
+            Some(RoutingFallbackReason::Unavailable)
+        }
         // A policy denial can be specific to one provider. Preserve its HTTP
         // error, but allow another candidate to serve the request.
         LlmClientError::UpstreamHttp { status, body }
@@ -1213,6 +1217,7 @@ mod tests {
                         omit_body_fields: BTreeSet::new(),
                         reasoning_effort: None,
                         max_retries: 0,
+                        failure_cooldown: std::time::Duration::ZERO,
                         timeout: None,
                     };
                     let backend = if responses {
@@ -1359,6 +1364,7 @@ mod tests {
                     omit_body_fields: BTreeSet::new(),
                     reasoning_effort: None,
                     max_retries: 0,
+                    failure_cooldown: std::time::Duration::ZERO,
                     timeout: None,
                 }),
                 None,
@@ -1991,7 +1997,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_budget_is_exhausted_before_falling_through() -> Result<()> {
+    async fn retry_exhaustion_falls_back_and_optional_cooldown_skips_failed_backend() -> Result<()>
+    {
         let server = MockServer::start().await;
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed_calls = Arc::clone(&calls);
@@ -2021,37 +2028,60 @@ mod tests {
             .mount(&server)
             .await;
 
-        let backend = || {
-            Backend::OpenAiChat(HttpBackendConfig {
-                base_url: format!("{}/v1", server.uri()),
-                api_key: None,
-                forward_auth: false,
-                extra_headers: BTreeMap::new(),
-                extra_body: BTreeMap::new(),
-                omit_body_fields: BTreeSet::new(),
-                reasoning_effort: None,
-                max_retries: 2,
-                timeout: None,
-            })
-        };
-        let client = Arc::new(
+        let client_with_cooldown = |cooldown| {
+            let backend = || {
+                Backend::OpenAiChat(HttpBackendConfig {
+                    base_url: format!("{}/v1", server.uri()),
+                    api_key: None,
+                    forward_auth: false,
+                    extra_headers: BTreeMap::new(),
+                    extra_body: BTreeMap::new(),
+                    omit_body_fields: BTreeSet::new(),
+                    reasoning_effort: None,
+                    max_retries: 2,
+                    failure_cooldown: cooldown,
+                    timeout: None,
+                })
+            };
             TranslatingLlmClient::new(&[
                 ModelConfig::new("weak", backend(), None),
                 ModelConfig::new("strong", backend(), None),
             ])
-            .map_err(|error| LibsyError::external("building test client", error))?,
-        );
-        let algorithm = Arc::new(CandidateAlgorithm {});
-        run(
-            algorithm,
-            ClientRouter::single(client),
-            request(),
-            to_category_map(&["weak", "strong"]),
-            None,
-        )
-        .await?;
+            .map(Arc::new)
+            .map_err(|error| LibsyError::external("building test client", error))
+        };
+        let call = async |client: Arc<TranslatingLlmClient>| {
+            run(
+                Arc::new(CandidateAlgorithm {}),
+                ClientRouter::single(client),
+                request(),
+                to_category_map(&["weak", "strong"]),
+                None,
+            )
+            .await?;
+            Ok::<_, LibsyError>(std::mem::take(&mut *calls.lock()))
+        };
 
-        assert_eq!(&*calls.lock(), &["weak", "weak", "weak", "strong"]);
+        let client = client_with_cooldown(std::time::Duration::ZERO)?;
+        assert_eq!(
+            call(client.clone()).await?,
+            ["weak", "weak", "weak", "strong"]
+        );
+        assert_eq!(call(client).await?, ["weak", "weak", "weak", "strong"]);
+
+        let cooldown = std::time::Duration::from_secs(60);
+        let client = client_with_cooldown(cooldown)?;
+        assert_eq!(
+            call(client.clone()).await?,
+            ["weak", "weak", "weak", "strong"]
+        );
+        assert_eq!(call(client.clone()).await?, ["strong"]);
+
+        tokio::time::pause();
+        tokio::time::advance(cooldown).await;
+        tokio::time::resume();
+
+        assert_eq!(call(client).await?, ["weak", "weak", "weak", "strong"]);
         Ok(())
     }
 
@@ -2130,6 +2160,7 @@ mod tests {
                 omit_body_fields: BTreeSet::new(),
                 reasoning_effort: None,
                 max_retries: 0,
+                failure_cooldown: std::time::Duration::ZERO,
                 timeout: None,
             })
         };

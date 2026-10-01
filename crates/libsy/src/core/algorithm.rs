@@ -109,6 +109,8 @@ pub struct CallModel {
     pub request: Request,
     /// Candidate models, tried in order until one answers. Never empty.
     pub models: Vec<ModelId>,
+    /// Return client errors to the algorithm so it can apply its fallback policy.
+    pub recover_errors: bool,
     /// How to send the response back to the algorithm. `None` once the call is recorded.
     reply: Option<oneshot::Sender<Result<Response>>>,
     started: Instant,
@@ -275,6 +277,12 @@ impl Driver {
     /// through [`CallModel::respond`] or [`CallModel::fail`]; outcome and token usage
     /// are recorded on the span when the promise resolves. The provider call itself is the
     /// host's, and is instrumented by whoever makes it.
+    pub async fn call_model(&self, request: Request, models: Vec<ModelId>) -> Result<Response> {
+        self.call_model_with_error_recovery(request, models, false)
+            .await
+    }
+
+    /// Allows a routing policy to handle a failed call when recovery is enabled.
     #[tracing::instrument(
         target = "libsy",
         name = "libsy.llm_call",
@@ -290,7 +298,12 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub async fn call_model(&self, mut request: Request, models: Vec<ModelId>) -> Result<Response> {
+    pub(crate) async fn call_model_with_error_recovery(
+        &self,
+        mut request: Request,
+        models: Vec<ModelId>,
+        recover_errors: bool,
+    ) -> Result<Response> {
         let Some(selected_model_id) = models.first() else {
             return Err(LibsyError::NoTargets);
         };
@@ -301,6 +314,7 @@ impl Driver {
             algorithm: self.algorithm.clone(),
             request,
             models,
+            recover_errors,
             reply: Some(reply),
             started,
         };

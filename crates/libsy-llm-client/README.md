@@ -73,6 +73,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         extra_body: BTreeMap::new(),
         reasoning_effort: None,
         max_retries: 2,
+        failure_cooldown: std::time::Duration::from_secs(5),
         timeout: None,
     };
 
@@ -258,6 +259,12 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `HttpBackendConfig::failure_cooldown` skips completion calls to a backend briefly
+  after an exhausted transient failure. Zero disables it. State is shared per model
+  within the client. Calls resume when the cooldown expires. Deployment TOML defaults
+  `failure_cooldown_ms` to `5000` (5 seconds); set it to `0` to disable cooldown.
+  With `forward_auth`, HTTP 429 keeps its request-local retries and fallback while
+  leaving shared cooldown state unchanged.
 - `HttpBackendConfig::timeout` bounds one complete response, including retries,
   retry delays, and every stream read. Expiry returns `LlmClientError::Timeout`,
   either from the call or from the returned stream, which then ends. `None` leaves
@@ -266,9 +273,11 @@ fn build_multi_format_client(
 `run` and `decide` collect streams used during routing, including answers that an
 algorithm must inspect, before returning them to the algorithm. They retain the
 provider events for replay. After the configured retries, a client failure stops
-`run` or `decide` before the algorithm can choose another routing candidate. This
-also applies when `timeout` is `None` or an advisor has `fail_open = true`.
-`libsy` and custom hosts that drive it directly are unchanged.
+`run` or `decide` by default. Calls with `CallModel::recover_errors` enabled return
+the error to the algorithm so it can apply its fallback policy. Capability
+classifiers and advisor consults default to `fail_open = true`. Set `fail_open = false`
+to stop the request on their client failures. Recovery includes client errors and
+deadlines during stream collection. Custom hosts can honor the same flag when serving calls.
 
 Retries replay the same upstream request to the same model. After routing completes,
 non-timeout failures may try another completion candidate. A timeout stops the call.

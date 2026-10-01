@@ -9,6 +9,7 @@ pub mod openai_chat;
 mod openai_media;
 pub mod responses;
 pub mod stream;
+mod structured_output;
 
 use serde_json::Value;
 
