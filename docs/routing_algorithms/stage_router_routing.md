@@ -306,6 +306,7 @@ header:
 | Header | Content |
 |---|---|
 | `x-model-router-selected-model` | The model ID that served the response, including any model-call fallback. |
+| `x-model-router-decision-source` | Which component decided the turn: `override`, `capable_hold`, `dimensions`, `llm-classifier`, or `fall_open`. Omitted when the algorithm records no decision evidence. |
 
 ### Decision sources
 
@@ -319,6 +320,10 @@ paths through its cascade:
 | `dimensions` | The signed score fell outside the ambiguous band and selected a tier. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a usable verdict. |
 | `fall_open` | The signal scorer abstained and the classifier was absent or could not decide, so the picker default was used. |
+
+Those labels are also forwarded to the caller as `x-model-router-decision-source`, read
+from the same evidence that feeds `routing_decisions` in the stats. The header and the
+stats counter are two views of one recorded fact, not two independent signals.
 
 ## When *not* to use stage-router
 

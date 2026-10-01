@@ -4715,6 +4715,150 @@ async fn request_and_upstream_errors_use_the_inbound_wire_format() -> TestResult
     Ok(())
 }
 
+// A body with a valid model but no `messages` is a client error. It must be
+// rejected with 400 before any upstream call, not forwarded and reported as an
+// upstream 502.
+#[tokio::test]
+async fn missing_messages_is_rejected_before_upstream() -> TestResult {
+    let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    let before = upstream.calls.lock().await.len();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({"model": ROUTE_MODEL})),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.json()?["error"]["code"], "invalid_request_error");
+    assert_eq!(
+        upstream.calls.lock().await.len(),
+        before,
+        "no upstream call should be made for an invalid body"
+    );
+    Ok(())
+}
+
+/// The routing decision's provenance must reach the caller.
+///
+/// `docs/routing_algorithms/stage_router_routing.md` states that "each response carries
+/// two routing headers", but the table below it lists only
+/// `x-model-router-selected-model`. The algorithm already records which component decided
+/// the turn (`DecisionSource`) and libsy already carries it as
+/// `OutcomeMetadata::evidence` with a stable `source` field; that evidence is simply never
+/// forwarded to the wire. This test pins the missing half so the documented contract and
+/// the response agree.
+#[tokio::test]
+async fn routing_response_exposes_decision_source() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.strong]
+id = "model/provenance-strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/provenance-weak"
+llm_client = "upstream"
+
+[routes.stage]
+id = "switchyard/stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/stage",
+            "messages": [
+                {"role": "user", "content": "fix the build"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "fatal runtime error: out of memory"},
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/provenance-strong"),
+        "the selected-model header must keep working"
+    );
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-decision-source")
+            .and_then(|value| value.to_str().ok()),
+        Some("override"),
+        "a critical error is an `override` decision and the caller must be able to see why"
+    );
+    Ok(())
+}
+
+/// A route that records no decision evidence must omit the header entirely.
+///
+/// The negative case matters as much as the positive one: a missing decision must be
+/// reported as missing. Emitting an empty value, or a guessed label such as `default`,
+/// would be worse than silence, because a caller reading provenance cannot distinguish
+/// "this algorithm does not record one" from "this one decided, and here is why".
+#[tokio::test]
+async fn routing_response_omits_decision_source_without_evidence() -> TestResult {
+    let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "hello"}],
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/a"),
+        "the selected-model header must still be present"
+    );
+    assert!(
+        !response
+            .headers
+            .contains_key("x-model-router-decision-source"),
+        "no decision evidence must mean no decision-source header, not an invented one"
+    );
+    Ok(())
+}
+
 /// A `type = "advisor"` deployment: gated executor + reviewer on one mock upstream.
 fn advisor_state(base_url: &str) -> TestResult<ServerState> {
     load_test_config(&format!(

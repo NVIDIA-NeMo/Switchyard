@@ -35,7 +35,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use axum_server::tls_rustls::RustlsConfig;
-use libsy::{LibsyError, RoutingOutcome};
+use libsy::{LibsyError, OutcomeMetadata, RoutingOutcome};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,6 +65,15 @@ pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
+
+/// Why the router chose this model. Paired with [`HEADER_SELECTED_MODEL`], which reports
+/// WHAT was chosen; neither is meaningful without the other.
+///
+/// `docs/routing_algorithms/stage_router_routing.md` describes "two routing headers" but
+/// only ever listed the selected-model one. The deciding component was already recorded
+/// internally as `DecisionSource` and carried as `OutcomeMetadata::evidence`, so this
+/// header forwards existing state rather than introducing a new mechanism.
+const HEADER_DECISION_SOURCE: &str = "x-model-router-decision-source";
 const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
     "baggage",
     "openai-processing-ms",
@@ -987,6 +996,18 @@ fn resolve_route(
                 "invalid_request_error",
             )
         })?;
+    // Every wire format normalizes turns into `messages`, so an empty vec means
+    // the body carried no conversation at all. Reject it here, next to the
+    // `model` check, so a client error costs no upstream round trip and is not
+    // reported as an upstream failure.
+    if llm_request.messages.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "request body must include a non-empty `messages` array",
+            "invalid_request_error",
+            "invalid_request_error",
+        ));
+    }
     let route = state.route_for_model(&requested_model).ok_or_else(|| {
         error_response(
             StatusCode::NOT_FOUND,
@@ -1076,6 +1097,7 @@ async fn handle_llm_request(
     let RunOutput {
         selected_model,
         response,
+        metadata,
     } = output;
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
@@ -1119,7 +1141,7 @@ async fn handle_llm_request(
         response_headers.append(name.clone(), value.clone());
     }
     if let Some(served_model) = served_model.as_ref() {
-        attach_routing_headers(&mut response, served_model.as_str());
+        attach_routing_headers(&mut response, served_model.as_str(), metadata.as_ref());
     }
     response
 }
@@ -1238,8 +1260,25 @@ fn metadata_from_headers(headers: HeaderMap) -> Metadata {
     metadata
 }
 
-fn attach_routing_headers(response: &mut Response, served_model: &str) {
+fn attach_routing_headers(
+    response: &mut Response,
+    served_model: &str,
+    metadata: Option<&OutcomeMetadata>,
+) {
     insert_routing_header(response, HEADER_SELECTED_MODEL, served_model);
+    if let Some(source) = metadata.and_then(decision_source_of) {
+        insert_routing_header(response, HEADER_DECISION_SOURCE, &source);
+    }
+}
+
+/// Extracts the deciding component from an outcome's evidence.
+///
+/// Built-in algorithms record a stable `source` string (`override`, `dimensions`,
+/// `llm-classifier`, `fall_open`, ...) in their evidence. Anything else - a custom
+/// algorithm, a route with no evidence at all - yields `None`, which simply omits the
+/// header rather than inventing a reason.
+fn decision_source_of(metadata: &OutcomeMetadata) -> Option<String> {
+    metadata.evidence.as_ref()?.get("source")?.as_str().map(str::to_string)
 }
 
 fn insert_routing_header(response: &mut Response, name: &'static str, value: &str) {

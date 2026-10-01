@@ -57,7 +57,7 @@ pub async fn run(
     request: Request,
     models: Arc<RuntimeModels>,
     observer: Option<RunObserver>,
-) -> Result<(ModelId, Response)> {
+) -> Result<(ModelId, Response, Option<OutcomeMetadata>)> {
     let algorithm_name = algorithm.name().to_string();
     let run_started = Instant::now();
     let routing_clients = clients.clone();
@@ -85,6 +85,10 @@ pub async fn run(
     metrics::record_routing_overhead(&algorithm_name, overhead);
 
     let selected_model_id = outcome.selected_model_id()?.clone();
+    // Captured before `outcome.metadata` is moved into the observer below. This is the
+    // algorithm's own record of WHY it chose, and the server needs it on the wire: the
+    // response body and the selected-model header both describe WHAT was chosen, never why.
+    let metadata = outcome.metadata.clone();
     if let Some(observer) = &observer
         && let Some(metadata) = outcome.metadata
     {
@@ -118,7 +122,7 @@ pub async fn run(
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
     }
-    result.map(|response| (selected_model_id, response))
+    result.map(|response| (selected_model_id, response, metadata))
 }
 
 /// Run an algorithm to a routing decision without serving its terminal completion.
@@ -1085,6 +1089,7 @@ mod tests {
             None,
         )
         .await;
+        let result = result.map(|(selected, response, _metadata)| (selected, response));
         (client, result)
     }
 
@@ -1109,7 +1114,7 @@ mod tests {
         let observed = Arc::clone(&observations);
         let observer: RunObserver = Arc::new(move |event| observed.lock().push(event));
 
-        let (selected, response) = run(
+        let (selected, response, _metadata) = run(
             Arc::new(AnsweredAlgorithm {
                 model: "weak".into(),
             }),
@@ -1235,7 +1240,7 @@ mod tests {
                         .fields
                         .insert("conversation".to_string(), conversation.clone());
                 }
-                let (_, response) = run(
+                let (_, response, _metadata) = run(
                     Arc::new(switchyard_libsy::Passthrough),
                     clients.clone(),
                     seed,
@@ -1385,7 +1390,7 @@ mod tests {
             raw_request: None,
             metadata: None,
         };
-        let (_, response) = run(
+        let (_, response, _metadata) = run(
             Arc::new(switchyard_libsy::Passthrough),
             clients.clone(),
             seed,
@@ -1423,7 +1428,7 @@ mod tests {
             raw_request: None,
             metadata: None,
         };
-        let (_, response) = run(
+        let (_, response, _metadata) = run(
             Arc::new(switchyard_libsy::Passthrough),
             clients.clone(),
             follow,
@@ -1462,7 +1467,7 @@ mod tests {
         assert_eq!(history.len, 4);
         assert_eq!(history.segment.len(), 2);
         assert!(history.parent.is_some());
-        let (_, response) = run(
+        let (_, response, _metadata) = run(
             Arc::new(switchyard_libsy::Passthrough),
             clients,
             third,
@@ -2156,6 +2161,7 @@ mod tests {
             None,
         )
         .await;
+        let result = result.map(|(selected, response, _metadata)| (selected, response));
         (server, calls, result)
     }
 

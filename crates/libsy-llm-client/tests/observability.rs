@@ -600,6 +600,7 @@ async fn run(
         None,
     )
     .await
+    .map(|(selected, response, _metadata)| (selected, response))
 }
 
 fn classifier_router() -> switchyard_libsy::Result<Arc<dyn Algorithm>> {
@@ -647,6 +648,7 @@ async fn run_classifier(
         None,
     )
     .await
+    .map(|(selected, response, _metadata)| (selected, response))
 }
 
 fn classifier_request() -> Request {
@@ -875,7 +877,7 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
     })?) as Arc<dyn Algorithm>;
     let request = request_with_metadata("affinity-fallback-session", "affinity-fallback-first");
 
-    let (selected, first_response) = switchyard_llm_client::run(
+    let (selected, first_response, _) = switchyard_llm_client::run(
         Arc::clone(&router),
         ClientRouter::single(client.clone()),
         request.clone(),
@@ -938,7 +940,7 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
     }
 
     client.efficient_available.store(true, Ordering::Relaxed);
-    let (selected, second_response) = switchyard_llm_client::run(
+    let (selected, second_response, _) = switchyard_llm_client::run(
         router,
         ClientRouter::single(client.clone()),
         request,
@@ -1289,7 +1291,7 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
         usage: Usage::default(),
     }) as Arc<dyn RoutedLlmClient>;
 
-    let (selected_model, _) = switchyard_llm_client::run(
+    let (selected_model, _, _) = switchyard_llm_client::run(
         algorithm,
         ClientRouter::single(client),
         request,
@@ -1343,7 +1345,7 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
         usage: Usage::default(),
     }) as Arc<dyn RoutedLlmClient>;
 
-    let (_, response) = switchyard_llm_client::run(
+    let (_, response, _) = switchyard_llm_client::run(
         algo(ALGO, MODEL),
         ClientRouter::single(client),
         request_with_metadata("observed-session", "observed-correlation"),

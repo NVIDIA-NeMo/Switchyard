@@ -6,7 +6,7 @@
 use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
+use libsy::{Algorithm, LibsyError, OutcomeMetadata, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
@@ -124,6 +124,9 @@ pub struct Route {
 pub struct RunOutput {
     pub selected_model: ModelId,
     pub response: Response,
+    /// The algorithm's record of why it chose, carried so the server can expose the
+    /// decision's provenance on the wire. `None` when the algorithm produced no metadata.
+    pub metadata: Option<OutcomeMetadata>,
 }
 
 impl Route {
@@ -195,7 +198,7 @@ impl Route {
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
-        let (selected_model, response) = switchyard_llm_client::run(
+        let (selected_model, response, metadata) = switchyard_llm_client::run(
             Arc::clone(&self.algorithm),
             self.clients.clone(),
             request,
@@ -206,6 +209,7 @@ impl Route {
         Ok(RunOutput {
             selected_model,
             response,
+            metadata,
         })
     }
 
