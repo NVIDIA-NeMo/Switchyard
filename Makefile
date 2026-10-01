@@ -8,6 +8,9 @@ help:
 	@echo "install-linux          Install the systemd user service and Codex profile"
 	@echo "install-linux-dry-run  Preview installation without changes"
 	@echo "uninstall-linux        Remove the service and Codex profile"
+	@echo "install-macos          Install the background server and menu bar app"
+	@echo "install-macos-dry-run  Preview installation without changes"
+	@echo "uninstall-macos        Remove the LaunchAgents and Codex profile"
 
 ## Install the Switchyard background server as a systemd user service.
 install-linux:
