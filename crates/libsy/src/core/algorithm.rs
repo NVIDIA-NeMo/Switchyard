@@ -619,6 +619,11 @@ pub trait Algorithm: Send + Sync + 'static {
     /// emits for its runs.
     fn name(&self) -> &str;
 
+    /// Replay locally stored messages before routing a Responses continuation.
+    fn needs_history_replay(&self, _request: &Request) -> bool {
+        false
+    }
+
     /// Select a route, requesting external work through [`Driver`] as needed.
     /// [`run_stream`](Self::run_stream) runs this method and exposes its work to the host.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;

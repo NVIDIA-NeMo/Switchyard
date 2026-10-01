@@ -32,6 +32,15 @@ The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.
 
+With Switchyard's LLM client, `previous_response_id` continuations restore cached
+history before edit detection. This supports handoff across providers and formats,
+including completed streams. The cache is lost on restart and excludes responses
+with `store: false`. Provider-managed `conversation` IDs and IDs without local
+history keep their existing routing behavior.
+
+Hosts calling `libsy` directly must supply the conversation history, including
+prior tool calls and results.
+
 Optional settings:
 
 | Key | Behavior |

@@ -161,6 +161,10 @@ impl Algorithm for PlanExecute {
         "plan_execute"
     }
 
+    fn needs_history_replay(&self, _request: &Request) -> bool {
+        true
+    }
+
     async fn route(
         self: Arc<Self>,
         driver: Driver,

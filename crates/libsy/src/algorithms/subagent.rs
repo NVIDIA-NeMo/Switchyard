@@ -117,6 +117,14 @@ impl Algorithm for SubagentRouter {
         self.parent.name()
     }
 
+    fn needs_history_replay(&self, request: &Request) -> bool {
+        !request
+            .metadata
+            .as_ref()
+            .is_some_and(Metadata::is_subagent_work)
+            && self.parent.needs_history_replay(request)
+    }
+
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         if request
             .metadata
