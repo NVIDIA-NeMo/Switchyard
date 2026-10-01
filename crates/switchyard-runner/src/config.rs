@@ -576,6 +576,9 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
+    #[serde(default = "default_failure_cooldown_ms")]
+    failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
 }
@@ -700,6 +703,7 @@ fn build_backend(
         omit_body_fields: omit_body_fields.clone(),
         reasoning_effort,
         max_retries: config.max_retries,
+        failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
         timeout: config.timeout_ms.map(Duration::from_millis),
     };
     let backend = match config.format {
@@ -713,6 +717,10 @@ fn build_backend(
 // A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
+}
+
+const fn default_failure_cooldown_ms() -> u64 {
+    5000
 }
 
 fn validate_value(label: &str, value: &str) -> RunnerResult<()> {

@@ -758,6 +758,7 @@ fn random_state_with_retries(
         omit_body_fields: BTreeSet::new(),
         reasoning_effort: None,
         max_retries,
+        failure_cooldown: std::time::Duration::ZERO,
         timeout: None,
     });
     let target_models = routes
@@ -1358,6 +1359,8 @@ schema_version = 1
 format = "openai_chat"
 base_url = "{base_url}"
 max_retries = 0
+# Exercise upstream fallback on every request.
+failure_cooldown_ms = 0
 
 [targets.first]
 id = "{first}"

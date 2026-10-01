@@ -54,10 +54,21 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. All backends reachable through the route must use the same provider. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
+| `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
 | `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
+
+Cooldown is enabled by default for 5 seconds. Set `failure_cooldown_ms = 0` to disable it.
+The cooldown starts after retries are exhausted.
+
+`failure_cooldown_ms` tracks transport failures, timeouts, HTTP 408/429, and 5xx
+responses after retries. State is shared across callers per model within the client,
+including callers using forwarded credentials. During cooldown,
+ordered fallback tries the next candidate. A terminal cooldown error returns HTTP
+503. Calls resume together after expiry. Auxiliary calls and errors after a stream
+is returned leave cooldown state unchanged.
 
 `timeout_ms` applies separately to every call through the client, including judge
 verdicts and answers. To give a judge a short deadline without limiting the

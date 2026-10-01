@@ -148,6 +148,8 @@ schema_version = 1
 format = "openai_chat"
 base_url = "{}"
 max_retries = 1
+# Exercise the upstream deadline on every request.
+failure_cooldown_ms = 0
 timeout_ms = {timeout}
 [targets]
 judge = {{ id = "{judge}", llm_client = "http", extra_body = {{ stream = {judge_stream} }} }}

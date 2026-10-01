@@ -73,6 +73,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         extra_body: BTreeMap::new(),
         reasoning_effort: None,
         max_retries: 2,
+        failure_cooldown: std::time::Duration::from_secs(5),
         timeout: None,
     };
 
@@ -258,6 +259,10 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `HttpBackendConfig::failure_cooldown` skips completion calls to a backend briefly
+  after an exhausted transient failure. Zero disables it. State is shared per model
+  within the client. Calls resume when the cooldown expires. Deployment TOML defaults
+  `failure_cooldown_ms` to `5000` (5 seconds); set it to `0` to disable cooldown.
 - `HttpBackendConfig::timeout` bounds one complete response, including retries,
   retry delays, and every stream read. Expiry returns `LlmClientError::Timeout`,
   either from the call or from the returned stream, which then ends. `None` leaves
