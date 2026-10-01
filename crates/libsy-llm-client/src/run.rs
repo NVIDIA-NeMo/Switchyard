@@ -27,7 +27,7 @@ use http::StatusCode;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use switchyard_libsy::{
-    Algorithm, CallDecision, CallModel, LibsyError, OutcomeMetadata, Result, RoutingOutcome,
+    Algorithm, Call, CallDecision, LibsyError, OutcomeMetadata, Result, RoutingOutcome,
     RuntimeModels, drive,
 };
 use switchyard_protocol::{
@@ -69,16 +69,10 @@ pub async fn run(
     let outcome = match clients.stored_state_owner(&request) {
         Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
         None => {
-            drive(
-                algorithm,
-                request,
-                models,
-                {
-                    let routing_observations = routing_observations.clone();
-                    move |call| serve(routing_clients.clone(), call, routing_observations.clone())
-                },
-                unsupported_decision,
-            )
+            drive(algorithm, request, models, {
+                let routing_observations = routing_observations.clone();
+                move |call| serve(routing_clients.clone(), call, routing_observations.clone())
+            })
             .await
         }
     };
@@ -143,13 +137,9 @@ pub async fn decide(
     let mut outcome = match clients.stored_state_owner(&request) {
         Some(owner) => continue_on(owner, algorithm.name(), request),
         None => {
-            drive(
-                algorithm,
-                request,
-                models,
-                move |call| serve(routing_clients.clone(), call, None),
-                unsupported_decision,
-            )
+            drive(algorithm, request, models, move |call| {
+                serve(routing_clients.clone(), call, None)
+            })
             .await?
         }
     };
@@ -192,12 +182,17 @@ fn emit_routing_observations(
 
 /// Serve one offloaded call and fulfill its promise.
 ///
-/// A client failure stops the driver unless this call opts into algorithm-level recovery.
+/// LLM failures stop the run unless the call enables recovery. Unsupported decisions
+/// return an error to the algorithm.
 async fn serve(
     clients: ClientRouter,
-    call: CallModel,
+    call: Call,
     observations: Option<Arc<Mutex<Vec<LlmCallObservation>>>>,
 ) -> Result<()> {
+    let call = match call {
+        Call::Model(call) => *call,
+        Call::Decision(call) => return unsupported_decision(*call).await,
+    };
     let observe = |observation| {
         if let Some(observations) = &observations {
             observations.lock().push(observation);

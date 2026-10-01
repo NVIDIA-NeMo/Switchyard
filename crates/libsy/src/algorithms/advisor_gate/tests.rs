@@ -16,8 +16,8 @@ use switchyard_protocol::{
 
 use super::transcript::{NO_TEXT_PLACEHOLDER, TRUNCATION_MARKER, middle_drop};
 use super::*;
-use crate::RuntimeModels;
 use crate::core::testing::{Serve, reply, serve_decision, test_drive_with_models};
+use crate::{Call, RuntimeModels};
 
 const EXECUTOR: &str = "executor";
 const ADVISOR: &str = "advisor";
@@ -340,27 +340,25 @@ async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
     );
     let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let observed = Arc::clone(&calls);
-    let outcome = crate::drive(
-        gate,
-        task_request(),
-        Arc::new(models),
-        move |call| {
-            let observed = Arc::clone(&observed);
-            async move {
-                let candidates = call.models.clone();
-                observed.lock().push(candidates.clone());
-                let (text, served) = if candidates[0] == target(EXECUTOR) {
-                    ("all done", target(EXECUTOR_FALLBACK))
-                } else {
-                    ("APPROVE", target(ADVISOR_FALLBACK))
-                };
-                let mut response = reply(text);
-                response.set_served_model(&served);
-                call.respond(Ok(response))
-            }
-        },
-        serve_decision,
-    )
+    let outcome = crate::drive(gate, task_request(), Arc::new(models), move |call| {
+        let observed = Arc::clone(&observed);
+        async move {
+            let call = match call {
+                Call::Model(call) => *call,
+                Call::Decision(call) => return serve_decision(*call).await,
+            };
+            let candidates = call.models.clone();
+            observed.lock().push(candidates.clone());
+            let (text, served) = if candidates[0] == target(EXECUTOR) {
+                ("all done", target(EXECUTOR_FALLBACK))
+            } else {
+                ("APPROVE", target(ADVISOR_FALLBACK))
+            };
+            let mut response = reply(text);
+            response.set_served_model(&served);
+            call.respond(Ok(response))
+        }
+    })
     .await
     .expect("routes");
 

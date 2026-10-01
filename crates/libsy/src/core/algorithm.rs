@@ -457,11 +457,19 @@ pub enum Step {
     Done(Box<RoutingOutcome>),
 }
 
-/// Drive [`Algorithm::run_stream`] with separate LLM and decision-call handlers.
+/// An offloaded call passed to the host's [`drive`] handler.
+pub enum Call {
+    /// An LLM call with its typed reply channel.
+    Model(Box<CallModel>),
+    /// A decision call with its typed reply channel.
+    Decision(Box<CallDecision>),
+}
+
+/// Drive [`Algorithm::run_stream`], handing each offloaded [`Call`] to `serve`.
 ///
 /// Returns the final [`RoutingOutcome`].
-/// Each handler owns its call and fulfills it with `respond`. Passing an error to
-/// `respond` lets the algorithm fall back. Returning `fail` or an `Err` from either
+/// The handler owns its call and fulfills it with `respond`. Passing an error to
+/// `respond` lets the algorithm fall back. Returning `fail` or an `Err` from the
 /// handler aborts the whole run.
 /// Calls are served concurrently, so an algorithm that offloads several at once (hedging, fan-out)
 /// gets real parallelism.
@@ -469,18 +477,15 @@ pub enum Step {
 /// libsy performs no I/O; this is only the mechanics of consuming its own step stream, kept
 /// here so every host does not reimplement the same loop. `switchyard-llm-client`'s `run`
 /// is this function plus an HTTP client.
-pub async fn drive<F, Fut, D, DecisionFut>(
+pub async fn drive<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
     request: Request,
     models: Arc<RuntimeModels>,
     serve: F,
-    serve_decision: D,
 ) -> Result<RoutingOutcome>
 where
-    F: Fn(CallModel) -> Fut,
+    F: Fn(Call) -> Fut,
     Fut: Future<Output = Result<()>>,
-    D: Fn(CallDecision) -> DecisionFut,
-    DecisionFut: Future<Output = Result<()>>,
 {
     let stream = algorithm.run_stream(request, models);
     tokio::pin!(stream);
@@ -498,9 +503,9 @@ where
                 match step {
                     None => break, // stream has ended, no more steps
                     Some(item) => match item? {
-                        Step::CallModel(call) => in_flight.push(serve(*call).left_future()),
+                        Step::CallModel(call) => in_flight.push(serve(Call::Model(call))),
                         Step::CallDecision(call) => {
-                            in_flight.push(serve_decision(*call).right_future());
+                            in_flight.push(serve(Call::Decision(call)));
                         }
                         Step::Done(outcome) => {
                             final_outcome = Some(*outcome);
@@ -934,28 +939,24 @@ mod tests {
             }
 
             for mode in ["mock", "reply", "error", "drop", "abort"] {
-                // Neither handler can finish until both call types are being served.
+                // Neither call can finish until both call types are being served.
                 let barrier = Arc::new(tokio::sync::Barrier::new(2));
-                let llm_barrier = barrier.clone();
                 let outcome = drive(
                     Arc::new(MixedCalls(mode)),
                     request(),
                     Arc::new(RuntimeModels::default()),
                     move |call| {
-                        let barrier = llm_barrier.clone();
-                        async move {
-                            barrier.wait().await;
-                            call.respond(Ok(reply("llm reply")))
-                        }
-                    },
-                    move |call| {
                         let barrier = barrier.clone();
                         async move {
+                            barrier.wait().await;
+                            let call = match call {
+                                Call::Model(call) => return call.respond(Ok(reply("llm reply"))),
+                                Call::Decision(call) => *call,
+                            };
                             assert_eq!(call.algorithm, "mixed");
                             assert_eq!(call.model, "decision");
                             assert_eq!(call.request.model, Some("decision".into()));
                             assert_eq!(call.request.context, decision_request().context);
-                            barrier.wait().await;
                             match mode {
                                 "mock" => serve_decision(call).await,
                                 "reply" => call.respond(Ok(decision_response())),

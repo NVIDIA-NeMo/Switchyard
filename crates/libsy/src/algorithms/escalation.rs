@@ -624,6 +624,10 @@ mod tests {
             move |call| {
                 let serve = Arc::clone(&routing_serve);
                 async move {
+                    let call = match call {
+                        crate::Call::Model(call) => *call,
+                        crate::Call::Decision(call) => return serve_decision(*call).await,
+                    };
                     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
                     let request = call.request.clone();
                     let response = serve
@@ -633,7 +637,6 @@ mod tests {
                     call.respond(response)
                 }
             },
-            serve_decision,
         )
         .await?;
 

@@ -6,8 +6,8 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels, Step, StepStream,
-    drive,
+    Algorithm, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels, Step,
+    StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::outcome_metadata::OutcomeMetadata;

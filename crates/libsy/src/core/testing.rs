@@ -23,7 +23,7 @@ use switchyard_protocol::{
     text_response,
 };
 
-use crate::core::algorithm::{Algorithm, CallDecision, CallModel, Driver, RuntimeModels};
+use crate::core::algorithm::{Algorithm, Call, CallDecision, Driver, RuntimeModels};
 use crate::{LibsyError, Result};
 
 /// Builds one runtime model category for a test.
@@ -79,13 +79,9 @@ pub(crate) async fn test_drive_with_models(
 ) -> Result<(ModelId, Response)> {
     let serve = Arc::new(serve);
     let routing_serve = Arc::clone(&serve);
-    let outcome = crate::drive(
-        algorithm,
-        request,
-        Arc::new(models.into()),
-        move |call| fulfill(Arc::clone(&routing_serve), call),
-        serve_decision,
-    )
+    let outcome = crate::drive(algorithm, request, Arc::new(models.into()), move |call| {
+        fulfill(Arc::clone(&routing_serve), call)
+    })
     .await?;
     let selected_model = outcome.selected_model_id()?.clone();
     let response = match outcome.response {
@@ -111,7 +107,11 @@ pub(crate) async fn serve_decision(call: CallDecision) -> Result<()> {
 
 /// Serve one call and fulfill its promise, mapping failures the way a host does so
 /// error-shape assertions match production.
-async fn fulfill(serve: Arc<impl Serve>, call: CallModel) -> Result<()> {
+async fn fulfill(serve: Arc<impl Serve>, call: Call) -> Result<()> {
+    let call = match call {
+        Call::Model(call) => *call,
+        Call::Decision(call) => return serve_decision(*call).await,
+    };
     let request = call.request.clone();
     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
     let result = serve
