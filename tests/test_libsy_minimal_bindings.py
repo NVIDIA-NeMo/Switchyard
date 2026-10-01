@@ -13,6 +13,7 @@ from switchyard.libsy import (
     Algorithm,
     ContextWindowExceededError,
     CustomClassifierConfig,
+    DeescalationConfig,
     EscalationClassifierConfig,
     LlmClassifierConfig,
     LlmResponse,
@@ -241,6 +242,20 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
         "p_solve"
     ]
     assert response["model"] == "weak"
+
+
+def test_escalation_accepts_optional_deescalation_config() -> None:
+    config = EscalationClassifierConfig(
+        deescalation=DeescalationConfig(
+            strong_min_calls=3,
+            confirmations=2,
+            strong_max_calls=6,
+            weak_cooldown_calls=8,
+        )
+    )
+    algorithm = LlmClassifierConfig.escalation(config=config)
+
+    assert isinstance(algorithms.llm_classifier(algorithm), Algorithm)
 
 
 async def test_custom_classifier_routes_across_named_targets() -> None:

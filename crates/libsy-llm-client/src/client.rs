@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::ready;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -23,6 +24,7 @@ use switchyard_translation::{
     TranslationError, WireFormat, decode_aggregated_response, decode_request, decode_stream,
     encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
 };
+use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::backend::{Backend, openai_url};
@@ -151,12 +153,17 @@ pub struct TranslatingLlmClient {
     model_to_config: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
     forward_auth_client: reqwest::Client,
+    cooldown_epoch: Instant,
+    // Milliseconds since cooldown_epoch. Each atomic is independent, so relaxed ordering suffices.
+    unavailable_until: HashMap<ModelId, AtomicU64>,
 }
 
 impl TranslatingLlmClient {
     /// Builds a client over the given [`ModelConfig`]s, with a fresh shared HTTP
     /// client and the built-in translation codecs.
     pub fn new(model_configs: &[ModelConfig]) -> Result<Self> {
+        // Pre-populate so concurrent calls update only atomics and keep map access lock-free.
+        let mut unavailable_until = HashMap::new();
         for config in model_configs {
             if config.reasoning_format.is_some()
                 && !matches!(config.default_backend, Backend::OpenAiChat(_))
@@ -173,12 +180,12 @@ impl TranslatingLlmClient {
                     ),
                 });
             }
-            config
-                .default_backend
-                .validate_configured_headers(&config.model_name)?;
-            for backend in config.other_backends.iter().flatten() {
+            for backend in std::iter::once(&config.default_backend)
+                .chain(config.other_backends.iter().flatten())
+            {
                 backend.validate_configured_headers(&config.model_name)?;
             }
+            unavailable_until.insert(config.model_name.clone(), AtomicU64::new(0));
         }
         let build_client = |builder: reqwest::ClientBuilder| {
             builder.build().map_err(|error| LlmClientError::Transport {
@@ -199,6 +206,8 @@ impl TranslatingLlmClient {
             model_to_config,
             client,
             forward_auth_client,
+            cooldown_epoch: Instant::now(),
+            unavailable_until,
         })
     }
 
@@ -292,6 +301,20 @@ impl TranslatingLlmClient {
         model: &ModelId,
         endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
+        let cooldown = backend.failure_cooldown();
+        let unavailable_until =
+            if matches!(endpoint, UpstreamEndpoint::Completion) && !cooldown.is_zero() {
+                self.unavailable_until.get(model)
+            } else {
+                None
+            };
+        if let Some(until) = unavailable_until
+            && until.load(Ordering::Relaxed) > duration_millis(self.cooldown_epoch.elapsed())
+        {
+            tracing::debug!(model = %model, wire_format = %wire_format, "skipping backend during failure cooldown");
+            return Err(LlmClientError::TemporarilyUnavailable);
+        }
+
         let mut body = encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
@@ -328,8 +351,21 @@ impl TranslatingLlmClient {
         let url = endpoint.url(backend);
         record_gen_ai_request(&url, model, streaming);
 
-        self.send_with_retries(&url, backend, &body, metadata, model, streaming)
-            .await
+        let result = self
+            .send_with_retries(&url, backend, &body, metadata, model, streaming)
+            .await;
+        // Forwarded credentials can hit a user's quota while the backend remains healthy.
+        if let Some(until) = unavailable_until
+            && let Err(error) = &result
+            && is_transient_failure(error)
+            && !(backend.is_forwarding_auth()
+                && matches!(error, LlmClientError::UpstreamHttp { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS))
+        {
+            let deadline = duration_millis(self.cooldown_epoch.elapsed().saturating_add(cooldown));
+            until.fetch_max(deadline, Ordering::Relaxed);
+        }
+        // Let cooldown expire naturally; a successful in-flight call may overlap a newer failure.
+        result
     }
 
     // Sends the encoded body, retrying retryable failures within the backend's retry budget.
@@ -785,13 +821,17 @@ fn deadline_error(timeout: Duration) -> LlmClientError {
 
 impl AttemptFailure {
     fn is_retryable(&self) -> bool {
-        match &self.error {
-            LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
-            LlmClientError::UpstreamHttp { status, .. } => {
-                metrics::is_retryable_http_status(status.as_u16())
-            }
-            _ => false,
+        is_transient_failure(&self.error)
+    }
+}
+
+fn is_transient_failure(error: &LlmClientError) -> bool {
+    match error {
+        LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
+        LlmClientError::UpstreamHttp { status, .. } => {
+            metrics::is_retryable_http_status(status.as_u16())
         }
+        _ => false,
     }
 }
 
@@ -1207,11 +1247,32 @@ fn apply_reasoning_format(body: &mut Value, reasoning_format: ReasoningFormat) {
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
-        let Some(value) = message.remove(other_field) else {
+        let value = message.remove(other_field);
+        if message.contains_key(target_field) {
             continue;
-        };
-        if !message.contains_key(target_field) {
-            message.insert(target_field.to_string(), value);
+        }
+        let value = value.or_else(|| {
+            let details = message.get("reasoning_details")?.as_array()?;
+            let text = details
+                .iter()
+                .filter_map(|detail| {
+                    detail
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .or_else(|| {
+                            detail
+                                .get("summary")
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                        })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(Value::String(text))
+        });
+        if let Some(value) = value {
+            message.entry(target_field).or_insert(value);
         }
     }
 }
@@ -1387,6 +1448,7 @@ mod tests {
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
+            failure_cooldown: Duration::ZERO,
             timeout: None,
         }
     }
@@ -2492,6 +2554,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rate_limit_cooldown_depends_on_shared_credentials()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for forward_auth in [true, false] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+                .expect(if forward_auth { 6 } else { 3 })
+                .mount(&server)
+                .await;
+            let backend = HttpBackendConfig {
+                forward_auth,
+                failure_cooldown: Duration::from_secs(60),
+                ..config_with_retries(&format!("{}/v1", server.uri()), 2)
+            };
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "gpt",
+                Backend::OpenAiChat(backend),
+                None,
+            )])?;
+            for credential in ["Bearer first-user", "Bearer second-user"] {
+                let mut headers = http::HeaderMap::new();
+                headers.insert("authorization", http::HeaderValue::from_static(credential));
+                let result = client
+                    .call_rewrite_model(request_with_headers("gpt", headers), None)
+                    .await;
+                if !forward_auth && credential == "Bearer second-user" {
+                    assert!(matches!(
+                        result,
+                        Err(LlmClientError::TemporarilyUnavailable)
+                    ));
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(LlmClientError::UpstreamHttp {
+                            status: StatusCode::TOO_MANY_REQUESTS,
+                            ..
+                        })
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn retry_exhaustion_returns_the_final_upstream_error()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
@@ -3055,11 +3162,63 @@ mod tests {
         }
     }
 
-    // Raw path, buffered: decode an OpenAI Chat body -> call -> encode back to OpenAI
-    // Chat JSON, with the served `model` restamped over the id the caller addressed.
-    //
-    // A target's `reasoning_format` moves assistant reasoning to the target's field
-    // even when the inbound request carried the other spelling: the target wins.
+    #[tokio::test]
+    async fn reasoning_format_replays_details_across_formats_and_streaming()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for streaming in [false, true] {
+            for (format, mut request) in [
+                (
+                    WireFormat::OpenAiChat,
+                    json!({"model": "gpt", "messages": [{"role": "assistant", "content": "answer", "reasoning_details": [{"type": "reasoning.text", "text": "thoughts"}]}]}),
+                ),
+                (
+                    WireFormat::OpenAiResponses,
+                    json!({"model": "gpt", "input": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "thoughts"}]}, {"role": "assistant", "content": "answer"}]}),
+                ),
+                (
+                    WireFormat::AnthropicMessages,
+                    json!({"model": "gpt", "max_tokens": 32, "messages": [{"role": "assistant", "content": [{"type": "thinking", "thinking": "thoughts"}, {"type": "text", "text": "answer"}]}]}),
+                ),
+            ] {
+                let server = MockServer::start().await;
+                let response = if streaming {
+                    ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream")
+                } else {
+                    chat_success_response()
+                };
+                Mock::given(method("POST"))
+                    .and(path("/v1/chat/completions"))
+                    .respond_with(response)
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let client = TranslatingLlmClient::new(&chat_map_with_reasoning_format(
+                    &format!("{}/v1", server.uri()),
+                    ReasoningFormat::Deepseek,
+                ))?;
+                request["stream"] = json!(streaming);
+                client
+                    .call_rewrite_model_raw(request, None, Some(&ModelId::new("gpt")), format)
+                    .await?;
+                let requests = server
+                    .received_requests()
+                    .await
+                    .ok_or("recording disabled")?;
+                let body: Value = serde_json::from_slice(&requests[0].body)?;
+                assert_eq!(body["stream"].as_bool().unwrap_or(false), streaming);
+                assert!(
+                    body["messages"]
+                        .as_array()
+                        .ok_or("missing messages")?
+                        .iter()
+                        .any(|message| message["reasoning_content"] == "thoughts"),
+                    "{format:?}: {body}"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn reasoning_format_openai_moves_incoming_reasoning_content()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {

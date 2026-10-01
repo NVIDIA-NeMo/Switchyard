@@ -300,6 +300,8 @@ fn capability_evidence(
 #[derive(Clone, Debug)]
 /// Settings that control capability classifier prompting and routing.
 pub struct TaskClassifierConfig {
+    /// Routes to the capable tier on judge client failures and deadlines. Defaults to true.
+    pub fail_open: bool,
     /// Lowest solve probability that routes a supported task to the efficient target.
     pub base_threshold: f64,
     /// Amount added per capability-boundary step.
@@ -329,6 +331,8 @@ pub struct TaskClassifierConfig {
 #[serde(deny_unknown_fields)]
 struct TaskClassifierConfigWire {
     base_threshold: f64,
+    #[serde(default = "default_fail_open")]
+    fail_open: bool,
     #[serde(default)]
     threshold_step: f64,
     #[serde(default)]
@@ -358,6 +362,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
         contract = contract.with_response_format_type(wire.response_format_type);
         Ok(Self {
             base_threshold: wire.base_threshold,
+            fail_open: wire.fail_open,
             threshold_step: wire.threshold_step,
             classify_trigger: wire.classify_trigger,
             message_hash_fallback: wire.message_hash_fallback,
@@ -368,6 +373,10 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
     }
 }
 
+const fn default_fail_open() -> bool {
+    true
+}
+
 const fn default_judge_max_output_tokens() -> u64 {
     DEFAULT_JUDGE_MAX_OUTPUT_TOKENS
 }
@@ -376,6 +385,7 @@ impl Default for TaskClassifierConfig {
     fn default() -> Self {
         Self {
             base_threshold: 0.0,
+            fail_open: default_fail_open(),
             threshold_step: 0.0,
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
@@ -644,6 +654,7 @@ impl LlmTaskClassifier {
                 ),
                 TaskClassifierPolicy::new(&config),
             )
+            .with_error_recovery(config.fail_open)
             .with_evidence(capability_evidence),
         );
         Self::from_classifier(

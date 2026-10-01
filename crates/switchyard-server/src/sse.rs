@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
 use serde_json::{Value, json};
+use switchyard_runner::stream_error_summary;
 use switchyard_translation::{LlmStreamError, RawEventStream, WireFormat};
 
 use crate::redaction::Redactor;
@@ -45,7 +46,14 @@ pub(crate) fn frame_stream(
                     })
                 }
                 Err(LlmStreamError::Client(error)) => {
-                    tracing::warn!(error = %error, "stream iteration failed");
+                    // The error text can quote request content, so the log
+                    // records only the stable error class.
+                    let summary = stream_error_summary(&error, None);
+                    tracing::warn!(
+                        error.kind = summary.kind.as_str(),
+                        error.upstream_status = summary.upstream_status,
+                        "stream iteration failed"
+                    );
                     failed = true;
                     error_event(target_format, error.to_string(), &redactor)
                 }
@@ -127,6 +135,7 @@ mod tests {
     use axum::{body::to_bytes, response::IntoResponse};
     use futures_util::stream;
     use switchyard_protocol::LlmClientError;
+    use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
 
@@ -184,6 +193,67 @@ mod tests {
         assert!(!body.contains("SwitchyardError"));
         assert!(!body.contains("after"));
         assert!(!body.contains("[DONE]"));
+        Ok(())
+    }
+
+    // Collects rendered warn events so the test can assert against the final
+    // log sink rather than a field mid-pipeline.
+    #[derive(Clone, Default)]
+    struct WarnCapture(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl tracing_subscriber::Layer<tracing_subscriber::Registry> for WarnCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, tracing_subscriber::Registry>,
+        ) {
+            if *event.metadata().level() != tracing::Level::WARN {
+                return;
+            }
+            let mut fields = String::new();
+            event.record(
+                &mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
+                    fields.push_str(&format!("{}={value:?} ", field.name()));
+                },
+            );
+            self.0.lock().unwrap().push(fields);
+        }
+    }
+
+    // The client error text can quote request content, so the stream-failure
+    // warn log records only the stable error class.
+    #[test]
+    fn stream_client_error_warn_redacts_upstream_body() -> TestResult {
+        const LEAKED: &str = "SECRET-quoted-request-content";
+        let capture = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        let body = tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(chat_body(vec![Err(LlmStreamError::Client(
+                LlmClientError::UpstreamHttp {
+                    status: axum::http::StatusCode::BAD_GATEWAY,
+                    body: format!("upstream failed: {LEAKED}"),
+                },
+            ))]))
+        })?;
+
+        // The client still sees the error text in-band.
+        assert!(body.contains(LEAKED), "{body}");
+
+        let events = capture.0.lock().unwrap().clone();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.contains("stream iteration failed")),
+            "{events:?}"
+        );
+        assert!(
+            !events.iter().any(|event| event.contains(LEAKED)),
+            "{events:?}"
+        );
         Ok(())
     }
 

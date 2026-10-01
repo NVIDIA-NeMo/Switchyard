@@ -588,6 +588,9 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
+    #[serde(default = "default_failure_cooldown_ms")]
+    failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
 }
@@ -716,6 +719,7 @@ fn build_backend(
         omit_body_fields: omit_body_fields.clone(),
         reasoning_effort,
         max_retries: config.max_retries,
+        failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
         timeout: config.timeout_ms.map(Duration::from_millis),
     };
     let backend = match config.format {
@@ -729,6 +733,10 @@ fn build_backend(
 // A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
+}
+
+const fn default_failure_cooldown_ms() -> u64 {
+    5000
 }
 
 fn validate_value(label: &str, value: &str) -> RunnerResult<()> {
@@ -1182,6 +1190,12 @@ new = ["send_message"]
         );
         runner_from_toml(&escalating)?;
 
+        let reversible = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nescalation = { confirmations = 2, deescalation = { strong_min_calls = 3, confirmations = 2, strong_max_calls = 6, weak_cooldown_calls = 8 } }",
+        );
+        runner_from_toml(&reversible)?;
+
         // A setting that would starve the judge is rejected here rather than on the first
         // request, the same as any other unusable route configuration.
         let starved = VALID_CONFIG.replace(
@@ -1189,6 +1203,7 @@ new = ["send_message"]
             "base_threshold = 0.5\nescalation = { confirmations = 0 }",
         );
         assert!(error_message(&starved).contains("confirmations must be at least 1"));
+
         Ok(())
     }
 
@@ -1230,16 +1245,11 @@ new = ["send_message"]
             "{}",
             error_message(&conflicting)
         );
-        // Same model, same client, different reasoning_format: the second target's
-        // field choice could never take effect.
+        let chat = "[targets.classifier]\nid = \"classifier/model\"\nllm_client = \"primary\"";
         let format_conflict = VALID_CONFIG.replace(
-            strong,
-            &format!(
-                "{strong}\n\n[targets.strong_format_a]\nid = \"strong/model\"\nllm_client = \"responses\"\n\n[targets.strong_format_b]\nid = \"strong/model\"\nllm_client = \"responses\"\nreasoning_format = \"openai\""
-            ),
+            chat,
+            &format!("{chat}\nreasoning_format = \"openai\"\n\n[targets.classifier_alias]\nid = \"classifier/model\"\nllm_client = \"primary\"\nreasoning_format = \"deepseek\""),
         );
-        // The duplicate check runs before per-target validation, so one target on the
-        // responses client carrying reasoning_format surfaces as a settings conflict.
         assert!(
             error_message(&format_conflict).contains(
                 "different reasoning_effort, reasoning_format, extra_body, or omit_body_fields"

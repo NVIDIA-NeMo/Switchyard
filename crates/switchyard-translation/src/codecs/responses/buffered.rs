@@ -16,6 +16,7 @@ use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
     ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
 };
+use crate::codecs::structured_output::{decode_openai_schema_enforcement, encode_openai_format};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -50,6 +51,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         let sanitized = strip_codex_compaction_markers(body);
         let body = sanitized.as_ref().unwrap_or(body);
         let mut diagnostics = Vec::new();
+        let response_format = decode_responses_text_format(body.get("text"));
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -58,7 +60,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                 .map(ToOwned::to_owned),
             output: OutputParams {
                 max_output_tokens: body.get("max_output_tokens").and_then(Value::as_u64),
-                response_format: decode_responses_text_format(body.get("text")),
+                is_schema_enforced: decode_openai_schema_enforcement(response_format.as_ref()),
+                response_format,
             },
             reasoning: ReasoningParams {
                 effort: body
@@ -170,10 +173,10 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn encode_request(
         &self,
         request: &LlmRequest,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         if let Some(body) =
-            exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, _policy)
+            exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, policy)
         {
             return Ok(EncodedRequest {
                 body,
@@ -181,7 +184,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             });
         }
         let mut diagnostics = Vec::new();
-        validate_request_capabilities(request, &mut diagnostics, _policy)?;
+        validate_request_capabilities(request, &mut diagnostics, policy)?;
         let mut body = Map::new();
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
@@ -204,7 +207,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             encode_responses_input(
                 &request.messages,
                 &mut diagnostics,
-                _policy,
+                policy,
                 crate::codex_namespaces::tool_namespaces(&request.extensions),
                 &crate::codex_custom_tools::custom_tool_names(&request.extensions),
                 crate::codex_custom_tools::custom_call_outputs(&request.extensions),
@@ -251,10 +254,12 @@ impl FormatCodec for OpenAiResponsesCodec {
         if let Some(max_output_tokens) = request.output.max_output_tokens {
             body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
         }
-        if let Some(response_format) = &request.output.response_format {
+        if let Some(response_format) =
+            encode_openai_format(&request.output, &mut diagnostics, policy)?
+        {
             body.insert(
                 "text".to_string(),
-                json!({"format": encode_responses_text_format(response_format)}),
+                json!({"format": encode_responses_text_format(&response_format)}),
             );
         }
         // An Anthropic request's raw reasoning is its `thinking` object, which Responses
@@ -298,7 +303,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         }
         copy_responses_request_extensions(&mut body, &request.extensions.fields);
 
-        let body = embed_preservation(Value::Object(body), &request.preservation, _policy);
+        let body = embed_preservation(Value::Object(body), &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })
     }
 
