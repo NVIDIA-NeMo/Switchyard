@@ -72,6 +72,9 @@ pub struct HttpBackendConfig {
     /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
     /// Anthropic has no equivalent and rejects the setting at configuration time.
     pub reasoning_effort: Option<String>,
+    /// Model name sent upstream in place of the routed model id. This lets two backends share
+    /// one provider model while keeping distinct ids, for example at different reasoning efforts.
+    pub upstream_model: Option<String>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
     /// Cooldown after an exhausted transient completion failure. Zero disables it.
@@ -91,6 +94,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_body_keys", &self.extra_body.keys())
             .field("omit_body_fields", &self.omit_body_fields)
             .field("reasoning_effort", &self.reasoning_effort)
+            .field("upstream_model", &self.upstream_model)
             .field("max_retries", &self.max_retries)
             .field("failure_cooldown", &self.failure_cooldown)
             .field("timeout", &self.timeout)
@@ -319,6 +323,11 @@ impl Backend {
         self.config().reasoning_effort.as_deref()
     }
 
+    /// Model name sent upstream, if the target overrides its routed model id.
+    pub fn upstream_model(&self) -> Option<&str> {
+        self.config().upstream_model.as_deref()
+    }
+
     /// Additional attempts allowed after the initial request.
     pub fn max_retries(&self) -> u32 {
         self.config().max_retries
@@ -440,6 +449,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
+            upstream_model: None,
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
             timeout: None,

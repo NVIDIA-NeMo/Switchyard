@@ -239,6 +239,12 @@ impl DeploymentConfig {
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
+            if let Some(upstream_model) = &target.upstream_model {
+                validate_value(
+                    &format!("target {target_name} upstream_model"),
+                    upstream_model,
+                )?;
+            }
             match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
                 std::collections::hash_map::Entry::Vacant(slot) => {
                     slot.insert((target_name, target));
@@ -250,7 +256,7 @@ impl DeploymentConfig {
                         || first.omit_body_fields != target.omit_body_fields
                     {
                         return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each target its own id and set upstream_model to the shared provider model",
                             target.id, target.llm_client
                         )));
                     }
@@ -366,6 +372,7 @@ impl DeploymentConfig {
                 &BTreeMap::new(),
                 &BTreeSet::new(),
                 None,
+                None,
             )?;
             let (Backend::OpenAiChat(config)
             | Backend::OpenAiResponses(config)
@@ -406,6 +413,7 @@ impl DeploymentConfig {
                     &target.extra_body,
                     &target.omit_body_fields,
                     target.reasoning_effort.clone(),
+                    target.upstream_model.clone(),
                 )?,
                 None,
             ));
@@ -508,7 +516,7 @@ impl DeploymentConfig {
                 && first.llm_client != target.llm_client
             {
                 return Err(RunnerError::configuration(format!(
-                    "route {route_name} targets {first_name} and {name} use model {} on different llm clients; execution is keyed by model id, so use distinct model ids within this route or put these targets in separate routes",
+                    "route {route_name} targets {first_name} and {name} use model {} on different llm clients; execution is keyed by model id, so give each target its own id and set upstream_model to the shared provider model",
                     target.id
                 )));
             }
@@ -764,6 +772,9 @@ struct TargetConfig {
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     /// Only meaningful on `openai_chat` and `openai_responses` clients.
     reasoning_effort: Option<String>,
+    /// Model name sent to the provider. Defaults to `id`. Setting it lets two targets share one
+    /// provider model with different request settings, since `id` must stay unique per route.
+    upstream_model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -799,6 +810,7 @@ fn build_backend(
     extra_body: &BTreeMap<String, Value>,
     omit_body_fields: &BTreeSet<String>,
     reasoning_effort: Option<String>,
+    upstream_model: Option<String>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(RunnerError::configuration(format!(
@@ -828,6 +840,7 @@ fn build_backend(
         extra_body: extra_body.clone(),
         omit_body_fields: omit_body_fields.clone(),
         reasoning_effort,
+        upstream_model,
         max_retries: config.max_retries,
         failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
         timeout: config.timeout_ms.map(Duration::from_millis),
@@ -1826,6 +1839,46 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn upstream_model_lets_one_route_use_one_model_at_two_efforts() -> RunnerResult<()> {
+        const TWO_EFFORTS: &str = r#"
+schema_version = 1
+
+[llm_clients.openai]
+format = "openai_responses"
+base_url = "https://example.test/v1"
+
+[targets.capable]
+id = "gpt-max"
+upstream_model = "gpt"
+llm_client = "openai"
+reasoning_effort = "max"
+
+[targets.efficient]
+id = "gpt-medium"
+upstream_model = "gpt"
+llm_client = "openai"
+reasoning_effort = "medium"
+
+[routes.switchyard]
+id = "switchyard"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "efficient_first"
+confidence_threshold = 0.5
+"#;
+        runner_from_toml(TWO_EFFORTS)?;
+
+        let blank = TWO_EFFORTS.replacen("upstream_model = \"gpt\"", "upstream_model = \"\"", 1);
+        assert!(
+            error_message(&blank).contains("target capable upstream_model must be non-empty"),
+            "{}",
+            error_message(&blank)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn accepts_relative_weights_and_seed() -> RunnerResult<()> {
         let weighted = VALID_CONFIG.replace(
             "targets = [\"strong\", \"weak\"]",
@@ -1869,6 +1922,7 @@ confidence_threshold = 0.5
             &target.extra_body,
             &target.omit_body_fields,
             None,
+            None,
         )?;
 
         assert_eq!(
@@ -1908,6 +1962,7 @@ confidence_threshold = 0.5
             &target.extra_body,
             &target.omit_body_fields,
             None,
+            None,
         )?;
 
         assert!(backend.omit_body_fields().contains("max_output_tokens"));
@@ -1925,7 +1980,14 @@ confidence_threshold = 0.5
                 "format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\n{setting}"
             );
             let config: LlmClientConfig = toml::from_str(&source).expect("valid deadline config");
-            let backend = build_backend("test", &config, &BTreeMap::new(), &BTreeSet::new(), None);
+            let backend = build_backend(
+                "test",
+                &config,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                None,
+                None,
+            );
             if expected == Some(0) {
                 assert!(backend.is_err());
             } else {

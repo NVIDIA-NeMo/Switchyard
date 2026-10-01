@@ -272,8 +272,8 @@ impl TranslatingLlmClient {
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
-        // the upstream always sees the target id.
-        set_json_model(&mut body, model);
+        // the upstream always sees the target's model.
+        set_json_model(&mut body, backend.upstream_model().unwrap_or(model));
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_provider_body(&mut body);
         }
@@ -1347,6 +1347,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
+            upstream_model: None,
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
             timeout: None,
@@ -2064,6 +2065,63 @@ mod tests {
                 WireFormat::OpenAiResponses,
             )
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upstream_model_lets_two_ids_share_one_provider_model()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        for effort in ["medium", "max"] {
+            Mock::given(method("POST"))
+                .and(path("/v1/responses"))
+                .and(wiremock::matchers::body_partial_json(json!({
+                    "model": "provider-model",
+                    "reasoning": {"effort": effort}
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "resp_1",
+                    "object": "response",
+                    "model": "provider-model",
+                    "status": "completed",
+                    "output": [{
+                        "type": "message",
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "ok"}]
+                    }],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let models = ["medium", "max"].map(|effort| {
+            let mut backend = config(&format!("{}/v1", server.uri()));
+            backend.reasoning_effort = Some(effort.to_string());
+            backend.upstream_model = Some("provider-model".to_string());
+            ModelConfig::new(
+                format!("model-{effort}"),
+                Backend::OpenAiResponses(backend),
+                None,
+            )
+        });
+        let client = TranslatingLlmClient::new(&models)?;
+        for effort in ["medium", "max"] {
+            client
+                .call_rewrite_model_raw(
+                    json!({
+                        "model": "client-facing",
+                        "input": [{"role": "user", "content": "hi"}],
+                        "reasoning": {"effort": "high"}
+                    }),
+                    None,
+                    Some(&ModelId::from(format!("model-{effort}"))),
+                    WireFormat::OpenAiResponses,
+                )
+                .await?;
+        }
         Ok(())
     }
 
