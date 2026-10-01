@@ -70,6 +70,13 @@ pub struct HttpBackendConfig {
     /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
     /// Anthropic has no equivalent and rejects the setting at configuration time.
     pub reasoning_effort: Option<String>,
+    /// Thinking switch forced on every request to this backend, replacing whatever the caller
+    /// sent. Written into `chat_template_kwargs.enable_thinking`, the spelling the Qwen-family
+    /// chat templates read. Like `reasoning_effort` this is an OVERRIDE, not a default: a
+    /// stale or hostile caller must not be able to turn thinking off on a route whose whole
+    /// purpose is to think. Anthropic has no equivalent and rejects the setting at
+    /// configuration time.
+    pub enable_thinking: Option<bool>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
     /// Deadline for one complete response, including retries, retry delays, and stream reads.
@@ -87,6 +94,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_body_keys", &self.extra_body.keys())
             .field("omit_body_fields", &self.omit_body_fields)
             .field("reasoning_effort", &self.reasoning_effort)
+            .field("enable_thinking", &self.enable_thinking)
             .field("max_retries", &self.max_retries)
             .field("timeout", &self.timeout)
             .finish()
@@ -314,6 +322,11 @@ impl Backend {
         self.config().reasoning_effort.as_deref()
     }
 
+    /// Thinking switch forced on outbound requests, if the target configures one.
+    pub fn enable_thinking(&self) -> Option<bool> {
+        self.config().enable_thinking
+    }
+
     /// Additional attempts allowed after the initial request.
     pub fn max_retries(&self) -> u32 {
         self.config().max_retries
@@ -430,6 +443,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
+            enable_thinking: None,
             max_retries: 0,
             timeout: None,
         }

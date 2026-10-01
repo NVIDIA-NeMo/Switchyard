@@ -192,11 +192,12 @@ impl DeploymentConfig {
                 std::collections::hash_map::Entry::Occupied(slot) => {
                     let (first_name, first) = slot.get();
                     if first.reasoning_effort != target.reasoning_effort
+                        || first.enable_thinking != target.enable_thinking
                         || first.extra_body != target.extra_body
                         || first.omit_body_fields != target.omit_body_fields
                     {
                         return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, enable_thinking, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
                             target.id, target.llm_client
                         )));
                     }
@@ -287,6 +288,7 @@ impl DeploymentConfig {
                 &BTreeMap::new(),
                 &BTreeSet::new(),
                 None,
+                None,
             )?;
             let (Backend::OpenAiChat(config)
             | Backend::OpenAiResponses(config)
@@ -319,6 +321,13 @@ impl DeploymentConfig {
                     )));
                 }
             }
+            if target.enable_thinking.is_some()
+                && matches!(client_config.format, ClientFormat::AnthropicMessages)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "target {target_name} enable_thinking is only supported on openai_chat and openai_responses clients"
+                )));
+            }
             model_configs.push(ModelConfig::new(
                 target.id.clone(),
                 build_backend(
@@ -327,6 +336,7 @@ impl DeploymentConfig {
                     &target.extra_body,
                     &target.omit_body_fields,
                     target.reasoning_effort.clone(),
+                    target.enable_thinking,
                 )?,
                 None,
             ));
@@ -595,6 +605,14 @@ struct TargetConfig {
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     /// Only meaningful on `openai_chat` and `openai_responses` clients.
     reasoning_effort: Option<String>,
+    /// Thinking switch forced on every request to this target, replacing the caller's value.
+    /// Written as `chat_template_kwargs.enable_thinking`, the spelling the Qwen-family chat
+    /// templates read. Only meaningful on `openai_chat` and `openai_responses` clients.
+    ///
+    /// This exists because the alternative is not equivalent: `extra_body` only fills keys the
+    /// request omitted, so a caller that explicitly sent `enable_thinking = false` would keep
+    /// thinking off. On a route whose purpose is to think, that must not be possible.
+    enable_thinking: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -653,6 +671,7 @@ fn build_backend(
     extra_body: &BTreeMap<String, Value>,
     omit_body_fields: &BTreeSet<String>,
     reasoning_effort: Option<String>,
+    enable_thinking: Option<bool>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
         return Err(RunnerError::configuration(format!(
@@ -699,6 +718,7 @@ fn build_backend(
         extra_body: extra_body.clone(),
         omit_body_fields: omit_body_fields.clone(),
         reasoning_effort,
+        enable_thinking,
         max_retries: config.max_retries,
         timeout: config.timeout_ms.map(Duration::from_millis),
     };
@@ -1203,6 +1223,31 @@ new = ["send_message"]
         Ok(())
     }
 
+    // `enable_thinking` is the Qwen-family template kwarg, forced rather than defaulted so a
+    // caller cannot silence a route that is meant to think (2026-09-28).
+    #[test]
+    fn a_target_enable_thinking_parses_and_is_rejected_where_unsupported() -> RunnerResult<()> {
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";
+        assert!(VALID_CONFIG.contains(strong) && VALID_CONFIG.contains(weak));
+
+        let forced = VALID_CONFIG.replace(strong, &format!("{strong}\nenable_thinking = true"));
+        runner_from_toml(&forced)?;
+
+        let off = VALID_CONFIG.replace(strong, &format!("{strong}\nenable_thinking = false"));
+        runner_from_toml(&off)?;
+
+        let anthropic =
+            VALID_CONFIG.replace(weak, &format!("{weak}\nenable_thinking = true"));
+        assert!(
+            error_message(&anthropic)
+                .contains("enable_thinking is only supported on openai_chat and openai_responses"),
+            "{}",
+            error_message(&anthropic)
+        );
+        Ok(())
+    }
+
     #[test]
     fn duplicate_targets_with_conflicting_settings_are_rejected() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
@@ -1216,7 +1261,9 @@ new = ["send_message"]
         );
         assert!(
             error_message(&conflicting)
-                .contains("different reasoning_effort, extra_body, or omit_body_fields"),
+                .contains(
+                    "different reasoning_effort, enable_thinking, extra_body, or omit_body_fields",
+                ),
             "{}",
             error_message(&conflicting)
         );
@@ -1653,6 +1700,7 @@ confidence_threshold = 0.5
             &target.extra_body,
             &target.omit_body_fields,
             None,
+            None,
         )?;
 
         assert_eq!(
@@ -1692,6 +1740,7 @@ confidence_threshold = 0.5
             &target.extra_body,
             &target.omit_body_fields,
             None,
+            None,
         )?;
 
         assert!(backend.omit_body_fields().contains("max_output_tokens"));
@@ -1709,7 +1758,14 @@ confidence_threshold = 0.5
                 "format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\n{setting}"
             );
             let config: LlmClientConfig = toml::from_str(&source).expect("valid deadline config");
-            let backend = build_backend("test", &config, &BTreeMap::new(), &BTreeSet::new(), None);
+            let backend = build_backend(
+                "test",
+                &config,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                None,
+                None,
+            );
             if expected == Some(0) {
                 assert!(backend.is_err());
             } else {

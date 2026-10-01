@@ -1212,6 +1212,7 @@ mod tests {
                         extra_body: BTreeMap::from([("store".to_string(), json!(store))]),
                         omit_body_fields: BTreeSet::new(),
                         reasoning_effort: None,
+                        enable_thinking: None,
                         max_retries: 0,
                         timeout: None,
                     };
@@ -1358,6 +1359,7 @@ mod tests {
                     extra_body: BTreeMap::new(),
                     omit_body_fields: BTreeSet::new(),
                     reasoning_effort: None,
+                    enable_thinking: None,
                     max_retries: 0,
                     timeout: None,
                 }),
@@ -2030,6 +2032,7 @@ mod tests {
                 extra_body: BTreeMap::new(),
                 omit_body_fields: BTreeSet::new(),
                 reasoning_effort: None,
+                enable_thinking: None,
                 max_retries: 2,
                 timeout: None,
             })
@@ -2129,6 +2132,7 @@ mod tests {
                 extra_body: BTreeMap::new(),
                 omit_body_fields: BTreeSet::new(),
                 reasoning_effort: None,
+                enable_thinking: None,
                 max_retries: 0,
                 timeout: None,
             })

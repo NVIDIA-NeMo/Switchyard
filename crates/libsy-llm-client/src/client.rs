@@ -265,6 +265,9 @@ impl TranslatingLlmClient {
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
+        // Same reasoning, same order: a forced thinking switch must beat the caller and any
+        // `chat_template_kwargs` a target set through `extra_body`.
+        apply_enable_thinking(&mut body, backend);
         if matches!(backend, Backend::Anthropic(_)) {
             enable_anthropic_prompt_caching(&mut body);
         }
@@ -1136,6 +1139,32 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
     }
 }
 
+// Forces the target's thinking switch onto the outbound body, replacing the caller's value.
+//
+// Same contract as `apply_reasoning_effort`: an OVERRIDE, not a default. A route whose whole
+// purpose is to think must not be silenced by a stale caller (or a hostile one) sending
+// `chat_template_kwargs.enable_thinking = false`, and `extra_body` cannot express that
+// because it only fills absent keys. `enable_thinking` is the spelling the Qwen-family chat
+// templates read; it is merged into any existing `chat_template_kwargs` object so other
+// template kwarg a caller set (for example `preserve_thinking`) survives.
+fn apply_enable_thinking(body: &mut Value, backend: &Backend) {
+    let Some(thinking) = backend.enable_thinking() else {
+        return;
+    };
+    let Value::Object(object) = body else {
+        return;
+    };
+    let kwargs = object
+        .entry("chat_template_kwargs".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !kwargs.is_object() {
+        *kwargs = Value::Object(serde_json::Map::new());
+    }
+    if let Value::Object(kwargs) = kwargs {
+        kwargs.insert("enable_thinking".to_string(), Value::Bool(thinking));
+    }
+}
+
 // Applies target defaults without overriding fields supplied by the caller.
 fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     let Value::Object(object) = body else {
@@ -1306,6 +1335,7 @@ mod tests {
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
+            enable_thinking: None,
             max_retries: 0,
             timeout: None,
         }
@@ -3212,5 +3242,45 @@ mod tests {
             )
             .await?;
         Ok(())
+    }
+
+    // An OVERRIDE, not a default: a route whose purpose is to think must not be silenced by a
+    // stale or hostile caller, and `extra_body` cannot express that because it only fills keys
+    // the request omitted (2026-09-28, the T-Mem route's latent hole).
+    #[test]
+    fn enable_thinking_override_beats_the_callers_value_and_keeps_other_template_kwargs() {
+        let mut forced = config("https://example.test/v1");
+        forced.enable_thinking = Some(true);
+        let backend = Backend::OpenAiChat(forced);
+
+        // Exactly the hostile shape: thinking explicitly off, plus another template kwarg.
+        let mut hostile = json!({
+            "model": "qwen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "chat_template_kwargs": {"enable_thinking": false, "preserve_thinking": true}
+        });
+        apply_enable_thinking(&mut hostile, &backend);
+        assert_eq!(hostile["chat_template_kwargs"]["enable_thinking"], json!(true));
+        assert_eq!(
+            hostile["chat_template_kwargs"]["preserve_thinking"],
+            json!(true),
+            "other template kwargs the caller set must survive"
+        );
+
+        // A body with no chat_template_kwargs at all gets one created.
+        let mut bare = json!({"model": "qwen", "messages": []});
+        apply_enable_thinking(&mut bare, &backend);
+        assert_eq!(bare["chat_template_kwargs"]["enable_thinking"], json!(true));
+
+        // A malformed value is replaced rather than left contradicting the override.
+        let mut malformed = json!({"chat_template_kwargs": "nonsense"});
+        apply_enable_thinking(&mut malformed, &backend);
+        assert_eq!(malformed["chat_template_kwargs"]["enable_thinking"], json!(true));
+
+        // A target that does not configure the switch leaves the caller's value alone.
+        let unset = Backend::OpenAiChat(config("https://example.test/v1"));
+        let mut untouched = json!({"chat_template_kwargs": {"enable_thinking": false}});
+        apply_enable_thinking(&mut untouched, &unset);
+        assert_eq!(untouched["chat_template_kwargs"]["enable_thinking"], json!(false));
     }
 }
