@@ -485,6 +485,39 @@ fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
 }
 
 #[test]
+fn anthropic_reconstruction_preserves_fallback_credit_token() -> TestResult {
+    let engine = TranslationEngine::default();
+    for token in [
+        json!("example-token-from-refusal"),
+        json!({"token": "example-token-from-refusal"}),
+        json!({"token": "example-token-from-refusal", "mode": "strict"}),
+        json!({"token": "example-token-from-refusal", "mode": "best_effort"}),
+    ] {
+        let body = json!({
+            "model": "claude-opus-4-8",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Review this code for security flaws."}],
+            "fallback_credit_token": token
+        });
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            let output = engine.translate_request(
+                WireFormat::AnthropicMessages,
+                WireFormat::AnthropicMessages,
+                &body,
+                &policy,
+            )?;
+            assert_eq!(
+                output.body.get("fallback_credit_token"),
+                Some(&token),
+                "fallback credit token must survive {:?} preservation",
+                policy.preservation,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn anthropic_reconstruction_preserves_thinking() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = normalized_policy();
