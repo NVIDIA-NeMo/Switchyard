@@ -1885,6 +1885,12 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td>Retry budget, <code>0</code>–<code>10</code>.</td>
 </tr>
 <tr>
+<td><code>failure_cooldown_ms</code></td>
+<td style="text-align: center;">No</td>
+<td><code>5000</code> (5 seconds)</td>
+<td>Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it.</td>
+</tr>
+<tr>
 <td><code>timeout_ms</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
@@ -1894,6 +1900,16 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 </table>
 <p>The TOML never contains the secret itself. <code>api_key_env</code> names a variable that
 must exist and be non-empty when the server loads.</p>
+<p>Cooldown is enabled by default for 5 seconds. Set <code>failure_cooldown_ms = 0</code> to disable it.
+The cooldown starts after retries are exhausted.</p>
+<p><code>failure_cooldown_ms</code> tracks transport failures, timeouts, HTTP 408/429, and 5xx
+responses after retries. State is shared across callers per model within the client,
+including callers using forwarded credentials. With <code>forward_auth = true</code>, HTTP 429
+only triggers request-local retries and fallback; other callers keep trying the model.
+For shared credentials, HTTP 429 also triggers cooldown. During cooldown,
+ordered fallback tries the next candidate. A terminal cooldown error returns HTTP
+503. Calls resume together after expiry. Auxiliary calls and errors after a stream
+is returned leave cooldown state unchanged.</p>
 <p><code>timeout_ms</code> applies separately to every call through the client, including judge
 verdicts and answers. To give a judge a short deadline without limiting the
 answering models, put the judge on its own <code>[llm_clients]</code> entry; two entries may
