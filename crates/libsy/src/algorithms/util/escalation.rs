@@ -754,6 +754,7 @@ mod tests {
         assert_eq!(message_text(&result), "no such file");
     }
 
+    /// A raw command batch fully mirrored by structured tool calls is emptied in the judge view.
     #[test]
     fn message_text_deduplicates_terminus_commands_for_the_judge() {
         let first_command = "grep -n bug app.py\n";
@@ -797,6 +798,7 @@ mod tests {
         assert_eq!(text.matches("tool_call bash_command(").count(), 2, "{text}");
     }
 
+    /// Each structured tool call can absorb only one rendered batch, so a repeated batch stays.
     #[test]
     fn message_text_deduplicates_multiple_batches_once_per_tool_call() {
         let first_command = "grep -n bug app.py\n";
@@ -839,6 +841,7 @@ mod tests {
         assert_eq!(text.matches("sed -n '1,80p' app.py").count(), 1, "{text}");
     }
 
+    /// A rendered batch stays when no structured tool call carries the same command.
     #[test]
     fn message_text_keeps_terminus_commands_without_matching_tool_call() {
         let command = "grep -n bug app.py\n";
@@ -877,6 +880,7 @@ mod tests {
         );
     }
 
+    /// A batch stays intact when only some of its commands have matching tool calls.
     #[test]
     fn message_text_keeps_a_partially_encoded_terminus_batch() {
         let first_command = "grep -n bug app.py\n";
@@ -908,6 +912,7 @@ mod tests {
         assert!(!text.contains(r#""commands":[]"#), "{text}");
     }
 
+    /// Duplicate commands in one batch need one tool call each before the batch is removed.
     #[test]
     fn message_text_keeps_duplicate_commands_without_one_tool_call_each() {
         let command = "grep -n bug app.py\n";

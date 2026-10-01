@@ -44,6 +44,7 @@ fn set_count(state: &mut State, key: &str, value: u32) {
         .insert(key.to_string(), StateValue::Count(value));
 }
 
+/// Reads the failure category whose confirmation streak is in progress, if any.
 fn category(state: &State) -> Option<&str> {
     match state.extra.get(CATEGORY_KEY) {
         Some(StateValue::String(category)) => Some(category),
@@ -607,6 +608,7 @@ mod tests {
         Ok(())
     }
 
+    /// A parsed decline records continue evidence on the routing outcome.
     #[tokio::test]
     async fn records_continue_evidence_when_judge_declines() -> Result<()> {
         let judge = Queue::new([
@@ -706,6 +708,7 @@ mod tests {
         Ok(())
     }
 
+    /// A verdict in a different category restarts the confirmation streak at one.
     #[tokio::test]
     async fn confirmation_streak_requires_the_same_category() -> Result<()> {
         let judge = Queue::new([
@@ -740,6 +743,7 @@ mod tests {
         Ok(())
     }
 
+    /// An escalate verdict without fresh evidence resets the streak instead of extending it.
     #[tokio::test]
     async fn verdict_without_new_evidence_resets_the_streak() -> Result<()> {
         let judge = Queue::new([
@@ -764,6 +768,7 @@ mod tests {
         Ok(())
     }
 
+    /// An unparseable verdict keeps the streak and its category for the next turn.
     #[tokio::test]
     async fn unavailable_judge_preserves_the_category_streak() -> Result<()> {
         let judge = Queue::new([
