@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import subprocess
 import sys
 from copy import deepcopy
@@ -75,6 +76,106 @@ def test_cli_output_is_byte_stable_and_offline() -> None:
     assert first.stderr == second.stderr == b""
     assert first.stdout == second.stdout
     assert json.loads(first.stdout)["suite"] == "synthetic-two-target-routing"
+
+
+def test_threshold_comparison_uses_the_same_fixed_outcomes(
+    replay_module: ModuleType, fixture_document: dict[str, object]
+) -> None:
+    """Compare fallback, quality, and cost without changing the original fixture."""
+    original = deepcopy(fixture_document)
+    report = replay_module.compare_thresholds(fixture_document, [1.0, 0.25, 0.0])
+
+    assert fixture_document == original
+    assert report["best_fixed_target"] == "capable"
+    assert report["fixed_targets"] == replay_module.replay(fixture_document)["fixed_targets"]
+    assert report["thresholds"] == [
+        {
+            "base_threshold": 0.0,
+            "selected_counts": {"capable": 2, "efficient": 1},
+            "fallback_count": 0,
+            "routed": {"quality": 3.0, "cost": 22.0},
+            "quality_regret_vs_best_fixed": 0.0,
+            "cost_delta_vs_best_fixed": -8.0,
+        },
+        {
+            "base_threshold": 0.25,
+            "selected_counts": {"capable": 1, "efficient": 2},
+            "fallback_count": 1,
+            "routed": {"quality": 2.0, "cost": 14.0},
+            "quality_regret_vs_best_fixed": 1.0,
+            "cost_delta_vs_best_fixed": -16.0,
+        },
+        {
+            "base_threshold": 1.0,
+            "selected_counts": {"capable": 0, "efficient": 3},
+            "fallback_count": 3,
+            "routed": {"quality": 1.0, "cost": 6.0},
+            "quality_regret_vs_best_fixed": 2.0,
+            "cost_delta_vs_best_fixed": -24.0,
+        },
+    ]
+
+
+def test_threshold_comparison_uses_strict_boundary(
+    replay_module: ModuleType, fixture_document: dict[str, object]
+) -> None:
+    """A case falls back only when its unrounded confidence is below the threshold."""
+    document = deepcopy(fixture_document)
+    for order in document["cases"][1]["orders"]:
+        order["probabilities"] = {"capable": 0.75, "efficient": 0.25}
+
+    report = replay_module.compare_thresholds(document, [0.5, math.nextafter(0.5, 1.0)])
+    assert [row["fallback_count"] for row in report["thresholds"]] == [1, 2]
+    assert [row["routed"]["quality"] for row in report["thresholds"]] == [2.0, 1.0]
+
+
+def test_threshold_comparison_preserves_unknown_costs(
+    replay_module: ModuleType, fixture_document: dict[str, object]
+) -> None:
+    """Never treat an unknown selected or fixed-target cost as zero."""
+    document = deepcopy(fixture_document)
+    for case in document["cases"]:
+        for outcome in case["outcomes"].values():
+            outcome.pop("cost")
+
+    report = replay_module.compare_thresholds(document, [0.0, 1.0])
+    assert all(row["routed"]["cost"] is None for row in report["thresholds"])
+    assert all(row["cost_delta_vs_best_fixed"] is None for row in report["thresholds"])
+
+
+@pytest.mark.parametrize(
+    "thresholds", [[], [0.1, 0.1], [-0.1], [1.1], [math.nan], [math.inf], [True]]
+)
+def test_threshold_comparison_rejects_invalid_values(
+    replay_module: ModuleType, fixture_document: dict[str, object], thresholds: list[float]
+) -> None:
+    """Reject comparisons whose thresholds cannot describe a routing policy."""
+    with pytest.raises(replay_module.FixtureError, match="thresholds"):
+        replay_module.compare_thresholds(fixture_document, thresholds)
+
+
+def test_threshold_cli_is_byte_stable_and_offline() -> None:
+    """Render one ordered comparison without credentials or network calls."""
+    command = [
+        sys.executable,
+        str(SCRIPT),
+        str(FIXTURE),
+        "--thresholds",
+        "1",
+        "0",
+        "0.25",
+    ]
+    first = subprocess.run(command, check=False, capture_output=True, env={})
+    second = subprocess.run(command, check=False, capture_output=True, env={})
+
+    assert first.returncode == second.returncode == 0
+    assert first.stderr == second.stderr == b""
+    assert first.stdout == second.stdout
+    assert [row["base_threshold"] for row in json.loads(first.stdout)["thresholds"]] == [
+        0.0,
+        0.25,
+        1.0,
+    ]
 
 
 def test_unsupported_schema_version_is_rejected(

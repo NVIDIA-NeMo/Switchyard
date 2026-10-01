@@ -264,6 +264,42 @@ def replay(document: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def compare_thresholds(document: dict[str, Any], thresholds: list[float]) -> dict[str, Any]:
+    """Compare explicit thresholds using the same recorded evidence and outcomes."""
+    require(bool(thresholds), "thresholds must not be empty")
+    values = [number_value(value, "thresholds[]", maximum=1.0) for value in thresholds]
+    require(len(values) == len(set(values)), "thresholds must not contain duplicates")
+
+    baseline = replay(document)
+    comparisons = []
+    for value in sorted(values):
+        report = (
+            baseline
+            if value == baseline["base_threshold"]
+            else replay({**document, "base_threshold": value})
+        )
+        comparisons.append(
+            {
+                "base_threshold": value,
+                "selected_counts": report["selected_counts"],
+                "fallback_count": report["fallback_count"],
+                "routed": report["routed"],
+                "quality_regret_vs_best_fixed": report["quality_regret_vs_best_fixed"],
+                "cost_delta_vs_best_fixed": report["cost_delta_vs_best_fixed"],
+            }
+        )
+    return {
+        "schema_version": baseline["schema_version"],
+        "suite": baseline["suite"],
+        "model": baseline["model"],
+        "default_target": baseline["default_target"],
+        "case_count": baseline["case_count"],
+        "fixed_targets": baseline["fixed_targets"],
+        "best_fixed_target": baseline["best_fixed_target"],
+        "thresholds": comparisons,
+    }
+
+
 def read_fixture(path: Path) -> dict[str, Any]:
     """Read one replay fixture from disk."""
     return object_value(json.loads(path.read_text(encoding="utf-8")), str(path))
@@ -274,9 +310,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fixture", type=Path, help="Versioned TypeSafe replay fixture")
     parser.add_argument("--output", type=Path, help="Write the JSON report to this path")
+    parser.add_argument(
+        "--thresholds",
+        nargs="+",
+        type=float,
+        help="Compare these confidence thresholds from 0 to 1 instead of replaying one",
+    )
     args = parser.parse_args(argv)
     try:
-        report = replay(read_fixture(args.fixture))
+        fixture = read_fixture(args.fixture)
+        report = (
+            replay(fixture)
+            if args.thresholds is None
+            else compare_thresholds(fixture, args.thresholds)
+        )
         encoded = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
         if args.output is None:
             sys.stdout.write(encoded)

@@ -14,6 +14,23 @@ uv run --no-sync python benchmark/typesafe_replay.py \
 Pass `--output report.json` to save the stable, machine-readable report. Replaying the same fixture
 always produces the same bytes.
 
+To compare several confidence thresholds on the same recorded cases, run:
+
+```bash
+uv run --no-sync python benchmark/typesafe_replay.py \
+  benchmark/typesafe/fixtures/synthetic-routing.json \
+  --thresholds 0 0.25 0.5 1
+```
+
+The comparison sorts the supplied thresholds and reports selected-target counts, fallback count,
+quality, cost, and regret against the same best fixed target for each one. Thresholds must be
+unique numbers in `[0, 1]`. A case falls back only when its unrounded confidence is *below* the
+threshold. Without `--thresholds`, the original single-threshold output is unchanged.
+
+Choose a threshold using development cases, then check the frozen policy on separate held-out
+cases. Repeatedly choosing from held-out outcomes turns them into tuning data. A comparison is
+descriptive: it cannot predict results for tasks or target versions absent from the fixture.
+
 ## Fixture format
 
 Every fixture is one JSON document with numeric `schema_version: 1`; JSON Booleans are not valid
