@@ -261,7 +261,7 @@
 <a href=#261 id=261 data-nosnippet>261</a>    /// mid-stream, or unparseable reply — is logged and folded into `None` for the policy's
 <a href=#262 id=262 data-nosnippet>262</a>    /// fallback branch. A closed driver stream is folded too; the algorithm's next driver
 <a href=#263 id=263 data-nosnippet>263</a>    /// call surfaces it, so nothing is masked.
-<a href=#264 id=264 data-nosnippet>264</a>    </span><span class="kw">async fn </span>verdict(
+<a href=#264 id=264 data-nosnippet>264</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>verdict(
 <a href=#265 id=265 data-nosnippet>265</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
 <a href=#266 id=266 data-nosnippet>266</a>        state: <span class="kw-2">&amp;mut </span>State,
 <a href=#267 id=267 data-nosnippet>267</a>        request: <span class="kw-2">&amp;</span>Request,
