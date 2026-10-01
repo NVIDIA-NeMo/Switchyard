@@ -94,7 +94,6 @@ pub(crate) async fn test_drive_with_models(
     Ok((selected_model, response))
 }
 
-/// Return an empty decision response from the selected model.
 pub(crate) async fn serve_decision(call: CallDecision) -> Result<()> {
     let response = DecisionResponse {
         id: None,

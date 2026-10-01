@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The [`Algorithm`] trait and its [`Driver`] — the orchestration contract every
-//! algorithm implements and the offload channel it uses for routing-time model calls.
+//! Routing algorithms request external work through [`Driver`] and receive typed replies.
+//! Hosts execute that work, keeping routing policy independent of transport.
 
 use std::{
     collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc,
@@ -160,13 +160,13 @@ impl Drop for CallModel {
     }
 }
 
-/// An offloaded decision call, fulfilled by the host through [`Self::respond`].
+/// A host-owned decision call. Dropping it without replying yields [`DriverError::ResponseDropped`].
 pub struct CallDecision {
-    /// The algorithm that produced this call.
+    /// Algorithm name for attributing host telemetry.
     pub algorithm: String,
-    /// The request, stamped with the selected model.
+    /// Its model is set to [`Self::model`] before dispatch.
     pub request: DecisionRequest,
-    /// The selected decision target.
+    /// Target ID for client lookup.
     pub model: ModelId,
     reply: oneshot::Sender<Result<DecisionResponse>>,
 }
@@ -179,7 +179,7 @@ impl CallDecision {
             .map_err(|_| DriverError::ResponseDropped.into())
     }
 
-    /// Return a host error to stop [`drive`] and cancel the algorithm.
+    /// Returning this error from the host handler aborts [`drive`].
     pub fn fail(self, error: LibsyError) -> Result<()> {
         Err(error)
     }
@@ -240,7 +240,7 @@ impl RoutingOutcome {
     }
 }
 
-/// How an algorithm's [`route`](Algorithm::route) makes model calls.
+/// An algorithm's handle for requesting external work and awaiting the host's typed replies.
 #[derive(Clone)]
 pub struct Driver {
     step_tx: mpsc::Sender<Result<Step>>,
@@ -359,7 +359,7 @@ impl Driver {
         result
     }
 
-    /// Publish a decision call and await the host's typed response.
+    /// Override the request's model with `model` and wait for the host to reply.
     #[tracing::instrument(
         target = "libsy",
         name = "libsy.decision_call",
@@ -446,7 +446,8 @@ impl Driver {
     }
 }
 
-/// One item in the stream returned by [`Algorithm::run_stream`].
+/// Work requests and the terminal outcome of [`Algorithm::run_stream`].
+/// Each call carries its own reply channel, so the host can execute calls concurrently.
 pub enum Step {
     /// The algorithm needs this model call performed. The host serves it and fulfills
     /// it with [`CallModel::respond`]. Boxed: it is by far the largest variant.
@@ -457,26 +458,24 @@ pub enum Step {
     Done(Box<RoutingOutcome>),
 }
 
-/// An offloaded call passed to the host's [`drive`] handler.
+/// Work dispatched through one host handler, with a typed reply channel per variant.
+/// [`drive`] handles terminal outcomes separately; the handler only executes calls.
 pub enum Call {
-    /// An LLM call with its typed reply channel.
+    /// Fulfilled with an LLM [`Response`].
     Model(Box<CallModel>),
-    /// A decision call with its typed reply channel.
+    /// Fulfilled with a [`DecisionResponse`].
     Decision(Box<CallDecision>),
 }
 
-/// Drive [`Algorithm::run_stream`], handing each offloaded [`Call`] to `serve`.
+/// Drive [`Algorithm::run_stream`] to its routing outcome, serving calls concurrently.
 ///
-/// Returns the final [`RoutingOutcome`].
-/// The handler owns its call and fulfills it with `respond`. Passing an error to
-/// `respond` lets the algorithm fall back. Returning `fail` or an `Err` from the
-/// handler aborts the whole run.
-/// Calls are served concurrently, so an algorithm that offloads several at once (hedging, fan-out)
-/// gets real parallelism.
+/// The shared execution loop lets hosts supply clients or test doubles through `serve`
+/// without reimplementing stream handling and cancellation.
 ///
-/// libsy performs no I/O; this is only the mechanics of consuming its own step stream, kept
-/// here so every host does not reimplement the same loop. `switchyard-llm-client`'s `run`
-/// is this function plus an HTTP client.
+/// `serve` owns each [`Call`] and performs its I/O. Passing an error to `respond`
+/// lets the algorithm fall back; returning an error from `serve` aborts the run.
+///
+/// Dropping this future cancels the algorithm and pending handler futures.
 pub async fn drive<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
     request: Request,
@@ -581,9 +580,10 @@ impl RoutingIdentity {
     }
 }
 
-/// An optimization strategy. Implement [`route`](Self::route);
-/// callers drive it with [`run_stream`](Self::run_stream), serving each
-/// [`Step::CallModel`] or [`Step::CallDecision`] it emits.
+/// Routing policy independent of how external calls are executed.
+/// Implement [`route`](Self::route), using [`Driver`] to request work from the host.
+/// Hosts can use [`drive`] for the shared execution loop or consume
+/// [`run_stream`](Self::run_stream) for custom execution.
 ///
 /// Methods take `self: Arc<Self>`: one algorithm (`Arc<dyn Algorithm>`) is shared across
 /// requests and run concurrently, so it owns its thread-safety and any shared state.
@@ -619,15 +619,13 @@ pub trait Algorithm: Send + Sync + 'static {
     /// emits for its runs.
     fn name(&self) -> &str;
 
-    /// Run one request to completion: make routing-time model calls with
-    /// [`Driver::call_model`] and return the terminal [`RoutingOutcome`].
-    /// The method an algorithm implements; [`run_stream`](Self::run_stream) drives it.
+    /// Select a route, requesting external work through [`Driver`] as needed.
+    /// [`run_stream`](Self::run_stream) runs this method and exposes its work to the host.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;
 
-    /// Process a request to completion, returning a stream of [`Step`]s.
+    /// Expose work requests and the final outcome so the host can control execution.
     ///
-    /// The consumer must fulfill each model or decision call before its awaiting algorithm
-    /// can continue. Every run ends with exactly one terminal item — [`Step::Done`] on
+    /// Each call waits for its host reply. A run ends with one terminal item — [`Step::Done`] on
     /// success, an `Err` item on failure, including when the algorithm panics. Dropping
     /// the stream aborts the spawned algorithm task.
     ///
@@ -939,7 +937,7 @@ mod tests {
             }
 
             for mode in ["mock", "reply", "error", "drop", "abort"] {
-                // Neither call can finish until both call types are being served.
+                // Serial dispatch would deadlock here and fail the enclosing timeout.
                 let barrier = Arc::new(tokio::sync::Barrier::new(2));
                 let outcome = drive(
                     Arc::new(MixedCalls(mode)),
