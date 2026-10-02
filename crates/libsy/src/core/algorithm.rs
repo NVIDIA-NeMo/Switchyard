@@ -489,7 +489,7 @@ impl Driver {
             "deviceOSVersion": "undefined",
             "deviceType": "undefined",
             "eventProtocol": "1.6",
-            "eventSchemaVer": "1.5",
+            "eventSchemaVer": "1.12",
             "eventSysVer": "switchyard-telemetry/1.0",
             "externalUserId": "undefined",
             "gdprBehOptIn": "None",
