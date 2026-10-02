@@ -10,7 +10,7 @@ use std::{
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{Arc, LazyLock},
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 use async_trait::async_trait;
@@ -39,6 +39,8 @@ static PRODUCT_TELEMETRY_ENABLED: LazyLock<bool> = LazyLock::new(|| {
             .any(|disabled| value.trim().eq_ignore_ascii_case(disabled))
     })
 });
+
+static PRODUCT_TELEMETRY_SESSION_ID: LazyLock<uuid::Uuid> = LazyLock::new(uuid::Uuid::now_v7);
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -387,15 +389,12 @@ impl Driver {
         if *PRODUCT_TELEMETRY_ENABLED {
             use std::io::Write;
 
-            let mut record = Self::expand_metadata(&metadata);
             let selected_models = result
                 .as_ref()
                 .ok()
                 .map(|outcome| outcome.selected_model_ids.as_slice())
                 .unwrap_or_default();
-            record["selected_model_id"] = serde_json::json!(selected_models.first());
-            record["fallback_plan_model_ids"] =
-                serde_json::json!(selected_models.get(1..).unwrap_or_default());
+            let record = Self::expand_metadata(&metadata, selected_models);
             let stdout_result = (|| -> std::io::Result<()> {
                 let mut stdout = std::io::stdout().lock();
                 let _ = stdout.write_all(b"\n*****************\n");
@@ -465,14 +464,50 @@ impl Driver {
     }
 
     // TODO: Move to telemetry handler.
-    // These are fields which are more or less constants that are unrelated to the routing outcome
-    fn expand_metadata(metadata: &crate::OutcomeMetadata) -> Value {
-        let mut record = serde_json::json!(metadata);
-        record["switchyard_version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
-        record["os_family"] = serde_json::json!(std::env::consts::OS);
-        record["cpu_arch"] = serde_json::json!(std::env::consts::ARCH);
-        record["telemetry_schema_version"] = serde_json::json! {"nat-telemetry/1.0"};
-        record
+    fn expand_metadata(metadata: &crate::OutcomeMetadata, selected_models: &[ModelId]) -> Value {
+        let timestamp = humantime::format_rfc3339_millis(SystemTime::now()).to_string();
+        let mut parameters = serde_json::json!(metadata);
+        parameters["nemoSource"] = serde_json::json!("switchyard");
+        parameters["selected_model_id"] = serde_json::json!(selected_models.first());
+        parameters["fallback_plan_model_ids"] =
+            serde_json::json!(selected_models.get(1..).unwrap_or_default());
+
+        serde_json::json!({
+            "browserType": "undefined",
+            "clientId": "184482118588404",  // NeMo Telemetry client ID
+            "clientType": "Native",
+            "clientVariant": "Release",
+            "clientVer": env!("CARGO_PKG_VERSION"),
+            "cpuArchitecture": std::env::consts::ARCH,
+            "deviceGdprBehOptIn": "None",
+            "deviceGdprFuncOptIn": "None",
+            "deviceGdprTechOptIn": "None",
+            "deviceId": "undefined",
+            "deviceMake": "undefined",
+            "deviceModel": "undefined",
+            "deviceOS": std::env::consts::OS,
+            "deviceOSVersion": "undefined",
+            "deviceType": "undefined",
+            "eventProtocol": "1.6",
+            "eventSchemaVer": "1.5",
+            "eventSysVer": "switchyard-telemetry/1.0",
+            "externalUserId": "undefined",
+            "gdprBehOptIn": "None",
+            "gdprFuncOptIn": "None",
+            "gdprTechOptIn": "None",
+            "idpId": "undefined",
+            "integrationId": "undefined",
+            "productName": "undefined",
+            "productVersion": "undefined",
+            "sentTs": timestamp,
+            "sessionId": PRODUCT_TELEMETRY_SESSION_ID.to_string(),
+            "userId": "undefined",
+            "events": [{
+                "ts": timestamp,
+                "parameters": parameters,
+                "name": "switchyard_outcome",
+            }],
+        })
     }
 }
 
@@ -848,28 +883,30 @@ mod tests {
         let (driver, _) = Driver::new("test", Arc::new(RuntimeModels::default()));
         driver.models_for(&Category::Any);
         let metadata = driver.outcome_metadata(&Err(LibsyError::NoTargets));
-        let record = Driver::expand_metadata(&metadata);
-        assert_eq!(record["routing_status"], "error");
-        assert_eq!(record["routing_error_code"], "no_targets");
-        assert_eq!(record["no_eligible_target"], true);
-        assert_eq!(record["considered_model_ids"], serde_json::json!([]));
-        assert!(record.get("selected_model_id").is_none());
-        assert!(record.get("fallback_plan_model_ids").is_none());
-        assert_eq!(record["algorithm_version"], Value::Null);
-        assert_eq!(record["feature_flags"], Value::Null);
-        assert_eq!(record["exclusion_reason_codes"], Value::Null);
+        let record = Driver::expand_metadata(&metadata, &[]);
+        let parameters = &record["events"][0]["parameters"];
+        assert_eq!(parameters["routing_status"], "error");
+        assert_eq!(parameters["routing_error_code"], "no_targets");
+        assert_eq!(parameters["no_eligible_target"], true);
+        assert_eq!(parameters["considered_model_ids"], serde_json::json!([]));
+        assert_eq!(parameters["selected_model_id"], Value::Null);
+        assert_eq!(parameters["fallback_plan_model_ids"], serde_json::json!([]));
+        assert_eq!(parameters["algorithm_version"], Value::Null);
+        assert_eq!(parameters["feature_flags"], Value::Null);
+        assert_eq!(parameters["exclusion_reason_codes"], Value::Null);
 
         let metadata = driver.outcome_metadata(&Err(LibsyError::AlgorithmError {
             message: "private upstream error".to_string(),
         }));
-        let record = Driver::expand_metadata(&metadata);
-        assert_eq!(record["routing_error_code"], "algorithm_error");
-        assert_eq!(record["no_eligible_target"], Value::Null);
+        let record = Driver::expand_metadata(&metadata, &[]);
+        let parameters = &record["events"][0]["parameters"];
+        assert_eq!(parameters["routing_error_code"], "algorithm_error");
+        assert_eq!(parameters["no_eligible_target"], Value::Null);
         assert!(!record.to_string().contains("private upstream error"));
     }
 
     #[test]
-    fn expanded_metadata_preserves_routing_fields_and_adds_only_constants() {
+    fn expanded_metadata_wraps_routing_fields_and_reuses_process_session() {
         let evidence = serde_json::json!({
             "source": "fail_open", "reason_code": "transport", "score": 0.5,
         });
@@ -880,32 +917,45 @@ mod tests {
             target_set(&["fallback-b", "fallback-a"]),
             request(),
         )));
-        let mut record = Driver::expand_metadata(&metadata);
-        assert_eq!(record["outcome_id"], metadata.outcome_id());
-        assert_eq!(record["evidence"], evidence);
-        assert_eq!(record["switchyard_version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(record["os_family"], std::env::consts::OS);
-        assert_eq!(record["cpu_arch"], std::env::consts::ARCH);
-        assert_eq!(record["telemetry_schema_version"], "nat-telemetry/1.0");
-        assert!(record.get("selected_model_id").is_none());
-        assert!(record.get("fallback_plan_model_ids").is_none());
+        let selected_models = target_set(&["selected", "fallback-b", "fallback-a"]);
+        let record = Driver::expand_metadata(&metadata, &selected_models);
+        let parameters = &record["events"][0]["parameters"];
+        assert_eq!(parameters["outcome_id"], metadata.outcome_id());
+        assert_eq!(parameters["evidence"], evidence);
+        assert_eq!(parameters["nemoSource"], "switchyard");
+        assert_eq!(parameters["selected_model_id"], "selected");
+        assert_eq!(
+            parameters["fallback_plan_model_ids"],
+            serde_json::json!(["fallback-b", "fallback-a"])
+        );
+        assert_eq!(record["clientVer"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(record["deviceOS"], std::env::consts::OS);
+        assert_eq!(record["cpuArchitecture"], std::env::consts::ARCH);
+        assert_eq!(record["eventSysVer"], "switchyard-telemetry/1.0");
+        assert_eq!(record["events"][0]["name"], "switchyard_outcome");
+        assert_eq!(record["sentTs"], record["events"][0]["ts"]);
+        humantime::parse_rfc3339(record["sentTs"].as_str().unwrap()).unwrap();
+        let session_id = uuid::Uuid::parse_str(record["sessionId"].as_str().unwrap()).unwrap();
+        assert_eq!(session_id.get_version_num(), 7);
+        let other =
+            Driver::expand_metadata(&crate::OutcomeMetadata::new("other".to_string(), None), &[]);
+        assert_eq!(record["sessionId"], other["sessionId"]);
         for field in [
             "decision_source",
             "reason_codes",
             "selection_score",
             "fail_open",
         ] {
-            assert!(record.get(field).is_none(), "duplicated evidence: {field}");
+            assert!(
+                parameters.get(field).is_none(),
+                "duplicated evidence: {field}"
+            );
         }
-        for field in [
-            "switchyard_version",
-            "os_family",
-            "cpu_arch",
-            "telemetry_schema_version",
-        ] {
-            record.as_object_mut().unwrap().remove(field);
+        let mut parameters = parameters.clone();
+        for field in ["nemoSource", "selected_model_id", "fallback_plan_model_ids"] {
+            parameters.as_object_mut().unwrap().remove(field);
         }
-        assert_eq!(record, serde_json::json!(metadata));
+        assert_eq!(parameters, serde_json::json!(metadata));
     }
 
     #[tokio::test]
