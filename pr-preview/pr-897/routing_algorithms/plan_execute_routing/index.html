@@ -1420,12 +1420,13 @@ make a classifier call.</p>
 The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.</p>
-<p>For Responses requests using <code>previous_response_id</code>, Switchyard restores locally
-cached messages before checking for edits. This supports handoff across providers
-and formats, including after a completed stream. Responses with <code>store: false</code>
-are not cached. The cache belongs to the running route and does not survive a
-restart. Provider-managed <code>conversation</code> IDs and responses without local history
-keep their existing routing behavior.</p>
+<p>With Switchyard's LLM client, <code>previous_response_id</code> continuations restore cached
+history before edit detection. This supports handoff across providers and formats,
+including completed streams. The cache is lost on restart and excludes responses
+with <code>store: false</code>. Provider-managed <code>conversation</code> IDs and IDs without local
+history keep their existing routing behavior.</p>
+<p>Hosts calling <code>libsy</code> directly must supply the conversation history, including
+prior tool calls and results.</p>
 <p>Optional settings:</p>
 <table>
 <thead>
