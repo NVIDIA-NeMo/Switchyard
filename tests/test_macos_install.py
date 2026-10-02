@@ -115,6 +115,7 @@ base_url = "http://old"
 model_provider = "sy"
 '''
     config.write_text(original)
+    (codex / "config.toml.direct").write_text(original)
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
     generated = read_config(codex / "config.sy.toml")
@@ -126,14 +127,16 @@ model_provider = "sy"
         REPO / "scripts" / "config" / "composite.toml"
     )
     assert read_config(codex / "config.toml.direct") == original
+    backups = list(codex.glob("config.toml.switchyard-backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == original
 
 
-@pytest.mark.parametrize("quote", ['"', "'"])
-def test_quoted_top_level_provider_keeps_existing_snapshot(setup, quote):
+def test_provider_table_marker_keeps_existing_snapshot(setup):
     _, home, _, env = setup
     codex = Path(env["CODEX_HOME"])
     codex.mkdir()
-    (codex / "config.toml").write_text(f"model_provider = {quote}sy{quote} # routed\n")
+    (codex / "config.toml").write_text('[model_providers.sy]\nname = "Switchyard"\n')
     snapshot = codex / "config.toml.direct"
     snapshot.write_text("original direct config\n")
     result = run(setup, "install.sh")
@@ -142,11 +145,22 @@ def test_quoted_top_level_provider_keeps_existing_snapshot(setup, quote):
     assert (codex / "config.sy.toml").is_file()
 
 
+def test_provider_setting_without_table_gets_snapshotted(setup):
+    _, _, _, env = setup
+    codex = Path(env["CODEX_HOME"])
+    codex.mkdir()
+    original = 'model_provider = "sy"\n'
+    (codex / "config.toml").write_text(original)
+    result = run(setup, "install.sh")
+    assert result.returncode == 0, result.stderr
+    assert (codex / "config.toml.direct").read_text() == original
+
+
 def test_uninstall_preserves_routed_config_before_restoring_snapshot(setup):
     _, home, _, env = setup
     codex = Path(env["CODEX_HOME"])
     codex.mkdir()
-    current = "model_provider = 'sy' # routed\nuser_setting = \"keep me\"\n"
+    current = '[model_providers.sy]\nname = "Switchyard"\nuser_setting = "keep me"\n'
     (codex / "config.toml").write_text(current)
     (codex / "config.toml.direct").write_text("model = \"original\"\n")
     result = run(setup, "uninstall.sh")
