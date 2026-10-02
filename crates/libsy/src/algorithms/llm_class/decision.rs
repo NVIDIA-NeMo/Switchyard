@@ -12,15 +12,15 @@ use switchyard_protocol::{
     ModelId, Request, Response,
 };
 
-use super::super::util::llm_judge::{libsy_error_reason, report_fail_open};
-use super::super::util::robustness::safe_error_summary;
 use super::TaskInput;
+use crate::algorithms::util::llm_judge::{libsy_error_reason, report_fail_open};
+use crate::algorithms::util::robustness::safe_error_summary;
 use crate::{Classification, Classifier, Driver, LibsyError, Result, Score, State};
 
 /// Evidence and policy for a relative-advantage decision judge.
 ///
-/// Candidate IDs keep model names out of the generated context. Evidence must use
-/// the same IDs, with unknown outcomes left unknown. Only the first runtime
+/// Candidate labels keep model names out of the generated context. Evidence must use
+/// the same labels, with unknown outcomes left unknown. Only the first runtime
 /// capable and efficient targets are compared; extra candidates do not add routes.
 #[derive(Clone, Debug)]
 pub struct DecisionJudgeConfig {
@@ -30,11 +30,12 @@ pub struct DecisionJudgeConfig {
     /// Replaces the packaged structured instructions; must keep the meaning of
     /// `advantage` (capable succeeds and efficient fails) and `no_advantage`.
     pub instructions: Option<Value>,
-    /// Evidence candidate ID to runtime target ID. Every compared target needs a
-    /// unique entry. Evidence and candidate collections can describe more than two models.
+    /// Maps anonymous labels used in evidence (e.g. `"a"`) to runtime model IDs.
+    /// Every compared target needs a unique label; extra candidates provide context.
     pub candidates: BTreeMap<String, ModelId>,
-    /// Supplied candidate descriptions, reference cases, outcome/cost summaries,
-    /// and selection notes. No examples or statistics are inferred by the router.
+    /// JSON passed unchanged to the judge, such as candidate descriptions, reference
+    /// cases, outcome/cost summaries, and selection notes. The judge interprets it
+    /// using the instructions; the router neither reads its fields nor derives statistics.
     pub evidence: Value,
 }
 
@@ -171,7 +172,7 @@ impl Classifier<State> for DecisionClassifier {
             (efficient, Category::Efficient)
         };
         driver.set_evidence(json!({
-            "source": "decision-classifier",
+            "source": "decision_classifier",
             "verdict": "relative_advantage",
             "score": advantage,
             "threshold": self.config.cutoff,

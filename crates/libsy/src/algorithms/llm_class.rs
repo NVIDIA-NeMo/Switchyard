@@ -1478,7 +1478,7 @@ mod tests {
                 .and_then(|metadata| metadata.evidence)
                 .expect("routing evidence");
             if matches!(name, "above" | "equal" | "below") {
-                assert_eq!(evidence["source"], "decision-classifier");
+                assert_eq!(evidence["source"], "decision_classifier");
                 assert_eq!(evidence["verdict"], "relative_advantage");
                 assert_eq!(evidence["threshold"], settings.cutoff);
                 assert_eq!(evidence["score"], score);
