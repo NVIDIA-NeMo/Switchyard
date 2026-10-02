@@ -76,8 +76,8 @@ pub struct HttpBackendConfig {
     /// standard field (e.g. an internal API that 400s on `max_output_tokens`).
     pub omit_body_fields: BTreeSet<String>,
     /// Reasoning effort forced on every request to this backend, replacing whatever the caller
-    /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
-    /// Anthropic has no equivalent and rejects the setting at configuration time.
+    /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`,
+    /// and Anthropic Messages as `output_config.effort`.
     pub reasoning_effort: Option<String>,
     /// Additional attempts for transient upstream failures.
     /// One template-compatibility retry may also run within the same timeout.
