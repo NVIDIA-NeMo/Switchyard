@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Installs the Switchyard background server as a per-user LaunchAgent, sets up
-# a `sy` Codex profile, and aliases `codex` to use it.
+# Installs the Switchyard background server as a per-user LaunchAgent and sets
+# up a `sy` Codex profile.
 #
 # Reinstalling keeps the original Codex config backup and regenerates the
 # routed config from it.
@@ -206,21 +206,9 @@ else
   say "  replaced $CODEX_CONFIG with the Switchyard config"
 fi
 
-step "Aliasing codex"
-for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-  if [[ -f "$rc" ]] && grep -qF "$ALIAS_START" "$rc"; then
-    say "  alias already in $rc"
-  elif (( DRY_RUN )); then
-    say "  would add the codex alias to $rc"
-  else
-    printf '\n%s\nalias codex="codex --profile sy"\n%s\n' "$ALIAS_START" "$ALIAS_END" >> "$rc"
-    say "  added the codex alias to $rc"
-  fi
-done
-
 step "Done"
 say "Server:   http://127.0.0.1:$SY_PORT  (logs in $SY_HOME/logs)"
-say "Open a new shell, or run: alias codex=\"codex --profile sy\""
+say "Use it with: codex -p sy (requires Codex CLI 0.134.0 or newer)"
 say ""
 if [[ -f "$CODEX_DIRECT_CONFIG" ]]; then
   say "Codex.app is routed. Its original config is backed up at:"
