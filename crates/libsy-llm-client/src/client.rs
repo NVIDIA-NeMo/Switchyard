@@ -1150,20 +1150,9 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
         return;
     };
     match backend {
-        Backend::OpenAiResponses(_) => {
-            // Responses nests effort under `reasoning` next to fields the caller may have set
-            // (`summary`, for example), so only the `effort` key is replaced. A `reasoning`
-            // value that is not an object is malformed and is replaced whole.
-            let reasoning = object
-                .entry("reasoning".to_string())
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if !reasoning.is_object() {
-                *reasoning = Value::Object(serde_json::Map::new());
-            }
-            if let Value::Object(reasoning) = reasoning {
-                reasoning.insert("effort".to_string(), Value::String(effort.to_string()));
-            }
-        }
+        // Responses nests effort under `reasoning`, Anthropic under `output_config`.
+        Backend::OpenAiResponses(_) => set_nested_effort(object, "reasoning", effort),
+        Backend::Anthropic(_) => set_nested_effort(object, "output_config", effort),
         Backend::OpenAiChat(_) => {
             // Chat Completions takes effort as a top-level field.
             object.insert(
@@ -1171,9 +1160,20 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
                 Value::String(effort.to_string()),
             );
         }
-        // Anthropic has no effort field (thinking is a token budget); the runner rejects the
-        // setting on Anthropic clients at load time, so this arm is unreachable in practice.
-        Backend::Anthropic(_) => {}
+    }
+}
+
+// Replaces only `effort` inside `key`, keeping fields the caller set next to it (`summary` or
+// `format`, for example). A non-object value there is malformed and is replaced whole.
+fn set_nested_effort(object: &mut serde_json::Map<String, Value>, key: &str, effort: &str) {
+    let container = object
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !container.is_object() {
+        *container = Value::Object(serde_json::Map::new());
+    }
+    if let Value::Object(container) = container {
+        container.insert("effort".to_string(), Value::String(effort.to_string()));
     }
 }
 
@@ -2063,6 +2063,52 @@ mod tests {
                 None,
                 Some(&ModelId::from("gpt")),
                 WireFormat::OpenAiResponses,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_override_sets_anthropic_output_config_effort()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let format = json!({"type": "json_schema", "schema": {"type": "object"}});
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "model": "claude",
+                "output_config": {"effort": "max", "format": format}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut backend = config(&server.uri());
+        backend.reasoning_effort = Some("max".to_string());
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "client-facing",
+                    "max_tokens": 7,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "output_config": {"effort": "high", "format": format}
+                }),
+                None,
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
             )
             .await?;
         Ok(())

@@ -393,17 +393,12 @@ impl DeploymentConfig {
                 .ok_or_else(|| {
                     RunnerError::configuration("validated llm client was not initialized")
                 })?;
-            if let Some(effort) = &target.reasoning_effort {
-                if effort.trim().is_empty() {
-                    return Err(RunnerError::configuration(format!(
-                        "target {target_name} reasoning_effort must not be empty"
-                    )));
-                }
-                if matches!(client_config.format, ClientFormat::AnthropicMessages) {
-                    return Err(RunnerError::configuration(format!(
-                        "target {target_name} reasoning_effort is only supported on openai_chat and openai_responses clients"
-                    )));
-                }
+            if let Some(effort) = &target.reasoning_effort
+                && effort.trim().is_empty()
+            {
+                return Err(RunnerError::configuration(format!(
+                    "target {target_name} reasoning_effort must not be empty"
+                )));
             }
             model_configs.push(ModelConfig::new(
                 target.id.clone(),
@@ -770,7 +765,6 @@ struct TargetConfig {
     omit_body_fields: BTreeSet<String>,
     system_prompt: Option<String>,
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
-    /// Only meaningful on `openai_chat` and `openai_responses` clients.
     reasoning_effort: Option<String>,
     /// Model name sent to the provider. Defaults to `id`. Setting it lets two targets share one
     /// provider model with different request settings, since `id` must stay unique per route.
@@ -1413,7 +1407,7 @@ evidence = { description = "candidate comparison" }
     }
 
     #[test]
-    fn a_target_reasoning_effort_parses_and_is_rejected_where_unsupported() -> RunnerResult<()> {
+    fn a_target_reasoning_effort_parses_on_every_client_format() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
         let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";
         assert!(VALID_CONFIG.contains(strong) && VALID_CONFIG.contains(weak));
@@ -1425,10 +1419,7 @@ evidence = { description = "candidate comparison" }
         assert!(error_message(&blank).contains("reasoning_effort must not be empty"));
 
         let anthropic = VALID_CONFIG.replace(weak, &format!("{weak}\nreasoning_effort = \"high\""));
-        assert!(
-            error_message(&anthropic)
-                .contains("only supported on openai_chat and openai_responses")
-        );
+        runner_from_toml(&anthropic)?;
         Ok(())
     }
 
