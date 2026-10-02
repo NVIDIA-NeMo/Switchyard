@@ -142,19 +142,18 @@ To forward `omp`'s key, remove `auth: none` and set `apiKey: GATEWAY_API_KEY`, t
 of the environment variable that holds your gateway key. Unlike pi, `omp` reads the name
 without a leading `$`.
 
-A route that forwards the key to an `anthropic_messages` client accepts requests only on
-`/v1/messages`, and it cannot also forward the key to an `openai_chat` or
-`openai_responses` client. So a route with a GPT judge on `openai_responses` cannot
-forward the caller's key to both the judge and Claude targets on `anthropic_messages`.
-Choose one of two setups:
+A route that forwards the key only to `anthropic_messages` clients accepts requests only
+on `/v1/messages`. A route that forwards the key to both a GPT judge on `openai_responses`
+and Claude targets on `anthropic_messages` works when both LLM clients use the same
+scheme, host, and port, as clients on one gateway do. Switchyard then turns the effort
+into adaptive thinking, and every request uses `omp`'s key. Two other setups also work:
 
 - Forward the key to every LLM client, and keep the Claude targets on `openai_chat` with
-  `omit_body_fields = ["reasoning_effort"]`. The Claude models then think at their
-  default effort, and `--thinking` has no effect on them.
+  `omit_body_fields = ["reasoning_effort"]`. This works across hosts, but the Claude
+  models then think at their default effort, and `--thinking` has no effect on them.
 - Forward the key only to the GPT judge, and give the Claude targets an
   `anthropic_messages` client with `api_key_env`, so they use a server-owned key.
-  Switchyard then turns the effort into adaptive thinking.
 
-Both setups forward the key to an OpenAI-format LLM client, so the route accepts only
+All three setups forward the key to an OpenAI-format LLM client, so the route accepts only
 `/v1/chat/completions` and `/v1/responses` and returns HTTP 400 on `/v1/messages`. Use
 `openai-completions` or `openai-responses`.
