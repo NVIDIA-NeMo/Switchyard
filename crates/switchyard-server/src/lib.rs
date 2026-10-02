@@ -90,6 +90,15 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
             .iter()
             .any(|prefix| name.starts_with(prefix))
 }
+
+// Error responses carry only headers needed for caller backoff and support tracing.
+fn should_forward_upstream_error_header(name: &HeaderName) -> bool {
+    let name = name.as_str();
+    matches!(name, "retry-after" | "request-id" | "x-request-id")
+        || name.starts_with("x-ratelimit-")
+        || name.starts_with("anthropic-ratelimit-")
+}
+
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
@@ -1326,7 +1335,11 @@ fn client_error(error: &LlmClientError) -> Response {
             "upstream_error",
             "temporarily_unavailable",
         ),
-        LlmClientError::UpstreamHttp { status, body } => upstream_error(*status, body),
+        LlmClientError::UpstreamHttp {
+            status,
+            body,
+            headers,
+        } => upstream_error(*status, body, headers),
         LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
             error_response(
                 StatusCode::BAD_GATEWAY,
@@ -1353,7 +1366,7 @@ fn client_error(error: &LlmClientError) -> Response {
 }
 
 // Keep the provider's message and nonempty string code in our error JSON.
-fn upstream_error(status: StatusCode, body: &str) -> Response {
+fn upstream_error(status: StatusCode, body: &str, headers: &HeaderMap) -> Response {
     let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
     let error = &parsed["error"];
     let message = error["message"].as_str().unwrap_or(body);
@@ -1362,6 +1375,12 @@ fn upstream_error(status: StatusCode, body: &str) -> Response {
         .filter(|code| !code.is_empty())
         .unwrap_or("upstream_error");
     let mut response = error_response(status, message, "upstream_error", code);
+    // Other client implementations can construct this error without filtering headers.
+    for (name, value) in headers {
+        if should_forward_upstream_error_header(name) {
+            response.headers_mut().append(name.clone(), value.clone());
+        }
+    }
     // Provider messages and codes can quote request content; log only fixed metadata.
     response
         .extensions_mut()
@@ -1425,6 +1444,12 @@ fn render_error_response(mut response: Response, wire_format: WireFormat) -> Res
     };
     let log_error = response.extensions_mut().remove::<RequestLogError>();
     let mut rendered = error.into_response(wire_format);
+    // Format-specific error rendering replaces the response, including its headers.
+    for (name, value) in response.headers() {
+        if should_forward_upstream_error_header(name) {
+            rendered.headers_mut().append(name.clone(), value.clone());
+        }
+    }
     if let Some(log_error) = log_error {
         rendered.extensions_mut().insert(log_error);
     }
@@ -2104,6 +2129,7 @@ targets = ["only"]
             body: format!(
                 r#"{{"error":{{"message":"validation failed: {LEAKED}","code":"invalid_request_{LEAKED}"}}}}"#
             ),
+            headers: Box::default(),
         };
         for wire_format in [
             WireFormat::OpenAiChat,
