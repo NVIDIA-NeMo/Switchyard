@@ -5,7 +5,11 @@
 //! algorithm implements and the offload channel it uses for routing-time model calls.
 
 use std::{
-    collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc,
+    collections::HashMap,
+    future::Future,
+    panic::AssertUnwindSafe,
+    pin::Pin,
+    sync::{Arc, LazyLock},
     time::Instant,
 };
 
@@ -27,6 +31,14 @@ use tracing::Instrument;
 use switchyard_protocol::{Category, ModelId, Request, Response};
 
 use crate::{DriverError, LibsyError, Result, observability};
+
+static PRODUCT_TELEMETRY_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    !std::env::var("SWITCHYARD_TELEMETRY_ENABLED").is_ok_and(|value| {
+        ["0", "false", "no", "off"]
+            .iter()
+            .any(|disabled| value.trim().eq_ignore_ascii_case(disabled))
+    })
+});
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -371,8 +383,8 @@ impl Driver {
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let metadata = self.outcome_metadata(&result);
-        // Temporary change do not commit
-        {
+        // Temporary change do not merge
+        if *PRODUCT_TELEMETRY_ENABLED {
             use std::io::Write;
 
             let mut record = Self::expand_metadata(&metadata);
@@ -394,7 +406,7 @@ impl Driver {
                 tracing::warn!(%error, "could not write routing metadata to stdout");
             }
         }
-        // Temporary change do not commit
+        // Temporary change do not merge
         let result = result.map(|mut outcome| {
             observability::record_outcome(&metadata, &outcome.selected_model_ids);
             outcome.metadata = Some(metadata);
@@ -459,6 +471,7 @@ impl Driver {
         record["switchyard_version"] = serde_json::json!(env!("CARGO_PKG_VERSION"));
         record["os_family"] = serde_json::json!(std::env::consts::OS);
         record["cpu_arch"] = serde_json::json!(std::env::consts::ARCH);
+        record["telemetry_schema_version"] = serde_json::json! {"nat-telemetry/1.0"};
         record
     }
 }
@@ -873,6 +886,7 @@ mod tests {
         assert_eq!(record["switchyard_version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(record["os_family"], std::env::consts::OS);
         assert_eq!(record["cpu_arch"], std::env::consts::ARCH);
+        assert_eq!(record["telemetry_schema_version"], "nat-telemetry/1.0");
         assert!(record.get("selected_model_id").is_none());
         assert!(record.get("fallback_plan_model_ids").is_none());
         for field in [
@@ -883,7 +897,12 @@ mod tests {
         ] {
             assert!(record.get(field).is_none(), "duplicated evidence: {field}");
         }
-        for field in ["switchyard_version", "os_family", "cpu_arch"] {
+        for field in [
+            "switchyard_version",
+            "os_family",
+            "cpu_arch",
+            "telemetry_schema_version",
+        ] {
             record.as_object_mut().unwrap().remove(field);
         }
         assert_eq!(record, serde_json::json!(metadata));
