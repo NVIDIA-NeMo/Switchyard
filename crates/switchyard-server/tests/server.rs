@@ -118,12 +118,57 @@ fn has_system_prompt(call: &Value, expected: &str) -> bool {
     })
 }
 
+fn upstream_error_with_headers(status: StatusCode, request_id: &'static str) -> HttpResponse {
+    let code = if status == StatusCode::TOO_MANY_REQUESTS {
+        "rate_limit_exceeded"
+    } else {
+        "upstream_error"
+    };
+    let mut response = (
+        status,
+        Json(json!({"error": {"message": "upstream unavailable", "code": code}})),
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert("retry-after", HeaderValue::from_static("15"));
+    headers.insert(
+        "x-ratelimit-reset-requests",
+        HeaderValue::from_static("15s"),
+    );
+    headers.insert("x-request-id", HeaderValue::from_static(request_id));
+    headers.insert("request-id", HeaderValue::from_static(request_id));
+    headers.insert(
+        "anthropic-ratelimit-requests-reset",
+        HeaderValue::from_static("15s"),
+    );
+    headers.insert("set-cookie", HeaderValue::from_static("session=secret"));
+    headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
+    headers.insert("x-upstream-debug", HeaderValue::from_static("private"));
+    response
+}
+
 async fn upstream_chat(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
     let prompt = user_prompt(&body);
+    if prompt == "error-headers-429" {
+        return upstream_error_with_headers(StatusCode::TOO_MANY_REQUESTS, "req-429");
+    }
+    if prompt == "error-headers-503" {
+        return upstream_error_with_headers(StatusCode::SERVICE_UNAVAILABLE, "req-503");
+    }
+    if prompt == "error-headers-fallback" && body["model"] == "model/weak" {
+        return upstream_error_with_headers(StatusCode::TOO_MANY_REQUESTS, "req-weak");
+    }
+    if prompt == "error-headers-final-fallback" {
+        return if body["model"] == "model/weak" {
+            upstream_error_with_headers(StatusCode::TOO_MANY_REQUESTS, "req-weak")
+        } else {
+            upstream_error_with_headers(StatusCode::SERVICE_UNAVAILABLE, "req-strong")
+        };
+    }
     if prompt == "fail" {
         return (
             StatusCode::IM_A_TEAPOT,
@@ -443,6 +488,9 @@ async fn upstream_messages_requires_forwarded_oauth(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
+    if body.to_string().contains("error-headers-429") {
+        return upstream_error_with_headers(StatusCode::TOO_MANY_REQUESTS, "req-anthropic-429");
+    }
     let has_expected_headers = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
@@ -5251,5 +5299,162 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some("model/a")
     );
+    Ok(())
+}
+
+/// Terminal upstream errors retain only safe retry and correlation headers in both API formats.
+#[tokio::test]
+async fn terminal_upstream_errors_forward_safe_headers() -> TestResult {
+    let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    let control = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "upstream-headers"}]
+        })),
+    )
+    .await?;
+    assert_eq!(control.status, StatusCode::OK);
+    assert_eq!(
+        control.headers.get("x-request-id"),
+        Some(&HeaderValue::from_static("req-42"))
+    );
+
+    for (prompt, status, request_id) in [
+        (
+            "error-headers-429",
+            StatusCode::TOO_MANY_REQUESTS,
+            "req-429",
+        ),
+        (
+            "error-headers-503",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "req-503",
+        ),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": ROUTE_MODEL,
+                "messages": [{"role": "user", "content": prompt}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, status);
+        assert_eq!(
+            response.headers.get("retry-after"),
+            Some(&HeaderValue::from_static("15"))
+        );
+        assert_eq!(
+            response.headers.get("x-ratelimit-reset-requests"),
+            Some(&HeaderValue::from_static("15s"))
+        );
+        assert_eq!(
+            response.headers.get("x-request-id"),
+            Some(&HeaderValue::from_static(request_id))
+        );
+        assert!(!response.headers.contains_key("set-cookie"));
+        assert!(!response.headers.contains_key("authorization"));
+        assert!(!response.headers.contains_key("x-upstream-debug"));
+        assert_eq!(response.json()?["error"]["message"], "upstream unavailable");
+    }
+
+    let anthropic = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "{}"
+max_retries = 0
+failure_cooldown_ms = 0
+[targets.anthropic]
+id = "model/anthropic"
+llm_client = "anthropic"
+[routes.anthropic]
+id = "route/anthropic"
+type = "passthrough"
+target = "anthropic"
+"#,
+        upstream.base_url
+    ))?);
+    let response = send(
+        &anthropic,
+        "POST",
+        "/v1/messages",
+        Some(json!({
+            "model": "route/anthropic",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "error-headers-429"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        response.headers.get("retry-after"),
+        Some(&HeaderValue::from_static("15"))
+    );
+    assert_eq!(
+        response.headers.get("x-request-id"),
+        Some(&HeaderValue::from_static("req-anthropic-429"))
+    );
+    assert_eq!(
+        response.headers.get("request-id"),
+        Some(&HeaderValue::from_static("req-anthropic-429"))
+    );
+    assert_eq!(
+        response.headers.get("anthropic-ratelimit-requests-reset"),
+        Some(&HeaderValue::from_static("15s"))
+    );
+    assert_eq!(response.json()?["error"]["type"], "rate_limit_error");
+    Ok(())
+}
+
+/// Retry guidance from an earlier candidate must not replace the final candidate's headers.
+#[tokio::test]
+async fn terminal_error_headers_follow_final_fallback_candidate() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(weighted_random_state(&upstream.base_url, [1000, 1])?);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "error-headers-fallback"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(upstream.models().await, ["model/weak", "model/strong"]);
+    assert!(!response.headers.contains_key("retry-after"));
+    assert!(!response.headers.contains_key("x-request-id"));
+
+    upstream.calls.lock().await.clear();
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "error-headers-final-fallback"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(upstream.models().await, ["model/weak", "model/strong"]);
+    assert_eq!(
+        response.headers.get("x-request-id"),
+        Some(&HeaderValue::from_static("req-strong"))
+    );
+    assert_eq!(
+        response.headers.get("retry-after"),
+        Some(&HeaderValue::from_static("15"))
+    );
+    assert!(!response.headers.contains_key("set-cookie"));
     Ok(())
 }

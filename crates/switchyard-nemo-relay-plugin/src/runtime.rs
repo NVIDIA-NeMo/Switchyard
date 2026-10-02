@@ -605,6 +605,7 @@ fn normalized_stream_error(chunks: &[LlmResponseChunk]) -> Option<LlmClientError
         LlmResponseChunk::StreamError { message } => Some(LlmClientError::UpstreamHttp {
             status: StatusCode::BAD_GATEWAY,
             body: message.clone(),
+            headers: Box::default(),
         }),
         _ => None,
     })
