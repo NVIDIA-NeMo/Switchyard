@@ -13,6 +13,7 @@ LoadCredential=tls-cert.pem:/etc/switchyard/cert.pem
 # %d is where systemd put those files
 ExecStart=/usr/local/bin/switchyard-server \
     -p 443 \
+    --host 0.0.0.0 \
     --config %d/config.toml \
     --tls-key %d/tls-key.pem \
     --tls-cert %d/tls-cert.pem

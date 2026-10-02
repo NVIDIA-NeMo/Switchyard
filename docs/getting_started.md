@@ -126,6 +126,11 @@ switchyard-server --config routes.toml \
   --host 127.0.0.1 --port 4000
 ```
 
+The standalone binary binds to `127.0.0.1` by default. For remote clients,
+pass `--host 0.0.0.0` explicitly and secure access to the server. The provided
+Docker image and systemd service set this option to preserve network access.
+A later `--host` argument overrides the image's default.
+
 Any client that speaks OpenAI Chat Completions, Anthropic Messages, or OpenAI
 Responses API can connect. The route `id` is the model name clients use.
 
