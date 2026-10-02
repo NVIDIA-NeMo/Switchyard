@@ -425,11 +425,13 @@ impl ToolSignals {
 
 // `command` is the lowercased Bash command line; None for non-Bash tools.
 // `bare_name` is the tool's own name when `name` joins it to a namespace or MCP server.
+// `is_retrieval` marks a call that only reads; it counts as an observation.
 #[derive(Debug, Clone)]
 struct ObservedToolCall<'a> {
     name: String,
     bare_name: Option<&'a str>,
     command: Option<String>,
+    is_retrieval: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -637,10 +639,22 @@ fn retrieval_command(mut words: &[&str], depth: usize) -> bool {
     }) {
         words = &words[1..];
     }
-    let Some((program, args)) = words.split_first() else {
+    let Some((&program, args)) = words.split_first() else {
         return false;
     };
-    let program = program_name(program);
+    // The standard bin dirs hold the real programs. Any other path, such as
+    // `./test`, names a local script.
+    let program = [
+        "/bin/",
+        "/sbin/",
+        "/usr/bin/",
+        "/usr/sbin/",
+        "/usr/local/bin/",
+        "/opt/homebrew/bin/",
+    ]
+    .iter()
+    .find_map(|dir| program.strip_prefix(dir))
+    .unwrap_or(program);
     // Unwrap launchers before inspecting the actual command and its flags.
     let wrapper_options: Option<&[&str]> = match program {
         "sudo" => Some(&[
@@ -1017,23 +1031,24 @@ fn extract_tool_signals_with_window_and_semantics(
                         .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
                     let command_field = command_of(decoded.as_ref().unwrap_or(&call.arguments));
                     let command = command_field.and_then(command_text);
+                    // The joined name wins, as in `build_signal`. A joined name
+                    // configured as observe still counts when its bare name is a
+                    // retrieval tool, such as `mcp__files__read`.
+                    let full = classify_tool_call_with_semantics(
+                        &call.name,
+                        command.as_deref(),
+                        semantics,
+                    );
+                    let name = match (full, bare_name) {
+                        (ToolSemantic::Unknown | ToolSemantic::Observe, Some(bare_name)) => {
+                            bare_name
+                        }
+                        _ => call.name.as_str(),
+                    };
+                    let is_retrieval = is_retrieval_tool(name, command_field);
                     if !call.id.is_empty() {
-                        // The joined name wins, as in `build_signal`. A joined name
-                        // configured as observe still counts when its bare name is a
-                        // retrieval tool, such as `mcp__files__read`.
-                        let full = classify_tool_call_with_semantics(
-                            &call.name,
-                            command.as_deref(),
-                            semantics,
-                        );
-                        let name = match (full, bare_name) {
-                            (ToolSemantic::Unknown | ToolSemantic::Observe, Some(bare_name)) => {
-                                bare_name
-                            }
-                            _ => call.name.as_str(),
-                        };
                         // A reused ID links to its latest call.
-                        if is_retrieval_tool(name, command_field) {
+                        if is_retrieval {
                             retrieval_calls.insert(call.id.as_str());
                         } else {
                             retrieval_calls.remove(call.id.as_str());
@@ -1043,6 +1058,7 @@ fn extract_tool_signals_with_window_and_semantics(
                         name: call.name.clone(),
                         bare_name,
                         command,
+                        is_retrieval,
                     });
                 }
                 ContentBlock::ToolResult(result) => {
@@ -1277,8 +1293,14 @@ fn build_signal(
     let mut pure_bash_streak = 0u32;
     let mut streak_open = true;
     for (i, tc) in tool_calls.iter().enumerate().rev() {
-        // The joined name wins, so configs that list it keep working.
-        let mut cat = classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics);
+        // Every read, found or missed, is an observation. The read check parses
+        // the command, so it beats the substring patterns. Otherwise the joined
+        // name wins, so configs that list it keep working.
+        let mut cat = if tc.is_retrieval {
+            ToolSemantic::Observe
+        } else {
+            classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics)
+        };
         if matches!(cat, ToolSemantic::Unknown)
             && let Some(bare_name) = tc.bare_name
         {
@@ -2017,7 +2039,7 @@ mod tests {
     #[test]
     fn shell_reads_are_ignored_but_keep_their_window_slot() {
         for command in [
-            "cat logfile.txt",
+            "/usr/bin/cat logfile.txt",
             "cd /repo && tail -n 100 logfile.txt | grep MemoryError",
             "env MODE=debug timeout 5s rg 'MemoryError' .",
         ] {
@@ -2098,9 +2120,12 @@ mod tests {
         ]
         .map(|argv| signal(argv).severity);
         assert_eq!(severities, [0.0, CRITICAL, 0.0, CRITICAL, CRITICAL]);
-        // The read counter also looks inside the script.
-        let signal = signal(json!(["bash", "-lc", "cd repo && rg foo"]));
-        assert_eq!(signal.read_count, 1);
+        // A read is an observation, even as a whole `-lc` script.
+        let read = signal(json!(["bash", "-lc", "sed -n 1,200p x"]));
+        assert_eq!(read.read_count, 1);
+        // Other commands are counted inside the script too.
+        let write = signal(json!(["bash", "-lc", "cd repo && mkdir x"]));
+        assert_eq!(write.write_count, 1);
     }
 
     #[test]
