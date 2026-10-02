@@ -3,22 +3,26 @@
 
 //! The macOS status item: event loop, menu, and the menu's actions.
 //!
-//! Everything platform-specific lives here, so the rest of the crate builds
-//! and is tested on any target.
+//! Everything platform-specific lives here and in the picker window, so the
+//! rest of the crate builds and is tested on any target.
 
-use std::process::Command;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{MainThreadMarker, NSDate, NSDefaultRunLoopMode};
-use tray_icon::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder};
 
 use crate::app::refresh;
 use crate::config::Config;
 use crate::icon;
+use crate::models::CACHE_FILE;
+use crate::picker::Picker;
+use crate::server::{command, restart};
 use crate::summary::Row;
 
+const CHANGE_ROUTING: &str = "change-routing";
 const RESTART: &str = "restart-server";
 const OPEN_CONFIG: &str = "open-config";
 const OPEN_SETTINGS: &str = "open-settings";
@@ -27,12 +31,18 @@ const QUIT: &str = "quit";
 /// How long the loop blocks waiting for a UI event before checking the clock.
 const EVENT_POLL: f64 = 0.1;
 
-/// Runs the status item until the user quits.
-pub fn run(config: Config) -> Result<(), String> {
+/// Runs the status item until the user quits. `settings` is the settings
+/// file that `config` came from; the model list cache sits next to it.
+pub fn run(config: Config, settings: &Path) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("the menu bar must run on the main thread")?;
     let ns_app = NSApplication::sharedApplication(mtm);
     // Accessory keeps the process out of the Dock and the app switcher.
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    // An accessory app shows no menu bar, but AppKit still finds keyboard
+    // shortcuts, such as Cmd-C in a text field and Cmd-W in the picker
+    // window, through the app's main menu.
+    let main_menu = main_menu()?;
+    main_menu.init_for_nsapp();
 
     let glyph = Icon::from_rgba(icon::glyph(), icon::SIZE, icon::SIZE)
         .map_err(|error| format!("build icon: {error}"))?;
@@ -46,16 +56,25 @@ pub fn run(config: Config) -> Result<(), String> {
 
     ns_app.finishLaunching();
 
+    let mut picker: Option<Picker> = None;
     let interval = Duration::from_secs(config.refresh_seconds.max(5));
     let mut next = Instant::now() + interval;
     loop {
         pump_events(&ns_app);
+        if let Some(picker) = picker.as_mut() {
+            picker.poll();
+        }
 
         let mut redraw = false;
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id.as_ref() {
                 QUIT => return Ok(()),
-                RESTART => report(restart_server(&config)),
+                CHANGE_ROUTING => picker
+                    .get_or_insert_with(|| {
+                        Picker::new(mtm, &config, settings.with_file_name(CACHE_FILE))
+                    })
+                    .show(),
+                RESTART => report(restart(&config.launchd_label)),
                 OPEN_CONFIG => report(open(&config.config_file)),
                 OPEN_SETTINGS => report(open(&Config::default_path())),
                 // Informational rows are disabled, so nothing else fires.
@@ -71,32 +90,9 @@ pub fn run(config: Config) -> Result<(), String> {
     }
 }
 
-/// Restarts the server's LaunchAgent.
-fn restart_server(config: &Config) -> Result<(), String> {
-    let uid = command("id", &["-u"])?;
-    let target = format!("gui/{}/{}", uid.trim(), config.launchd_label);
-    command("launchctl", &["kickstart", "-k", &target]).map(|_| ())
-}
-
 /// Opens a config file in the user's editor.
 fn open(path: &std::path::Path) -> Result<(), String> {
     command("open", &["-t", &path.display().to_string()]).map(|_| ())
-}
-
-/// Runs a command, returning its stdout or a message naming what failed.
-fn command(program: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|error| format!("run {program}: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{program} {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn report(result: Result<(), String>) {
@@ -122,6 +118,7 @@ fn menu(rows: &[Row]) -> Result<Menu, String> {
     }
     append(&PredefinedMenuItem::separator())?;
     for (id, text) in [
+        (CHANGE_ROUTING, "Change routing…"),
         (RESTART, "Restart server"),
         (OPEN_CONFIG, "Open server config…"),
         (OPEN_SETTINGS, "Open menu bar settings…"),
@@ -130,6 +127,28 @@ fn menu(rows: &[Row]) -> Result<Menu, String> {
         append(&MenuItem::with_id(id, text, true, None))?;
     }
     Ok(menu)
+}
+
+/// Builds the app's hidden main menu, which gives text fields their Edit
+/// shortcuts and windows their Cmd-W shortcut.
+fn main_menu() -> Result<Menu, String> {
+    let edit = Submenu::with_items(
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(None),
+            &PredefinedMenuItem::redo(None),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::cut(None),
+            &PredefinedMenuItem::copy(None),
+            &PredefinedMenuItem::paste(None),
+            &PredefinedMenuItem::select_all(None),
+        ],
+    )
+    .map_err(|error| format!("build the Edit menu: {error}"))?;
+    let window = Submenu::with_items("Window", true, &[&PredefinedMenuItem::close_window(None)])
+        .map_err(|error| format!("build the Window menu: {error}"))?;
+    Menu::with_items(&[&edit, &window]).map_err(|error| format!("build the main menu: {error}"))
 }
 
 /// Drains pending AppKit events, blocking briefly when there are none.
@@ -146,17 +165,5 @@ fn pump_events(ns_app: &NSApplication) {
         ns_app.sendEvent(&event);
         // Only the first wait blocks; the rest drain what is already queued.
         expiration = Some(NSDate::distantPast());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reports_which_command_failed() {
-        let error = command("switchyard-does-not-exist", &[]).expect_err("missing program");
-
-        assert!(error.contains("switchyard-does-not-exist"));
     }
 }

@@ -3,9 +3,11 @@
 
 //! Menu bar companion for a locally running Switchyard server.
 //!
-//! The server owns routing; this process only reads what the server already
-//! wrote. It shows today's and this week's traffic, and what that traffic
-//! would have cost had every call gone to the capable model instead.
+//! The server owns routing; this process reads what the server wrote. It
+//! shows today's and this week's traffic, and what that traffic would have
+//! cost had every call gone to the capable model instead. Its "Change
+//! routing…" window edits a route in the server config and restarts the
+//! server.
 
 mod app;
 mod config;
@@ -13,9 +15,20 @@ mod health;
 mod pricing;
 mod rollup;
 mod summary;
-// The status item and the glyph it draws are the only platform-specific code.
+// Only the macOS picker window calls these. They build on every target so
+// that their tests also run in CI, which does not run on macOS.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod models;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod server;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod server_config;
+// The status item, the glyph it draws, and the picker window are the only
+// platform-specific code.
 #[cfg(target_os = "macos")]
 mod icon;
+#[cfg(target_os = "macos")]
+mod picker;
 #[cfg(target_os = "macos")]
 mod tray;
 
@@ -65,7 +78,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let config = match Config::load(&settings.unwrap_or_else(Config::default_path)) {
+    let settings = settings.unwrap_or_else(Config::default_path);
+    let config = match Config::load(&settings) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("switchyard-menubar: {error}");
@@ -85,7 +99,7 @@ fn main() -> ExitCode {
     }
 
     #[cfg(target_os = "macos")]
-    if let Err(error) = tray::run(config) {
+    if let Err(error) = tray::run(config, &settings) {
         eprintln!("switchyard-menubar: {error}");
         return ExitCode::FAILURE;
     }
