@@ -237,6 +237,10 @@ key, replace the `apiKey` placeholder with the name of an environment variable t
 your gateway key, with a leading `$`: `"apiKey": "$GATEWAY_API_KEY"`. Without the `$`,
 pi sends the name itself as the key.
 
+Only standalone `switchyard-server` forwards keys. The native Nemo Relay plugin rejects
+routes that use `forward_auth = true` (see
+[Request Handling](nemo_relay.md#request-handling)).
+
 The LLM clients that forward the key decide which request APIs a route accepts:
 
 - If they all use OpenAI formats (`openai_chat` or `openai_responses`), the route accepts

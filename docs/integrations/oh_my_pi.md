@@ -142,6 +142,10 @@ To forward `omp`'s key, remove `auth: none` and set `apiKey: GATEWAY_API_KEY`, t
 of the environment variable that holds your gateway key. Unlike pi, `omp` reads the name
 without a leading `$`.
 
+Only standalone `switchyard-server` forwards keys. The native Nemo Relay plugin rejects
+routes that use `forward_auth = true` (see
+[Request Handling](nemo_relay.md#request-handling)).
+
 A route that forwards the key only to `anthropic_messages` clients accepts requests only
 on `/v1/messages`. A route that forwards the key to both a GPT judge on `openai_responses`
 and Claude targets on `anthropic_messages` works when both LLM clients use the same
