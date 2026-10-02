@@ -355,7 +355,7 @@ async fn call_one(
     result
 }
 
-// Preserve signed provider events while checking the complete routing response.
+/// Preserve signed provider events while checking the complete routing response.
 async fn buffer_routing_stream(
     mut chunks: LlmResponseStream,
 ) -> std::result::Result<LlmResponseStream, LlmClientError> {

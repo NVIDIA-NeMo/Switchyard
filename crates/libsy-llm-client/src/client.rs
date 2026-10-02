@@ -858,15 +858,15 @@ fn first_event_overflow(
         })
 }
 
-// Keep only response headers useful to callers, before the full upstream error is retained.
+/// Retain end-to-end retry and correlation headers from a failed upstream response.
 fn safe_upstream_error_headers(headers: &HeaderMap) -> HeaderMap {
     let mut safe = HeaderMap::new();
     for (name, value) in headers {
         let name_str = name.as_str();
-        if matches!(name_str, "retry-after" | "request-id" | "x-request-id")
+        let allowed = matches!(name_str, "retry-after" | "request-id" | "x-request-id")
             || name_str.starts_with("x-ratelimit-")
-            || name_str.starts_with("anthropic-ratelimit-")
-        {
+            || name_str.starts_with("anthropic-ratelimit-");
+        if allowed && !is_non_forwardable_header(name_str, headers) {
             safe.append(name.clone(), value.clone());
         }
     }
@@ -2548,6 +2548,35 @@ mod tests {
         assert!(!headers.contains_key("set-cookie"));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         Ok(())
+    }
+
+    /// Connection-nominated headers must not survive the upstream error allowlist.
+    #[test]
+    fn upstream_error_headers_exclude_connection_nominations() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "connection",
+            "x-request-id, x-ratelimit-reset-requests"
+                .parse()
+                .expect("header value"),
+        );
+        headers.append("connection", "retry-after".parse().expect("header value"));
+        headers.insert("x-request-id", "hop-id".parse().expect("header value"));
+        headers.insert(
+            "x-ratelimit-reset-requests",
+            "15s".parse().expect("header value"),
+        );
+        headers.insert("retry-after", "15".parse().expect("header value"));
+        headers.insert("request-id", "end-to-end-id".parse().expect("header value"));
+
+        let safe = safe_upstream_error_headers(&headers);
+        assert!(!safe.contains_key("x-request-id"));
+        assert!(!safe.contains_key("x-ratelimit-reset-requests"));
+        assert!(!safe.contains_key("retry-after"));
+        assert_eq!(
+            safe.get("request-id"),
+            Some(&"end-to-end-id".parse().expect("header value"))
+        );
     }
 
     #[tokio::test]
