@@ -134,11 +134,10 @@ write_file() {
 }
 
 xml_escape_text() {
-  local value="$1"
-  value="${value//&/&amp;}"
-  value="${value//</&lt;}"
-  value="${value//>/&gt;}"
-  printf '%s' "$value"
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g'
 }
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
