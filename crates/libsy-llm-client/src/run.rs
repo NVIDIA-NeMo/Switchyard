@@ -704,8 +704,11 @@ impl ClientRouter {
         let owner = self.stored_state_owner(request);
         let fields = &request.llm_request.extensions.fields;
         self.needs_history_replay = algorithm.needs_history_replay(request)
-            && !fields.contains_key("conversation")
-            && match fields.get("previous_response_id") {
+            && fields.get("conversation").is_none_or(Value::is_null)
+            && match fields
+                .get("previous_response_id")
+                .filter(|value| !value.is_null())
+            {
                 Some(_) => owner.as_ref().is_some_and(|owner| owner.history.is_some()),
                 None => request
                     .llm_request
@@ -1389,7 +1392,7 @@ mod tests {
         let decode = |body: &Value| {
             switchyard_translation::decode_request(WireFormat::OpenAiResponses, body).unwrap()
         };
-        for stream in [false, true] {
+        for (stream, null_fields) in [(false, false), (true, false), (false, true), (true, true)] {
             let server = MockServer::start().await;
             let call = json!({"type": "function_call", "call_id": "call_file",
                 "name": "write_file", "arguments": "{}"});
@@ -1443,7 +1446,7 @@ mod tests {
             ])));
             let algorithm: Arc<dyn Algorithm> =
                 Arc::new(switchyard_libsy::PlanExecute::new(Default::default())?);
-            for (body, expected) in [
+            for (mut body, expected) in [
                 (
                     json!({"model": "route", "input": "Write task.py", "stream": stream}),
                     "strong",
@@ -1454,6 +1457,12 @@ mod tests {
                     "weak",
                 ),
             ] {
+                if null_fields {
+                    body["conversation"] = Value::Null;
+                    if body.get("previous_response_id").is_none() {
+                        body["previous_response_id"] = Value::Null;
+                    }
+                }
                 let request = Request {
                     llm_request: decode(&body),
                     ..Request::default()
@@ -1466,7 +1475,11 @@ mod tests {
                     None,
                 )
                 .await?;
-                assert_eq!(selected.as_str(), expected, "stream={stream}");
+                assert_eq!(
+                    selected.as_str(),
+                    expected,
+                    "stream={stream}, null_fields={null_fields}"
+                );
                 if let LlmResponse::Stream(mut events) = response.llm_response {
                     while let Some(event) = events.next().await {
                         if event
