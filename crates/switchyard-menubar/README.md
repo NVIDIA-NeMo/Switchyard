@@ -71,10 +71,11 @@ server's error and the file does not change. If it passes, the app saves the
 file, keeps the old one as `<file>.switchyard-backup.<timestamp>`, and
 restarts the server with `launchctl kickstart -k gui/<uid>/<launchd_label>`.
 A second backup in the same second gets `-2` added to its name, so a backup
-never replaces another one. If another program changes the file while the
-check runs, Apply saves nothing and asks you to click Apply again. If
-`config_file` is a symlink, the app writes the file that the link points to,
-puts the backup next to that file, and leaves the link in place.
+never replaces another one. If another program changes the file while Apply
+checks it and writes the backup, Apply saves nothing, removes that backup, and
+asks you to click Apply again. If `config_file` is a symlink, the app writes
+the file that the link points to, puts the backup next to that file, and
+leaves the link in place.
 
 The result area lists what happened, most important first: the saved file
 and its backup, the restart and whether the server answers `/health` within

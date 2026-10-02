@@ -122,8 +122,9 @@ fn server_binary() -> Result<PathBuf, String> {
 /// symlink. The new text goes to a temporary file next to the real file. The
 /// temporary file is synced to disk and then renamed over the real file, so a
 /// reader never sees a half-written config. When the check fails, or when
-/// the real file no longer holds `original`, the temporary file is removed,
-/// `path` does not change, and the error is returned.
+/// the real file no longer holds `original` after the backup is written, the
+/// temporary file and the new backup are removed, `path` does not change,
+/// and the error is returned.
 fn save_checked(binary: &Path, path: &Path, original: &str, text: &str) -> Result<PathBuf, String> {
     // Resolve a symlink and replace the file it points to, so the link stays.
     let file = std::fs::canonicalize(path)
@@ -158,17 +159,19 @@ fn save_checked(binary: &Path, path: &Path, original: &str, text: &str) -> Resul
         )
     })?;
 
-    // The check takes a moment. Keep an edit that another program saved
-    // in the meantime.
+    let backup = back_up(&file, original)
+        .map_err(|error| format!("Could not back up {}: {error}", path.display()))?;
+    // The check and the backup take a moment. Keep an edit that another
+    // program saved in the meantime. Compare right before the rename, because
+    // the rename replaces the file whatever it holds.
     if std::fs::read_to_string(&file).ok().as_deref() != Some(original) {
+        let _ = std::fs::remove_file(&backup);
         return Err(format!(
             "Could not replace {}, because it changed on disk while Apply was checking it. \
              Click Apply again to apply your choices to the new file.",
             path.display()
         ));
     }
-    let backup = back_up(&file, original)
-        .map_err(|error| format!("Could not back up {}: {error}", path.display()))?;
     candidate
         .persist(&file)
         .map_err(|error| format!("Could not replace {}: {}", path.display(), error.error))?;
