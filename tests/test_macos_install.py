@@ -16,6 +16,7 @@ REPO = Path(__file__).resolve().parents[1]
 def setup(tmp_path):
     scripts = tmp_path / "repo" / "scripts" / "macos"
     shutil.copytree(REPO / "scripts" / "macos", scripts)
+    shutil.copy(REPO / "scripts" / "common.sh", scripts.parent / "common.sh")
     shutil.copytree(REPO / "scripts" / "config", scripts.parent / "config")
     home = tmp_path / "home"
     home.mkdir()
@@ -74,12 +75,13 @@ def test_install_escapes_switchyard_path_in_launch_agent(setup):
     assert values["StandardErrorPath"].text == str(switchyard_home / "logs" / "server.err.log")
 
 
-def test_missing_codex_config_creates_routed_and_empty_direct_baselines(setup):
+def test_missing_codex_config_creates_routed_config_and_empty_backup(setup):
     _, home, _, _ = setup
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
     codex = home / ".codex"
-    assert 'model_provider = "sy"' in read_config(codex / "config.toml.sy")
+    assert 'model_provider = "sy"' in read_config(codex / "config.sy.toml")
+    assert read_config(codex / "config.toml") == read_config(codex / "config.sy.toml")
     assert (codex / "config.toml.direct").read_text() == ""
 
 
@@ -100,10 +102,11 @@ model_provider = "sy"
     config.write_text(original)
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
-    generated = read_config(codex / "config.toml.sy")
+    generated = read_config(codex / "config.sy.toml")
     assert generated.count("[model_providers.sy]") == 1
     assert 'name = "Old"' not in generated
     assert '[other]\nmodel_provider = "sy"' in generated
+    assert read_config(config) == generated
     assert read_config(switchyard_home / "composite.toml") == read_config(
         REPO / "scripts" / "config" / "composite.toml"
     )
@@ -121,7 +124,7 @@ def test_quoted_top_level_provider_keeps_existing_snapshot(setup, quote):
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
     assert snapshot.read_text() == "original direct config\n"
-    assert (codex / "config.toml.sy").is_file()
+    assert (codex / "config.sy.toml").is_file()
 
 
 def test_uninstall_preserves_routed_config_before_restoring_snapshot(setup):
