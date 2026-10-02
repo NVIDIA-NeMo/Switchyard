@@ -5253,3 +5253,52 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let base_url = upstream.base_url.replace("/v1", "/buffered");
+    for (setting, expected_reasoning) in [("", 1), ("responses_reasoning = \"drop\"", 0)] {
+        let config = format!(
+            r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_responses"
+base_url = "{base_url}"
+{setting}
+[targets]
+answer = {{ id = "model/efficient", llm_client = "upstream" }}
+[routes.route]
+id = "route"
+type = "passthrough"
+target = "answer"
+"#
+        );
+        let app = build_switchyard_router(load_test_config(&config)?);
+        let response = send(&app, "POST", "/v1/responses", Some(json!({
+            "model": "route", "input": [
+                {"type": "message", "role": "user", "content": "continue"},
+                {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
+                {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "local"}], "summary": []}
+            ]
+        }))).await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.json()?);
+        let calls = upstream.calls.lock().await;
+        let input = calls.last().expect("upstream request")["input"]
+            .as_array()
+            .expect("input array");
+        assert_eq!(
+            input
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count(),
+            expected_reasoning
+        );
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "message" && item["role"] == "user")
+        );
+    }
+    Ok(())
+}
