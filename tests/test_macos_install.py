@@ -4,6 +4,7 @@
 import os
 import shutil
 import subprocess
+import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def setup(tmp_path):
     stubs = {
         "cargo": "exit 0\n",
         "uname": "echo Darwin\n",
-        "install": 'printf "#!/bin/sh\\nexit 0\\n" > "$4"\nchmod +x "$4"\n',
+        "install": 'if [[ "$3" == */switchyard-menubar ]]; then printf "#!/bin/bash\\n[[ \\\"${FAIL_TOML_VALIDATION:-0}\\\" != 1 ]]\\n" > "$4"; else printf "#!/bin/sh\\nexit 0\\n" > "$4"; fi\nchmod +x "$4"\n',
         "launchctl": '[[ "$1" != print ]]\n',
     }
     for name, body in stubs.items():
@@ -113,14 +114,52 @@ def test_install_prints_profile_usage_without_editing_shell_files(setup):
     assert bashrc.read_text() == "bash settings\n"
 
 
-def test_provider_table_with_comment_is_replaced_and_shared_template_is_used(setup):
+def test_menu_bar_settings_escape_sy_home_as_toml_strings(setup):
+    _, home, _, env = setup
+    switchyard_home = home / 'Switchyard "quoted" \\ folder'
+    env["SY_HOME"] = str(switchyard_home)
+
+    result = run(setup, "install.sh")
+
+    assert result.returncode == 0, result.stderr
+    settings = tomllib.loads((switchyard_home / "menubar.toml").read_text())
+    assert settings["routing_log"] == str(switchyard_home / "routing.jsonl")
+    assert settings["config_file"] == str(switchyard_home / "composite.toml")
+
+
+def test_invalid_generated_codex_toml_does_not_replace_active_config(setup):
+    _, home, _, env = setup
+    codex = Path(env["CODEX_HOME"])
+    codex.mkdir()
+    original = 'model = "gpt-5.6-sol"\n'
+    (codex / "config.toml").write_text(original)
+    env["FAIL_TOML_VALIDATION"] = "1"
+
+    result = run(setup, "install.sh")
+
+    assert result.returncode != 0
+    assert "leaving" in result.stderr
+    assert (codex / "config.toml").read_text() == original
+
+
+@pytest.mark.parametrize(
+    "provider_header",
+    [
+        "[model_providers.\"sy\"]",
+        "[model_providers . 'sy']",
+        '[ "model_providers" . "sy" ]',
+    ],
+)
+def test_provider_table_with_quoted_key_is_replaced_and_shared_template_is_used(
+    setup, provider_header
+):
     _, home, switchyard_home, env = setup
     codex = Path(env["CODEX_HOME"])
     codex.mkdir()
     config = codex / "config.toml"
-    original = '''theme = "dark"
+    original = f'''theme = "dark"
 
-[model_providers.sy] # old provider
+{provider_header} # old provider
 name = "Old"
 base_url = "http://old"
 
@@ -131,9 +170,11 @@ model_provider = "sy"
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
     generated = read_config(codex / "config.sy.toml")
+    parsed = tomllib.loads(generated)
     assert generated.count("[model_providers.sy]") == 1
     assert 'name = "Old"' not in generated
     assert '[other]\nmodel_provider = "sy"' in generated
+    assert parsed["model_providers"]["sy"]["name"] == "Switchyard"
     assert read_config(config) == generated
     assert read_config(switchyard_home / "composite.toml") == read_config(
         REPO / "scripts" / "config" / "composite.toml"
