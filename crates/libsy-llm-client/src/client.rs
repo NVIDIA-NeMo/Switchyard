@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`TranslatingLlmClient`] — the crate's single public entry point: encode a neutral
+//! [`TranslatingLlmClient`]: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -896,7 +896,7 @@ fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
     }
 }
 
-fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
+pub(crate) fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // Reqwest labels truncated or otherwise unreadable response bodies as decode
     // errors, so distinguish them from serde JSON failures at the call site.
     let error = error.without_url();

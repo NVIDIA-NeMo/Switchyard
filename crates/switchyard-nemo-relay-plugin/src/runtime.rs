@@ -336,7 +336,23 @@ impl SwitchyardRuntime {
                 }
                 RunObservation::LlmCall(call) => {
                     call_index += 1;
-                    self.routing_call_events(events, call, call_index, metadata);
+                    self.routing_call_events(
+                        events,
+                        call,
+                        call_index,
+                        metadata,
+                        "switchyard.routing.llm_call",
+                    );
+                }
+                RunObservation::DecisionCall(call) => {
+                    call_index += 1;
+                    self.routing_call_events(
+                        events,
+                        call,
+                        call_index,
+                        metadata,
+                        "switchyard.routing.decision_call",
+                    );
                 }
                 RunObservation::RoutingOverhead(duration) => {
                     let latency_ms = duration.as_secs_f64() * 1_000.0;
@@ -377,12 +393,13 @@ impl SwitchyardRuntime {
         call: LlmCallObservation,
         call_index: usize,
         metadata: &Json,
+        mark_name: &str,
     ) {
         let outcome = if call.is_success { "ok" } else { "error" };
         let latency_ms = call.duration.as_secs_f64() * 1_000.0;
         let token_metrics = token_usage_metrics("routing", &call, metadata);
         events.push(RoutingEvent::Mark(RoutingMark {
-            name: "switchyard.routing.llm_call".into(),
+            name: mark_name.into(),
             data: json!({
                 "call_index": call_index,
                 "selected_model": call.selected_model.as_str(),
