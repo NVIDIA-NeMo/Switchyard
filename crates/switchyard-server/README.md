@@ -176,6 +176,81 @@ To add instructions for a target, set `system_prompt` on its `[targets.<name>]` 
 Switchyard prepends that text when the selected target serves a completion and retains
 the caller's instructions. Omit the setting to add no target instructions.
 
+## Codex "Approve for me"
+
+With "Approve for me" on, Codex asks a reviewer model to check each action that
+needs approval. Codex sends each review request to its own model provider, so
+when Codex points at Switchyard, the review goes to Switchyard. Unless Codex is
+logged in with an OpenAI API key, the request names the model ID
+`codex-auto-review`. If no route has that `id`, the server returns HTTP 404
+`model_not_found`. Codex treats a failed review as a denial, so it declines the
+action.
+
+You need the route if you use Codex through Switchyard with "Approve for me" on
+in the Default or Read Only mode. This includes Codex logged in with ChatGPT.
+Full Access mode never asks for approval, so it never sends review requests.
+
+Add a route whose `id` is `codex-auto-review`. `examples/run_codex.sh` and
+`scripts/config/composite.toml` forward the review unchanged to Codex's own
+reviewer model on the ChatGPT backend:
+
+```toml
+[llm_clients.chatgpt_backend]
+format = "openai_responses"
+base_url = "https://chatgpt.com/backend-api/codex"
+forward_auth = true
+
+[targets.reviewer]
+id = "codex-auto-review"
+llm_client = "chatgpt_backend"
+
+[routes.codex_auto_review]
+id = "codex-auto-review"
+type = "passthrough"
+target = "reviewer"
+```
+
+To review with another model, point `target` at any other target. Codex reads
+the reviewer's final message as a JSON verdict, so use a model that can follow a
+JSON output schema.
+
+When Codex is logged in with an OpenAI API key, it sends review requests to
+`gpt-5.6-luna` instead. For that login, give the reviewer route
+`id = "gpt-5.6-luna"`. That route then receives every Codex request for the
+`gpt-5.6-luna` model ID, not only review requests.
+
+Codex can send reviews to another model ID only through a full replacement model
+catalog: set the `model_catalog_json` config key, and set
+`auto_review_model_override` on the session model's entry. That catalog must
+list every model Codex uses and changes with Codex releases, so a Switchyard
+route is simpler.
+
+To run every action without a review, use Codex settings instead of a
+Switchyard route. With `approval_policy = "never"` (`-a never`), Codex never
+asks and sends no review requests. Commands still run inside the sandbox, and
+anything the sandbox blocks fails back to the model:
+
+```toml
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true  # only if commands need the network
+```
+
+`--dangerously-bypass-approvals-and-sandbox` (`--yolo`, the Full Access preset)
+runs everything with no sandbox and no approvals. To skip review only for some
+commands, add an experimental `prefix_rule(pattern = [...], decision = "allow")`
+rule to `~/.codex/rules/default.rules`. See Codex's
+[Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security)
+page.
+
+The installer, `scripts/linux/install.sh`, does not overwrite an existing
+`~/.switchyard/composite.toml`.
+If you installed Switchyard before this route was added, add the
+`[targets.reviewer]` and `[routes.codex_auto_review]` blocks to that file by
+hand, then restart the server.
+
 ## Endpoints
 
 | Method | Path | Purpose |
