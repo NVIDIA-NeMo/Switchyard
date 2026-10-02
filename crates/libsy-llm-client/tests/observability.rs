@@ -1604,6 +1604,140 @@ async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_lib
 }
 
 #[tokio::test]
+async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Result<()> {
+    use switchyard_protocol::{DecisionRequest, DecisionResponse};
+
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    struct DecisionAlgo(String);
+
+    #[async_trait]
+    impl Algorithm for DecisionAlgo {
+        fn name(&self) -> &str {
+            &self.0
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> switchyard_libsy::Result<RoutingOutcome> {
+            driver
+                .call_decision(
+                    DecisionRequest {
+                        model: None,
+                        context: json!(LEAKED_CONTENT),
+                        questions: Default::default(),
+                    },
+                    self.0.clone().into(),
+                )
+                .await?;
+            Ok(RoutingOutcome::route_to("answer".into(), vec![], request))
+        }
+    }
+
+    for mode in ["reply", "error", "fail", "drop", "cancel"] {
+        let algorithm = format!("obs-decision-{mode}");
+        let name = algorithm.as_str();
+        let mut stream = Box::pin(Arc::new(DecisionAlgo(algorithm.clone())).run_stream(
+            request_with_metadata("decision-session", "decision-correlation"),
+            Arc::new(RuntimeModels::default()),
+        ));
+        let Some(Ok(Step::CallDecision(call))) = stream.next().await else {
+            return Err(test_error("expected a decision call"));
+        };
+        assert_eq!(
+            u64_counter_value(
+                &flushed_metrics(exporter, provider),
+                "switchyard.decision_calls",
+                &[("algorithm", name)],
+            ),
+            None,
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if mode == "cancel" {
+            drop(stream);
+            drop(call);
+        } else {
+            match mode {
+                "reply" => call.respond(Ok(DecisionResponse {
+                    id: Some("decision-response".into()),
+                    model: Some("provider-model".into()),
+                    answers: Default::default(),
+                    usage: Usage {
+                        input_tokens: Some(42),
+                        output_tokens: Some(5),
+                        ..Usage::default()
+                    },
+                }))?,
+                "error" => call.respond(Err(test_error(LEAKED_CONTENT)))?,
+                "fail" => assert!(call.fail(test_error(LEAKED_CONTENT)).is_err()),
+                "drop" => drop(call),
+                _ => unreachable!(),
+            }
+            while stream.next().await.is_some() {}
+        }
+        let outcome = if mode == "reply" { "ok" } else { "error" };
+        let attrs = [
+            ("algorithm", name),
+            ("selected_model", name),
+            ("outcome", outcome),
+        ];
+        let snapshots = flushed_metrics(exporter, provider);
+        assert_eq!(
+            u64_counter_value(&snapshots, "switchyard.decision_calls", &attrs),
+            Some(1)
+        );
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.decision_calls",
+                &[
+                    ("algorithm", name),
+                    ("outcome", if mode == "reply" { "error" } else { "ok" })
+                ],
+            ),
+            None,
+        );
+        assert_eq!(
+            f64_histogram_count(&snapshots, "switchyard.decision_call_duration_ms", &attrs),
+            Some(1)
+        );
+        assert!(
+            f64_histogram_sum_ms(&snapshots, "switchyard.decision_call_duration_ms", &attrs)
+                .unwrap_or(0)
+                >= 10
+        );
+        assert_eq!(
+            u64_counter_value(&snapshots, "switchyard.llm_calls", &[("algorithm", name)]),
+            None
+        );
+
+        let span = find_span(&store.spans(), "libsy.decision_call", "algorithm", name);
+        assert_eq!(span.parent.as_deref(), Some("libsy.run"));
+        assert_eq!(
+            span.fields.get("outcome").map(String::as_str),
+            Some(outcome)
+        );
+        for (field, value) in [
+            ("input_tokens", "42"),
+            ("output_tokens", "5"),
+            ("gen_ai.response.id", "decision-response"),
+            ("gen_ai.response.model", "provider-model"),
+        ] {
+            assert_eq!(
+                span.fields.get(field).map(String::as_str),
+                (mode == "reply").then_some(value)
+            );
+        }
+        assert!(!span.fields.contains_key("total_tokens"));
+        assert!(!span.fields.contains_key("error"));
+        assert!(!format!("{span:?}").contains(LEAKED_CONTENT));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (store, exporter, provider, _, _) = telemetry();
