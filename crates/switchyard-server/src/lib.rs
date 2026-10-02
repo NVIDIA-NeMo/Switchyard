@@ -445,7 +445,7 @@ fn stats_observer(
                 stats.record_error(&call.selected_model);
             }
         }
-        RunObservation::LlmCall(call) => {
+        RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_success {
                 if let (Some((log, context)), Some(usage)) =
