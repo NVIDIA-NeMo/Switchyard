@@ -210,9 +210,16 @@ type = "passthrough"
 target = "reviewer"
 ```
 
-To review with another model, point `target` at any other target. Codex reads
-the reviewer's final message as a JSON verdict, so use a model that can follow a
-JSON output schema.
+To review with another model, point `target` at any other target. Use a small,
+fast model at low reasoning effort. Codex waits for each review before it runs
+the action, so a slow reviewer slows down every step that needs approval.
+Codex already asks for `low` effort in each review request, so don't set a
+higher `reasoning_effort` on the reviewer target. A larger model costs more and
+takes longer per review, but OpenAI found that stronger models catch risky
+actions more reliably
+([Auto-review](https://alignment.openai.com/auto-review/)). The model must also
+follow a JSON output schema, because Codex reads the reviewer's final message as
+a JSON verdict.
 
 When Codex is logged in with an OpenAI API key, it sends review requests to
 `gpt-5.6-luna` instead. For that login, give the reviewer route

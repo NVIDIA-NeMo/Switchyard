@@ -8,6 +8,7 @@ It has the following endpoints connected to Inference Hub:
 * `switchyard/random` -> oss-20b (above) and nvidia_dynamo/deepseek-ai/deepseek-v4-flash-nvfp4-elb
 * `switchyard/stage` -> nvidia/zai-org/glm-5.2 and aws/anthropic/bedrock-claude-opus-4-8
 * `switchyard/classifier` -> same models as stage
+* `codex-auto-review` -> same model as `switchyard/passthrough`, for Codex "Approve for me" reviews
 
 If you have an NVIDIA UNIX account and Silverfort I think you can ssh to it, ping for details. There's a `/home/README` with the infos once you're in.
 
