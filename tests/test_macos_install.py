@@ -85,6 +85,21 @@ def test_missing_codex_config_creates_routed_config_and_empty_backup(setup):
     assert (codex / "config.toml.direct").read_text() == ""
 
 
+def test_install_prints_profile_usage_without_editing_shell_files(setup):
+    _, home, _, _ = setup
+    zshrc = home / ".zshrc"
+    bashrc = home / ".bashrc"
+    zshrc.write_text("zsh settings\n")
+    bashrc.write_text("bash settings\n")
+
+    result = run(setup, "install.sh")
+
+    assert result.returncode == 0, result.stderr
+    assert "Use it with: codex -p sy" in result.stdout
+    assert zshrc.read_text() == "zsh settings\n"
+    assert bashrc.read_text() == "bash settings\n"
+
+
 def test_provider_table_with_comment_is_replaced_and_shared_template_is_used(setup):
     _, home, switchyard_home, env = setup
     codex = Path(env["CODEX_HOME"])
