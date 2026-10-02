@@ -67,6 +67,14 @@ impl Config {
     }
 }
 
+pub fn validate_toml_file(path: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    toml::from_str::<toml::Value>(&text)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    Ok(())
+}
+
 /// Rewrites a leading `~`. Paths are written by hand in the settings file,
 /// where `~` is the natural way to spell a home path.
 pub fn expand_home(path: &Path) -> PathBuf {
@@ -128,6 +136,19 @@ output_per_mtok = 2.0
         std::fs::write(&path, "server_url = ").expect("write settings");
 
         assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn validates_arbitrary_toml_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codex.toml");
+        std::fs::write(&path, "[model_providers.\"sy\"]\nname = \"Switchyard\"\n")
+            .expect("write config");
+
+        assert!(validate_toml_file(&path).is_ok());
+
+        std::fs::write(&path, "[model_providers.\"sy\"]\nname = ").expect("write config");
+        assert!(validate_toml_file(&path).is_err());
     }
 
     #[test]

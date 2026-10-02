@@ -42,12 +42,19 @@ write_codex_switchyard_config() {
   # model_provider, and an earlier copy of the provider table.
   if [[ -f "$source" ]]; then
     awk '
-      BEGIN { preamble = 1; skip_table = 0 }
+      BEGIN {
+        preamble = 1
+        skip_table = 0
+        quote = sprintf("%c", 39)
+        model_key = "(model_providers|\"model_providers\"|" quote "model_providers" quote ")"
+        provider_key = "(sy|\"sy\"|" quote "sy" quote ")"
+        provider_header = "^[[:space:]]*\\[[[:space:]]*" model_key "[[:space:]]*\\.[[:space:]]*" provider_key "[[:space:]]*\\][[:space:]]*$"
+      }
       /^[[:space:]]*\[/ {
         preamble = 0
         header = $0
         sub(/[[:space:]]*#.*/, "", header)
-        skip_table = (header ~ /^[[:space:]]*\[model_providers\.sy\][[:space:]]*$/)
+        skip_table = (header ~ provider_header)
       }
       preamble && /^[[:space:]]*(model|model_provider)[[:space:]]*=/ { next }
       !skip_table { print }
@@ -79,6 +86,10 @@ xml_escape_text() {
     -e 's/>/\&gt;/g'
 }
 
+toml_escape_basic_string() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
   say "This installer is for macOS only." >&2
   exit 1
@@ -101,10 +112,11 @@ write_once "$SY_HOME/composite.toml" < "$REPO_ROOT/scripts/config/composite.toml
 step "Writing menu bar settings"
 # Rates are list prices per million tokens and are only used to estimate
 # savings. Edit them to match what you actually pay.
+TOML_SY_HOME="$(toml_escape_basic_string "$SY_HOME")"
 write_once "$SY_HOME/menubar.toml" <<EOF
 server_url = "http://127.0.0.1:$SY_PORT"
-routing_log = "$SY_HOME/routing.jsonl"
-config_file = "$SY_HOME/composite.toml"
+routing_log = "$TOML_SY_HOME/routing.jsonl"
+config_file = "$TOML_SY_HOME/composite.toml"
 launchd_label = "$SERVER_LABEL"
 refresh_seconds = 30
 
@@ -265,8 +277,13 @@ else
 fi
 write_codex_switchyard_config "$CONFIG_SOURCE" "$CODEX_SWITCHYARD_CONFIG"
 if (( DRY_RUN )); then
+  say "  would validate $CODEX_SWITCHYARD_CONFIG"
   say "  would replace $CODEX_CONFIG with $CODEX_SWITCHYARD_CONFIG"
 else
+  if ! "$SY_HOME/bin/switchyard-menubar" --validate-toml "$CODEX_SWITCHYARD_CONFIG"; then
+    say "Generated Codex config is invalid; leaving $CODEX_CONFIG unchanged." >&2
+    exit 1
+  fi
   cp "$CODEX_SWITCHYARD_CONFIG" "$CODEX_CONFIG"
   say "  replaced $CODEX_CONFIG with the Switchyard config"
 fi
