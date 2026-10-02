@@ -134,8 +134,8 @@ forward_auth = true
 ```
 
 Such a route serves Chat Completions and Responses callers and forwards the
-caller's bearer token to every client. The server returns `400` without calling
-an upstream when a caller uses an API that the route does not serve.
+caller's bearer token to every forwarding client. The server returns `400` without
+calling an upstream when a caller uses an API that the route does not serve.
 
 These limits apply only to forwarded credentials. A client with `api_key_env`
 sends the server's own key, so a route can mix formats and providers through

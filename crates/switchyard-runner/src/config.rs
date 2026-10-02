@@ -407,7 +407,7 @@ impl DeploymentConfig {
             if forwarding_origins.len() > 1 {
                 let origins = Vec::from_iter(forwarding_origins).join(", ");
                 return Err(RunnerError::configuration(format!(
-                    "route {route_name} cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host, such as an LLM gateway, or set api_key_env instead of forward_auth on one provider's clients"
+                    "route {route_name} cannot forward both Anthropic and OpenAI caller credentials to different origins ({origins}); point all of its forwarding clients at one origin (same scheme, host, and port), such as an LLM gateway, or set api_key_env instead of forward_auth on one provider's clients"
                 )));
             }
             caller_auth = Some(CallerAuthKind::OpenAi);
@@ -1955,7 +1955,8 @@ target = "claude"
         )
     }
 
-    /// A forwarding route can mix OpenAI and Anthropic clients only when they all use one host.
+    /// A forwarding route can mix OpenAI and Anthropic clients only when they all use the same
+    /// scheme, host, and port.
     #[test]
     fn forwarding_route_mixes_formats_only_on_one_host() -> RunnerResult<()> {
         // Same host, different paths: the mixed route serves OpenAI callers, and the route that
@@ -1979,7 +1980,7 @@ target = "claude"
         ] {
             let error = error_message(&mixed_forwarding_config(other));
             assert!(
-                error.contains("different hosts") && error.contains(other),
+                error.contains("different origins") && error.contains(other),
                 "{error}"
             );
         }

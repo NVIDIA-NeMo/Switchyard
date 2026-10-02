@@ -98,7 +98,7 @@ forwarding clients must use one credential family: all OpenAI formats or all
 as an LLM gateway that accepts each caller's gateway key on every endpoint: a
 route may mix the two families when all of its forwarding clients use the same
 scheme, host, and port. Such a route serves Chat Completions and Responses
-callers and forwards the caller's bearer token to every client.
+callers and forwards the caller's bearer token to every forwarding client.
 The server returns 400 to a caller whose API the route does not serve.
 Clients that use `api_key_env` send the server's own key, so these limits do
 not apply to them.
