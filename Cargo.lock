@@ -2335,6 +2335,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "shlex",
  "switchyard-protocol",
  "thiserror 2.0.18",
  "tokio",
