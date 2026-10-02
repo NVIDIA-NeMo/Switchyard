@@ -22,24 +22,5 @@ PROFILE_END="# <<< switchyard sy profile <<<"
 codex_config_uses_switchyard() {
   local path="$1"
   [[ -f "$path" ]] || return 1
-  awk '
-    function is_string(value, wanted, quote, prefix, suffix) {
-      sub(/^[[:space:]]*/, "", value)
-      quote = substr(value, 1, 1)
-      if (quote != "\"" && quote != sprintf("%c", 39)) return 0
-      prefix = quote wanted quote
-      if (substr(value, 1, length(prefix)) != prefix) return 0
-      suffix = substr(value, length(prefix) + 1)
-      return suffix ~ /^[[:space:]]*(#.*)?$/
-    }
-    BEGIN { top_level = 1 }
-    /^[[:space:]]*#/ { next }
-    /^[[:space:]]*\[/ { top_level = 0; next }
-    top_level && /^[[:space:]]*model_provider[[:space:]]*=/ {
-      value = $0
-      sub(/^[^=]*=[[:space:]]*/, "", value)
-      if (is_string(value, "sy")) found = 1
-    }
-    END { exit !found }
-  ' "$path"
+  grep -Fq '[model_providers.sy]' "$path"
 }

@@ -195,12 +195,7 @@ else
   fi
 fi
 write_codex_switchyard_config "$CONFIG_SOURCE" "$CODEX_SWITCHYARD_CONFIG"
-if (( DRY_RUN )); then
-  say "  would replace $CODEX_CONFIG with $CODEX_SWITCHYARD_CONFIG"
-else
-  cp "$CODEX_SWITCHYARD_CONFIG" "$CODEX_CONFIG"
-  say "  replaced $CODEX_CONFIG with the Switchyard config"
-fi
+write_with_backup "$CODEX_CONFIG" < "$CODEX_SWITCHYARD_CONFIG"
 
 step "Done"
 say "Server:   http://127.0.0.1:$SY_PORT  (logs in $SY_HOME/logs)"
