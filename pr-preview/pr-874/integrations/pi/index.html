@@ -1762,7 +1762,7 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/510877a60b46109fcb4b998ca34b2a003f460a9e/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/368bd61b318cc4b688f17da49138d75afc612501/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-targets-behind-an-openai-compatible-gateway">Claude targets behind an OpenAI-compatible gateway<a class="headerlink" href="#claude-targets-behind-an-openai-compatible-gateway" title="Permanent link">&para;</a></h2>
 <p>Some gateways, such as a LiteLLM proxy, serve Claude models on <code>/v1/chat/completions</code>,
@@ -1788,7 +1788,7 @@ for this page, the <code>format</code> decided whether Claude prompts were cache
 <tr>
 <td>pi sends it as <code>apiKey</code>, and the Claude LLM client forwards it with <code>forward_auth = true</code></td>
 <td><code>format = "openai_chat"</code>, with <code>omit_body_fields = ["reasoning_effort"]</code> on the target</td>
-<td>Prompt caching works. pi's <code>--thinking</code> level has no effect, and Claude thinks at its default effort.</td>
+<td>Prompt caching works. pi's <code>--thinking</code> level has no effect, and Claude thinks at its default effort. The omitted field stays out only if the target's <code>extra_body</code> and <code>reasoning_effort</code> do not set it again.</td>
 </tr>
 </tbody>
 </table>
@@ -1841,17 +1841,18 @@ multiply each token count in its record by the matching price, and add the resul
 </tr>
 </tbody>
 </table>
-<p>Anthropic's published pricing sets the cache-read price at 0.1 times the input price. It
-sets the cache-write price at 1.25 times the input price for a 5-minute cache, or 2 times
-for a 1-hour cache. The routing log does not record which cache lifetime the gateway
-used, and a gateway may charge its own prices, so the result is an estimate, not the
-gateway's bill.</p>
+<p>Anthropic's <a href="https://platform.claude.com/docs/en/about-claude/pricing">pricing page</a>
+sets the cache-read price at 0.1 times the input price for most models, including
+Claude Sonnet 5, but at 0.05 times for Claude Opus 5.5. It sets the cache-write price at
+1.25 times the input price for a 5-minute cache, or 2 times for a 1-hour cache. The
+routing log does not record which cache lifetime the gateway used, and a gateway may
+charge its own prices, so the result is an estimate, not the gateway's bill.</p>
 <p>Put your prices in a <code>prices.json</code> file, in USD per million tokens. Key each entry by the
-<code>model</code> value from the routing log. The rates below are illustrative: they only follow
-Anthropic's published ratios, with cache reads at 0.1 times and 5-minute cache writes at
-1.25 times the input price. Replace them with your provider's current prices.</p>
+<code>model</code> value from the routing log. The example below uses Anthropic's list prices for
+Claude Sonnet 5 on 2026-10-02, with the 5-minute cache-write price. Check the current
+pricing page or your gateway's prices before you rely on the result.</p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;claude-opus-5-5&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">12.50</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">50.00</span><span class="p">}</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;claude-sonnet-5&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.20</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.50</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.00</span><span class="p">}</span>
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>The command below prints one estimated cost per record. For a record whose model has no
@@ -1887,7 +1888,9 @@ tested for this page, turn <code>reasoning_effort</code> into Anthropic's older
 <li>Keep the OpenAI-format LLM client and remove the effort field from requests to the
   target with <a href="../../reference/toml_schema/#targetsname"><code>omit_body_fields</code></a>. Use the
   field name of the target's format: <code>reasoning_effort</code> on <code>openai_chat</code>, or <code>reasoning</code>
-  on <code>openai_responses</code>.</li>
+  on <code>openai_responses</code>. Switchyard applies the target's <code>extra_body</code> and
+  <code>reasoning_effort</code> after <code>omit_body_fields</code>, so this works only if neither sets the
+  field again.</li>
 </ul>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">[targets.claude]</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
