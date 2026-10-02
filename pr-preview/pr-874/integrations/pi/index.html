@@ -1762,7 +1762,7 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/368bd61b318cc4b688f17da49138d75afc612501/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/57e67f7206ca0d8fcb16c9583434ecb0df5feb5d/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-targets-behind-an-openai-compatible-gateway">Claude targets behind an OpenAI-compatible gateway<a class="headerlink" href="#claude-targets-behind-an-openai-compatible-gateway" title="Permanent link">&para;</a></h2>
 <p>Some gateways, such as a LiteLLM proxy, serve Claude models on <code>/v1/chat/completions</code>,
@@ -1786,7 +1786,12 @@ for this page, the <code>format</code> decided whether Claude prompts were cache
 <td>Prompt caching and pi's <code>--thinking</code> level both work. Every caller's Claude requests use the server-owned key.</td>
 </tr>
 <tr>
-<td>pi sends it as <code>apiKey</code>, and the Claude LLM client forwards it with <code>forward_auth = true</code></td>
+<td>pi sends it as <code>apiKey</code>, and the route also forwards it to an OpenAI-format LLM client on the same gateway, such as a GPT judge</td>
+<td><code>format = "anthropic_messages"</code> with <code>forward_auth = true</code>, on the same scheme, host, and port as that client</td>
+<td>Prompt caching and pi's <code>--thinking</code> level both work, and every request uses pi's own key.</td>
+</tr>
+<tr>
+<td>pi sends it as <code>apiKey</code>, and the route forwards it only to Claude targets</td>
 <td><code>format = "openai_chat"</code>, with <code>omit_body_fields = ["reasoning_effort"]</code> on the target</td>
 <td>Prompt caching works. pi's <code>--thinking</code> level has no effect, and Claude thinks at its default effort. The omitted field stays out only if the target's <code>extra_body</code> and <code>reasoning_effort</code> do not set it again.</td>
 </tr>
@@ -1794,7 +1799,7 @@ for this page, the <code>format</code> decided whether Claude prompts were cache
 </table>
 <p>Do not use <code>format = "openai_responses"</code> for Claude targets on such a gateway. The
 gateway tested for this page never cached Claude prompts on <code>/v1/responses</code>, and it
-returned HTTP 400 when thinking was on (see <a href="#thinking">Thinking</a>). In both setups, a GPT
+returned HTTP 400 when thinking was on (see <a href="#thinking">Thinking</a>). In every setup, a GPT
 judge on <code>openai_responses</code> can still use pi's forwarded key (see
 <a href="#forwarded-keys">Forwarded keys</a>).</p>
 <h3 id="prompt-caching">Prompt caching<a class="headerlink" href="#prompt-caching" title="Permanent link">&para;</a></h3>
@@ -1907,29 +1912,28 @@ environment variable (see
 key, replace the <code>apiKey</code> placeholder with the name of an environment variable that holds
 your gateway key, with a leading <code>$</code>: <code>"apiKey": "$GATEWAY_API_KEY"</code>. Without the <code>$</code>,
 pi sends the name itself as the key.</p>
-<p>Two rules limit forwarding in one route:</p>
+<p>The LLM clients that forward the key decide which request APIs a route accepts:</p>
 <ul>
-<li>Every LLM client in the route that sets <code>forward_auth = true</code> must use the same API
-  family: <code>openai_chat</code> and <code>openai_responses</code>, or <code>anthropic_messages</code>. Otherwise the
-  server does not start and prints
+<li>If they all use OpenAI formats (<code>openai_chat</code> or <code>openai_responses</code>), the route accepts
+  <code>/v1/chat/completions</code> and <code>/v1/responses</code>, the two APIs pi uses.</li>
+<li>If they all use <code>anthropic_messages</code>, the route accepts only <code>/v1/messages</code>, and pi
+  should not use that API (see <a href="#which-request-api">Which request API</a>).</li>
+<li>If they mix the two, the route accepts <code>/v1/chat/completions</code> and <code>/v1/responses</code>. The
+  server starts only if all of them use the same scheme, host, and port in <code>base_url</code>,
+  as clients on one gateway do. Otherwise it prints an error that starts with
   <code>route &lt;name&gt; cannot forward both Anthropic and OpenAI caller credentials</code>. <code>&lt;name&gt;</code> is
   the route's <code>[routes.&lt;name&gt;]</code> table key, not its <code>id</code>.</li>
-<li>A route that forwards the key to an <code>anthropic_messages</code> client accepts requests only on
-  <code>/v1/messages</code>, and pi should not use that API (see <a href="#which-request-api">Which request API</a>).</li>
 </ul>
-<p>So if the route forwards pi's key to its Claude targets, put them on <code>openai_chat</code> with
-<code>omit_body_fields</code>.</p>
-<p>To keep pi's <code>--thinking</code> level, give the Claude targets an <code>anthropic_messages</code> client
-with <code>api_key_env</code>. Which endpoints the route accepts then depends on the route's other
-LLM clients:</p>
-<ul>
-<li>If no LLM client in the route sets <code>forward_auth = true</code>, the route accepts every
-  request API.</li>
-<li>If an OpenAI-format LLM client forwards the key, for example a GPT judge on
-  <code>openai_responses</code>, the route accepts only <code>/v1/chat/completions</code> and <code>/v1/responses</code>
-  and returns HTTP 400 on <code>/v1/messages</code>. pi uses those two APIs, so this setup works
-  with pi.</li>
-</ul>
+<p>So to forward pi's key and keep pi's <code>--thinking</code> level, the route needs an OpenAI-format
+LLM client that also forwards the key on the same gateway, such as a GPT judge on
+<code>openai_responses</code>. Then put the Claude targets on an <code>anthropic_messages</code> client with
+<code>forward_auth = true</code> (see the example under
+<a href="../../reference/toml_schema/#llm_clientsname"><code>[llm_clients.&lt;name&gt;]</code></a>).</p>
+<p>A route without such a client cannot do both. To forward pi's key to Claude, put the
+Claude targets on <code>openai_chat</code> with <code>omit_body_fields</code>. To keep <code>--thinking</code>, give them
+an <code>anthropic_messages</code> client with <code>api_key_env</code>. Clients with <code>api_key_env</code> never limit
+the request APIs: if no LLM client in the route sets <code>forward_auth = true</code>, the route
+accepts every request API.</p>
 
 
 

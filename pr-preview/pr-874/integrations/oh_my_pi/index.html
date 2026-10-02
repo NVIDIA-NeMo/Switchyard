@@ -1776,20 +1776,19 @@ the pi guide. This section covers what differs for <code>omp</code>, checked wit
 <p>To forward <code>omp</code>'s key, remove <code>auth: none</code> and set <code>apiKey: GATEWAY_API_KEY</code>, the name
 of the environment variable that holds your gateway key. Unlike pi, <code>omp</code> reads the name
 without a leading <code>$</code>.</p>
-<p>A route that forwards the key to an <code>anthropic_messages</code> client accepts requests only on
-<code>/v1/messages</code>, and it cannot also forward the key to an <code>openai_chat</code> or
-<code>openai_responses</code> client. So a route with a GPT judge on <code>openai_responses</code> cannot
-forward the caller's key to both the judge and Claude targets on <code>anthropic_messages</code>.
-Choose one of two setups:</p>
+<p>A route that forwards the key only to <code>anthropic_messages</code> clients accepts requests only
+on <code>/v1/messages</code>. A route that forwards the key to both a GPT judge on <code>openai_responses</code>
+and Claude targets on <code>anthropic_messages</code> works when both LLM clients use the same
+scheme, host, and port, as clients on one gateway do. Switchyard then turns the effort
+into adaptive thinking, and every request uses <code>omp</code>'s key. Two other setups also work:</p>
 <ul>
 <li>Forward the key to every LLM client, and keep the Claude targets on <code>openai_chat</code> with
-  <code>omit_body_fields = ["reasoning_effort"]</code>. The Claude models then think at their
-  default effort, and <code>--thinking</code> has no effect on them.</li>
+  <code>omit_body_fields = ["reasoning_effort"]</code>. This works across hosts, but the Claude
+  models then think at their default effort, and <code>--thinking</code> has no effect on them.</li>
 <li>Forward the key only to the GPT judge, and give the Claude targets an
-  <code>anthropic_messages</code> client with <code>api_key_env</code>, so they use a server-owned key.
-  Switchyard then turns the effort into adaptive thinking.</li>
+  <code>anthropic_messages</code> client with <code>api_key_env</code>, so they use a server-owned key.</li>
 </ul>
-<p>Both setups forward the key to an OpenAI-format LLM client, so the route accepts only
+<p>All three setups forward the key to an OpenAI-format LLM client, so the route accepts only
 <code>/v1/chat/completions</code> and <code>/v1/responses</code> and returns HTTP 400 on <code>/v1/messages</code>. Use
 <code>openai-completions</code> or <code>openai-responses</code>.</p>
 
