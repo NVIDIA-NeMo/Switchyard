@@ -124,6 +124,7 @@ async fn upstream_props(State(calls): State<Arc<Mutex<Vec<Value>>>>) -> Json<Val
     Json(json!({"default_generation_settings": {"n_ctx": 98_304}}))
 }
 
+/// Build a mock upstream error containing both safe and sensitive headers.
 fn upstream_error_with_headers(status: StatusCode, request_id: &'static str) -> HttpResponse {
     let code = if status == StatusCode::TOO_MANY_REQUESTS {
         "rate_limit_exceeded"
@@ -153,6 +154,7 @@ fn upstream_error_with_headers(status: StatusCode, request_id: &'static str) -> 
     response
 }
 
+/// Simulate chat replies and terminal failures for routing tests.
 async fn upstream_chat(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     Json(body): Json<Value>,
@@ -164,6 +166,13 @@ async fn upstream_chat(
     }
     if prompt == "error-headers-503" {
         return upstream_error_with_headers(StatusCode::SERVICE_UNAVAILABLE, "req-503");
+    }
+    if prompt == "error-headers-connection" {
+        let mut response = upstream_error_with_headers(StatusCode::TOO_MANY_REQUESTS, "hop-id");
+        response
+            .headers_mut()
+            .insert("connection", HeaderValue::from_static("x-request-id"));
+        return response;
     }
     if prompt == "error-headers-fallback" && body["model"] == "model/weak" {
         return upstream_error_with_headers(StatusCode::TOO_MANY_REQUESTS, "req-weak");
@@ -6198,6 +6207,27 @@ async fn terminal_upstream_errors_forward_safe_headers() -> TestResult {
         assert!(!response.headers.contains_key("x-upstream-debug"));
         assert_eq!(response.json()?["error"]["message"], "upstream unavailable");
     }
+
+    let nominated = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "error-headers-connection"}]
+        })),
+    )
+    .await?;
+    assert_eq!(nominated.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(!nominated.headers.contains_key("x-request-id"));
+    assert_eq!(
+        nominated.headers.get("request-id"),
+        Some(&HeaderValue::from_static("hop-id"))
+    );
+    assert_eq!(
+        nominated.headers.get("retry-after"),
+        Some(&HeaderValue::from_static("15"))
+    );
 
     let anthropic = build_switchyard_router(load_test_config(&format!(
         r#"

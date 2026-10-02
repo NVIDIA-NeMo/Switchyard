@@ -491,7 +491,7 @@ async fn call_one(
     result
 }
 
-// Routing logs need the final usage, but replay must keep signed provider events intact.
+/// Preserve signed provider events while checking the complete routing response.
 async fn buffer_routing_stream(
     mut chunks: LlmResponseStream,
 ) -> std::result::Result<(LlmResponseStream, Option<Usage>), LlmClientError> {
