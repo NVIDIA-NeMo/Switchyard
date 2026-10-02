@@ -1776,6 +1776,9 @@ the pi guide. This section covers what differs for <code>omp</code>, checked wit
 <p>To forward <code>omp</code>'s key, remove <code>auth: none</code> and set <code>apiKey: GATEWAY_API_KEY</code>, the name
 of the environment variable that holds your gateway key. Unlike pi, <code>omp</code> reads the name
 without a leading <code>$</code>.</p>
+<p>Only standalone <code>switchyard-server</code> forwards keys. The native Nemo Relay plugin rejects
+routes that use <code>forward_auth = true</code> (see
+<a href="../nemo_relay/#request-handling">Request Handling</a>).</p>
 <p>A route that forwards the key only to <code>anthropic_messages</code> clients accepts requests only
 on <code>/v1/messages</code>. A route that forwards the key to both a GPT judge on <code>openai_responses</code>
 and Claude targets on <code>anthropic_messages</code> works when both LLM clients use the same
