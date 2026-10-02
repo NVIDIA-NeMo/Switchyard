@@ -395,15 +395,19 @@ impl DeploymentConfig {
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
         }
-        // A route may mix credential families only when all of its forwarding clients use the
-        // same scheme, host, and port, so the caller's credential reaches only that host. Such a
-        // route serves Chat Completions and Responses callers because Anthropic clients forward
-        // the caller's `authorization` header unchanged.
+        // Only forwarding clients count here. A client with api_key_env sends the server's own
+        // key, so a route can mix formats and providers through such clients. A forwarded
+        // credential belongs to the service that issued it, so forwarding clients must share one
+        // credential family unless they all use the same scheme, host, and port. One host that
+        // serves both formats is a single service, such as an LLM gateway that accepts the
+        // caller's gateway key on its OpenAI and Anthropic endpoints. Such a route serves Chat
+        // Completions and Responses callers because Anthropic clients forward the caller's
+        // `authorization` header unchanged.
         if mixes_families {
             if forwarding_origins.len() > 1 {
                 let origins = Vec::from_iter(forwarding_origins).join(", ");
                 return Err(RunnerError::configuration(format!(
-                    "route {route_name} cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host"
+                    "route {route_name} cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host, such as an LLM gateway, or set api_key_env instead of forward_auth on one provider's clients"
                 )));
             }
             caller_auth = Some(CallerAuthKind::OpenAi);
@@ -1963,7 +1967,7 @@ target = "capable"
     }
 
     #[test]
-    fn forwarding_route_mixes_credential_families_only_on_one_host() -> RunnerResult<()> {
+    fn mixed_formats_need_one_host_only_when_forwarding() -> RunnerResult<()> {
         // The URL path does not count, so both base URLs name one host.
         for messages_url in [
             "https://gateway.example.test",
@@ -1996,11 +2000,21 @@ target = "capable"
             let error = error_message(&mixed_forwarding_config(messages_url));
             assert!(
                 error.contains(&format!(
-                    "route hub cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host"
+                    "route hub cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host, such as an LLM gateway, or set api_key_env instead of forward_auth on one provider's clients"
                 )),
                 "{error}"
             );
         }
+
+        // Clients that send the server's own key never limit a route, even on two hosts, so the
+        // route serves callers of every API.
+        let server_keys = mixed_forwarding_config("https://api.anthropic.test")
+            .replace("forward_auth = true", "api_key_env = \"PATH\"");
+        let runner = runner_from_toml(&server_keys)?;
+        assert_eq!(
+            runner.route("switchyard/hub").and_then(Route::caller_auth),
+            None
+        );
         Ok(())
     }
 

@@ -51,7 +51,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `format` | Yes | — | `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | `base_url` | Yes | — | Upstream base URL. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
-| `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port. |
+| `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
@@ -109,15 +109,37 @@ upstream should receive the credential, and use HTTPS unless the upstream runs
 on loopback. Other application headers are preserved and may contain
 provider-specific credentials. Forwarding clients do not follow HTTP redirects.
 
-All forwarding clients in a route, including classifier and judge targets, must
-use one credential family: OpenAI (`openai_chat` and `openai_responses` clients,
-which serve Chat Completions and Responses callers) or Anthropic
-(`anthropic_messages` clients, which serve Messages callers). A route may mix
-the two families only when all of its forwarding clients use the same host: the
-same scheme, host, and port in `base_url`, though the path may differ. Such a
-route serves Chat Completions and Responses callers and forwards the caller's
-bearer token to every client. The server returns `400` without calling an
-upstream when a caller uses an API that the route does not serve.
+A forwarded credential belongs to the service that issued it. A ChatGPT login,
+for example, must never reach Anthropic. So all forwarding clients in a route,
+including classifier and judge targets, must use one credential family: OpenAI
+(`openai_chat` and `openai_responses` clients, which serve Chat Completions and
+Responses callers) or Anthropic (`anthropic_messages` clients, which serve
+Messages callers).
+
+The exception is one host that serves both formats, such as an LLM gateway that
+accepts each caller's gateway key on its OpenAI and Anthropic endpoints. A route
+may mix the two families when all of its forwarding clients use the same scheme,
+host, and port in `base_url`; the path may differ:
+
+```toml
+[llm_clients.gateway_responses]
+format = "openai_responses"
+base_url = "https://gateway.example.com/v1"
+forward_auth = true
+
+[llm_clients.gateway_messages]
+format = "anthropic_messages"
+base_url = "https://gateway.example.com"
+forward_auth = true
+```
+
+Such a route serves Chat Completions and Responses callers and forwards the
+caller's bearer token to every client. The server returns `400` without calling
+an upstream when a caller uses an API that the route does not serve.
+
+These limits apply only to forwarded credentials. A client with `api_key_env`
+sends the server's own key, so a route can mix formats and providers through
+such clients.
 
 ## `[targets.<name>]`
 

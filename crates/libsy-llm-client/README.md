@@ -242,10 +242,11 @@ fn build_multi_format_client(
   normalize `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`.
   Anthropic backends forward `authorization` or `x-api-key`; they also keep
   `oauth-*` values from `anthropic-beta` and remove other caller-supplied beta values.
-  All backends reachable through a forwarding route must use one credential family
-  (OpenAI or Anthropic) unless they all use the same scheme, host, and port. Such a
-  route serves Chat Completions and Responses callers and forwards their bearer
-  token to every backend.
+  The forwarding backends in one route must use one credential family (OpenAI or
+  Anthropic) unless they all use the same scheme, host, and port, such as one LLM
+  gateway that accepts the caller's gateway key on every endpoint. Such a route
+  serves Chat Completions and Responses callers and forwards their bearer token
+  to every backend. Backends that send a configured key are not restricted.
   Headers owned by other providers are preserved as application headers.
 - Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
   `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
