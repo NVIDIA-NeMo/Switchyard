@@ -350,6 +350,9 @@ impl DeploymentConfig {
             .collect()
     }
 
+    /// Builds the client router for one route. The second value is the caller credential family
+    /// that the route's forwarding clients need, or `None` when no client forwards the caller's
+    /// credential. A request through the other family's APIs fails before any upstream call.
     fn build_route_clients(
         &self,
         route_name: &str,
@@ -363,7 +366,7 @@ impl DeploymentConfig {
         let mut by_model = HashMap::new();
         let mut targets_by_model: HashMap<&str, (&str, &TargetConfig)> = HashMap::new();
         let mut caller_auth = None;
-        let mut mixes_families = false;
+        let mut has_mixed_families = false;
         let mut forwarding_origins = BTreeSet::new();
         for name in route.callable_target_names() {
             let target = self.targets.get(name).ok_or_else(|| {
@@ -388,7 +391,7 @@ impl DeploymentConfig {
             })?;
             if client_config.forward_auth {
                 let target_auth = client_config.format.caller_auth_kind();
-                mixes_families |= caller_auth.is_some_and(|kind| kind != target_auth);
+                has_mixed_families |= caller_auth.is_some_and(|kind| kind != target_auth);
                 caller_auth = Some(target_auth);
                 forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
             }
@@ -400,7 +403,7 @@ impl DeploymentConfig {
         // scheme, host, and port, such as one LLM gateway that accepts the caller's gateway key
         // on every endpoint. Such a route serves Chat Completions and Responses callers because
         // Anthropic clients forward the caller's `authorization` header unchanged.
-        if mixes_families {
+        if has_mixed_families {
             if forwarding_origins.len() > 1 {
                 let origins = Vec::from_iter(forwarding_origins).join(", ");
                 return Err(RunnerError::configuration(format!(
@@ -1918,8 +1921,8 @@ confidence_threshold = 0.5
         }
     }
 
-    // A route that mixes a GPT target on a Responses client with a Claude target on a Messages
-    // client, plus a route that uses only the Messages client.
+    /// Returns a config whose `mixed` route has a GPT target on a Responses client and a Claude
+    /// target on a Messages client at `messages_url`. Its `claude` route uses Claude only.
     fn mixed_forwarding_config(messages_url: &str) -> String {
         format!(
             r#"
@@ -1952,6 +1955,7 @@ target = "claude"
         )
     }
 
+    /// A forwarding route can mix OpenAI and Anthropic clients only when they all use one host.
     #[test]
     fn forwarding_route_mixes_formats_only_on_one_host() -> RunnerResult<()> {
         // Same host, different paths: the mixed route serves OpenAI callers, and the route that

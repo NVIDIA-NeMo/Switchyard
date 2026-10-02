@@ -3317,6 +3317,8 @@ async fn upstream_gateway_records_auth(
     .into_response()
 }
 
+/// A route that mixes formats on one gateway forwards the caller's bearer token to both of the
+/// gateway's APIs: `/v1/responses` for the judge and `/v1/messages` for the answer.
 #[tokio::test]
 async fn route_on_one_host_forwards_the_bearer_token_to_responses_and_messages() -> TestResult {
     let calls = Arc::new(Mutex::new(Vec::new()));
