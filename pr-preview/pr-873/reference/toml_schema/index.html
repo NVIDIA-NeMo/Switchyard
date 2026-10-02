@@ -1961,8 +1961,8 @@ host, and port in <code>base_url</code>; the path may differ:</p>
 </span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="n">forward_auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span></code></pre></div>
 <p>Such a route serves Chat Completions and Responses callers and forwards the
-caller's bearer token to every client. The server returns <code>400</code> without calling
-an upstream when a caller uses an API that the route does not serve.</p>
+caller's bearer token to every forwarding client. The server returns <code>400</code> without
+calling an upstream when a caller uses an API that the route does not serve.</p>
 <p>These limits apply only to forwarded credentials. A client with <code>api_key_env</code>
 sends the server's own key, so a route can mix formats and providers through
 such clients.</p>
