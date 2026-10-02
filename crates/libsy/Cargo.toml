@@ -33,11 +33,24 @@ rand.workspace = true
 regex.workspace = true
 switchyard-protocol.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", default-features = false }
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 uuid.workspace = true
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+tokio.workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+# Workers/browser targets have no OS threads or epoll: only tokio's
+# runtime-agnostic pieces (channels, mutexes, macros) are linked.
+tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
+wasm-bindgen-futures = "0.4"
+web-time = "1"
+# `rand` 0.10 pulls getrandom 0.4; route it through the JS crypto API.
+# (`jsonschema` already does the same for the 0.3 line that `ahash` uses.)
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
+uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.

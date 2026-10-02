@@ -31,7 +31,8 @@
 //! holds the only mutable state.
 
 use std::sync::Arc;
-use std::time::Instant;
+
+use crate::rt::Instant;
 
 use switchyard_protocol::{
     Category, ContentBlock, InstructionBlock, LlmRequest, Message, ModelId, OutputParams, Request,
