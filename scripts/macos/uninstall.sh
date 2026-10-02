@@ -18,19 +18,6 @@ DRY_RUN=0
 # shellcheck source=scripts/macos/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Deletes a file this script owns.
-remove_file() {
-  local path="$1"
-  if [[ ! -e "$path" ]]; then
-    say "  nothing to remove at $path"
-  elif (( DRY_RUN )); then
-    say "  would delete $path"
-  else
-    rm -f "$path"
-    say "  deleted $path"
-  fi
-}
-
 step "Unloading LaunchAgents"
 if (( DRY_RUN )); then
   say "  would unload gui/$UID/$SERVER_LABEL and delete its plist"
@@ -48,20 +35,21 @@ strip_block "$CODEX_CONFIG" "$PROFILE_START" "$PROFILE_END" "the legacy sy profi
   say "  no legacy profile in $CODEX_CONFIG"
 
 step "Unrouting Codex.app"
-# Leaving a routed config.toml behind would point Codex.app at a server that
-# is no longer running, so put the snapshot back before the agents go away.
-if codex_config_uses_switchyard "$CODEX_CONFIG"; then
-  if [[ ! -f "$CODEX_DIRECT_CONFIG" ]]; then
-    say "  config.toml is routed but $CODEX_DIRECT_CONFIG is missing; edit it by hand"
-  elif (( DRY_RUN )); then
+if [[ -f "$CODEX_DIRECT_CONFIG" ]]; then
+  if (( DRY_RUN )); then
     say "  would preserve $CODEX_CONFIG before restoring $CODEX_DIRECT_CONFIG"
   else
-    backup="$(mktemp "$CODEX_CONFIG.switchyard-current.XXXXXX")"
-    cp "$CODEX_CONFIG" "$backup"
+    backup=""
+    if [[ -f "$CODEX_CONFIG" ]]; then
+      backup="$(mktemp "$CODEX_CONFIG.switchyard-current.XXXXXX")"
+      cp "$CODEX_CONFIG" "$backup"
+    fi
     cp "$CODEX_DIRECT_CONFIG" "$CODEX_CONFIG"
     rm -f "$CODEX_DIRECT_CONFIG"
-    say "  restored the unrouted config.toml; preserved the current file at $backup"
+    say "  restored the original config.toml${backup:+; preserved the current file at $backup}"
   fi
+elif codex_config_uses_switchyard "$CODEX_CONFIG"; then
+  say "  config.toml is routed but $CODEX_DIRECT_CONFIG is missing; edit it by hand"
 else
   remove_file "$CODEX_DIRECT_CONFIG"
 fi
@@ -75,4 +63,5 @@ done
 step "Done"
 say "Left in place, delete them if you want:"
 say "  $SY_HOME (binaries, config, routing log, logs)"
-say "  $CODEX_CONFIG.switchyard-backup.* (backups taken at install time)"
+say "  $CODEX_CONFIG.switchyard-current.* (configs preserved during restore)"
+say "  $CODEX_PROFILE_CONFIG.switchyard-backup.* (profile backups)"
