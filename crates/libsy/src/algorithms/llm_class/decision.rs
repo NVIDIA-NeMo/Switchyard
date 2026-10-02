@@ -12,7 +12,7 @@ use switchyard_protocol::{
     ModelId, Request, Response,
 };
 
-use super::TaskInput;
+use crate::algorithms::llm_class::TaskInput;
 use crate::algorithms::util::llm_judge::{libsy_error_reason, report_fail_open};
 use crate::algorithms::util::robustness::safe_error_summary;
 use crate::{Classification, Classifier, Driver, LibsyError, Result, Score, State};
