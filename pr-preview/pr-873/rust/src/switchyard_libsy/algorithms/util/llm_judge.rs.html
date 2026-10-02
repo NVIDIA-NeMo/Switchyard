@@ -310,7 +310,7 @@
 <a href=#310 id=310 data-nosnippet>310</a>/// `error` must already be redacted: `LlmClientError::UpstreamHttp`'s `Display` interpolates the
 <a href=#311 id=311 data-nosnippet>311</a>/// raw upstream body, which can quote the conversation back. Callers pass a
 <a href=#312 id=312 data-nosnippet>312</a>/// `robustness::safe_*` summary rather than the error itself.
-<a href=#313 id=313 data-nosnippet>313</a></span><span class="kw">fn </span>report_fail_open(judge_model: <span class="kw-2">&amp;</span>str, error: String, reason: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) {
+<a href=#313 id=313 data-nosnippet>313</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>report_fail_open(judge_model: <span class="kw-2">&amp;</span>str, error: String, reason: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str) {
 <a href=#314 id=314 data-nosnippet>314</a>    <span class="macro">tracing::warn!</span>(
 <a href=#315 id=315 data-nosnippet>315</a>        target: <span class="string">"libsy"</span>,
 <a href=#316 id=316 data-nosnippet>316</a>        judge_model,
