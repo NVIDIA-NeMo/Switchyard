@@ -456,8 +456,8 @@ impl DeploymentConfig {
             prompts,
             routing_answer_target: None,
         };
-        let Some((response_name, dependency_name)) =
-            route.algorithm.routing_response_and_dependency()
+        let Some((response_name, dependency_names)) =
+            route.algorithm.routing_response_and_dependencies()
         else {
             return Ok(policy);
         };
@@ -467,14 +467,18 @@ impl DeploymentConfig {
         if !policy.prompts.contains_key(&response.id) {
             return Ok(policy);
         }
-        let dependency = self.targets.get(dependency_name).ok_or_else(|| {
-            RunnerError::configuration(format!("route references unknown target {dependency_name}"))
-        })?;
-        if response.id == dependency.id {
-            return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
-                response.id,
-            )));
+        for dependency_name in dependency_names {
+            let dependency = self.targets.get(dependency_name).ok_or_else(|| {
+                RunnerError::configuration(format!(
+                    "route references unknown target {dependency_name}"
+                ))
+            })?;
+            if response.id == dependency.id {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
+                    response.id,
+                )));
+            }
         }
         policy.routing_answer_target = Some(response.id.clone());
         Ok(policy)
@@ -954,20 +958,27 @@ classify_trigger = "new_session""#,
         // The sub-agent target is also the parent's capable tier. Merged into one group it
         // would be indistinguishable from that tier, and delegated work would follow the
         // parent's ordering instead of its own configured target.
-        let runner = runner_from_toml(&with_subagent_passthrough(&stage_config(), "stage"))?;
-        let models = runner
-            .route("switchyard/stage")
-            .expect("stage route should exist")
-            .models();
+        for (route, parent_any) in [
+            ("stage", ["strong", "weak"]),
+            ("classifier", ["weak", "strong"]),
+        ] {
+            let runner = runner_from_toml(&with_subagent_passthrough(&stage_config(), route))?;
+            let models = runner
+                .route(&format!("switchyard/{route}"))
+                .expect("route should exist")
+                .models();
 
-        assert_eq!(
-            models.subagent_models_for(&Category::Any),
-            [ModelId::from("strong/model")]
-        );
-        assert_eq!(
-            models.models_for(&Category::Any),
-            [ModelId::from("strong/model"), ModelId::from("weak/model")]
-        );
+            assert_eq!(
+                models.subagent_models_for(&Category::Any),
+                [ModelId::from("strong/model")],
+                "{route}"
+            );
+            assert_eq!(
+                models.models_for(&Category::Any),
+                parent_any.map(|name| ModelId::from(format!("{name}/model"))),
+                "{route}"
+            );
+        }
         Ok(())
     }
 
@@ -1091,7 +1102,7 @@ new = ["send_message"]
     }
 
     #[test]
-    fn passthrough_and_stage_accept_subagent_routing() -> RunnerResult<()> {
+    fn parent_routes_accept_subagent_routing() -> RunnerResult<()> {
         let stage = stage_config();
         let stage_with_classifier = with_subagent_llm_classifier(&stage, "stage", "");
         let parsed: DeploymentConfig = toml::from_str(&stage_with_classifier).map_err(|error| {
@@ -1105,15 +1116,82 @@ new = ["send_message"]
             assert!(callable_targets.contains(&expected));
         }
 
+        // An llm_classifier parent ends up with two judges once it nests a sub-agent route:
+        // its own and the child's. The child also gets a target of its own (`worker`), which
+        // only appears in the parent's callable targets if the child's targets are included.
+        let base = VALID_CONFIG.replace(
+            "classifier_target = \"classifier\"",
+            "classifier_target = \"parent_judge\"",
+        ) + "\n[targets.parent_judge]\nid = \"parent-judge/model\"\nllm_client = \"primary\"\n\n[targets.worker]\nid = \"worker/model\"\nllm_client = \"primary\"\n";
+        let classifier_with_classifier = with_subagent_llm_classifier(&base, "classifier", "")
+            .replace("capable = [\"strong\"]", "capable = [\"worker\"]")
+            .replace(
+                "any = [\"strong\", \"weak\"]",
+                "any = [\"worker\", \"weak\"]",
+            );
+        let parsed: DeploymentConfig =
+            toml::from_str(&classifier_with_classifier).map_err(|error| {
+                RunnerError::configuration(format!("failed to parse classifier config: {error}"))
+            })?;
+        let Some(classifier_route) = parsed.routes.get("classifier") else {
+            return Err(RunnerError::configuration("classifier route is missing"));
+        };
+        let callable_targets = classifier_route.callable_target_names();
+        for expected in ["weak", "strong", "parent_judge", "classifier", "worker"] {
+            assert!(callable_targets.contains(&expected), "{expected}");
+        }
+
         for configured in [
             with_subagent_llm_classifier(VALID_CONFIG, "passthrough", ""),
             with_subagent_passthrough(VALID_CONFIG, "passthrough"),
             stage_with_classifier,
             with_subagent_passthrough(&stage, "stage"),
+            classifier_with_classifier,
+            // One llm_classifier-child row per parent shape (capability above, escalation,
+            // custom); a passthrough child has no judge, so it adds no branch here.
+            // Escalation answers while routing; a prompted weak target is fine while the
+            // child's judge runs on a different model.
+            with_subagent_llm_classifier(&prompted_escalation_config(), "classifier", ""),
+            with_subagent_llm_classifier(&custom_classifier_parent_config(), "custom", ""),
         ] {
             runner_from_toml(&configured)?;
         }
         Ok(())
+    }
+
+    fn prompted_escalation_config() -> String {
+        let escalation =
+            VALID_CONFIG.replace("base_threshold = 0.5", "escalation = { confirmations = 1 }");
+        assert!(
+            escalation.contains("escalation = "),
+            "escalation replace missed"
+        );
+        let prompted = escalation.replace(
+            "id = \"weak/model\"\nllm_client = \"anthropic\"",
+            "id = \"weak/model\"\nllm_client = \"anthropic\"\nsystem_prompt = \"answer prompt\"",
+        );
+        assert!(
+            prompted.contains("system_prompt = "),
+            "system_prompt replace missed"
+        );
+        prompted
+    }
+
+    fn custom_classifier_parent_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[routes.custom]
+id = "switchyard/custom"
+type = "llm_classifier"
+mode = "custom"
+models = {{ judge = ["classifier"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }}
+default_target = "efficient"
+prompt = "Select a target."
+response_schema = '{{"type":"object","properties":{{"target":{{"type":"string","enum":["capable","efficient"]}}}},"required":["target"],"additionalProperties":false}}'
+policy = {{ type = "target_selector", selector = "/target" }}
+classify_trigger = "new_session"
+"#
+        )
     }
 
     #[test]
@@ -1488,6 +1566,8 @@ classifier_magic = true
                 ),
                 "message_hash_fallback requires classify_trigger = new_session",
             ),
+            // Sub-agent affinity needs the harness child identity, so nested classifier
+            // routes reject message hash fallback.
             (
                 with_subagent_llm_classifier(
                     VALID_CONFIG,
@@ -1495,6 +1575,19 @@ classifier_magic = true
                     "\nmessage_hash_fallback = true",
                 ),
                 "cannot use message_hash_fallback",
+            ),
+            (
+                with_subagent_llm_classifier(
+                    VALID_CONFIG,
+                    "classifier",
+                    "\nmessage_hash_fallback = true",
+                ),
+                "cannot use message_hash_fallback",
+            ),
+            (
+                with_subagent_llm_classifier(&prompted_escalation_config(), "classifier", "")
+                    .replace("judge = [\"classifier\"]", "judge = [\"weak\"]"),
+                "cannot apply system_prompt to target weak: model weak/model is also used by routing-only target weak",
             ),
             (
                 with_subagent_llm_classifier(VALID_CONFIG, "passthrough", "")
