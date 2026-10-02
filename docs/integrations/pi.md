@@ -112,7 +112,7 @@ Choose the Claude LLM client by who holds the gateway key:
 | Who holds the gateway key | Claude LLM client | Result |
 |---|---|---|
 | The server, through `api_key_env` | `format = "anthropic_messages"` | Prompt caching and pi's `--thinking` level both work. Every caller's Claude requests use the server-owned key. |
-| pi sends it as `apiKey`, and the Claude LLM client forwards it with `forward_auth = true` | `format = "openai_chat"`, with `omit_body_fields = ["reasoning_effort"]` on the target | Prompt caching works. pi's `--thinking` level has no effect, and Claude thinks at its default effort. |
+| pi sends it as `apiKey`, and the Claude LLM client forwards it with `forward_auth = true` | `format = "openai_chat"`, with `omit_body_fields = ["reasoning_effort"]` on the target | Prompt caching works. pi's `--thinking` level has no effect, and Claude thinks at its default effort. The omitted field stays out only if the target's `extra_body` and `reasoning_effort` do not set it again. |
 
 Do not use `format = "openai_responses"` for Claude targets on such a gateway. The
 gateway tested for this page never cached Claude prompts on `/v1/responses`, and it
@@ -153,20 +153,21 @@ multiply each token count in its record by the matching price, and add the resul
 | `cache_creation_tokens` | Cache-write price |
 | `completion_tokens` | Output price |
 
-Anthropic's published pricing sets the cache-read price at 0.1 times the input price. It
-sets the cache-write price at 1.25 times the input price for a 5-minute cache, or 2 times
-for a 1-hour cache. The routing log does not record which cache lifetime the gateway
-used, and a gateway may charge its own prices, so the result is an estimate, not the
-gateway's bill.
+Anthropic's [pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
+sets the cache-read price at 0.1 times the input price for most models, including
+Claude Sonnet 5, but at 0.05 times for Claude Opus 5.5. It sets the cache-write price at
+1.25 times the input price for a 5-minute cache, or 2 times for a 1-hour cache. The
+routing log does not record which cache lifetime the gateway used, and a gateway may
+charge its own prices, so the result is an estimate, not the gateway's bill.
 
 Put your prices in a `prices.json` file, in USD per million tokens. Key each entry by the
-`model` value from the routing log. The rates below are illustrative: they only follow
-Anthropic's published ratios, with cache reads at 0.1 times and 5-minute cache writes at
-1.25 times the input price. Replace them with your provider's current prices.
+`model` value from the routing log. The example below uses Anthropic's list prices for
+Claude Sonnet 5 on 2026-10-02, with the 5-minute cache-write price. Check the current
+pricing page or your gateway's prices before you rely on the result.
 
 ```json
 {
-  "claude-opus-5-5": {"input": 10.00, "cache_read": 1.00, "cache_write": 12.50, "output": 50.00}
+  "claude-sonnet-5": {"input": 2.00, "cache_read": 0.20, "cache_write": 2.50, "output": 10.00}
 }
 ```
 
@@ -211,7 +212,9 @@ You have two options:
 - Keep the OpenAI-format LLM client and remove the effort field from requests to the
   target with [`omit_body_fields`](../reference/toml_schema.md#targetsname). Use the
   field name of the target's format: `reasoning_effort` on `openai_chat`, or `reasoning`
-  on `openai_responses`.
+  on `openai_responses`. Switchyard applies the target's `extra_body` and
+  `reasoning_effort` after `omit_body_fields`, so this works only if neither sets the
+  field again.
 
   ```toml
   [targets.claude]
