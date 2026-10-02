@@ -80,9 +80,10 @@ static ERROR_PATTERNS: &[(&str, f32, &[&str])] = &[
         &[
             "filenotfounderror:",
             "no such file or directory",
-            // Claude Code Read-tool miss. Anchored as "file does not exist" (not a
-            // bare "does not exist", which fires on `ls` output and prose) — trace-
-            // mined across 1006 local trajectories at 22 true / 2 false positives.
+            // Claude Code's missing-file message. Reads are exempt (`is_missing_file`).
+            // Anchored as "file does not exist" (not a bare "does not exist", which
+            // fires on `ls` output and prose) — trace-mined across 1006 local
+            // trajectories at 22 true / 2 false positives.
             "file does not exist",
         ],
     ),
@@ -424,11 +425,13 @@ impl ToolSignals {
 
 // `command` is the lowercased Bash command line; None for non-Bash tools.
 // `bare_name` is the tool's own name when `name` joins it to a namespace or MCP server.
+// `is_retrieval` marks a call that only reads; it counts as an observation.
 #[derive(Debug, Clone)]
 struct ObservedToolCall<'a> {
     name: String,
     bare_name: Option<&'a str>,
     command: Option<String>,
+    is_retrieval: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -535,11 +538,272 @@ fn classify_tool_call_with_semantics(
     semantics.classify(name).unwrap_or(ToolSemantic::Unknown)
 }
 
-/// Built-in tools that return file or search contents instead of running anything.
-fn is_retrieval_tool(name: &str, command: Option<&str>) -> bool {
+/// Tools whose successful output is retrieved content or inspection data.
+fn is_retrieval_tool(name: &str, command: Option<&Value>) -> bool {
     let lower = name.to_lowercase();
     READ_TOOL_NAMES.contains(&lower.as_str())
-        || (EDITOR_TOOL_NAMES.contains(&lower.as_str()) && command == Some("view"))
+        || (EDITOR_TOOL_NAMES.contains(&lower.as_str())
+            && command
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.eq_ignore_ascii_case("view")))
+        // PowerShell quoting and escapes do not follow the POSIX rules below.
+        || (lower != "powershell"
+            && BASH_TOOL_NAMES.contains(&lower.as_str())
+            && command.is_some_and(command_is_retrieval))
+}
+
+/// A shell command field given as one line or as argv words.
+fn command_is_retrieval(command: &Value) -> bool {
+    match command {
+        Value::String(line) => shell_is_retrieval(line, 0),
+        Value::Array(argv) => {
+            // Charge each word a separator byte, as in the one-line form, so the
+            // budget also bounds the argument count.
+            argv.iter()
+                .try_fold(0, |size, word| {
+                    let size = size + word.as_str()?.len() + 1;
+                    (size <= MAX_RETRIEVAL_COMMAND_BYTES).then_some(size)
+                })
+                .is_some()
+                && retrieval_command(
+                    &argv.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+                    0,
+                )
+        }
+        _ => false,
+    }
+}
+
+// Keep shell parsing bounded on the request thread. Larger commands retain
+// ordinary error scanning, just like unrecognized shell syntax.
+const MAX_RETRIEVAL_COMMAND_BYTES: usize = 16 * 1024;
+
+/// Only suppress output when every shell segment is a recognized inspection.
+/// Observation counters can count mixed commands; suppressing errors needs all
+/// commands to qualify. Substitutions and redirects keep their error signals.
+fn shell_is_retrieval(command: &str, depth: usize) -> bool {
+    if command.len() > MAX_RETRIEVAL_COMMAND_BYTES {
+        return false;
+    }
+    if quoted_chars(command).any(|(_, c, quote)| {
+        (quote != Some('\'') && matches!(c, '$' | '`'))
+            || (quote.is_none() && matches!(c, '<' | '>' | '(' | ')' | '{' | '}' | '#'))
+    }) {
+        return false;
+    }
+    let mut segments = shell_segments(command).peekable();
+    segments.peek().is_some()
+        && segments.all(|segment| {
+            // `split` also rejects an unclosed quote or a trailing backslash.
+            shlex::split(segment).is_some_and(|words| {
+                retrieval_command(&words.iter().map(String::as_str).collect::<Vec<_>>(), depth)
+            })
+        })
+}
+
+fn skip_shell_options<'a>(mut args: &'a [&'a str], takes_value: &[&str]) -> &'a [&'a str] {
+    while let Some((option, rest)) = args.split_first() {
+        if !option.starts_with('-') || *option == "-" {
+            break;
+        }
+        args = rest;
+        if *option == "--" {
+            break;
+        }
+        if takes_value.contains(option) {
+            args = args.get(1..).unwrap_or_default();
+        }
+    }
+    args
+}
+
+/// A short-option word such as `-Hx` that sets any of `flags`.
+fn has_short_flag(word: &str, flags: &[char]) -> bool {
+    word.starts_with('-') && !word.starts_with("--") && word.contains(flags)
+}
+
+// Bounds recursion through nested wrappers and `sh -c` scripts.
+const MAX_COMMAND_DEPTH: usize = 20;
+
+fn retrieval_command(mut words: &[&str], depth: usize) -> bool {
+    if depth > MAX_COMMAND_DEPTH {
+        return false;
+    }
+    while words.first().is_some_and(|word| {
+        word.split_once('=').is_some_and(|(name, _)| {
+            !name.is_empty()
+                && name.bytes().enumerate().all(|(i, c)| {
+                    c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
+                })
+        })
+    }) {
+        words = &words[1..];
+    }
+    let Some((&program, args)) = words.split_first() else {
+        return false;
+    };
+    // The standard bin dirs hold the real programs. Any other path, such as
+    // `./test`, names a local script.
+    let program = [
+        "/bin/",
+        "/sbin/",
+        "/usr/bin/",
+        "/usr/sbin/",
+        "/usr/local/bin/",
+        "/opt/homebrew/bin/",
+    ]
+    .iter()
+    .find_map(|dir| program.strip_prefix(dir))
+    .unwrap_or(program);
+    // Unwrap launchers before inspecting the actual command and its flags.
+    let wrapper_options: Option<&[&str]> = match program {
+        "sudo" => Some(&[
+            "-u", "-g", "-h", "-p", "-C", "-T", "--user", "--group", "--host",
+        ]),
+        "env" => Some(&["-u", "--unset", "-C", "--chdir"]),
+        "command" | "nohup" => Some(&[]),
+        "exec" => Some(&["-a"]),
+        "time" => Some(&["-f", "--format", "-o", "--output"]),
+        "timeout" => Some(&["-s", "--signal", "-k", "--kill-after"]),
+        "xargs" => Some(&[
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "-I",
+            "--replace",
+            "-d",
+            "--delimiter",
+            "-L",
+            "--max-lines",
+            "-s",
+            "--max-chars",
+        ]),
+        _ => None,
+    };
+    if let Some(options) = wrapper_options {
+        // `env -S` splits its argument into a new command line.
+        if program == "env"
+            && args
+                .iter()
+                .any(|arg| arg.starts_with("--split-string") || has_short_flag(arg, &['S']))
+        {
+            return false;
+        }
+        let mut rest = skip_shell_options(args, options);
+        if program == "timeout" {
+            rest = rest.get(1..).unwrap_or_default();
+        }
+        return (program == "env" && rest.is_empty()) || retrieval_command(rest, depth + 1);
+    }
+    if matches!(program, "bash" | "sh" | "dash" | "zsh" | "ksh") {
+        return args
+            .first()
+            .is_some_and(|option| has_short_flag(option, &['c']))
+            && args
+                .get(1)
+                .is_some_and(|command| shell_is_retrieval(command, depth + 1));
+    }
+    if program == "git" {
+        return git_is_retrieval(args);
+    }
+    if matches!(args, ["--help" | "--version"]) {
+        return true;
+    }
+    match program {
+        "find" => !args.iter().any(|arg| {
+            matches!(
+                *arg,
+                "-delete"
+                    | "-exec"
+                    | "-execdir"
+                    | "-ok"
+                    | "-okdir"
+                    | "-fprint"
+                    | "-fprint0"
+                    | "-fprintf"
+            )
+        }),
+        // fd joins short flags, so `-Hx` runs a command too.
+        "fd" => !args
+            .iter()
+            .any(|arg| arg.starts_with("--exec") || has_short_flag(arg, &['x', 'X'])),
+        // Only the common line-range printing form; sed scripts can execute commands.
+        "sed" => {
+            args.len() >= 2
+                && args[0] == "-n"
+                && args[2..].iter().all(|arg| !arg.starts_with('-'))
+                && args[1].strip_suffix('p').is_some_and(|range| {
+                    !range.is_empty()
+                        && range
+                            .bytes()
+                            .all(|c| c.is_ascii_digit() || matches!(c, b',' | b'$'))
+                })
+        }
+        "sort" => !args.iter().any(|arg| {
+            arg.starts_with("--compress-program")
+                || arg.starts_with("--output")
+                || arg.starts_with("-o")
+        }),
+        "rg" => !args.iter().any(|arg| arg.starts_with("--pre")),
+        "xxd" => !args.contains(&"-r") && !args.contains(&"-revert"),
+        "go" => {
+            matches!(args.first(), Some(&"list" | &"doc" | &"env" | &"version"))
+                && !args.iter().any(|arg| matches!(*arg, "-w" | "-u"))
+        }
+        "docker" | "podman" => matches!(args.first(), Some(&"ps" | &"version")),
+        "cat" | "grep" | "ls" | "nl" | "head" | "tail" | "wc" | "pwd" | "stat" | "file" | "du"
+        | "df" | "which" | "type" | "diff" | "cmp" | "jq" | "uniq" | "cut" | "readlink"
+        | "realpath" | "tree" | "basename" | "dirname" | "printenv" | "echo" | "printf"
+        | "less" | "more" | "test" | "[" | "ps" | "pgrep" | "pkg-config" | "strings" | "uname"
+        | "od" | "true" | ":" | "cd" | "pstree" | "sha256sum" | "sha1sum" | "md5sum" | "lsof"
+        | "tr" | "free" | "id" | "namei" | "whoami" | "paste" | "ss" | "getent" => true,
+        _ => false,
+    }
+}
+
+fn git_is_retrieval(args: &[&str]) -> bool {
+    let args = skip_shell_options(
+        args,
+        &["-C", "-c", "--git-dir", "--work-tree", "--namespace"],
+    );
+    let Some((subcommand, rest)) = args.split_first() else {
+        return false;
+    };
+    match *subcommand {
+        "diff" => !rest.contains(&"--check"),
+        "branch" => {
+            rest.is_empty()
+                || rest.iter().all(|arg| {
+                    matches!(
+                        *arg,
+                        "-a" | "-r"
+                            | "--all"
+                            | "--list"
+                            | "--show-current"
+                            | "-v"
+                            | "-vv"
+                            | "--verbose"
+                    )
+                })
+        }
+        "remote" => {
+            rest.is_empty()
+                || matches!(rest, ["-v" | "--verbose"])
+                || rest.first() == Some(&"get-url")
+        }
+        "tag" => rest.is_empty() || matches!(rest[0], "-l" | "--list"),
+        "config" => matches!(
+            rest.first(),
+            Some(&"--get" | &"--get-all" | &"--list" | &"-l")
+        ),
+        "worktree" => rest.first() == Some(&"list"),
+        "submodule" => rest.first() == Some(&"status"),
+        "status" | "log" | "show" | "blame" | "ls-files" | "ls-remote" | "rev-parse"
+        | "merge-base" | "grep" | "describe" | "show-ref" | "check-ignore" | "rev-list"
+        | "ls-tree" | "diff-tree" | "version" => true,
+        _ => false,
+    }
 }
 
 fn is_builtin_tool_name(lower: &str) -> bool {
@@ -554,41 +818,39 @@ fn is_builtin_tool_name(lower: &str) -> bool {
 /// pretending to be a full shell parser; only the leading program and flags of
 /// each segment are inspected below.
 fn shell_segments(command: &str) -> impl Iterator<Item = &str> {
-    let mut chars = command.char_indices();
-    let mut start = 0usize;
+    let mut start = 0;
+    quoted_chars(command)
+        .filter(|&(_, c, quote)| quote.is_none() && matches!(c, '\n' | ';' | '|' | '&'))
+        .map(|(index, _, _)| index)
+        .chain([command.len()])
+        .filter_map(move |end| {
+            let segment = command[start..end].trim();
+            // Separators are one byte.
+            start = end + 1;
+            (!segment.is_empty()).then_some(segment)
+        })
+}
+
+/// Unescaped characters with their byte index and the quote around them.
+fn quoted_chars(command: &str) -> impl Iterator<Item = (usize, char, Option<char>)> {
     let mut quote = None;
     let mut escaped = false;
-    let mut finished = false;
-
-    std::iter::from_fn(move || {
-        loop {
-            for (index, character) in chars.by_ref() {
-                if escaped {
-                    escaped = false;
-                } else if character == '\\' && quote != Some('\'') {
-                    escaped = true;
-                } else if quote == Some(character) {
-                    quote = None;
-                } else if quote.is_none() && matches!(character, '\'' | '"') {
-                    quote = Some(character);
-                } else if quote.is_none() && matches!(character, '\n' | ';' | '|' | '&') {
-                    let segment = command[start..index].trim();
-                    start = index + character.len_utf8();
-                    if !segment.is_empty() {
-                        return Some(segment);
-                    }
-                }
-            }
-
-            if finished {
-                return None;
-            }
-            finished = true;
-            let segment = command[start..].trim();
-            if !segment.is_empty() {
-                return Some(segment);
-            }
+    command.char_indices().filter_map(move |(index, c)| {
+        if escaped {
+            escaped = false;
+            return None;
         }
+        if c == '\\' && quote != Some('\'') {
+            escaped = true;
+            return None;
+        }
+        let around = quote;
+        if quote == Some(c) {
+            quote = None;
+        } else if quote.is_none() && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        }
+        Some((index, c, around))
     })
 }
 
@@ -762,24 +1024,31 @@ fn extract_tool_signals_with_window_and_semantics(
                         .and_then(|namespaces| split_qualified_name(namespaces, &call.name))
                         .map(|(tool, _)| tool)
                         .or_else(|| mcp_tool_name(&call.name));
-                    let command = command_of(&call.arguments);
+                    // The Responses wire format sends arguments as a JSON string.
+                    let decoded = call
+                        .arguments
+                        .as_str()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+                    let command_field = command_of(decoded.as_ref().unwrap_or(&call.arguments));
+                    let command = command_field.and_then(command_text);
+                    // The joined name wins, as in `build_signal`. A joined name
+                    // configured as observe still counts when its bare name is a
+                    // retrieval tool, such as `mcp__files__read`.
+                    let full = classify_tool_call_with_semantics(
+                        &call.name,
+                        command.as_deref(),
+                        semantics,
+                    );
+                    let name = match (full, bare_name) {
+                        (ToolSemantic::Unknown | ToolSemantic::Observe, Some(bare_name)) => {
+                            bare_name
+                        }
+                        _ => call.name.as_str(),
+                    };
+                    let is_retrieval = is_retrieval_tool(name, command_field);
                     if !call.id.is_empty() {
-                        // The joined name wins, as in `build_signal`. A joined name
-                        // configured as observe still counts when its bare name is a
-                        // retrieval tool, such as `mcp__files__read`.
-                        let full = classify_tool_call_with_semantics(
-                            &call.name,
-                            command.as_deref(),
-                            semantics,
-                        );
-                        let name = match (full, bare_name) {
-                            (ToolSemantic::Unknown | ToolSemantic::Observe, Some(bare_name)) => {
-                                bare_name
-                            }
-                            _ => call.name.as_str(),
-                        };
                         // A reused ID links to its latest call.
-                        if is_retrieval_tool(name, command.as_deref()) {
+                        if is_retrieval {
                             retrieval_calls.insert(call.id.as_str());
                         } else {
                             retrieval_calls.remove(call.id.as_str());
@@ -789,30 +1058,33 @@ fn extract_tool_signals_with_window_and_semantics(
                         name: call.name.clone(),
                         bare_name,
                         command,
+                        is_retrieval,
                     });
                 }
                 ContentBlock::ToolResult(result) => {
                     // Before the empty-text filter: empty results still count.
                     tool_result_count += 1;
-                    let text = result
-                        .content
-                        .iter()
-                        .filter_map(text_of)
-                        .collect::<Vec<_>>()
-                        .join("\n");
                     let is_error = result.is_error == Some(true);
-                    let is_retrieval_result =
-                        !is_error && retrieval_calls.contains(result.tool_call_id.as_str());
+                    let is_retrieval_result = retrieval_calls
+                        .contains(result.tool_call_id.as_str())
+                        && (!is_error
+                            || result
+                                .content
+                                .iter()
+                                .filter_map(text_of)
+                                .any(is_missing_file));
+                    let texts = result.content.iter().filter_map(text_of);
+                    let has_text = texts.clone().any(|text| !text.is_empty());
+                    if is_retrieval_result {
+                        // Keep the window slot without copying file contents.
+                        if has_text {
+                            tool_texts.push((String::new(), false));
+                        }
+                        continue;
+                    }
                     // An explicit failure remains a signal even without text.
-                    if !text.is_empty() || is_error {
-                        // Read and search results show file contents, not the outcome
-                        // of a run. Drop the text but keep the slot so windows don't shift.
-                        let text = if is_retrieval_result {
-                            String::new()
-                        } else {
-                            text
-                        };
-                        tool_texts.push((text, is_error));
+                    if has_text || is_error {
+                        tool_texts.push((texts.collect::<Vec<_>>().join("\n"), is_error));
                     }
                 }
                 // Built-in tool history stays opaque so it can be replayed unchanged.
@@ -905,19 +1177,13 @@ fn mcp_tool_name(name: &str) -> Option<&str> {
     (!tool.is_empty()).then_some(tool)
 }
 
-/// The shell command a tool call carries, when it has one. Harnesses name the
-/// field `command`; anything else is a tool whose category comes from its name.
-fn command_of(arguments: &Value) -> Option<String> {
-    // the Responses wire format sends arguments as a JSON string, not an object
-    let decoded = arguments
-        .as_str()
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
-    let object = decoded.as_ref().unwrap_or(arguments);
-
+/// The command field a tool call carries, when it has one. Harnesses name it
+/// `command`, `cmd` or `input`; anything else is a tool whose category comes
+/// from its name.
+fn command_of(arguments: &Value) -> Option<&Value> {
     ["command", "cmd", "input"]
         .iter()
-        .filter_map(|key| object.get(*key))
-        .find_map(command_text)
+        .find_map(|key| arguments.get(*key))
 }
 
 /// A command field as lowercase text, from a string or an argv array.
@@ -942,6 +1208,14 @@ fn text_of(block: &ContentBlock) -> Option<&str> {
         ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
         _ => None,
     }
+}
+
+/// Reads of missing paths happen as often on tasks that succeed as on tasks
+/// that fail, so they are not a failure signal.
+fn is_missing_file(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    // The OS error from shell tools, and Claude Code's Read tool message.
+    lower.contains("no such file or directory") || lower.contains("file does not exist")
 }
 
 fn build_signal(
@@ -992,8 +1266,14 @@ fn build_signal(
     let mut pure_bash_streak = 0u32;
     let mut streak_open = true;
     for (i, tc) in tool_calls.iter().enumerate().rev() {
-        // The joined name wins, so configs that list it keep working.
-        let mut cat = classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics);
+        // Every read, found or missed, is an observation. The read check parses
+        // the command, so it beats the substring patterns. Otherwise the joined
+        // name wins, so configs that list it keep working.
+        let mut cat = if tc.is_retrieval {
+            ToolSemantic::Observe
+        } else {
+            classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics)
+        };
         if matches!(cat, ToolSemantic::Unknown)
             && let Some(bare_name) = tc.bare_name
         {
@@ -1647,6 +1927,103 @@ mod tests {
         assert_eq!(signal.severity, HARD);
         assert!(!signal.tests_passed);
         assert_eq!(signal.tool_result_count, 3);
+    }
+
+    // A request whose tool result answers the tool call.
+    fn call_with_result(mut call: Message, mut result: Message) -> Request {
+        if let ContentBlock::ToolCall(call) = &mut call.content[0] {
+            call.id = "call-1".into();
+        }
+        if let ContentBlock::ToolResult(result) = &mut result.content[0] {
+            result.tool_call_id = "call-1".into();
+        }
+        with_messages(vec![call, result])
+    }
+
+    #[test]
+    fn shell_reads_are_ignored_but_keep_their_window_slot() {
+        for command in [
+            "/usr/bin/cat logfile.txt",
+            "cd /repo && tail -n 100 logfile.txt | grep MemoryError",
+            "env MODE=debug timeout 5s rg 'MemoryError' .",
+        ] {
+            let mut request = call_with_result(bash(command), tr("MemoryError\nall tests passed"));
+            request.llm_request.messages.splice(
+                0..0,
+                [bash("pytest"), tr("Traceback (most recent call last):")],
+            );
+            // The read adds no error and no test pass, so the earlier failure stands.
+            let signal = ToolSignals::from_request(&request, Some(2));
+            assert_eq!(signal.severity, HARD, "{command}");
+            assert!(!signal.tests_passed, "{command}");
+            // The read still fills a window slot, so the failure can age out.
+            let signal = ToolSignals::from_request(&request, Some(1));
+            assert_eq!(signal.severity, 0.0, "{command}");
+        }
+    }
+
+    #[test]
+    fn shell_commands_that_run_code_keep_signals() {
+        let oversized = format!("cat {}", "a".repeat(MAX_RETRIEVAL_COMMAND_BYTES));
+        for command in [
+            "cat logfile.txt; pytest",
+            "echo $(pytest)",
+            "find . -name '*.py' -exec pytest ';'",
+            oversized.as_str(),
+        ] {
+            let request = call_with_result(bash(command), tr("MemoryError"));
+            let signal = ToolSignals::from_request(&request, None);
+            assert_eq!(signal.severity, CRITICAL, "{command}");
+        }
+    }
+
+    #[test]
+    fn failed_reads_signal_unless_the_file_is_missing() {
+        let failed = |text: &str| {
+            let mut result = tr(text);
+            if let ContentBlock::ToolResult(result) = &mut result.content[0] {
+                result.is_error = Some(true);
+            }
+            result
+        };
+        let missing = "missing.txt: No such file or directory";
+        let severities = [
+            call_with_result(bash("cat missing.txt"), failed(missing)),
+            call_with_result(tc("Read"), failed("File does not exist.")),
+            // A read that fails for another reason still counts.
+            call_with_result(bash("cat logfile.txt"), failed("MemoryError")),
+            // Only reads are exempt.
+            call_with_result(bash("python missing.txt"), failed(missing)),
+        ]
+        .map(|request| ToolSignals::from_request(&request, None).severity);
+        assert_eq!(severities, [0.0, 0.0, CRITICAL, HARD]);
+    }
+
+    #[test]
+    fn argv_commands_keep_word_boundaries() {
+        let signal = |argv: Value| {
+            let call = exec_command(json!({"cmd": argv}));
+            ToolSignals::from_request(&call_with_result(call, tr("MemoryError")), None)
+        };
+        let mut many_args = vec![""; MAX_RETRIEVAL_COMMAND_BYTES];
+        many_args[0] = "cat";
+        let severities = [
+            json!(["bash", "-lc", "cd repo && rg foo"]),
+            json!(["bash", "-lc", "cat log; pytest"]),
+            // One argv word is one file name, even with a separator in it.
+            json!(["cat", "log; pytest"]),
+            // Over the byte budget, by size and by argument count.
+            json!(["cat", "a".repeat(MAX_RETRIEVAL_COMMAND_BYTES)]),
+            json!(many_args),
+        ]
+        .map(|argv| signal(argv).severity);
+        assert_eq!(severities, [0.0, CRITICAL, 0.0, CRITICAL, CRITICAL]);
+        // A read is an observation, even as a whole `-lc` script.
+        let read = signal(json!(["bash", "-lc", "sed -n 1,200p x"]));
+        assert_eq!(read.read_count, 1);
+        // Other commands are counted inside the script too.
+        let write = signal(json!(["bash", "-lc", "cd repo && mkdir x"]));
+        assert_eq!(write.write_count, 1);
     }
 
     #[test]
