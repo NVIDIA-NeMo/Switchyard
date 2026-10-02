@@ -1478,7 +1478,7 @@
 <a href=#1478 id=1478 data-nosnippet>1478</a>                .and_then(|metadata| metadata.evidence)
 <a href=#1479 id=1479 data-nosnippet>1479</a>                .expect(<span class="string">"routing evidence"</span>);
 <a href=#1480 id=1480 data-nosnippet>1480</a>            <span class="kw">if </span><span class="macro">matches!</span>(name, <span class="string">"above" </span>| <span class="string">"equal" </span>| <span class="string">"below"</span>) {
-<a href=#1481 id=1481 data-nosnippet>1481</a>                <span class="macro">assert_eq!</span>(evidence[<span class="string">"source"</span>], <span class="string">"decision-classifier"</span>);
+<a href=#1481 id=1481 data-nosnippet>1481</a>                <span class="macro">assert_eq!</span>(evidence[<span class="string">"source"</span>], <span class="string">"decision_classifier"</span>);
 <a href=#1482 id=1482 data-nosnippet>1482</a>                <span class="macro">assert_eq!</span>(evidence[<span class="string">"verdict"</span>], <span class="string">"relative_advantage"</span>);
 <a href=#1483 id=1483 data-nosnippet>1483</a>                <span class="macro">assert_eq!</span>(evidence[<span class="string">"threshold"</span>], settings.cutoff);
 <a href=#1484 id=1484 data-nosnippet>1484</a>                <span class="macro">assert_eq!</span>(evidence[<span class="string">"score"</span>], score);
