@@ -32,7 +32,26 @@ The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.
 
-Optional settings:
+## Responses API history requirement
+
+Plan/execute needs the conversation history to detect edits and hand the task to
+the executor. Continuing with only `previous_response_id` or a provider
+`conversation` ID and new input is not supported for this handoff.
+
+For example, a `function_call_output` contains the result and call ID, but not
+the tool name. Without the earlier `write_file` call, the router cannot tell that
+the result belongs to an edit and can stay on the planner.
+
+Send the conversation history in `input`, including earlier tool calls and their
+results. Omit `previous_response_id` and `conversation` so routing can switch
+models between turns.
+
+When embedding `libsy`, your application must supply that history in
+`Request.llm_request.messages` before routing. `libsy` does not fetch it from the
+provider. A stable session ID remembers a detected handoff, but cannot detect an
+edit missing from the request history.
+
+## Optional settings
 
 | Key | Behavior |
 |---|---|

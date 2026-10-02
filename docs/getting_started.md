@@ -192,6 +192,10 @@ Use this path when you want routing inside your own Rust application rather than
 behind a proxy. `switchyard-libsy` never calls a model itself: an algorithm
 picks a target and hands the model call back to you.
 
+For plan/execute, supply conversation history, including tool calls and results,
+before routing. Responses API continuation IDs alone are not enough. See the
+[Responses API history requirement](routing_algorithms/plan_execute_routing.md#responses-api-history-requirement).
+
 ### Add the dependencies
 
 ```toml
