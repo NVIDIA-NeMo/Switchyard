@@ -274,6 +274,7 @@ impl AggLlmResponse {
     }
 }
 
+/// Accumulate a chunk unless it reports a provider or decoding failure.
 fn push_checked_chunk(
     accumulator: &mut ResponseAccumulator,
     chunk: LlmResponseChunk,
