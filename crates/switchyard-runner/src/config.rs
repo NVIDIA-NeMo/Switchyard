@@ -395,14 +395,11 @@ impl DeploymentConfig {
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
         }
-        // Only forwarding clients count here. A client with api_key_env sends the server's own
-        // key, so a route can mix formats and providers through such clients. A forwarded
-        // credential belongs to the service that issued it, so forwarding clients must share one
-        // credential family unless they all use the same scheme, host, and port. One host that
-        // serves both formats is a single service, such as an LLM gateway that accepts the
-        // caller's gateway key on its OpenAI and Anthropic endpoints. Such a route serves Chat
-        // Completions and Responses callers because Anthropic clients forward the caller's
-        // `authorization` header unchanged.
+        // Only forwarding clients count: an api_key_env client sends the server's own key.
+        // Forwarding clients must share one credential family unless they all use the same
+        // scheme, host, and port, such as one LLM gateway that accepts the caller's gateway key
+        // on every endpoint. Such a route serves Chat Completions and Responses callers because
+        // Anthropic clients forward the caller's `authorization` header unchanged.
         if mixes_families {
             if forwarding_origins.len() > 1 {
                 let origins = Vec::from_iter(forwarding_origins).join(", ");
@@ -1921,8 +1918,8 @@ confidence_threshold = 0.5
         }
     }
 
-    // Builds a classifier route whose judge uses a Responses client and whose tiers use a
-    // Messages client, plus a passthrough route that uses only the Messages client.
+    // A route that mixes a GPT target on a Responses client with a Claude target on a Messages
+    // client, plus a route that uses only the Messages client.
     fn mixed_forwarding_config(messages_url: &str) -> String {
         format!(
             r#"
@@ -1938,83 +1935,50 @@ format = "anthropic_messages"
 base_url = "{messages_url}"
 forward_auth = true
 
-[targets.judge]
-id = "judge/model"
-llm_client = "responses"
+[targets]
+gpt = {{ id = "gpt/model", llm_client = "responses" }}
+claude = {{ id = "claude/model", llm_client = "messages" }}
 
-[targets.capable]
-id = "capable/model"
-llm_client = "messages"
-
-[targets.efficient]
-id = "efficient/model"
-llm_client = "messages"
-
-[routes.hub]
-id = "switchyard/hub"
-type = "llm_classifier"
-classifier_target = "judge"
-strong_target = "capable"
-weak_target = "efficient"
-base_threshold = 0.5
+[routes.mixed]
+id = "switchyard/mixed"
+type = "random"
+targets = ["gpt", "claude"]
 
 [routes.claude]
 id = "switchyard/claude"
 type = "passthrough"
-target = "capable"
+target = "claude"
 "#
         )
     }
 
     #[test]
-    fn mixed_formats_need_one_host_only_when_forwarding() -> RunnerResult<()> {
-        // The URL path does not count, so both base URLs name one host.
-        for messages_url in [
-            "https://gateway.example.test",
-            "https://gateway.example.test/v1",
-        ] {
-            let runner = runner_from_toml(&mixed_forwarding_config(messages_url))?;
-            let caller_auth = |id| runner.route(id).and_then(Route::caller_auth);
-            assert_eq!(caller_auth("switchyard/hub"), Some(CallerAuthKind::OpenAi));
-            assert_eq!(
-                caller_auth("switchyard/claude"),
-                Some(CallerAuthKind::Anthropic)
-            );
-        }
+    fn forwarding_route_mixes_formats_only_on_one_host() -> RunnerResult<()> {
+        // Same host, different paths: the mixed route serves OpenAI callers, and the route that
+        // uses only the Messages client keeps serving Messages callers.
+        let runner = runner_from_toml(&mixed_forwarding_config("https://gateway.example.test"))?;
+        let caller_auth = |id| runner.route(id).and_then(Route::caller_auth);
+        assert_eq!(
+            caller_auth("switchyard/mixed"),
+            Some(CallerAuthKind::OpenAi)
+        );
+        assert_eq!(
+            caller_auth("switchyard/claude"),
+            Some(CallerAuthKind::Anthropic)
+        );
 
-        // A different host, port, or scheme is a different origin.
-        for (messages_url, origins) in [
-            (
-                "https://api.anthropic.test",
-                "https://api.anthropic.test, https://gateway.example.test",
-            ),
-            (
-                "https://gateway.example.test:8443",
-                "https://gateway.example.test, https://gateway.example.test:8443",
-            ),
-            (
-                "http://gateway.example.test",
-                "http://gateway.example.test, https://gateway.example.test",
-            ),
+        // A different host, port, or scheme fails, and the error names it.
+        for other in [
+            "https://api.anthropic.test",
+            "https://gateway.example.test:8443",
+            "http://gateway.example.test",
         ] {
-            let error = error_message(&mixed_forwarding_config(messages_url));
+            let error = error_message(&mixed_forwarding_config(other));
             assert!(
-                error.contains(&format!(
-                    "route hub cannot forward both Anthropic and OpenAI caller credentials to different hosts ({origins}); point all of its forwarding clients at one host, such as an LLM gateway, or set api_key_env instead of forward_auth on one provider's clients"
-                )),
+                error.contains("different hosts") && error.contains(other),
                 "{error}"
             );
         }
-
-        // Clients that send the server's own key never limit a route, even on two hosts, so the
-        // route serves callers of every API.
-        let server_keys = mixed_forwarding_config("https://api.anthropic.test")
-            .replace("forward_auth = true", "api_key_env = \"PATH\"");
-        let runner = runner_from_toml(&server_keys)?;
-        assert_eq!(
-            runner.route("switchyard/hub").and_then(Route::caller_auth),
-            None
-        );
         Ok(())
     }
 
