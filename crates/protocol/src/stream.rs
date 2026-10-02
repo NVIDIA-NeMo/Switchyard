@@ -275,6 +275,7 @@ impl AggLlmResponse {
     }
 }
 
+/// Accumulate a chunk unless it reports a provider or decoding failure.
 fn push_checked_chunk(
     accumulator: &mut ResponseAccumulator,
     chunk: LlmResponseChunk,
@@ -286,6 +287,7 @@ fn push_checked_chunk(
         LlmResponseChunk::StreamError { message } => Err(LlmClientError::UpstreamHttp {
             status: MID_STREAM_UPSTREAM_STATUS,
             body: message,
+            headers: Box::default(),
         }),
         chunk => {
             accumulator.push(chunk);

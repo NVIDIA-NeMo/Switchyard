@@ -449,6 +449,7 @@ impl RoutedLlmClient for JudgeClient {
             JudgeOutcome::CallFailure => Err(LlmClientError::UpstreamHttp {
                 status: http::StatusCode::INTERNAL_SERVER_ERROR,
                 body: format!(r#"{{"error":{{"message":"server error: {LEAKED_CONTENT}"}}}}"#),
+                headers: Box::default(),
             }),
             JudgeOutcome::Reply(text) => Ok(Response {
                 llm_response: LlmResponse::Agg(text_response(None, *text)),
@@ -1575,7 +1576,7 @@ async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_lib
     assert!(matches!(
         result,
         Err(LibsyError::ClientCall {
-            source: LlmClientError::UpstreamHttp { status, body },
+            source: LlmClientError::UpstreamHttp { status, body, .. },
             ..
         }) if status == http::StatusCode::INTERNAL_SERVER_ERROR && body.contains(LEAKED_CONTENT)
     ));

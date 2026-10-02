@@ -87,6 +87,15 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
             .iter()
             .any(|prefix| name.starts_with(prefix))
 }
+
+/// Whether an error header is useful for caller backoff or support tracing.
+fn should_forward_upstream_error_header(name: &HeaderName) -> bool {
+    let name = name.as_str();
+    matches!(name, "retry-after" | "request-id" | "x-request-id")
+        || name.starts_with("x-ratelimit-")
+        || name.starts_with("anthropic-ratelimit-")
+}
+
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
@@ -665,6 +674,7 @@ fn fallback_url(base_url: &str, path_and_query: &str) -> Result<reqwest::Url, St
     Ok(url)
 }
 
+/// Remove fixed hop-by-hop headers and those nominated by Connection.
 fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
     let connection_headers = headers
         .get_all(axum::http::header::CONNECTION)
@@ -1274,6 +1284,7 @@ fn runner_error(error: RunnerError) -> Response {
     }
 }
 
+/// Map a client failure to an HTTP response with safe upstream metadata.
 fn client_error(error: &LlmClientError) -> Response {
     match error {
         LlmClientError::ResponseStateLimitExceeded { .. } => error_response(
@@ -1313,7 +1324,11 @@ fn client_error(error: &LlmClientError) -> Response {
             "upstream_error",
             "temporarily_unavailable",
         ),
-        LlmClientError::UpstreamHttp { status, body } => upstream_error(*status, body),
+        LlmClientError::UpstreamHttp {
+            status,
+            body,
+            headers,
+        } => upstream_error(*status, body, headers),
         LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
             error_response(
                 StatusCode::BAD_GATEWAY,
@@ -1339,8 +1354,8 @@ fn client_error(error: &LlmClientError) -> Response {
     }
 }
 
-// Keep the provider's message and nonempty string code in our error JSON.
-fn upstream_error(status: StatusCode, body: &str) -> Response {
+/// Preserve the provider's error message and safe final-attempt headers.
+fn upstream_error(status: StatusCode, body: &str, headers: &HeaderMap) -> Response {
     let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
     let error = &parsed["error"];
     let message = error["message"].as_str().unwrap_or(body);
@@ -1349,6 +1364,14 @@ fn upstream_error(status: StatusCode, body: &str) -> Response {
         .filter(|code| !code.is_empty())
         .unwrap_or("upstream_error");
     let mut response = error_response(status, message, "upstream_error", code);
+    // Other client implementations can supply Connection-nominated headers.
+    let mut headers = headers.clone();
+    strip_hop_by_hop_headers(&mut headers);
+    for (name, value) in &headers {
+        if should_forward_upstream_error_header(name) {
+            response.headers_mut().append(name.clone(), value.clone());
+        }
+    }
     // Provider messages and codes can quote request content; log only fixed metadata.
     response
         .extensions_mut()
@@ -1406,12 +1429,19 @@ impl ApiError {
     }
 }
 
+/// Render an API error in the caller's format without losing safe error headers.
 fn render_error_response(mut response: Response, wire_format: WireFormat) -> Response {
     let Some(error) = response.extensions_mut().remove::<ApiError>() else {
         return response;
     };
     let log_error = response.extensions_mut().remove::<RequestLogError>();
     let mut rendered = error.into_response(wire_format);
+    // Format-specific error rendering replaces the response, including its headers.
+    for (name, value) in response.headers() {
+        if should_forward_upstream_error_header(name) {
+            rendered.headers_mut().append(name.clone(), value.clone());
+        }
+    }
     if let Some(log_error) = log_error {
         rendered.extensions_mut().insert(log_error);
     }
@@ -2014,6 +2044,7 @@ mod tests {
             body: format!(
                 r#"{{"error":{{"message":"validation failed: {LEAKED}","code":"invalid_request_{LEAKED}"}}}}"#
             ),
+            headers: Box::default(),
         };
         for wire_format in [
             WireFormat::OpenAiChat,
@@ -2031,6 +2062,44 @@ mod tests {
                 .expect("ApiError extension");
             assert!(api_error.message.contains(LEAKED), "{}", api_error.message);
             assert_eq!(api_error.code, format!("invalid_request_{LEAKED}"));
+        }
+    }
+
+    /// A custom client cannot forward headers nominated as hop-by-hop by Connection.
+    #[test]
+    fn upstream_error_strips_connection_nominated_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "connection",
+            "x-request-id, x-ratelimit-reset-requests"
+                .parse()
+                .expect("header value"),
+        );
+        headers.insert("x-request-id", "hop-id".parse().expect("header value"));
+        headers.insert(
+            "x-ratelimit-reset-requests",
+            "15s".parse().expect("header value"),
+        );
+        headers.insert("retry-after", "15".parse().expect("header value"));
+        let error = LlmClientError::UpstreamHttp {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            body: "rate limited".to_string(),
+            headers: Box::new(headers),
+        };
+
+        for wire_format in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+            let response = render_error_response(client_error(&error), wire_format);
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert!(!response.headers().contains_key("x-request-id"));
+            assert!(
+                !response
+                    .headers()
+                    .contains_key("x-ratelimit-reset-requests")
+            );
+            assert_eq!(
+                response.headers().get("retry-after"),
+                Some(&"15".parse().expect("header value"))
+            );
         }
     }
 
