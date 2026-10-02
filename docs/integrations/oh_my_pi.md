@@ -96,68 +96,43 @@ as a LiteLLM proxy. In that case, run Switchyard on another port or set
 `LITELLM_BASE_URL`. Set `cost` on the model entry if you want `omp` to show a non-zero
 cost.
 
-## Claude targets behind an OpenAI-compatible gateway
+## Claude through an LLM gateway
 
-The pi guide's section
-[Claude targets behind an OpenAI-compatible gateway](pi.md#claude-targets-behind-an-openai-compatible-gateway)
-applies to `omp` too. Use its table to choose the Claude LLM client by who holds the
-gateway key. Switchyard calls the gateway endpoint that matches the target's LLM client
-`format`, whatever `api` `omp` uses, so the `format` decides whether the gateway caches
-the prompt. Use `format = "openai_chat"` or `"anthropic_messages"` for Claude targets,
-because a gateway may not cache Claude prompts on `/v1/responses`. To estimate what the
-requests cost from the routing log, see [Estimate the cost](pi.md#estimate-the-cost) in
-the pi guide. This section covers what differs for `omp`, checked with Oh My Pi 18.2.11.
+The pi guide's [Claude through an LLM gateway](pi.md#claude-through-an-llm-gateway)
+section applies to `omp`: give Claude targets an LLM client with
+`format = "anthropic_messages"`. It shows how to check prompt caching and estimate the
+cost. This section covers what differs for `omp`, tested with Oh My Pi 18.2.11.
 
-### Thinking
+### Thinking on `anthropic-messages`
 
-Thinking depends on both the LLM client `format` and the `api`:
+On `openai-completions` and `openai-responses`, Switchyard turns `omp`'s thinking level
+into adaptive thinking for an `anthropic_messages` target. On `anthropic-messages`,
+Switchyard sends `omp`'s own `thinking` object unchanged. `omp` does not
+recognize a route ID such as `switchyard` as a Claude model. With thinking on, it sends
+`thinking: {type: "enabled"}`, and Claude Opus 5.5 and Sonnet 5 return HTTP 400. Set
+adaptive thinking on the model entry:
 
-- On `openai-completions`, `omp` sends `reasoning_effort`, and on `openai-responses` it
-  sends `reasoning.effort`. Switchyard passes the effort to an `openai_chat` target as
-  `reasoning_effort` and to an `openai_responses` target as `reasoning.effort`. Some
-  gateways turn either field into a thinking setting that Claude Opus 5.5 and Sonnet 5
-  refuse with HTTP 400. Switchyard turns the effort into adaptive thinking only for an
-  `anthropic_messages` target. The pi guide's [Thinking](pi.md#thinking) section shows
-  how to remove the field with `omit_body_fields` instead.
-- On `anthropic-messages`, Switchyard sends `omp`'s own `thinking` settings to an
-  `anthropic_messages` target unchanged. `omp` does not recognize a route id such as
-  `switchyard` as a Claude model, so with thinking on it sends
-  `thinking: {type: "enabled"}`, and Claude Opus 5.5 and Sonnet 5 return HTTP 400. Tell
-  `omp` to use adaptive thinking on the model entry:
+```yaml
+      - id: switchyard
+        reasoning: true
+        thinking:
+          mode: anthropic-adaptive
+          efforts: [low, medium, high]
+```
 
-  ```yaml
-        - id: switchyard
-          reasoning: true
-          thinking:
-            mode: anthropic-adaptive
-            efforts: [low, medium, high]
-  ```
-
-  `omp` requires `efforts` next to `mode`. It then sends `thinking: {type: "adaptive"}`
-  and `output_config.effort`.
+`omp` requires `efforts` next to `mode`. With both set, it sends
+`thinking: {type: "adaptive"}` and `output_config.effort`.
 
 ### Forwarded keys
 
-To forward `omp`'s key, remove `auth: none` and set `apiKey: GATEWAY_API_KEY`, the name
-of the environment variable that holds your gateway key. Unlike pi, `omp` reads the name
-without a leading `$`.
-
-Only standalone `switchyard-server` forwards keys. The native Nemo Relay plugin rejects
-routes that use `forward_auth = true` (see
+To forward `omp`'s key, remove `auth: none` and set `apiKey: GATEWAY_API_KEY`, the name of
+the environment variable that holds your gateway key. Unlike pi, `omp` reads the name
+without a leading `$`. With `auth: none`, `omp` sends no key, and the gateway returns HTTP
+401. Only standalone `switchyard-server` forwards keys. The native Nemo Relay plugin
+rejects routes that use `forward_auth = true` (see
 [Request Handling](nemo_relay.md#request-handling)).
 
-A route that forwards the key only to `anthropic_messages` clients accepts requests only
-on `/v1/messages`. A route that forwards the key to both a GPT judge on `openai_responses`
-and Claude targets on `anthropic_messages` works when both LLM clients use the same
-scheme, host, and port, as clients on one gateway do. Switchyard then turns the effort
-into adaptive thinking, and every request uses `omp`'s key. Two other setups also work:
-
-- Forward the key to every LLM client, and keep the Claude targets on `openai_chat` with
-  `omit_body_fields = ["reasoning_effort"]`. This works across hosts, but the Claude
-  models then think at their default effort, and `--thinking` has no effect on them.
-- Forward the key only to the GPT judge, and give the Claude targets an
-  `anthropic_messages` client with `api_key_env`, so they use a server-owned key.
-
-All three setups forward the key to an OpenAI-format LLM client, so the route accepts only
-`/v1/chat/completions` and `/v1/responses` and returns HTTP 400 on `/v1/messages`. Use
-`openai-completions` or `openai-responses`.
+The pi guide's [Forwarded keys](pi.md#forwarded-keys) table shows which request APIs a
+route accepts when it forwards the key. A route that forwards the key to an OpenAI-format
+LLM client, such as a classifier's GPT judge, accepts only `openai-completions` and
+`openai-responses` requests.
