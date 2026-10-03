@@ -110,6 +110,7 @@ struct CapabilityClassifierRouteConfig {
     prompt: Option<String>,
     response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +121,7 @@ struct EscalationClassifierRouteConfig {
     prompt: Option<String>,
     response_format_type: ClassifierResponseFormat,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
     judge: EscalationJudgeConfig,
 }
 
@@ -134,6 +136,7 @@ struct CustomClassifierRouteConfig {
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
 }
 
 /// Runtime model groups for a custom classifier, keyed by group name.
@@ -257,6 +260,10 @@ pub struct LlmClassifierRouteConfig {
     /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
+    /// Whole-consultation bound on the judge call in milliseconds; expiry follows the
+    /// route's `fail_open` setting. Unset leaves the consultation unbounded.
+    #[serde(default)]
+    pub judge_deadline_ms: Option<u64>,
     /// Escalation mode: how many escalate verdicts latch the session, and how
     /// much of the transcript the judge sees.
     pub escalation: Option<EscalationJudgeConfig>,
@@ -494,6 +501,10 @@ pub struct StageClassifierConfig {
     /// Most completion tokens the judge verdict may use.
     #[serde(default = "default_classifier_max_output_tokens")]
     pub max_output_tokens: u64,
+    /// Whole-consultation bound on the judge call in milliseconds; expiry follows the
+    /// route's `fail_open` setting. Unset leaves the consultation unbounded.
+    #[serde(default)]
+    pub judge_deadline_ms: Option<u64>,
 }
 
 /// The tier pair and scoring settings shared by every stage-router-backed route.
@@ -532,6 +543,7 @@ impl StageClassifierConfig {
                 contract: classifier_contract(self.prompt.as_deref())
                     .with_response_format_type(self.response_format_type),
                 max_output_tokens: self.max_output_tokens,
+                judge_deadline_ms: self.judge_deadline_ms,
             }),
             fail_open: true,
             classify_trigger: self.classify_trigger,
@@ -892,6 +904,7 @@ impl LlmClassifierRouteConfig {
             prompt,
             response_format_type,
             max_output_tokens,
+            judge_deadline_ms,
             escalation,
             models,
             default_target,
@@ -954,6 +967,7 @@ impl LlmClassifierRouteConfig {
                         prompt: prompt.clone(),
                         response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
+                        judge_deadline_ms: *judge_deadline_ms,
                     },
                 ))
             }
@@ -997,6 +1011,7 @@ impl LlmClassifierRouteConfig {
                         prompt: prompt.clone(),
                         response_format_type: *response_format_type,
                         max_output_tokens: *max_output_tokens,
+                        judge_deadline_ms: *judge_deadline_ms,
                         judge: required_classifier_field(route_name, "escalation", escalation)?,
                     },
                 ))
@@ -1047,6 +1062,7 @@ impl LlmClassifierRouteConfig {
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         max_output_tokens: *max_output_tokens,
+                        judge_deadline_ms: *judge_deadline_ms,
                     },
                 ))
             }
@@ -1250,6 +1266,7 @@ fn build_algorithm(
                             contract: classifier_contract(config.prompt.as_deref())
                                 .with_response_format_type(config.response_format_type),
                             max_output_tokens: config.max_output_tokens,
+                            judge_deadline_ms: config.judge_deadline_ms,
                         }),
                         fail_open: config.fail_open,
                         classify_trigger: config.classify_trigger,
@@ -1266,6 +1283,7 @@ fn build_algorithm(
                             .with_response_format_type(config.response_format_type),
                         config: config.judge,
                         max_output_tokens: config.max_output_tokens,
+                        judge_deadline_ms: config.judge_deadline_ms,
                     })
                 }
                 LlmClassifierModeConfig::Custom(config) => {
@@ -1289,6 +1307,7 @@ fn build_algorithm(
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
                     classifier_config.max_output_tokens = config.max_output_tokens;
+                    classifier_config.judge_deadline_ms = config.judge_deadline_ms;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                         default_target: config.default_target,
                         config: classifier_config,
