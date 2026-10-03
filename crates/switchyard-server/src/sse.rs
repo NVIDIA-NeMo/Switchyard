@@ -82,6 +82,10 @@ fn frame_event(
     let data = redactor.json(serde_json::to_string(&value)?);
     match target_format {
         WireFormat::OpenAiChat => Ok(Event::default().data(data)),
+        WireFormat::BedrockConverse => Err(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Bedrock requires AWS EventStream framing, unavailable on SSE endpoints",
+        ))),
         WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
             let event_type = value
                 .get("type")
@@ -95,7 +99,7 @@ fn frame_event(
 
 fn error_event(target_format: WireFormat, message: String, redactor: &Redactor) -> Event {
     match target_format {
-        WireFormat::OpenAiChat => Event::default().data(
+        WireFormat::OpenAiChat | WireFormat::BedrockConverse => Event::default().data(
             redactor.json(
                 json!({
                     "error": {

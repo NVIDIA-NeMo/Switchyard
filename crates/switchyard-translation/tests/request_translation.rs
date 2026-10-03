@@ -282,6 +282,7 @@ fn native_abuse_identity_is_preserved_but_not_mapped() -> TestResult {
                         "messages": [{"role": "user", "content": "hi"}],
                         "max_tokens": 8
                     }),
+                    WireFormat::BedrockConverse => unreachable!(),
                 };
                 if source == WireFormat::AnthropicMessages {
                     if let Some(identity) = identity {
@@ -393,7 +394,7 @@ fn openai_target_prompt_preserves_native_request_fields() -> TestResult {
             WireFormat::OpenAiResponses => {
                 expected["instructions"] = json!("target prompt\n\ncaller prompt");
             }
-            WireFormat::AnthropicMessages => unreachable!(),
+            WireFormat::AnthropicMessages | WireFormat::BedrockConverse => unreachable!(),
         }
 
         let mut request = engine.decode_request(format, &body, &policy)?.request;
@@ -665,7 +666,7 @@ fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
                     "messages": [{"role": "user", "content": "hi"}]
                 }),
                 WireFormat::OpenAiResponses => json!({"model": "route", "input": "hi"}),
-                WireFormat::AnthropicMessages => unreachable!(),
+                WireFormat::AnthropicMessages | WireFormat::BedrockConverse => unreachable!(),
             };
             if has_fields {
                 for (key, value) in fields.as_object().ok_or("expected fields object")? {

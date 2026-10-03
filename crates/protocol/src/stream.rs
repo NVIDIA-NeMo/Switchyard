@@ -504,9 +504,12 @@ fn parse_tool_arguments(arguments: &str) -> Value {
 /// to a normalized [`StopReason`], covering the common OpenAI and Anthropic spellings.
 fn stop_reason_from_str(reason: Option<&str>) -> StopReason {
     match reason {
-        Some("length" | "max_tokens") => StopReason::MaxTokens,
+        Some("length" | "max_tokens" | "model_context_window_exceeded") => StopReason::MaxTokens,
         Some("tool_calls" | "function_call" | "tool_use") => StopReason::ToolUse,
-        Some("content_filter") => StopReason::ContentFilter,
+        Some("content_filter" | "content_filtered" | "guardrail_intervened") => {
+            StopReason::ContentFilter
+        }
+        Some("malformed_model_output" | "malformed_tool_use") => StopReason::Error,
         Some("stop" | "end_turn" | "stop_sequence") | None => StopReason::EndTurn,
         Some(_) => StopReason::Unknown,
     }

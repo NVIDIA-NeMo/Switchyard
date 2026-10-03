@@ -1389,13 +1389,15 @@ impl ApiError {
                     "message": self.message.clone(),
                 }
             }),
-            WireFormat::OpenAiChat | WireFormat::OpenAiResponses => json!({
-                "error": {
-                    "message": self.message.clone(),
-                    "type": self.error_type,
-                    "code": self.code,
-                }
-            }),
+            WireFormat::OpenAiChat | WireFormat::OpenAiResponses | WireFormat::BedrockConverse => {
+                json!({
+                    "error": {
+                        "message": self.message.clone(),
+                        "type": self.error_type,
+                        "code": self.code,
+                    }
+                })
+            }
         };
         let mut response = (self.status, Json(body)).into_response();
         response

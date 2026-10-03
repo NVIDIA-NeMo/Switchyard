@@ -11,6 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::LlmResponseChunk;
 use crate::codecs::anthropic::AnthropicMessagesStreamCodec;
+use crate::codecs::bedrock::BedrockConverseStreamCodec;
 use crate::codecs::openai_chat::OpenAiChatStreamCodec;
 use crate::codecs::responses::OpenAiResponsesStreamCodec;
 use crate::engine::{FormatRegistry, TranslationEngine};
@@ -89,6 +90,8 @@ pub struct StreamTranslationState {
 
     pub(crate) reasoning_block_index: Option<usize>,
     pub(crate) reasoning_block_started: bool,
+    #[serde(default)]
+    pub(crate) bedrock: crate::codecs::bedrock::stream::BedrockStreamState,
 }
 
 // One Responses reasoning output item under construction by the encoder.
@@ -231,6 +234,7 @@ impl StreamCodecRegistry {
         registry.register(OpenAiChatStreamCodec);
         registry.register(AnthropicMessagesStreamCodec);
         registry.register(OpenAiResponsesStreamCodec);
+        registry.register(BedrockConverseStreamCodec);
         registry
     }
 
