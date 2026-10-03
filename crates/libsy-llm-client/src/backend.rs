@@ -21,6 +21,9 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Default number of retries for server-configured upstream calls.
 pub const DEFAULT_MAX_RETRIES: u32 = 2;
 
+/// Default maximum size of a buffered response or one SSE event.
+pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
 // Canonical OpenAI phrase plus NVIDIA/LiteLLM wrap variants. Adding a new
 // provider-wrap is a one-line entry here, not a fork of the parsing logic.
 const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
@@ -79,6 +82,8 @@ pub struct HttpBackendConfig {
     /// Deadline for one complete response, including retries, retry delays, and stream reads.
     /// `None` leaves the wait unbounded.
     pub timeout: Option<Duration>,
+    /// Maximum size of one buffered successful response or one upstream SSE event.
+    pub max_response_bytes: usize,
 }
 
 impl fmt::Debug for HttpBackendConfig {
@@ -94,6 +99,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("max_retries", &self.max_retries)
             .field("failure_cooldown", &self.failure_cooldown)
             .field("timeout", &self.timeout)
+            .field("max_response_bytes", &self.max_response_bytes)
             .finish()
     }
 }
@@ -169,6 +175,16 @@ impl Backend {
                 message: format!(
                     "model {model_name:?} api_key cannot be encoded as an HTTP header"
                 ),
+            });
+        }
+        Ok(())
+    }
+
+    // Rejects a zero response limit before the client can send a request.
+    pub(crate) fn validate_response_limit(&self, model_name: &str) -> Result<()> {
+        if self.max_response_bytes() == 0 {
+            return Err(LlmClientError::Configuration {
+                message: format!("model {model_name:?} max_response_bytes must be at least 1"),
             });
         }
         Ok(())
@@ -334,6 +350,11 @@ impl Backend {
         self.config().timeout
     }
 
+    /// Maximum size of one buffered successful response or one upstream SSE event.
+    pub fn max_response_bytes(&self) -> usize {
+        self.config().max_response_bytes
+    }
+
     /// Whether this backend speaks the Anthropic Messages wire format — the only
     /// one with a `count_tokens` endpoint.
     pub fn is_anthropic(&self) -> bool {
@@ -443,6 +464,7 @@ mod tests {
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
             timeout: None,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
 

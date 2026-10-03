@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_MAX_RETRIES,
+    HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
 use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
 
@@ -597,6 +597,8 @@ struct LlmClientConfig {
     failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
+    #[serde(default = "default_max_response_bytes")]
+    max_response_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -683,6 +685,11 @@ fn build_backend(
             "llm client {client_name} timeout_ms must be at least 1"
         )));
     }
+    if config.max_response_bytes == 0 {
+        return Err(RunnerError::configuration(format!(
+            "llm client {client_name} max_response_bytes must be at least 1"
+        )));
+    }
     if config.forward_auth && config.api_key_env.is_some() {
         return Err(RunnerError::configuration(format!(
             "llm client {client_name} cannot set both forward_auth and api_key_env"
@@ -721,6 +728,7 @@ fn build_backend(
         max_retries: config.max_retries,
         failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
         timeout: config.timeout_ms.map(Duration::from_millis),
+        max_response_bytes: config.max_response_bytes,
     };
     let backend = match config.format {
         ClientFormat::OpenAiChat => Backend::OpenAiChat(http),
@@ -737,6 +745,10 @@ const fn default_max_retries() -> u32 {
 
 const fn default_failure_cooldown_ms() -> u64 {
     5000
+}
+
+const fn default_max_response_bytes() -> usize {
+    DEFAULT_MAX_RESPONSE_BYTES
 }
 
 fn validate_value(label: &str, value: &str) -> RunnerResult<()> {
@@ -1740,6 +1752,37 @@ confidence_threshold = 0.5
                 assert_eq!(backend?.timeout(), expected.map(Duration::from_millis));
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn response_limit_defaults_accepts_override_and_rejects_zero() -> RunnerResult<()> {
+        let defaults: LlmClientConfig =
+            toml::from_str("format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"")
+                .expect("valid client config");
+        let backend = build_backend("test", &defaults, &BTreeMap::new(), &BTreeSet::new(), None)?;
+        assert_eq!(backend.max_response_bytes(), DEFAULT_MAX_RESPONSE_BYTES);
+
+        let configured: LlmClientConfig = toml::from_str(
+            "format = \"openai_chat\"\n\
+             base_url = \"https://example.test/v1\"\n\
+             max_response_bytes = 101",
+        )
+        .expect("valid client config");
+        let backend = build_backend(
+            "test",
+            &configured,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            None,
+        )?;
+        assert_eq!(backend.max_response_bytes(), 101);
+
+        let source = "format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\nmax_response_bytes = 0";
+        let config: LlmClientConfig = toml::from_str(source).expect("valid client config");
+        let error = build_backend("test", &config, &BTreeMap::new(), &BTreeSet::new(), None)
+            .expect_err("zero response limit must fail");
+        assert!(error.to_string().contains("max_response_bytes"));
         Ok(())
     }
 

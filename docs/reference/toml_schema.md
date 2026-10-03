@@ -56,6 +56,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
 | `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
+| `max_response_bytes` | No | `33554432` | Maximum size of one buffered successful upstream response or one SSE event. Must be at least `1`; the complete stream is not capped. |
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
@@ -78,6 +79,16 @@ answering models, put the judge on its own `[llm_clients]` entry; two entries ma
 share a `base_url`. When an answer deadline expires, the server returns `504`.
 If the final answer has already started streaming, the
 server sends a framed error and ends the stream without a success marker.
+
+The response limit bounds memory used for one upstream result. Streaming calls
+apply `max_response_bytes` to each SSE event as it arrives, so a long stream of
+smaller events remains valid. A buffered response or first streamed event above
+the limit fails with `502`. If a later event exceeds the limit after the response
+has started, the server ends the stream with an inline error under the
+already-committed status. Non-success responses keep at most 64 KiB of body
+text and include a truncation marker when the upstream sent more. For SSE,
+the limit counts data and field-line bytes, including CRLF line endings, but
+not the LF or CRLF blank line that separates events.
 
 The Rust runner collects streams used during routing before the algorithm
 continues, preserving provider events for replay. After the configured retries,

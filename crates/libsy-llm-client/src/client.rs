@@ -34,6 +34,8 @@ use crate::raw::RawResponse;
 // Caller headers safe to send when caller auth forwarding is disabled.
 const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id"];
 
+const ERROR_BODY_LIMIT: usize = 64 * 1024;
+
 // Headers tied to the inbound connection, destination, or body. The HTTP client
 // must rebuild these for the upstream request, even when forwarding auth.
 const NON_FORWARDABLE_HEADERS: &[&str] = &[
@@ -144,6 +146,7 @@ impl TranslatingLlmClient {
                 .chain(config.other_backends.iter().flatten())
             {
                 backend.validate_configured_headers(&config.model_name)?;
+                backend.validate_response_limit(&config.model_name)?;
             }
             unavailable_until.insert(config.model_name.clone(), AtomicU64::new(0));
         }
@@ -481,12 +484,12 @@ impl TranslatingLlmClient {
                 });
             }
             let upstream_headers = response.headers().clone();
-            let body = match response.bytes().await {
+            let body = match read_response_body(response, backend.max_response_bytes()).await {
                 Ok(body) => body,
                 Err(error) => {
                     metrics::record_upstream_attempt(None);
                     return Err(AttemptFailure {
-                        error: convert_reqwest_error(error),
+                        error,
                         status: Some(status),
                         retry_after: None,
                     });
@@ -495,24 +498,31 @@ impl TranslatingLlmClient {
             metrics::record_upstream_attempt(Some(status.as_u16()));
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
-                body: body.to_vec(),
+                body,
                 upstream_headers,
             });
         }
 
         let retry_after = retry_after_delay(response.headers());
-        let body = match response.text().await {
+        let (body, truncated) = match read_error_body(response, ERROR_BODY_LIMIT).await {
             Ok(body) => body,
             Err(error) => {
                 metrics::record_upstream_attempt(None);
                 return Err(AttemptFailure {
-                    error: convert_reqwest_error(error),
+                    error,
                     status: Some(status),
                     retry_after,
                 });
             }
         };
-        let body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
+        let mut body =
+            redact_forwarded_headers(body, metadata, backend.is_forwarding_auth(), truncated);
+        if truncated {
+            body.push_str(&format!(
+                "\n[upstream error body truncated at {} bytes]",
+                ERROR_BODY_LIMIT
+            ));
+        }
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
@@ -609,6 +619,7 @@ impl TranslatingLlmClient {
                                         json!({ "error": error }).to_string(),
                                         metadata.as_ref(),
                                         backend.is_forwarding_auth(),
+                                        false,
                                     ),
                                 }
                             }
@@ -814,13 +825,14 @@ async fn prepare_response_stream(
             .map(|bytes| bytes.to_vec())
             .map_err(convert_reqwest_error)
     });
-    let mut chunks = decode_stream(bytes, backend.wire_format())?;
+    let mut chunks = decode_stream(bytes, backend.wire_format(), backend.max_response_bytes())?;
     match chunks.next().await {
         None => Ok(stream::empty().boxed()),
         // Nothing has reached the caller, so transport failures can still be retried.
         Some(Err(error @ (LlmClientError::Transport { .. } | LlmClientError::Timeout { .. }))) => {
             Err(error)
         }
+        Some(Err(error @ LlmClientError::UpstreamResponseTooLarge { .. })) => Err(error),
         Some(first) => {
             // An in-band context overflow skips retries and advances to another candidate.
             if let Some(message) = first_event_overflow(&first, backend) {
@@ -832,6 +844,56 @@ async fn prepare_response_stream(
             Ok(stream::once(ready(first)).chain(chunks).boxed())
         }
     }
+}
+
+// Collects a success body and rejects it before cumulative bytes exceed `limit`.
+async fn read_response_body(response: reqwest::Response, limit: usize) -> Result<Vec<u8>> {
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or_default()
+            .min(limit),
+    );
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(convert_reqwest_error)?;
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Err(LlmClientError::UpstreamResponseTooLarge { limit });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+// Retains at most `limit` error bytes and removes a trailing partial UTF-8 codepoint.
+async fn read_error_body(response: reqwest::Response, limit: usize) -> Result<(String, bool)> {
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or_default()
+            .min(limit),
+    );
+    let mut truncated = false;
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(convert_reqwest_error)?;
+        let remaining = limit.saturating_sub(body.len());
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    if truncated
+        && let Err(error) = std::str::from_utf8(&body)
+        && error.error_len().is_none()
+    {
+        body.truncate(error.valid_up_to());
+    }
+    Ok((String::from_utf8_lossy(&body).into_owned(), truncated))
 }
 
 // The overflow message when a stream's first event is an in-band provider rejection
@@ -1300,6 +1362,7 @@ fn redact_forwarded_headers(
     mut body: String,
     metadata: Option<&Metadata>,
     is_forwarding_auth: bool,
+    truncated: bool,
 ) -> String {
     if !is_forwarding_auth {
         return body;
@@ -1316,6 +1379,18 @@ fn redact_forwarded_headers(
         };
         if !value.is_empty() {
             body = body.replace(value, "[REDACTED]");
+            if truncated {
+                for prefix_end in (1..value.len())
+                    .rev()
+                    .filter(|index| value.is_char_boundary(*index))
+                {
+                    if body.ends_with(&value[..prefix_end]) {
+                        body.truncate(body.len() - prefix_end);
+                        body.push_str("[REDACTED]");
+                        break;
+                    }
+                }
+            }
         }
     }
     body
@@ -1350,6 +1425,7 @@ mod tests {
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
             timeout: None,
+            max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
 
@@ -1480,6 +1556,12 @@ mod tests {
         )]
     }
 
+    fn chat_map_with_limit(base_url: &str, max_response_bytes: usize) -> Vec<ModelConfig> {
+        let mut config = config(base_url);
+        config.max_response_bytes = max_response_bytes;
+        vec![ModelConfig::new("gpt", Backend::OpenAiChat(config), None)]
+    }
+
     fn anthropic_map(base_url: &str) -> Vec<ModelConfig> {
         vec![ModelConfig::new(
             "claude",
@@ -1579,6 +1661,23 @@ mod tests {
             .expect_err("closed port");
 
         assert!(!convert_reqwest_error(error).to_string().contains("CANARY"));
+    }
+
+    #[test]
+    fn direct_client_configuration_rejects_zero_response_limit() {
+        let mut config = config("https://example.test/v1");
+        config.max_response_bytes = 0;
+        let Err(error) = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(config),
+            None,
+        )]) else {
+            panic!("zero response limit must fail");
+        };
+        assert!(matches!(
+            error,
+            LlmClientError::Configuration { message } if message.contains("max_response_bytes")
+        ));
     }
 
     #[test]
@@ -1807,6 +1906,147 @@ mod tests {
         let agg = response.llm_response.into_agg().await?;
         assert_eq!(completion_text(&agg), "Hi there");
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn buffered_response_limit_accepts_exact_and_rejects_one_byte_over()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let body = json!({
+            "id": "chatcmpl-1",
+            "model": "gpt",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "bounded"},
+                "finish_reason": "stop"
+            }],
+            "usage": {}
+        })
+        .to_string();
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body.clone(), "application/json"))
+            .mount(&server)
+            .await;
+        let base_url = format!("{}/v1", server.uri());
+
+        let exact = TranslatingLlmClient::new(&chat_map_with_limit(&base_url, body.len()))?;
+        let response = exact
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await?;
+        assert_eq!(
+            completion_text(&response.llm_response.into_agg().await?),
+            "bounded"
+        );
+
+        let too_small = TranslatingLlmClient::new(&chat_map_with_limit(&base_url, body.len() - 1))?;
+        let Err(error) = too_small
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("response one byte above the limit must fail");
+        };
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamResponseTooLarge { limit } if limit == body.len() - 1
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn error_body_limit_truncates_on_a_utf8_boundary()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let retained = "a".repeat(ERROR_BODY_LIMIT - 1);
+        let body = format!("{retained}é-sensitive-tail");
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(body))
+            .mount(&server)
+            .await;
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_limit(&format!("{}/v1", server.uri()), 8))?;
+
+        let Err(error) = client
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("upstream HTTP error expected");
+        };
+        let LlmClientError::UpstreamHttp { body, .. } = error else {
+            panic!("expected an upstream HTTP error");
+        };
+        assert_eq!(
+            body,
+            format!("{retained}\n[upstream error body truncated at {ERROR_BODY_LIMIT} bytes]")
+        );
+        assert!(!body.contains('�'));
+        assert!(!body.contains("sensitive-tail"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn error_body_at_the_exact_limit_is_not_marked_as_truncated()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let body = "a".repeat(ERROR_BODY_LIMIT);
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(body.clone()))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+
+        let Err(error) = client
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("upstream HTTP error expected");
+        };
+        let LlmClientError::UpstreamHttp { body: received, .. } = error else {
+            panic!("expected an upstream HTTP error");
+        };
+        assert_eq!(received, body);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn truncated_error_body_redacts_a_partial_forwarded_credential()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let prefix = "a".repeat(ERROR_BODY_LIMIT - "denied: super-sec".len());
+        let retained = format!("{prefix}denied: super-sec");
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string(format!("{retained}ret-credential was rejected")),
+            )
+            .mount(&server)
+            .await;
+        let config = forwarding_config(&format!("{}/v1", server.uri()));
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(config),
+            None,
+        )])?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-private-token",
+            http::HeaderValue::from_static("super-secret-credential"),
+        );
+
+        let Err(LlmClientError::UpstreamHttp { body, .. }) = client
+            .call_rewrite_model(request_with_headers("gpt", headers), None)
+            .await
+        else {
+            panic!("expected an upstream HTTP error");
+        };
+        assert_eq!(
+            body,
+            format!(
+                "{prefix}denied: [REDACTED]\n[upstream error body truncated at {} bytes]",
+                ERROR_BODY_LIMIT
+            )
+        );
+        assert!(!body.contains("super-sec"));
         Ok(())
     }
 
