@@ -371,9 +371,15 @@ async fn upstream_chat(
         .into_response();
     }
 
+    // JSON Object mode carries the custom schema in the judge prompt instead of
+    // `response_format`, so recognize it there too.
     let custom_target_schema = body
         .pointer("/response_format/json_schema/schema/properties/decision/properties/target")
-        .is_some();
+        .is_some()
+        || (body["response_format"]["type"] == "json_object"
+            && body["messages"][0]["content"]
+                .as_str()
+                .is_some_and(|prompt| prompt.contains("\"decision\"")));
     let requests_invalid_verdict = body["messages"].as_array().is_some_and(|messages| {
         messages.iter().any(|message| {
             message["content"]
@@ -399,7 +405,10 @@ async fn upstream_chat(
         })
     });
     let content = if model == "model/classifier" && custom_target_schema {
-        if requests_invalid_verdict {
+        if requests_schema_invalid_verdict {
+            // The selector would accept "fast"; only the schema's additionalProperties rejects it.
+            r#"{"decision":{"target":"fast"},"extra":1}"#.to_string()
+        } else if requests_invalid_verdict {
             r#"{"decision":{"target":"unknown"}}"#.to_string()
         } else {
             let group = requested_group.unwrap_or_else(|| "efficient".to_string());
@@ -2491,6 +2500,172 @@ selector = "/decision/target"
         judge_call["response_format"]["json_schema"]["schema"]["properties"]["decision"]["properties"]
             ["target"]["enum"],
         json!(["fast", "balanced", "reasoning", "premium"])
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_classifier_can_request_json_object_output() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.custom]
+id = "switchyard/custom"
+type = "llm_classifier"
+mode = "custom"
+response_format_type = "json_object"
+models = {{ judge = ["classifier"], fast = ["weak"], reasoning = ["strong"], any = ["weak", "strong"] }}
+default_target = "reasoning"
+prompt = "CUSTOM JSON OBJECT"
+response_schema = '''
+{{
+  "type": "object",
+  "properties": {{
+    "decision": {{
+      "type": "object",
+      "properties": {{
+        "target": {{"type": "string", "enum": ["fast", "reasoning"]}}
+      }},
+      "required": ["target"],
+      "additionalProperties": false
+    }}
+  }},
+  "required": ["decision"],
+  "additionalProperties": false
+}}
+'''
+
+[routes.custom.policy]
+type = "target_selector"
+selector = "/decision/target"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    // The provider only guarantees JSON here. The second verdict names a valid target, so the
+    // selector alone would pick `fast`; only local schema validation rejects it and falls
+    // back to `default_target`.
+    for (task, selected) in [
+        ("route to fast", "model/weak"),
+        ("return a schema-invalid verdict", "model/strong"),
+    ] {
+        upstream.calls.lock().await.clear();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/custom",
+                "messages": [{"role": "user", "content": task}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{task}");
+        assert_eq!(
+            response.headers["x-model-router-selected-model"], selected,
+            "{task}"
+        );
+
+        let calls = upstream.calls.lock().await;
+        let judge_call = calls
+            .iter()
+            .find(|call| call["model"] == "model/classifier")
+            .ok_or("custom classifier target was not called")?;
+        assert_eq!(
+            judge_call["response_format"],
+            json!({"type": "json_object"})
+        );
+        let prompt = judge_call["messages"][0]["content"]
+            .as_str()
+            .ok_or("custom classifier prompt was not text")?;
+        assert!(prompt.starts_with("CUSTOM JSON OBJECT"), "{prompt}");
+        assert!(prompt.contains("JSON Schema"), "{prompt}");
+        assert!(prompt.contains("\"decision\""), "{prompt}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn subagent_custom_classifier_can_request_json_object_output() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets]
+classifier = {{ id = "model/classifier", llm_client = "upstream" }}
+strong = {{ id = "model/strong", llm_client = "upstream" }}
+weak = {{ id = "model/weak", llm_client = "upstream" }}
+[routes.agent]
+id = "agent"
+type = "passthrough"
+target = "weak"
+[routes.agent.subagents]
+type = "llm_classifier"
+mode = "custom"
+response_format_type = "json_object"
+models = {{ judge = ["classifier"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }}
+default_target = "efficient"
+prompt = "classify the delegated task"
+response_schema = '''{{"type":"object","properties":{{"decision":{{"type":"object","properties":{{"target":{{"type":"string","enum":["capable","efficient"]}}}},"required":["target"],"additionalProperties":false}}}},"required":["decision"],"additionalProperties":false}}'''
+[routes.agent.subagents.policy]
+type = "target_selector"
+selector = "/decision/target"
+"#,
+        base_url = upstream.base_url
+    ))?);
+
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "agent",
+            "messages": [{"role": "user", "content": "route to capable"}]
+        })),
+        &[
+            ("x-claude-code-session-id", "root-session"),
+            ("x-claude-code-agent-id", "child-agent"),
+        ],
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response.headers["x-model-router-selected-model"],
+        "model/strong"
+    );
+    let calls = upstream.calls.lock().await;
+    let judge_call = calls
+        .iter()
+        .find(|call| call["model"] == "model/classifier")
+        .ok_or("subagent classifier target was not called")?;
+    // The sub-agent path builds its own classifier config; this pins that the
+    // setting reaches the judge instead of silently staying on JSON Schema.
+    assert_eq!(
+        judge_call["response_format"],
+        json!({"type": "json_object"})
     );
     Ok(())
 }

@@ -358,6 +358,64 @@ async def test_classifier_config_accepts_json_object_output() -> None:
     assert response["model"] == "weak"
 
 
+async def test_custom_classifier_config_accepts_json_object_output() -> None:
+    """Verify that Python can select JSON Object mode for a custom classifier judge."""
+
+    class JudgeClient(EchoClient):
+        async def call(self, request: dict[str, Any]) -> dict[str, Any]:
+            self.calls.append(request)
+            return {
+                "model": self.model,
+                "outputs": [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": '{"target":"efficient"}'}],
+                        "stop_reason": "end_turn",
+                    }
+                ],
+            }
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["target"],
+        "properties": {"target": {"type": "string", "enum": ["capable", "efficient"]}},
+    }
+    judge = JudgeClient("judge")
+    algorithm = algorithms.llm_classifier(
+        LlmClassifierConfig.custom(
+            default_target="capable",
+            config=CustomClassifierConfig(
+                "Choose a target.",
+                schema,
+                "/target",
+                response_format_type="json_object",
+            ),
+        )
+    )
+
+    _, response = await run_algorithm(
+        algorithm,
+        {
+            "judge": judge,
+            "model-a": EchoClient("model-a"),
+            "model-b": EchoClient("model-b"),
+        },
+        models={
+            "judge": ["judge"],
+            "capable": ["model-a"],
+            "efficient": ["model-b"],
+            "any": ["model-a", "model-b"],
+        },
+    )
+
+    assert judge.calls[0]["output"]["response_format"] == {"type": "json_object"}
+    prompt = judge.calls[0]["instructions"][0]["content"][0]["text"]
+    assert prompt.startswith("Choose a target.")
+    assert '"efficient"' in prompt
+    assert response["model"] == "model-b"
+
+
 def test_classifier_config_rejects_unknown_response_format() -> None:
     invalid_response_format: Any = "yaml"
 
@@ -366,6 +424,22 @@ def test_classifier_config_rejects_unknown_response_format() -> None:
         match="response_format_type must be 'json_schema' or 'json_object'",
     ):
         TaskClassifierConfig(0.5, response_format_type=invalid_response_format)
+
+
+def test_custom_classifier_config_rejects_unknown_response_format() -> None:
+    invalid_response_format: Any = "yaml"
+    schema = {"type": "object"}
+
+    with pytest.raises(
+        ValueError,
+        match="response_format_type must be 'json_schema' or 'json_object'",
+    ):
+        CustomClassifierConfig(
+            "Choose a target.",
+            schema,
+            "/target",
+            response_format_type=invalid_response_format,
+        )
 
 
 async def test_random_weights_and_seed_are_reproducible() -> None:
