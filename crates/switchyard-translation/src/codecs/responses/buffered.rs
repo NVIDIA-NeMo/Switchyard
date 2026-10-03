@@ -270,6 +270,18 @@ impl FormatCodec for OpenAiResponsesCodec {
                 .reasoning
                 .raw
                 .as_ref()
+                .is_some_and(|thinking| thinking.get("budget_tokens").is_some())
+            {
+                push_lossy(
+                    &mut diagnostics,
+                    policy,
+                    "Responses has no thinking token budget; dropped thinking.budget_tokens",
+                )?;
+            }
+            if request
+                .reasoning
+                .raw
+                .as_ref()
                 .and_then(|thinking| thinking.get("type"))
                 .and_then(Value::as_str)
                 == Some("disabled")
