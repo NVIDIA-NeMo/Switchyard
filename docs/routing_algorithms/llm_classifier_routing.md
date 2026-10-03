@@ -125,6 +125,7 @@ for the server merge behavior.
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+| `judge_deadline_ms` | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and follows `fail_open`: the route either falls back to the capable tier (default) or stops with a 504. Must be at least `1`. Unset leaves the consultation unbounded. |
 
 ### Override the classifier prompt
 

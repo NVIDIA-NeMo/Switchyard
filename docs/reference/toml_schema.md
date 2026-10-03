@@ -267,13 +267,14 @@ checkpoint = "/models/router.pt"
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
-`max_output_tokens` applies to all three.
+`max_output_tokens` and `judge_deadline_ms` apply to all three.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and follows the route's `fail_open` setting. Must be at least `1`. Unset leaves the consultation unbounded. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
 Capability mode classifies before serving. See
@@ -398,6 +399,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and the route falls back to the capable tier. Must be at least `1`. Unset leaves the consultation unbounded. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
