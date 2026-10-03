@@ -16,6 +16,9 @@ Harbor directly at the upstream provider.
 For a small automated MMLU-Redux example using NeMo Gym instead of Harbor, see
 [Evaluate Switchyard routing with NeMo Gym](nemo_gym/README.md).
 
+To replay recorded TypeSafe/Jev routing evidence without credentials or provider calls, see
+[Offline TypeSafe/Jev Replay](typesafe/README.md).
+
 ## Prerequisites
 
 From the repo root:

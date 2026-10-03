@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "suite": "synthetic-two-target-routing",
+  "model": "jev-pinned-example",
+  "candidates": [
+    {
+      "label": "capable",
+      "description": "Best for complex, multi-step work."
+    },
+    {
+      "label": "efficient",
+      "description": "Best for short, well-specified work."
+    }
+  ],
+  "base_threshold": 0.25,
+  "default_target": "efficient",
+  "cases": [
+    {
+      "id": "simple-request",
+      "orders": [
+        {
+          "candidate_order": ["capable", "efficient"],
+          "probabilities": {"capable": 0.1, "efficient": 0.9}
+        },
+        {
+          "candidate_order": ["efficient", "capable"],
+          "probabilities": {"capable": 0.2, "efficient": 0.8}
+        }
+      ],
+      "outcomes": {
+        "capable": {"quality": 1.0, "cost": 10.0},
+        "efficient": {"quality": 1.0, "cost": 2.0}
+      }
+    },
+    {
+      "id": "complex-request",
+      "orders": [
+        {
+          "candidate_order": ["capable", "efficient"],
+          "probabilities": {"capable": 0.8, "efficient": 0.2}
+        },
+        {
+          "candidate_order": ["efficient", "capable"],
+          "probabilities": {"capable": 0.6, "efficient": 0.4}
+        }
+      ],
+      "outcomes": {
+        "capable": {"quality": 1.0, "cost": 10.0},
+        "efficient": {"quality": 0.0, "cost": 2.0}
+      }
+    },
+    {
+      "id": "order-sensitive-request",
+      "orders": [
+        {
+          "candidate_order": ["capable", "efficient"],
+          "probabilities": {"capable": 0.7, "efficient": 0.3}
+        },
+        {
+          "candidate_order": ["efficient", "capable"],
+          "probabilities": {"capable": 0.3, "efficient": 0.7}
+        }
+      ],
+      "outcomes": {
+        "capable": {"quality": 1.0, "cost": 10.0},
+        "efficient": {"quality": 0.0, "cost": 2.0}
+      }
+    }
+  ]
+}
