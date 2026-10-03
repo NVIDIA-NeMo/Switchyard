@@ -302,6 +302,10 @@ impl FormatCodec for OpenAiChatCodec {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
+            let refusal = message
+                .get("refusal")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty());
             let mut content = match message.get("content") {
                 // decode_openai_content would turn absent response text into an empty text block.
                 None | Some(Value::Null) => Vec::new(),
@@ -314,6 +318,11 @@ impl FormatCodec for OpenAiChatCodec {
                 )?,
             };
             prepend_openai_reasoning_blocks(&mut content, &message);
+            if let Some(text) = refusal {
+                content.push(ContentBlock::Refusal {
+                    text: text.to_string(),
+                });
+            }
             if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for (index, tool_call) in tool_calls.iter().enumerate() {
                     if let Some(call) = decode_openai_tool_call(
@@ -325,6 +334,12 @@ impl FormatCodec for OpenAiChatCodec {
                     }
                 }
             }
+            let finish_reason = choice.get("finish_reason").and_then(Value::as_str);
+            let stop_reason = if refusal.is_some() && matches!(finish_reason, Some("stop") | None) {
+                StopReason::ContentFilter
+            } else {
+                map_openai_finish_reason(finish_reason)
+            };
             response.outputs.push(ResponseOutput {
                 url_citations: message
                     .get("annotations")
@@ -338,9 +353,7 @@ impl FormatCodec for OpenAiChatCodec {
                     .collect(),
                 role: Role::Assistant,
                 content,
-                stop_reason: Some(map_openai_finish_reason(
-                    choice.get("finish_reason").and_then(Value::as_str),
-                )),
+                stop_reason: Some(stop_reason),
             });
         }
 
