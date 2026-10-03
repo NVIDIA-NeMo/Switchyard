@@ -245,15 +245,23 @@ impl FormatCodec for BedrockConverseCodec {
                 system.push(encode_system_block(block, &mut diagnostics, policy)?);
             }
         }
-        let mut messages = Vec::new();
+        let mut messages: Vec<Value> = Vec::new();
         for message in &request.messages {
             if matches!(message.role, Role::System | Role::Developer) {
                 for block in &message.content {
                     system.push(encode_system_block(block, &mut diagnostics, policy)?);
                 }
             } else {
-                messages.push(json!({"role": encode_role(message.role),
-                    "content": encode_content(&message.content, &mut diagnostics, policy)?}));
+                let role = encode_role(message.role);
+                let content = encode_content(&message.content, &mut diagnostics, policy)?;
+                if let Some(previous) = messages.last_mut()
+                    && previous["role"] == role
+                    && let Some(blocks) = previous["content"].as_array_mut()
+                {
+                    blocks.extend(content);
+                } else {
+                    messages.push(json!({"role": role, "content": content}));
+                }
             }
         }
         if !system.is_empty() {
@@ -282,8 +290,30 @@ impl FormatCodec for BedrockConverseCodec {
         if !inference.is_empty() {
             body.insert("inferenceConfig".into(), Value::Object(inference));
         }
-        // Converse has no `none` tool-choice variant: disabling tools means omitting the config.
-        if request.tool_choice != Some(ToolChoice::None) && !request.tools.is_empty() {
+        let has_tool_history = request.messages.iter().any(|message| {
+            message.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+                )
+            })
+        });
+        if has_tool_history && request.tools.is_empty() {
+            return Err(invalid(
+                "$.toolConfig",
+                "tool history requires tool definitions",
+            ));
+        }
+        let is_tool_disabled = request.tool_choice == Some(ToolChoice::None);
+        // History still requires toolConfig, but Converse has no `none` choice.
+        if is_tool_disabled && has_tool_history {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                "Bedrock Converse cannot disable tools while retaining tool history",
+            )?;
+        }
+        if (!is_tool_disabled || has_tool_history) && !request.tools.is_empty() {
             let tools = request
                 .tools
                 .iter()
@@ -300,7 +330,7 @@ impl FormatCodec for BedrockConverseCodec {
                 })
                 .collect::<Vec<_>>();
             let mut config = json!({"tools": tools});
-            if let Some(choice) = &request.tool_choice {
+            if !is_tool_disabled && let Some(choice) = &request.tool_choice {
                 config["toolChoice"] = encode_tool_choice(choice)?;
             }
             body.insert("toolConfig".into(), config);
@@ -797,7 +827,7 @@ fn encode_role(role: Role) -> &'static str {
 pub(super) fn decode_stop_reason(reason: &str) -> StopReason {
     match reason {
         "end_turn" | "stop_sequence" => StopReason::EndTurn,
-        "max_tokens" => StopReason::MaxTokens,
+        "max_tokens" | "model_context_window_exceeded" => StopReason::MaxTokens,
         "tool_use" => StopReason::ToolUse,
         "content_filtered" | "guardrail_intervened" => StopReason::ContentFilter,
         "malformed_model_output" | "malformed_tool_use" => StopReason::Error,

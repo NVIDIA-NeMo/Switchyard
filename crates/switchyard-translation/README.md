@@ -14,6 +14,12 @@ settings, inline images, stop reasons, and cache-token usage have neutral mappin
 become serialized JSON text when normalized; same-format preservation retains their original JSON.
 Native controls such as guardrails and additional model fields survive same-format request encoding.
 Cross-format projection diagnoses their loss and rejects it under strict loss policy.
+Normalized encoding merges consecutive messages with the same Bedrock role in content order.
+Tool history requires tool definitions. Disabling tools with history retains the required config
+and reports a lossy conversion; strict loss policy rejects it. Without history, disabling tools
+omits the config. Same-format preservation keeps the original request body.
+Context-window exhaustion maps to the neutral token-limit stop reason so other formats mark the
+response incomplete. Same-format preservation retains the original Bedrock stop reason.
 
 ConverseStream codecs operate on the JSON union events after the host removes and validates AWS
 EventStream framing. Feed those events to `decode_event_stream`, then use `encode_stream` for target
@@ -23,8 +29,10 @@ truncation, malformed events, or provider exceptions fail the stream. Encoding r
 input and output tokens; an absent total is derived from those counts and cache details.
 
 Same-format preserved events replay unchanged, including native reasoning signatures. Aggregated
-Bedrock reasoning preserves signature and redacted-content fragments. Foreign opaque reasoning
-stream details, including cross-format Anthropic/Bedrock signatures, are rejected. Tool arguments
+Bedrock reasoning preserves signature and redacted-content fragments. Translation to Anthropic
+streams omits Bedrock signature fragments while retaining visible reasoning and answer text;
+Bedrock redacted reasoning cannot be mapped and fails the stream. Encoding Bedrock rejects
+foreign opaque reasoning stream details, including Anthropic signatures. Tool arguments
 may precede their ID and name; parallel calls are serialized into Bedrock blocks. A tool block
 cannot resume after other content closes it. Encoding Bedrock rejects unsupported foreign media and provider-specific built-in tool
 history.

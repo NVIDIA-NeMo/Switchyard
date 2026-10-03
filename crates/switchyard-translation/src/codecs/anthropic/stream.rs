@@ -213,15 +213,12 @@ fn encode_anthropic_stream(
         }
         LlmResponseChunk::ReasoningDetailsDelta { text, details, .. } => {
             if details.iter().any(|detail| {
-                detail
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .is_some_and(|kind| kind.starts_with("bedrock."))
+                detail.get("type").and_then(Value::as_str) == Some("bedrock.redacted_content")
             }) {
                 return encode_anthropic_stream(
                     state,
                     LlmResponseChunk::DecodeError {
-                        message: "Bedrock reasoning signatures have no Anthropic stream mapping"
+                        message: "Bedrock redacted reasoning has no Anthropic stream mapping"
                             .into(),
                     },
                 );

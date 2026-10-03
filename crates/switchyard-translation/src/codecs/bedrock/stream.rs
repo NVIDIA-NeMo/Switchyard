@@ -180,6 +180,7 @@ fn decode(
         state.stop_reason = Some(reason.into());
         let reason = match reason {
             "content_filtered" | "guardrail_intervened" => "content_filter",
+            "model_context_window_exceeded" => "max_tokens",
             other => other,
         };
         return Ok(vec![LlmResponseChunk::MessageStop {
@@ -531,6 +532,7 @@ fn finish(state: &mut StreamTranslationState) -> Vec<Value> {
     if !state.bedrock.replayed_stop {
         let reason = match state.stop_reason.as_deref() {
             Some("length" | "max_tokens") => "max_tokens",
+            Some("model_context_window_exceeded") => "model_context_window_exceeded",
             Some("tool_calls" | "function_call" | "tool_use") => "tool_use",
             Some("content_filter" | "content_filtered") => "content_filtered",
             Some("guardrail_intervened") => "guardrail_intervened",

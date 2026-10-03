@@ -155,12 +155,13 @@ fn native_requests_and_cross_format_tool_histories() -> TestResult {
     assert_eq!(chat["messages"].as_array().map(Vec::len), Some(4));
     let mut no_tools = decoded;
     no_tools.tool_choice = Some(ToolChoice::None);
+    let output = engine.encode_request(BEDROCK, &no_tools, &normalized())?;
+    assert!(output.body["toolConfig"]["tools"].is_array());
     assert!(
-        engine
-            .encode_request(BEDROCK, &no_tools, &normalized())?
-            .body
-            .get("toolConfig")
-            .is_none()
+        output
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "lossy_conversion")
     );
     Ok(())
 }
@@ -550,7 +551,7 @@ fn event_stream_errors_and_truncation_fail_without_success_terminal() -> TestRes
         LlmResponseChunk::ReasoningDetailsDelta {
             index: 0,
             text: String::new(),
-            details: vec![json!({"type": "bedrock.signature_delta", "signature": "opaque"})],
+            details: vec![json!({"type": "bedrock.redacted_content", "data": "YQ=="})],
         }
         .into(),
     )?;
@@ -558,5 +559,274 @@ fn event_stream_errors_and_truncation_fail_without_success_terminal() -> TestRes
     assert_eq!(output[0]["type"], "error");
     let bytes = stream::iter([Ok::<Vec<u8>, LlmClientError>(b"data: {}\n\n".to_vec())]);
     assert!(decode_stream(bytes, BEDROCK).is_err());
+    Ok(())
+}
+
+#[test]
+fn context_window_exhaustion_stays_incomplete_across_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({"output": {"message": {"role": "assistant", "content": [{"text": "partial"}]}},
+        "stopReason": "model_context_window_exceeded", "usage": usage()});
+    let response = engine
+        .decode_response(BEDROCK, &body, &normalized())?
+        .response;
+    assert_eq!(
+        response.outputs[0].stop_reason,
+        Some(switchyard_protocol::StopReason::MaxTokens)
+    );
+    assert_eq!(
+        engine
+            .encode_response(BEDROCK, &response, &normalized())?
+            .body,
+        body
+    );
+    let mut values = events();
+    values[3] = json!({"messageStop": {"stopReason": "model_context_window_exceeded"}});
+    let aggregate = block_on(LlmResponse::Stream(raw_events(values.clone())?).into_agg())?;
+    assert_eq!(
+        aggregate.outputs[0].stop_reason,
+        Some(switchyard_protocol::StopReason::MaxTokens)
+    );
+    let replayed =
+        block_on(encode_stream(raw_events(values.clone())?, BEDROCK, None)?.collect::<Vec<_>>())
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(replayed, values);
+    for target in [
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+    ] {
+        let encoded = engine
+            .encode_response(target, &response, &normalized())?
+            .body;
+        match target {
+            WireFormat::OpenAiChat => assert_eq!(encoded["choices"][0]["finish_reason"], "length"),
+            WireFormat::OpenAiResponses => assert_eq!(encoded["status"], "incomplete"),
+            WireFormat::AnthropicMessages => assert_eq!(encoded["stop_reason"], "max_tokens"),
+            WireFormat::BedrockConverse => unreachable!(),
+        }
+        let projected = translate_events(&values, target)?;
+        let aggregate = block_on(
+            LlmResponse::Stream(decode_event_stream(
+                stream::iter(projected.into_iter().map(Ok)),
+                target,
+            )?)
+            .into_agg(),
+        )?;
+        assert_eq!(
+            aggregate.outputs[0].stop_reason,
+            Some(switchyard_protocol::StopReason::MaxTokens),
+            "{target}"
+        );
+    }
+    let mut direct = StreamTranslationState::new(BEDROCK, BEDROCK);
+    engine.encode_stream_event(
+        &mut direct,
+        BEDROCK,
+        LlmResponseChunk::MessageStop {
+            reason: Some("model_context_window_exceeded".into()),
+        }
+        .into(),
+    )?;
+    engine.encode_stream_event(
+        &mut direct,
+        BEDROCK,
+        LlmResponseChunk::Usage(response.usage).into(),
+    )?;
+    assert!(
+        engine
+            .finish_stream(&mut direct, BEDROCK)?
+            .iter()
+            .any(|e| e["messageStop"]["stopReason"] == "model_context_window_exceeded")
+    );
+    Ok(())
+}
+
+#[test]
+fn consecutive_tool_results_and_user_turns_merge_without_reordering() -> TestResult {
+    let body = json!({"messages": [
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "a", "type": "function", "function": {"name": "weather", "arguments": "{}"}},
+            {"id": "b", "type": "function", "function": {"name": "weather", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "a", "content": "sunny"},
+        {"role": "tool", "tool_call_id": "b", "content": "rainy"},
+        {"role": "user", "content": "also tomorrow?"},
+        {"role": "assistant", "content": "forecast"},
+        {"role": "assistant", "content": "continued"},
+        {"role": "user", "content": "thanks"}
+    ], "tools": [{"type": "function", "function": {"name": "weather", "parameters": {"type": "object"}}}]});
+    let engine = TranslationEngine::default();
+    let ir = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &normalized())?
+        .request;
+    let encoded = engine.encode_request(BEDROCK, &ir, &normalized())?.body;
+    assert_eq!(encoded["messages"].as_array().map(Vec::len), Some(5));
+    assert_eq!(encoded["messages"][2]["role"], "user");
+    let content = encoded["messages"][2]["content"]
+        .as_array()
+        .ok_or("content array")?;
+    assert_eq!(content.len(), 3);
+    assert_eq!(content[0]["toolResult"]["toolUseId"], "a");
+    assert_eq!(content[1]["toolResult"]["toolUseId"], "b");
+    assert_eq!(content[2], json!({"text": "also tomorrow?"}));
+    assert_eq!(
+        encoded["messages"][3]["content"],
+        json!([{"text": "forecast"}, {"text": "continued"}])
+    );
+    let responses = json!({"input": [
+        {"role": "user", "content": "weather?"},
+        {"type": "function_call", "call_id": "a", "name": "weather", "arguments": "{}"},
+        {"type": "function_call", "call_id": "b", "name": "weather", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "a", "output": "sunny"},
+        {"type": "function_call_output", "call_id": "b", "output": "rainy"},
+        {"role": "user", "content": "also tomorrow?"},
+        {"role": "assistant", "content": "forecast"},
+        {"role": "assistant", "content": "continued"},
+        {"role": "user", "content": "thanks"}
+    ], "tools": [{"type": "function", "name": "weather", "parameters": {"type": "object"}}]});
+    let translated = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            BEDROCK,
+            &responses,
+            &normalized(),
+        )?
+        .body;
+    assert_eq!(translated["messages"], encoded["messages"]);
+    Ok(())
+}
+
+#[test]
+fn disabled_tools_keep_required_history_configuration_or_fail() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut ir = engine
+        .decode_request(BEDROCK, &request(), &normalized())?
+        .request;
+    ir.tool_choice = Some(ToolChoice::None);
+    let output = engine.encode_request(BEDROCK, &ir, &normalized())?;
+    assert!(output.body["toolConfig"]["tools"].is_array());
+    assert!(output.body["toolConfig"].get("toolChoice").is_none());
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "lossy_conversion")
+    );
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized()
+    };
+    assert!(engine.encode_request(BEDROCK, &ir, &strict).is_err());
+    let mut no_history = ir.clone();
+    no_history.messages.truncate(1);
+    assert!(
+        engine
+            .encode_request(BEDROCK, &no_history, &strict)?
+            .body
+            .get("toolConfig")
+            .is_none()
+    );
+    ir.tools.clear();
+    for choice in [ToolChoice::None, ToolChoice::Auto] {
+        ir.tool_choice = Some(choice);
+        assert!(engine.encode_request(BEDROCK, &ir, &normalized()).is_err());
+    }
+    ir.messages = vec![ir.messages[0].clone()];
+    ir.tool_choice = Some(ToolChoice::None);
+    assert!(
+        engine
+            .encode_request(BEDROCK, &ir, &strict)?
+            .body
+            .get("toolConfig")
+            .is_none()
+    );
+    let mut prompt_body = request();
+    for field in ["toolConfig", "system", "inferenceConfig"] {
+        prompt_body
+            .as_object_mut()
+            .ok_or("request object")?
+            .remove(field);
+    }
+    prompt_body["promptVariables"] = json!({"city": {"text": "Taipei"}});
+    let preserved_policy = TranslationPolicy {
+        preservation: PreservationPolicy::InMemory,
+        ..strict
+    };
+    let preserved = engine
+        .decode_request(BEDROCK, &prompt_body, &preserved_policy)?
+        .request;
+    assert!(preserved.tools.is_empty());
+    assert_eq!(
+        engine
+            .encode_request(BEDROCK, &preserved, &preserved_policy)?
+            .body,
+        prompt_body
+    );
+    Ok(())
+}
+
+#[test]
+fn signed_bedrock_reasoning_keeps_anthropic_answer_but_redacted_fails() -> TestResult {
+    let values = vec![
+        json!({"messageStart": {"role": "assistant"}}),
+        json!({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "think"}}}}),
+        json!({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"signature": "opaque"}}}}),
+        json!({"contentBlockStop": {"contentBlockIndex": 0}}),
+        json!({"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"text": "answer"}}}),
+        json!({"contentBlockStop": {"contentBlockIndex": 1}}),
+        json!({"messageStop": {"stopReason": "end_turn"}}),
+        json!({"metadata": {"usage": usage()}}),
+    ];
+    let output = translate_events(&values, WireFormat::AnthropicMessages)?;
+    assert!(!output.iter().any(|event| event["type"] == "error"));
+    let aggregate = block_on(
+        LlmResponse::Stream(decode_event_stream(
+            stream::iter(output.into_iter().map(Ok)),
+            WireFormat::AnthropicMessages,
+        )?)
+        .into_agg(),
+    )?;
+    assert!(
+        aggregate.outputs[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Reasoning { text, .. } if text == "think"))
+    );
+    assert!(
+        aggregate.outputs[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text == "answer"))
+    );
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::new(BEDROCK, WireFormat::AnthropicMessages);
+    let output = engine.encode_stream_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        LlmResponseChunk::ReasoningDetailsDelta {
+            index: 0,
+            text: "visible".into(),
+            details: vec![
+                json!({"type": "bedrock.signature_delta", "signature": "opaque"}),
+                json!({"type": "bedrock.redacted_content", "data": "YQ=="}),
+            ],
+        }
+        .into(),
+    )?;
+    assert!(state.errored);
+    assert_eq!(output[0]["type"], "error");
+    assert!(
+        output[0]["error"]["message"]
+            .as_str()
+            .is_some_and(|s| s.contains("redacted"))
+    );
+    assert!(
+        engine
+            .finish_stream(&mut state, WireFormat::AnthropicMessages)?
+            .is_empty()
+    );
     Ok(())
 }
