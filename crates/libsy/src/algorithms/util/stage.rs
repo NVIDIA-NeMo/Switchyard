@@ -103,7 +103,7 @@ impl Tier {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PickerMode {
-    /// Default to capable unless the scorer confidently picks efficient.
+    /// Default to capable until the first edit or write, then default to efficient.
     CapableFirst,
     /// Default to efficient unless the scorer confidently picks capable.
     EfficientFirst,
@@ -168,6 +168,8 @@ pub enum DecisionSource {
     Override,
     /// A recent escalation is being held on the capable tier.
     CapableHold,
+    /// Capable-first handed execution off after the first edit or write.
+    Mutation,
     /// Scorer crossed `confidence_threshold`.
     Dimensions,
     /// Scorer was not confident, so the signals did not decide this turn.
@@ -184,6 +186,7 @@ impl DecisionSource {
         match self {
             Self::Override => "override",
             Self::CapableHold => "capable_hold",
+            Self::Mutation => "mutation",
             Self::Dimensions => "dimensions",
             Self::Ambiguous => "ambiguous",
             Self::LlmClassifier => "llm-classifier",
@@ -385,7 +388,7 @@ fn override_reason(signal: &ToolSignals) -> Option<OverrideReason> {
 ///
 /// 1. **Escalate** — repeated failure, critical error, or compaction.
 /// 2. **Scorer** — no hard reason, so weigh the two axes; if confident, follow it.
-/// 3. **Fall open** — not confident: hand to the classifier, else the default.
+/// 3. **Fall open** — capable-first mutations go efficient; otherwise use the fallback.
 ///
 /// Deterministic and pure: the async classifier lives in the caller, so rule 3
 /// returns [`PickOutcome::ConsultClassifier`] instead of calling it here. The
@@ -413,6 +416,12 @@ pub fn pick_tier(signal: &ToolSignals, mode: PickerMode, confidence_threshold: f
             probability,
             Some(scored.confidence),
         );
+    }
+
+    // A mutation changes capable-first's undecided default to efficient.
+    if matches!(mode, PickerMode::CapableFirst) && (signal.edit_count > 0 || signal.write_count > 0)
+    {
+        return resolved(Tier::Efficient, DecisionSource::Mutation, 0.0, Some(1.0));
     }
 
     // 3. Fall open — the signals didn't corroborate enough to be sure. Hand off
@@ -823,6 +832,29 @@ mod tests {
     fn the_picker_mode_names_the_tier_an_undecided_turn_falls_back_to() {
         assert_eq!(PickerMode::CapableFirst.default_tier(), Tier::Capable);
         assert_eq!(PickerMode::EfficientFirst.default_tier(), Tier::Efficient);
+    }
+
+    #[test]
+    fn capable_first_hands_off_after_mutation() {
+        for signal in [
+            ToolSignals {
+                edit_count: 1,
+                ..Default::default()
+            },
+            ToolSignals {
+                write_count: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(
+                pick_tier(&signal, PickerMode::CapableFirst, 0.5),
+                PickOutcome::Resolved {
+                    tier: Tier::Efficient,
+                    source: DecisionSource::Mutation,
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]
