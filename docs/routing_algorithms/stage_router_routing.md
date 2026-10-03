@@ -155,6 +155,19 @@ The signal-vs-classifier split is dataset-dependent. Measure it in production:
 scorer metrics. Response headers and structured decision logs explain individual
 selections.
 
+### The `capable_first` ceiling
+
+With `capable_first`, the scorer can drop a turn to efficient only when
+`confidence_threshold` is **below** `tanh(0.5) ≈ 0.462117`. Production is the
+only signal that points to efficient, so a turn made only of writes and edits
+scores no lower than `-0.462117`. At or above that ceiling, including `0.5`, the
+scorer never selects efficient. The router logs a warning when it is built with
+this combination. An optional classifier can still select efficient.
+
+For scorer-driven offloading with `capable_first`, `0.45` is below the ceiling.
+It is not a calibrated value. Measure quality and cost for your model pair
+before you choose a threshold.
+
 ### Calibrating the threshold from run data
 
 Use about 10% of your representative tasks. Replay their agent histories through
