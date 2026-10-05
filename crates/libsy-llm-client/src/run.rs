@@ -37,7 +37,7 @@ use switchyard_protocol::{
 };
 use switchyard_translation::prepare_request_for_target;
 
-use crate::observation::{LlmCallObservation, ModelCallObservation, RunObservation, RunObserver};
+use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
@@ -169,7 +169,7 @@ async fn serve_decision(
     if let Some(observations) = observations {
         observations
             .lock()
-            .push(RunObservation::DecisionCall(ModelCallObservation {
+            .push(RunObservation::DecisionCall(LlmCallObservation {
                 selected_model: call.model.clone(),
                 is_success: result.is_ok(),
                 duration: started.elapsed(),
@@ -715,7 +715,7 @@ impl ClientRouter {
     }
 
     /// Resolve a decision target without falling back to an LLM client.
-    pub fn route_decision(
+    fn route_decision(
         &self,
         model: &ModelId,
     ) -> std::result::Result<&Arc<dyn RoutedDecisionClient>, LlmClientError> {

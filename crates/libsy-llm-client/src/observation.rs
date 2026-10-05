@@ -11,7 +11,7 @@ use switchyard_protocol::{ModelId, Usage};
 
 /// One completed model call observed while serving an algorithm run.
 #[derive(Clone, Debug)]
-pub struct ModelCallObservation {
+pub struct LlmCallObservation {
     /// Model selected for the completed call.
     pub selected_model: ModelId,
     /// Whether the call completed successfully.
@@ -22,9 +22,6 @@ pub struct ModelCallObservation {
     pub usage: Option<Usage>,
 }
 
-/// An LLM call's observation, sharing the fields used by decision calls.
-pub type LlmCallObservation = ModelCallObservation;
-
 /// Events emitted inline while [`crate::run()`] serves a routing request.
 #[derive(Clone, Debug)]
 pub enum RunObservation {
@@ -33,7 +30,7 @@ pub enum RunObservation {
     /// A completed model call requested by the algorithm for routing work.
     LlmCall(LlmCallObservation),
     /// A completed decision call requested by the algorithm for routing work.
-    DecisionCall(ModelCallObservation),
+    DecisionCall(LlmCallObservation),
     /// A completed terminal model call made from the routing outcome.
     AnswerCall(LlmCallObservation),
     /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.
