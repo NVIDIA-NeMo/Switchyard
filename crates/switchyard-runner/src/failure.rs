@@ -21,6 +21,8 @@ pub enum RouteErrorKind {
     UpstreamHttp,
     /// The selected target rejected the request because its context window was exceeded.
     ContextWindowExceeded,
+    /// The selected backend is temporarily unavailable.
+    TemporarilyUnavailable,
     /// The upstream request timed out.
     Timeout,
     /// The upstream could not be reached or the request could not be sent.
@@ -144,6 +146,7 @@ fn client_error_summary(
         LlmClientError::ContextWindowExceeded { .. } => {
             (RouteErrorKind::ContextWindowExceeded, None)
         }
+        LlmClientError::TemporarilyUnavailable => (RouteErrorKind::TemporarilyUnavailable, None),
         LlmClientError::Timeout { .. } => (RouteErrorKind::Timeout, None),
         LlmClientError::Transport { .. } => (RouteErrorKind::Transport, None),
         LlmClientError::InvalidResponse { .. } => (RouteErrorKind::InvalidResponse, None),

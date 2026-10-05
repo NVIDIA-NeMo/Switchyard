@@ -14,6 +14,8 @@ mod routing_log;
 mod shutdown;
 mod sse;
 mod stats;
+#[cfg(test)]
+mod testing;
 mod usage_metrics;
 
 use std::collections::BTreeMap;
@@ -1308,6 +1310,12 @@ fn client_error(error: &LlmClientError) -> Response {
             "invalid_request_error",
             "context_length_exceeded",
         ),
+        LlmClientError::TemporarilyUnavailable => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            error.to_string(),
+            "upstream_error",
+            "temporarily_unavailable",
+        ),
         LlmClientError::UpstreamHttp { status, body } => upstream_error(*status, body),
         LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
             error_response(
@@ -1938,7 +1946,7 @@ mod tests {
 
         let captured = CapturedEvents::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
-        tracing::subscriber::with_default(subscriber, run);
+        crate::testing::with_subscriber(subscriber, run);
         captured.0.lock().clone()
     }
 

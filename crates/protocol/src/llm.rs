@@ -263,6 +263,10 @@ pub struct OutputParams {
     pub max_output_tokens: Option<u64>,
     /// Provider-neutral or provider-specific structured-output configuration.
     pub response_format: Option<Value>,
+    /// Whether the provider must enforce the response schema, overriding native
+    /// flags when set and retaining native behavior when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_schema_enforced: Option<bool>,
 }
 
 /// Provider reasoning controls preserved by translation.

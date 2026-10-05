@@ -350,6 +350,9 @@ impl DeploymentConfig {
             .collect()
     }
 
+    /// Builds the client router for one route. The second value is the caller credential family
+    /// that the route's forwarding clients need, or `None` when no client forwards the caller's
+    /// credential. A request through the other family's APIs fails before any upstream call.
     fn build_route_clients(
         &self,
         route_name: &str,
@@ -363,6 +366,8 @@ impl DeploymentConfig {
         let mut by_model = HashMap::new();
         let mut targets_by_model: HashMap<&str, (&str, &TargetConfig)> = HashMap::new();
         let mut caller_auth = None;
+        let mut has_mixed_families = false;
+        let mut forwarding_origins = BTreeSet::new();
         for name in route.callable_target_names() {
             let target = self.targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
@@ -386,15 +391,26 @@ impl DeploymentConfig {
             })?;
             if client_config.forward_auth {
                 let target_auth = client_config.format.caller_auth_kind();
-                if caller_auth.is_some_and(|kind| kind != target_auth) {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name} cannot forward both Anthropic and OpenAI caller credentials"
-                    )));
-                }
+                has_mixed_families |= caller_auth.is_some_and(|kind| kind != target_auth);
                 caller_auth = Some(target_auth);
+                forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
             }
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
+        }
+        // Only forwarding clients count: an api_key_env client sends the server's own key.
+        // Forwarding clients must share one credential family unless they all use the same
+        // scheme, host, and port, such as one LLM gateway that accepts the caller's gateway key
+        // on every endpoint. Such a route serves Chat Completions and Responses callers because
+        // Anthropic clients forward the caller's `authorization` header unchanged.
+        if has_mixed_families {
+            if forwarding_origins.len() > 1 {
+                let origins = Vec::from_iter(forwarding_origins).join(", ");
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} cannot forward both Anthropic and OpenAI caller credentials to different origins ({origins}); point all of its forwarding clients at one origin (same scheme, host, and port), such as an LLM gateway, or set api_key_env instead of forward_auth on one provider's clients"
+                )));
+            }
+            caller_auth = Some(CallerAuthKind::OpenAi);
         }
         let completion_targets = route
             .routing_target_names()
@@ -576,6 +592,9 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
+    #[serde(default = "default_failure_cooldown_ms")]
+    failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
 }
@@ -700,6 +719,7 @@ fn build_backend(
         omit_body_fields: omit_body_fields.clone(),
         reasoning_effort,
         max_retries: config.max_retries,
+        failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
         timeout: config.timeout_ms.map(Duration::from_millis),
     };
     let backend = match config.format {
@@ -713,6 +733,10 @@ fn build_backend(
 // A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
+}
+
+const fn default_failure_cooldown_ms() -> u64 {
+    5000
 }
 
 fn validate_value(label: &str, value: &str) -> RunnerResult<()> {
@@ -1895,6 +1919,72 @@ confidence_threshold = 0.5
                     .contains(&format!("extra_headers cannot set \"{header}\""))
             );
         }
+    }
+
+    /// Returns a config whose `mixed` route has a GPT target on a Responses client and a Claude
+    /// target on a Messages client at `messages_url`. Its `claude` route uses Claude only.
+    fn mixed_forwarding_config(messages_url: &str) -> String {
+        format!(
+            r#"
+schema_version = 1
+
+[llm_clients.responses]
+format = "openai_responses"
+base_url = "https://gateway.example.test/v1"
+forward_auth = true
+
+[llm_clients.messages]
+format = "anthropic_messages"
+base_url = "{messages_url}"
+forward_auth = true
+
+[targets]
+gpt = {{ id = "gpt/model", llm_client = "responses" }}
+claude = {{ id = "claude/model", llm_client = "messages" }}
+
+[routes.mixed]
+id = "switchyard/mixed"
+type = "random"
+targets = ["gpt", "claude"]
+
+[routes.claude]
+id = "switchyard/claude"
+type = "passthrough"
+target = "claude"
+"#
+        )
+    }
+
+    /// A forwarding route can mix OpenAI and Anthropic clients only when they all use the same
+    /// scheme, host, and port.
+    #[test]
+    fn forwarding_route_mixes_formats_only_on_one_host() -> RunnerResult<()> {
+        // Same host, different paths: the mixed route serves OpenAI callers, and the route that
+        // uses only the Messages client keeps serving Messages callers.
+        let runner = runner_from_toml(&mixed_forwarding_config("https://gateway.example.test"))?;
+        let caller_auth = |id| runner.route(id).and_then(Route::caller_auth);
+        assert_eq!(
+            caller_auth("switchyard/mixed"),
+            Some(CallerAuthKind::OpenAi)
+        );
+        assert_eq!(
+            caller_auth("switchyard/claude"),
+            Some(CallerAuthKind::Anthropic)
+        );
+
+        // A different host, port, or scheme fails, and the error names it.
+        for other in [
+            "https://api.anthropic.test",
+            "https://gateway.example.test:8443",
+            "http://gateway.example.test",
+        ] {
+            let error = error_message(&mixed_forwarding_config(other));
+            assert!(
+                error.contains("different origins") && error.contains(other),
+                "{error}"
+            );
+        }
+        Ok(())
     }
 
     const ADVISOR_CONFIG: &str = r#"

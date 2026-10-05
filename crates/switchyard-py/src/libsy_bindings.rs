@@ -9,15 +9,18 @@ use std::sync::Arc;
 use futures::StreamExt;
 use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
-use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
+use pyo3::exceptions::{
+    PyBaseException, PyNotImplementedError, PyStopAsyncIteration, PyTypeError, PyValueError,
+};
 use pyo3::prelude::*;
 use serde_json::Value;
 use switchyard_libsy::{
-    Algorithm, CallModel, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
-    CustomClassifierConfig, CustomClassifierPolicy, DeescalationConfig, EscalationJudgeConfig,
-    HandoffNoteConfig, LibsyError as RustLibsyError, LlmClassifierConfig, LlmFallback,
-    LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter,
-    StageRouterConfig, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    Algorithm, CallModel, CapabilityJudgeConfig, ClassifierContractConfig,
+    ClassifierResponseFormat, ClassifyTrigger, CustomClassifierConfig, CustomClassifierPolicy,
+    DeescalationConfig, EscalationJudgeConfig, HandoffNoteConfig, LibsyError as RustLibsyError,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, PickerMode,
+    Random, RoutingOutcome, RuntimeModels, StageRouter, StageRouterConfig, Step as RustStep,
+    StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -328,13 +331,16 @@ impl PyTaskClassifierConfig {
     ) -> PyResult<Self> {
         Ok(Self {
             inner: TaskClassifierConfig {
-                base_threshold,
-                threshold_step,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold,
+                    threshold_step,
+                    contract: classifier_contract(prompt, response_format_type)?,
+                    max_output_tokens,
+                }),
+                fail_open: true,
                 classify_trigger: classify_trigger(session_affinity),
                 message_hash_fallback,
                 recent_turn_window,
-                contract: classifier_contract(prompt, response_format_type)?,
-                max_output_tokens,
             },
         })
     }
@@ -763,6 +769,9 @@ impl PyAlgorithm {
 
 fn step_to_python(step: RustStep) -> PyResult<PyStep> {
     match step {
+        RustStep::CallDecision(_) => Err(PyNotImplementedError::new_err(
+            "decision calls are not supported by the Python bindings",
+        )),
         RustStep::CallModel(call) => Python::attach(|py| {
             Ok(PyStep::CallModel {
                 call: Py::new(py, PyModelCall::new(py, *call)?)?,

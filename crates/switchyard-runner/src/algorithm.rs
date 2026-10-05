@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
-    AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
-    ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
-    PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    AdvisorGate, AdvisorGateConfig, Algorithm, CapabilityJudgeConfig, ClassifierContractConfig,
+    ClassifierResponseFormat, ClassifyTrigger, CompositeRouter, CompositeRouterConfig,
+    CustomClassifierConfig, CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
+    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
 };
 use serde::Deserialize;
 use switchyard_protocol::{Category, ModelId};
@@ -99,6 +99,7 @@ enum LlmClassifierModeConfig {
 #[derive(Clone, Debug)]
 struct CapabilityClassifierRouteConfig {
     classifier_target: String,
+    fail_open: bool,
     strong_target: String,
     weak_target: String,
     base_threshold: f64,
@@ -237,6 +238,9 @@ pub struct LlmClassifierRouteConfig {
     /// Capability mode: how much to raise the threshold when the judge is
     /// uncertain. Added once for an uncertain verdict and twice for unsupported.
     pub threshold_step: Option<f64>,
+    /// Capability mode: routes to the capable tier on judge client failures and deadlines.
+    /// Defaults to true when capability mode is selected.
+    pub fail_open: Option<bool>,
     /// How often the judge runs: every request, once per user turn, or once per session.
     pub classify_trigger: ClassifyTrigger,
     /// Reuses the session's target by hashing the first user message when no
@@ -522,14 +526,17 @@ pub struct StageTierConfig {
 impl StageClassifierConfig {
     fn task_classifier_config(&self) -> TaskClassifierConfig {
         TaskClassifierConfig {
-            base_threshold: self.base_threshold,
-            threshold_step: self.threshold_step,
+            judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                base_threshold: self.base_threshold,
+                threshold_step: self.threshold_step,
+                contract: classifier_contract(self.prompt.as_deref())
+                    .with_response_format_type(self.response_format_type),
+                max_output_tokens: self.max_output_tokens,
+            }),
+            fail_open: true,
             classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
-            contract: classifier_contract(self.prompt.as_deref())
-                .with_response_format_type(self.response_format_type),
-            max_output_tokens: self.max_output_tokens,
         }
     }
 }
@@ -878,6 +885,7 @@ impl LlmClassifierRouteConfig {
             weak_target,
             base_threshold,
             threshold_step,
+            fail_open,
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
@@ -896,6 +904,12 @@ impl LlmClassifierRouteConfig {
             (None, true) => ClassifierMode::Escalation,
             (None, false) => ClassifierMode::Capability,
         };
+
+        if !matches!(selected_mode, ClassifierMode::Capability) && *fail_open == Some(true) {
+            return Err(AlgorithmConfigError::new(format!(
+                "llm_classifier route {route_name}: fail_open = true requires capability mode"
+            )));
+        }
 
         match selected_mode {
             ClassifierMode::Capability => {
@@ -917,6 +931,7 @@ impl LlmClassifierRouteConfig {
                 Ok(LlmClassifierModeConfig::Capability(
                     CapabilityClassifierRouteConfig {
                         classifier_target: classifier_target.clone(),
+                        fail_open: fail_open.unwrap_or(true),
                         strong_target: required_classifier_field(
                             route_name,
                             "strong_target",
@@ -1229,14 +1244,17 @@ fn build_algorithm(
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
                     let classifier_config = TaskClassifierConfig {
-                        base_threshold: config.base_threshold,
-                        threshold_step: config.threshold_step,
+                        judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                            base_threshold: config.base_threshold,
+                            threshold_step: config.threshold_step,
+                            contract: classifier_contract(config.prompt.as_deref())
+                                .with_response_format_type(config.response_format_type),
+                            max_output_tokens: config.max_output_tokens,
+                        }),
+                        fail_open: config.fail_open,
                         classify_trigger: config.classify_trigger,
                         message_hash_fallback: config.message_hash_fallback,
                         recent_turn_window: config.recent_turn_window,
-                        contract: classifier_contract(config.prompt.as_deref())
-                            .with_response_format_type(config.response_format_type),
-                        max_output_tokens: config.max_output_tokens,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         config: classifier_config,
@@ -1480,7 +1498,7 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 }
 
 fn default_classifier_max_output_tokens() -> u64 {
-    TaskClassifierConfig::default().max_output_tokens
+    LlmCapabilityConfig::default().max_output_tokens
 }
 
 fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig) {

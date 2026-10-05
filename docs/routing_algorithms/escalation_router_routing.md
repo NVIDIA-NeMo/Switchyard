@@ -61,8 +61,10 @@ The route-level `prompt` key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
 Switchyard supplies that schema according to the route's `response_format_type`:
 through the structured-output request in the default `json_schema` mode, or in
-the prompt in `json_object` mode. When de-escalation is enabled, Switchyard
-appends the phase-specific verdict contract to packaged and custom prompts.
+the prompt in `json_object` mode. The verdict includes an `escalate` decision, a
+bounded failure `category`, whether the newest turn adds `new_evidence`, and a
+short `reason`. When de-escalation is enabled, Switchyard appends the
+phase-specific verdict contract to packaged and custom prompts.
 
 ## How the decision works
 
@@ -72,8 +74,10 @@ For each turn on an unlatched session, Switchyard:
 2. Appends that reply to the transcript and asks the judge to rule on the
    completed turn. The judge therefore rates work the weak model actually did,
    not a prediction about work it might do.
-3. Increments a consecutive-escalate streak on an escalate verdict, and resets it
-   to zero on a decline.
+3. Increments a confirmation streak only when an escalate verdict cites fresh
+   evidence for the same failure category as the preceding vote. A different
+   category starts a new streak at one; a decline or stale evidence resets it to
+   zero.
 4. Serves the buffered weak reply when the streak has not yet reached
    `confirmations` — so a judged turn that does not escalate costs one weak call
    plus one judge call, and no strong call.
@@ -119,7 +123,7 @@ configuration, so a bare `escalation = {}` is a valid, tuned route:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `confirmations` | `2` | Consecutive escalate verdicts required before the session latches to strong. Must be at least `1`. |
+| `confirmations` | `2` | Consecutive fresh-evidence verdicts for the same failure category required before the session latches to strong. Must be at least `1`. |
 | `recent_turn_window` | `28` | Trailing messages shown to the judge on top of the anchors. Must be at least `1`. |
 | `window_message_chars` | `500` | Per-message truncation cap inside that trailing window. Must be at least `50`. |
 
@@ -146,11 +150,13 @@ weak_cooldown_calls = 8
 
 With this table present, Switchyard marks judge input as either
 `EFFICIENT_EVALUATION` or `STRONG_EVALUATION`. In the strong phase,
-`escalate: true` keeps the strong tier. An `escalate: false` verdict can release
-the next request only after `strong_min_calls` is reached and the configured
-confirmation streak is complete. A timeout, error, or unparseable verdict
-retains the strong tier. Omitting the table preserves the permanent latch and
-does not add phase markers to judge input.
+`escalate: true` keeps the strong tier; the router reads only `escalate` there,
+so `category` and `new_evidence` are reported but do not affect release. An
+`escalate: false` verdict can release the next request only after
+`strong_min_calls` is reached and the configured confirmation streak is
+complete. A timeout, error, or unparseable verdict retains the strong tier.
+Omitting the table preserves the permanent latch and does not add phase markers
+to judge input.
 
 The strong-phase verdict is judged against the trouble that caused the
 escalation: the packaged rules release only once the failure that triggered the
@@ -179,8 +185,8 @@ route. The request still succeeds, but its temporary state cannot carry into the
 next request.
 
 Anchor and transcript caps remain fixed. Set the route-level
-`max_output_tokens` key to change the judge's reply budget. Any decline still
-resets the streak to zero.
+`max_output_tokens` key to change the judge's reply budget. Any decline or
+verdict without new evidence resets the streak to zero.
 
 ## Run the route
 
@@ -225,6 +231,10 @@ When the server runs with a routing log, successful judge calls also appear in
 per-session routing stats under the judge's model id, tagged with the
 `classifier` tier — so per-session token accounting includes judge overhead
 alongside the tiers the session was served by.
+
+The server log records each parsed escalation verdict's `escalate` decision,
+category, and `new_evidence` flag. The judge's free-form reason is neither
+retained nor logged.
 
 ## When not to use escalation routing
 

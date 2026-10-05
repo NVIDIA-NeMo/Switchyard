@@ -15,8 +15,8 @@ use super::util::buffered_response::buffer_response;
 use super::util::classifier_contract::ClassifierContractConfig;
 use super::util::decisive;
 use super::util::escalation::{
-    self, DeescalationConfig, EscalationJudge, EscalationJudgeConfig, EscalationPolicy,
-    EvaluationPhase,
+    self, DeescalationConfig, EscalationCategory, EscalationJudge, EscalationJudgeConfig,
+    EscalationPolicy, EvaluationPhase,
 };
 use super::util::llm_judge::JudgeClassifier;
 use crate::core::algorithm::Driver;
@@ -25,6 +25,8 @@ use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 
 const STREAK_KEY: &str = "escalation_streak";
+/// Session-state key holding the category currently being confirmed.
+const CATEGORY_KEY: &str = "escalation_category";
 const STRONG_CALLS_KEY: &str = "escalation_strong_calls";
 const RELEASE_STREAK_KEY: &str = "escalation_release_streak";
 const WEAK_COOLDOWN_KEY: &str = "escalation_weak_cooldown";
@@ -40,6 +42,20 @@ fn set_count(state: &mut State, key: &str, value: u32) {
     state
         .extra
         .insert(key.to_string(), StateValue::Count(value));
+}
+
+/// Reads the failure category whose confirmation streak is in progress, if any.
+fn category(state: &State) -> Option<&str> {
+    match state.extra.get(CATEGORY_KEY) {
+        Some(StateValue::String(category)) => Some(category),
+        _ => None,
+    }
+}
+
+/// Clears the confirmation streak together with the category it was confirming.
+fn clear_streak(state: &mut State) {
+    set_count(state, STREAK_KEY, 0);
+    state.extra.remove(CATEGORY_KEY);
 }
 
 fn assistant_message(response: &AggLlmResponse) -> Message {
@@ -171,7 +187,7 @@ impl EscalationClassifier {
         set_count(state, RELEASE_STREAK_KEY, release_streak);
 
         if release_streak >= deescalation.config.confirmations {
-            set_count(state, STREAK_KEY, 0);
+            clear_streak(state);
             set_count(state, STRONG_CALLS_KEY, 0);
             set_count(state, RELEASE_STREAK_KEY, 0);
             tracing::debug!(
@@ -225,7 +241,7 @@ impl Classifier<State> for EscalationClassifier {
                 .strong_max_calls
                 .is_some_and(|strong_max_calls| strong_calls >= strong_max_calls)
         {
-            set_count(state, STREAK_KEY, 0);
+            clear_streak(state);
             set_count(state, STRONG_CALLS_KEY, 0);
             set_count(state, RELEASE_STREAK_KEY, 0);
             set_count(
@@ -336,19 +352,52 @@ impl Classifier<State> for EscalationClassifier {
             ));
         }
 
-        let (classification, _) = self
+        let judge_models = driver.models_for(&Category::Judge);
+        if judge_models.is_empty() {
+            return Err(LibsyError::AlgorithmError {
+                message: "no models available for category Judge".to_string(),
+            });
+        }
+        let verdict = self
             .escalation_judge
-            .score(state, &mut judge_request, driver)
-            .await?;
+            .verdict(state, &judge_request, driver, judge_models)
+            .await;
 
         let held = count(state, STREAK_KEY);
-        let best = classification.argmax(false)?;
-        let (escalate, pending) = match &best {
-            Some(score) if score.target == capable => (true, held.saturating_add(1)),
-            Some(_) => (false, 0),
-            None => (false, held),
+        let held_category = category(state).map(str::to_string);
+        let (escalate, pending, pending_category) = match verdict.as_ref() {
+            Some(verdict) => {
+                let category = verdict.category.label();
+                tracing::info!(
+                    escalate = verdict.escalate,
+                    category,
+                    new_evidence = verdict.new_evidence,
+                    "escalation judge verdict"
+                );
+                if verdict.escalate
+                    && verdict.new_evidence
+                    && verdict.category != EscalationCategory::None
+                {
+                    let next = if held_category.as_deref() == Some(category) {
+                        held.saturating_add(1)
+                    } else {
+                        1
+                    };
+                    (true, next, Some(category.to_string()))
+                } else {
+                    (false, 0, None)
+                }
+            }
+            None => (false, held, held_category),
         };
         set_count(state, STREAK_KEY, pending);
+        if let Some(category) = pending_category {
+            state
+                .extra
+                .insert(CATEGORY_KEY.to_string(), StateValue::String(category));
+        } else {
+            state.extra.remove(CATEGORY_KEY);
+        }
 
         if escalate && pending >= self.confirmations {
             driver.set_evidence(serde_json::json!({
@@ -366,6 +415,11 @@ impl Classifier<State> for EscalationClassifier {
             driver.set_evidence(serde_json::json!({
                 "source": "escalation",
                 "verdict": "pending",
+            }));
+        } else if verdict.is_some() {
+            driver.set_evidence(serde_json::json!({
+                "source": "escalation",
+                "verdict": "continue",
             }));
         }
 
@@ -390,7 +444,7 @@ mod tests {
     use super::*;
     use crate::algorithms::llm_class::{LlmClassifierConfig, LlmTaskClassifier};
     use crate::algorithms::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
-    use crate::core::testing::{Serve, reply, test_drive_with_models};
+    use crate::core::testing::{Serve, reply, serve_decision, test_drive_with_models};
 
     /// A queue of replies, drained in order.
     struct Queue(Mutex<VecDeque<String>>);
@@ -475,13 +529,13 @@ mod tests {
         }
     }
 
-    /// Builds a router with escalation enabled (`confirmations=1` latches immediately).
-    fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
+    /// Builds a router with escalation enabled.
+    fn escalation_router_with_confirmations(confirmations: u32) -> Result<Arc<LlmTaskClassifier>> {
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Escalation {
                 contract: ClassifierContractConfig::default(),
                 config: EscalationJudgeConfig {
-                    confirmations: 1,
+                    confirmations,
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
@@ -526,9 +580,16 @@ mod tests {
         Ok(selected)
     }
 
+    /// Builds a router that latches on its first supported escalation verdict.
+    fn escalation_router() -> Result<Arc<LlmTaskClassifier>> {
+        escalation_router_with_confirmations(1)
+    }
+
     #[tokio::test]
     async fn serves_efficient_when_judge_declines() -> Result<()> {
-        let judge = Queue::new([r#"{"escalate":false,"reason":"progressing"}"#]);
+        let judge = Queue::new([
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"progressing"}"#,
+        ]);
         let model = Queue::new(["efficient answer"]);
 
         let (selected_model, response) = test_drive_with_models(
@@ -543,6 +604,48 @@ mod tests {
         assert_eq!(
             response.llm_response.as_agg().map(completion_text),
             Some("efficient answer".to_string())
+        );
+        Ok(())
+    }
+
+    /// A parsed decline records continue evidence on the routing outcome.
+    #[tokio::test]
+    async fn records_continue_evidence_when_judge_declines() -> Result<()> {
+        let judge = Queue::new([
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"progressing"}"#,
+        ]);
+        let model = Queue::new(["efficient answer"]);
+        let serve = Arc::new(queued(model, judge));
+        let routing_serve = Arc::clone(&serve);
+        let outcome = crate::drive(
+            escalation_router()?,
+            classify_request(),
+            Arc::new(crate::core::algorithm::RuntimeModels::new(runtime_models())),
+            move |call| {
+                let serve = Arc::clone(&routing_serve);
+                async move {
+                    let call = match call {
+                        crate::Call::Model(call) => *call,
+                        crate::Call::Decision(call) => return serve_decision(*call).await,
+                    };
+                    let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+                    let request = call.request.clone();
+                    let response = serve
+                        .serve(target.clone(), request)
+                        .await
+                        .map_err(|source| LibsyError::client_call(target, source));
+                    call.respond(response)
+                }
+            },
+        )
+        .await?;
+
+        assert_eq!(
+            outcome.metadata.and_then(|metadata| metadata.evidence),
+            Some(serde_json::json!({
+                "source": "escalation",
+                "verdict": "continue",
+            }))
         );
         Ok(())
     }
@@ -564,7 +667,9 @@ mod tests {
                         })
                     });
                 recorded.lock().extend(prompt);
-                std::future::ready(Ok(reply(r#"{"escalate":false,"reason":"progressing"}"#)))
+                std::future::ready(Ok(reply(
+                    r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"progressing"}"#,
+                )))
             } else {
                 std::future::ready(Ok(reply("efficient answer")))
             }
@@ -586,7 +691,9 @@ mod tests {
 
     #[tokio::test]
     async fn upgrades_to_capable_when_judge_escalates() -> Result<()> {
-        let judge = Queue::new([r#"{"escalate":true,"reason":"stuck in a loop"}"#]);
+        let judge = Queue::new([
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"stuck in a loop"}"#,
+        ]);
         let model = Queue::new(["efficient draft", "capable answer"]);
 
         let (selected_model, response) = test_drive_with_models(
@@ -605,9 +712,106 @@ mod tests {
         Ok(())
     }
 
+    /// A verdict in a different category restarts the confirmation streak at one.
+    #[tokio::test]
+    async fn confirmation_streak_requires_the_same_category() -> Result<()> {
+        let judge = Queue::new([
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"repeated command"}"#,
+            r#"{"escalate":true,"category":"drift","new_evidence":true,"reason":"off task"}"#,
+            r#"{"escalate":true,"category":"drift","new_evidence":true,"reason":"still off task"}"#,
+        ]);
+        let model = Queue::new(["efficient t1", "efficient t2", "efficient t3", "capable t3"]);
+        let router = escalation_router_with_confirmations(2)?;
+        let request = classify_session_request();
+
+        let (first, _) = test_drive_with_models(
+            router.clone(),
+            request.clone(),
+            runtime_models(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        let (second, _) = test_drive_with_models(
+            router.clone(),
+            request.clone(),
+            runtime_models(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        let (third, _) =
+            test_drive_with_models(router, request, runtime_models(), queued(model, judge)).await?;
+
+        assert_eq!(first, "efficient");
+        assert_eq!(second, "efficient");
+        assert_eq!(third, "capable");
+        Ok(())
+    }
+
+    /// An escalate verdict without fresh evidence resets the streak instead of extending it.
+    #[tokio::test]
+    async fn verdict_without_new_evidence_resets_the_streak() -> Result<()> {
+        let judge = Queue::new([
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"repeated command"}"#,
+            r#"{"escalate":true,"category":"repetition","new_evidence":false,"reason":"only old evidence remains"}"#,
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"new repeated command"}"#,
+        ]);
+        let model = Queue::new(["efficient t1", "efficient t2", "efficient t3"]);
+        let router = escalation_router_with_confirmations(2)?;
+        let request = classify_session_request();
+
+        for _ in 0..3 {
+            let (selected, _) = test_drive_with_models(
+                router.clone(),
+                request.clone(),
+                runtime_models(),
+                queued(Arc::clone(&model), Arc::clone(&judge)),
+            )
+            .await?;
+            assert_eq!(selected, "efficient");
+        }
+        Ok(())
+    }
+
+    /// An unparseable verdict keeps the streak and its category for the next turn.
+    #[tokio::test]
+    async fn unavailable_judge_preserves_the_category_streak() -> Result<()> {
+        let judge = Queue::new([
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"repeated command"}"#,
+            "not json",
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"another repeated command"}"#,
+        ]);
+        let model = Queue::new(["efficient t1", "efficient t2", "efficient t3", "capable t3"]);
+        let router = escalation_router_with_confirmations(2)?;
+        let request = classify_session_request();
+
+        let (first, _) = test_drive_with_models(
+            router.clone(),
+            request.clone(),
+            runtime_models(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        let (second, _) = test_drive_with_models(
+            router.clone(),
+            request.clone(),
+            runtime_models(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        let (third, _) =
+            test_drive_with_models(router, request, runtime_models(), queued(model, judge)).await?;
+
+        assert_eq!(first, "efficient");
+        assert_eq!(second, "efficient");
+        assert_eq!(third, "capable");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stays_capable_after_latch() -> Result<()> {
-        let judge = Queue::new([r#"{"escalate":true,"reason":"stuck"}"#]);
+        let judge = Queue::new([
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"stuck"}"#,
+        ]);
         let model = Queue::new(["efficient draft", "capable t1", "capable t2"]);
         let router = escalation_router()?;
         let request = classify_session_request();
@@ -629,10 +833,10 @@ mod tests {
     #[tokio::test]
     async fn deescalation_holds_then_returns_to_efficient() -> Result<()> {
         let judge = Queue::new([
-            r#"{"escalate":true,"reason":"stuck"}"#,
-            r#"{"escalate":false,"reason":"recovered"}"#,
-            r#"{"escalate":false,"reason":"routine"}"#,
-            r#"{"escalate":false,"reason":"progressing"}"#,
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"stuck"}"#,
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"recovered"}"#,
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"routine"}"#,
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"progressing"}"#,
         ]);
         let model = Queue::new([
             "efficient draft",
@@ -658,10 +862,10 @@ mod tests {
     #[tokio::test]
     async fn deescalation_hard_limit_forces_a_weak_cooldown() -> Result<()> {
         let judge = Queue::new([
-            r#"{"escalate":true,"reason":"stuck"}"#,
-            r#"{"escalate":true,"reason":"still hard"}"#,
-            r#"{"escalate":true,"reason":"still hard"}"#,
-            r#"{"escalate":false,"reason":"progressing"}"#,
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"stuck"}"#,
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"still hard"}"#,
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"still hard"}"#,
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"progressing"}"#,
         ]);
         let model = Queue::new([
             "efficient draft",
@@ -695,7 +899,9 @@ mod tests {
 
     #[tokio::test]
     async fn strong_review_returns_an_efficient_fallback_without_judging_it() -> Result<()> {
-        let judge = Queue::new([r#"{"escalate":true,"reason":"stuck"}"#]);
+        let judge = Queue::new([
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"stuck"}"#,
+        ]);
         let model = Queue::new(["efficient draft", "capable t1", "efficient fallback"]);
         let router = deescalation_router(DeescalationConfig {
             strong_min_calls: 1,

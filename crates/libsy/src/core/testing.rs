@@ -19,10 +19,11 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use switchyard_protocol::{
-    Category, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
+    Category, DecisionResponse, LlmClientError, LlmResponse, ModelId, Request, Response,
+    text_response,
 };
 
-use crate::core::algorithm::{Algorithm, CallModel, Driver, RuntimeModels};
+use crate::core::algorithm::{Algorithm, Call, CallDecision, Driver, RuntimeModels};
 use crate::{LibsyError, Result};
 
 /// Builds one runtime model category for a test.
@@ -93,9 +94,23 @@ pub(crate) async fn test_drive_with_models(
     Ok((selected_model, response))
 }
 
+pub(crate) async fn serve_decision(call: CallDecision) -> Result<()> {
+    let response = DecisionResponse {
+        id: None,
+        model: Some(call.model.clone()),
+        answers: Default::default(),
+        usage: Default::default(),
+    };
+    call.respond(Ok(response))
+}
+
 /// Serve one call and fulfill its promise, mapping failures the way a host does so
 /// error-shape assertions match production.
-async fn fulfill(serve: Arc<impl Serve>, call: CallModel) -> Result<()> {
+async fn fulfill(serve: Arc<impl Serve>, call: Call) -> Result<()> {
+    let call = match call {
+        Call::Model(call) => *call,
+        Call::Decision(call) => return serve_decision(*call).await,
+    };
     let request = call.request.clone();
     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
     let result = serve

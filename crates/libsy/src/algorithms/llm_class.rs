@@ -11,6 +11,10 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
+mod decision;
+use decision::DecisionClassifier;
+pub use decision::DecisionJudgeConfig;
+
 use super::escalation;
 use super::fall_through::FallThrough;
 use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
@@ -186,8 +190,9 @@ struct TaskInput {
     recent_turn_window: Option<usize>,
 }
 
-impl ClassifierInput for TaskInput {
-    fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
+impl TaskInput {
+    /// Selects conversation content without adding judge instructions.
+    fn messages(&self, request: &Request) -> Vec<Message> {
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
         let mut messages = match self.recent_turn_window {
@@ -204,6 +209,13 @@ impl ClassifierInput for TaskInput {
                 .retain(|block| !matches!(block, ContentBlock::Reasoning { .. }));
         }
         messages.retain(|message| !message.content.is_empty());
+        messages
+    }
+}
+
+impl ClassifierInput for TaskInput {
+    fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
+        let mut messages = self.messages(request);
         // Only the windowed path carries assistant turns and tool traffic for the judge
         // to be distracted by. The default path is user task messages only — the anchor
         // and the latest follow-up — so there is nothing there to outrank.
@@ -223,7 +235,7 @@ struct TaskClassifierPolicy {
 }
 
 impl TaskClassifierPolicy {
-    fn new(config: &TaskClassifierConfig) -> Self {
+    fn new(config: &LlmCapabilityConfig) -> Self {
         Self {
             base_threshold: config.base_threshold,
             threshold_step: config.threshold_step,
@@ -297,31 +309,60 @@ fn capability_evidence(
     }))
 }
 
+/// Settings shared by capability judges and their surrounding route.
 #[derive(Clone, Debug)]
-/// Settings that control capability classifier prompting and routing.
 pub struct TaskClassifierConfig {
-    /// Lowest solve probability that routes a supported task to the efficient target.
-    pub base_threshold: f64,
-    /// Amount added per capability-boundary step.
-    ///
-    /// Supported verdicts use `base_threshold`, uncertain and unmatched verdicts use one
-    /// step, and unsupported verdicts use two steps.
-    pub threshold_step: f64,
+    /// The judge's prediction contract and routing policy.
+    pub judge: CapabilityJudgeConfig,
+    /// Routes to the capable tier on judge client failures and deadlines. Defaults to true.
+    pub fail_open: bool,
     /// How often the classifier re-decides this session's target.
     pub classify_trigger: ClassifyTrigger,
     /// Uses the first user message as the SessionKey for sticky routing when session metadata is unavailable.
     pub message_hash_fallback: bool,
-    /// Trailing conversation turns the judge sees on top of the client
-    /// instructions and the opening task.
-    ///
-    /// `None` (the default) judges the opening task and latest user follow-up.
-    /// `Some(n)` widens that to the client instructions, the opening task, and
-    /// the last `n` turns after it.
+    /// `None` judges the opening task and latest user follow-up. `Some(n)` also
+    /// includes the surrounding conversation using the last `n` turns.
     pub recent_turn_window: Option<usize>,
+}
+
+/// Selects how a capability judge obtains and interprets its prediction.
+#[derive(Clone, Debug)]
+pub enum CapabilityJudgeConfig {
+    /// A structured LLM verdict with a solve probability and capability boundary.
+    Llm(LlmCapabilityConfig),
+    /// A Choice score for the capable candidate succeeding where the efficient one fails.
+    Decision(DecisionJudgeConfig),
+}
+
+impl Default for CapabilityJudgeConfig {
+    fn default() -> Self {
+        Self::Llm(LlmCapabilityConfig::default())
+    }
+}
+
+/// Prompt, output, and solve-probability settings for an LLM capability judge.
+#[derive(Clone, Debug)]
+pub struct LlmCapabilityConfig {
+    /// Lowest solve probability that routes a supported task to the efficient target.
+    pub base_threshold: f64,
+    /// Amount added per capability-boundary step: zero for supported, one for
+    /// uncertain or unmatched, and two for unsupported.
+    pub threshold_step: f64,
     /// Prompt and verdict contract settings for the classifier judge.
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+}
+
+impl Default for LlmCapabilityConfig {
+    fn default() -> Self {
+        Self {
+            base_threshold: 0.0,
+            threshold_step: 0.0,
+            contract: ClassifierContractConfig::default(),
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+        }
+    }
 }
 
 /// Flat serialized shape that maps prompt settings into the runtime contract.
@@ -329,6 +370,8 @@ pub struct TaskClassifierConfig {
 #[serde(deny_unknown_fields)]
 struct TaskClassifierConfigWire {
     base_threshold: f64,
+    #[serde(default = "default_fail_open")]
+    fail_open: bool,
     #[serde(default)]
     threshold_step: f64,
     #[serde(default)]
@@ -357,15 +400,22 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
         }
         contract = contract.with_response_format_type(wire.response_format_type);
         Ok(Self {
-            base_threshold: wire.base_threshold,
-            threshold_step: wire.threshold_step,
+            judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                base_threshold: wire.base_threshold,
+                threshold_step: wire.threshold_step,
+                contract,
+                max_output_tokens: wire.max_output_tokens,
+            }),
+            fail_open: wire.fail_open,
             classify_trigger: wire.classify_trigger,
             message_hash_fallback: wire.message_hash_fallback,
             recent_turn_window: wire.recent_turn_window,
-            contract,
-            max_output_tokens: wire.max_output_tokens,
         })
     }
+}
+
+const fn default_fail_open() -> bool {
+    true
 }
 
 const fn default_judge_max_output_tokens() -> u64 {
@@ -375,19 +425,16 @@ const fn default_judge_max_output_tokens() -> u64 {
 impl Default for TaskClassifierConfig {
     fn default() -> Self {
         Self {
-            base_threshold: 0.0,
-            threshold_step: 0.0,
+            judge: CapabilityJudgeConfig::default(),
+            fail_open: default_fail_open(),
             classify_trigger: ClassifyTrigger::default(),
             message_hash_fallback: false,
             recent_turn_window: None,
-            contract: ClassifierContractConfig::default(),
-            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
         }
     }
 }
 
-impl TaskClassifierConfig {
-    /// Validates routing thresholds before the classifier is constructed.
+impl LlmCapabilityConfig {
     fn validate(&self) -> Result<()> {
         if !(0.0..=1.0).contains(&self.base_threshold) {
             return Err(LibsyError::AlgorithmError {
@@ -417,6 +464,16 @@ impl TaskClassifierConfig {
             return Err(LibsyError::AlgorithmError {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
+        }
+        Ok(())
+    }
+}
+
+impl TaskClassifierConfig {
+    fn validate(&self) -> Result<()> {
+        match &self.judge {
+            CapabilityJudgeConfig::Llm(config) => config.validate()?,
+            CapabilityJudgeConfig::Decision(config) => config.validate()?,
         }
         // Only `every_request` is rejected: it retains no target, so a fallback identity has nothing to key on. Both retaining triggers can key the retained target on a message hash when the caller sends no session id.
         if self.message_hash_fallback && self.classify_trigger == ClassifyTrigger::EveryRequest {
@@ -629,23 +686,29 @@ impl LlmTaskClassifier {
 
     fn build_capability(config: TaskClassifierConfig) -> Result<Self> {
         config.validate()?;
-        let contract = Self::load_capability_contract(&config.contract)?;
         let classify_trigger = config.classify_trigger;
         let message_hash_fallback = config.message_hash_fallback;
-        let classifier: Arc<dyn Classifier<State>> = Arc::new(
-            JudgeClassifier::new(
-                StructuredJudge::new(
-                    TaskInput {
-                        recent_turn_window: config.recent_turn_window,
-                    },
-                    contract,
-                    SerdeDecoder::new(),
-                    JudgeRuntimeConfig::new(config.max_output_tokens)?,
-                ),
-                TaskClassifierPolicy::new(&config),
-            )
-            .with_evidence(capability_evidence),
-        );
+        let input = TaskInput {
+            recent_turn_window: config.recent_turn_window,
+        };
+        let classifier: Arc<dyn Classifier<State>> = match config.judge {
+            CapabilityJudgeConfig::Llm(judge) => Arc::new(
+                JudgeClassifier::new(
+                    StructuredJudge::new(
+                        input,
+                        Self::load_capability_contract(&judge.contract)?,
+                        SerdeDecoder::new(),
+                        JudgeRuntimeConfig::new(judge.max_output_tokens)?,
+                    ),
+                    TaskClassifierPolicy::new(&judge),
+                )
+                .with_error_recovery(config.fail_open)
+                .with_evidence(capability_evidence),
+            ),
+            CapabilityJudgeConfig::Decision(judge) => {
+                Arc::new(DecisionClassifier::new(judge, input, config.fail_open)?)
+            }
+        };
         Self::from_classifier(
             classifier,
             ClassifierRouteConfig {
@@ -795,15 +858,22 @@ mod tests {
 
     type CapabilityJudge = StructuredJudge<TaskInput, SerdeDecoder<TaskClassifierVerdict>>;
 
+    fn llm_config(base_threshold: f64) -> LlmCapabilityConfig {
+        LlmCapabilityConfig {
+            base_threshold,
+            ..LlmCapabilityConfig::default()
+        }
+    }
+
     fn test_config(base_threshold: f64) -> TaskClassifierConfig {
         TaskClassifierConfig {
-            base_threshold,
+            judge: CapabilityJudgeConfig::Llm(llm_config(base_threshold)),
             ..TaskClassifierConfig::default()
         }
     }
 
     fn policy() -> TaskClassifierPolicy {
-        TaskClassifierPolicy::new(&test_config(TEST_THRESHOLD))
+        TaskClassifierPolicy::new(&llm_config(TEST_THRESHOLD))
     }
 
     fn runtime_models() -> HashMap<Category, Vec<ModelId>> {
@@ -1034,7 +1104,10 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             config: TaskClassifierConfig {
-                max_output_tokens: 512,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    max_output_tokens: 512,
+                    ..llm_config(TEST_THRESHOLD)
+                }),
                 ..test_config(TEST_THRESHOLD)
             },
         })?);
@@ -1056,8 +1129,11 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             config: TaskClassifierConfig {
-                contract: ClassifierContractConfig::default()
-                    .with_prompt("Custom capability rubric."),
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    contract: ClassifierContractConfig::default()
+                        .with_prompt("Custom capability rubric."),
+                    ..llm_config(TEST_THRESHOLD)
+                }),
                 ..test_config(TEST_THRESHOLD)
             },
         })?);
@@ -1205,6 +1281,247 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn decision_judge_routes_on_relative_advantage() -> Result<()> {
+        use crate::{Call, RuntimeModels, drive};
+        use serde_json::json;
+        use std::collections::BTreeMap;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use switchyard_protocol::{
+            BooleanEstimate, DecisionAnswer, DecisionResponse, DecisionValue, Probability,
+            ProviderConfidence,
+        };
+
+        let settings = DecisionJudgeConfig {
+            cutoff: 0.4,
+            instructions: None,
+            candidates: BTreeMap::from([
+                ("a".into(), "capable".into()),
+                ("b".into(), "efficient".into()),
+                ("c".into(), "third".into()),
+            ]),
+            evidence: json!({
+                "candidate_descriptions": {"a": "Profile A", "b": "Profile B", "c": "Profile C"},
+                "reference_cases": [{"task": "Independent example", "observed_solved": {"a": true, "b": null, "c": false}}],
+                "summaries": [],
+            }),
+        };
+        let mut request = classify_session_request();
+        request.llm_request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Reasoning {
+                    text: "private reasoning".into(),
+                    signature: None,
+                    details: vec![],
+                },
+                ContentBlock::Text {
+                    text: "visible progress".into(),
+                },
+            ],
+        });
+        request
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "latest follow-up"));
+        let original_messages = request.llm_request.messages.clone();
+        let expected_task = json!([
+            original_messages[0].clone(),
+            Message::text(Role::Assistant, "visible progress"),
+            Message::text(Role::User, "latest follow-up"),
+        ]);
+
+        for (name, score, fail_open, expected) in [
+            ("above", 0.45, true, Some("capable")),
+            ("equal", 0.4, true, Some("efficient")),
+            ("below", 0.39, false, Some("efficient")),
+            ("missing answer", 0.0, true, Some("capable")),
+            ("no distribution", 0.0, true, Some("capable")),
+            ("wrong type", 0.0, true, Some("capable")),
+            ("out of range", 1.1, true, Some("capable")),
+            ("nonfinite", f64::NAN, false, Some("capable")),
+            ("provider error", 0.0, true, Some("capable")),
+            ("provider error", 0.0, false, None),
+            ("dropped reply", 0.0, true, Some("capable")),
+            ("missing candidate", 0.0, true, None),
+        ] {
+            let mut config = settings.clone();
+            if name == "missing candidate" {
+                config.candidates.remove("a");
+            }
+            if name == "below" {
+                config.instructions = Some(
+                    json!({"policy": "Judge capable-only success using the supplied evidence."}),
+                );
+            }
+            let override_instructions = config.instructions.clone();
+            let router: Arc<dyn Algorithm> =
+                Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                    config: TaskClassifierConfig {
+                        judge: CapabilityJudgeConfig::Decision(config),
+                        fail_open,
+                        recent_turn_window: Some(3),
+                        classify_trigger: ClassifyTrigger::NewSession,
+                        ..TaskClassifierConfig::default()
+                    },
+                })?);
+            let calls = AtomicUsize::new(0);
+            let serve = |call| {
+                let calls = &calls;
+                let expected_task = &expected_task;
+                let settings = &settings;
+                let override_instructions = &override_instructions;
+                async move {
+                    let Call::Decision(call) = call else {
+                        panic!("judge must use the decision step")
+                    };
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(call.model, "judge");
+                    assert_eq!(call.request.model, Some("judge".into()));
+                    assert_eq!(
+                        call.request.context,
+                        json!({
+                            "task": expected_task,
+                            "candidates": ["a", "b", "c"],
+                            "comparison": {"capable": "a", "efficient": "b"},
+                            "evidence": settings.evidence,
+                        })
+                    );
+                    assert_eq!(call.request.questions.len(), 1);
+                    let question = &call.request.questions["route"];
+                    let switchyard_protocol::DecisionKind::Choice { options } = &question.kind
+                    else {
+                        panic!("expected a choice")
+                    };
+                    assert_eq!(
+                        options
+                            .iter()
+                            .map(|option| option.id.as_str())
+                            .collect::<Vec<_>>(),
+                        ["advantage", "no_advantage"]
+                    );
+                    if let Some(instructions) = override_instructions {
+                        assert_eq!(&question.instructions, instructions);
+                    } else {
+                        for key in ["setting", "evidence", "comparison", "boundary", "policy"] {
+                            assert!(question.instructions[key].as_str().is_some());
+                        }
+                    }
+                    if name == "provider error" {
+                        return call.respond(Err(LibsyError::client_call(
+                            "judge",
+                            LlmClientError::General("private provider body".into()),
+                        )));
+                    }
+                    if name == "dropped reply" {
+                        drop(call);
+                        return Ok(());
+                    }
+                    let value = if name == "wrong type" {
+                        DecisionValue::Boolean(BooleanEstimate::Value(true))
+                    } else {
+                        DecisionValue::Choice {
+                            selected: "no_advantage".into(),
+                            probabilities: (name != "no distribution").then(|| {
+                                BTreeMap::from([
+                                    ("advantage".into(), Probability(score)),
+                                    ("no_advantage".into(), Probability(1.0 - score)),
+                                ])
+                            }),
+                        }
+                    };
+                    let answers = if name == "missing answer" {
+                        BTreeMap::new()
+                    } else {
+                        BTreeMap::from([(
+                            "route".into(),
+                            DecisionAnswer {
+                                value,
+                                provider_confidence: Some(ProviderConfidence(0.99)),
+                            },
+                        )])
+                    };
+                    call.respond(Ok(DecisionResponse {
+                        id: None,
+                        model: Some("provider-judge".into()),
+                        answers,
+                        usage: Default::default(),
+                    }))
+                }
+            };
+            let models = Arc::new(RuntimeModels::new(runtime_models()));
+            let result = drive(router.clone(), request.clone(), models.clone(), &serve).await;
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                usize::from(name != "missing candidate"),
+                "{name}"
+            );
+            let Some(expected) = expected else {
+                if name == "missing candidate" {
+                    assert!(
+                        matches!(result, Err(LibsyError::AlgorithmError { message }) if message.contains("candidate is missing"))
+                    );
+                } else {
+                    assert!(
+                        matches!(result, Err(LibsyError::ClientCall { .. })),
+                        "{name}"
+                    );
+                }
+                continue;
+            };
+            let outcome = result?;
+            assert_eq!(outcome.selected_model_id()?, expected, "{name}");
+            assert!(outcome.response.is_none());
+            assert_eq!(outcome.request.llm_request.messages, original_messages);
+            let evidence = outcome
+                .metadata
+                .and_then(|metadata| metadata.evidence)
+                .expect("routing evidence");
+            if matches!(name, "above" | "equal" | "below") {
+                assert_eq!(evidence["source"], "decision_classifier");
+                assert_eq!(evidence["verdict"], "relative_advantage");
+                assert_eq!(evidence["threshold"], settings.cutoff);
+                assert_eq!(evidence["score"], score);
+            } else {
+                let reason = match name {
+                    "provider error" => "client_error",
+                    "dropped reply" => "call_error",
+                    _ => "invalid_verdict",
+                };
+                assert_eq!(
+                    evidence,
+                    json!({"source": "fail_open", "reason_code": reason})
+                );
+            }
+            let retained = drive(router, request.clone(), models, &serve).await?;
+            assert_eq!(retained.selected_model_id()?, expected);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "affinity should skip the judge: {name}"
+            );
+        }
+        for cutoff in [-0.1, 1.1, f64::NAN] {
+            let mut config = settings.clone();
+            config.cutoff = cutoff;
+            assert!(
+                LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                    config: TaskClassifierConfig {
+                        judge: CapabilityJudgeConfig::Decision(config),
+                        ..TaskClassifierConfig::default()
+                    },
+                })
+                .is_err()
+            );
+        }
+        let mut duplicate = settings.clone();
+        duplicate
+            .candidates
+            .insert("duplicate-a".into(), "capable".into());
+        assert!(duplicate.validate().is_err());
+        Ok(())
+    }
+
     #[test]
     fn the_threshold_boundary_is_inclusive() -> Result<()> {
         let policy = policy();
@@ -1218,8 +1535,8 @@ mod tests {
     #[test]
     fn the_threshold_moves_the_routing_boundary() -> Result<()> {
         let borderline = verdict(0.5, "supported", "SUP-1");
-        let strict = TaskClassifierPolicy::new(&test_config(0.9));
-        let lenient = TaskClassifierPolicy::new(&test_config(0.1));
+        let strict = TaskClassifierPolicy::new(&llm_config(0.9));
+        let lenient = TaskClassifierPolicy::new(&llm_config(0.1));
         assert_eq!(selected(&strict, Some(&borderline))?, "capable");
         assert_eq!(selected(&lenient, Some(&borderline))?, "efficient");
         Ok(())
@@ -1254,23 +1571,35 @@ mod tests {
         }
         for config in [
             TaskClassifierConfig {
-                base_threshold: 0.5,
-                threshold_step: -0.1,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    threshold_step: -0.1,
+                    ..LlmCapabilityConfig::default()
+                }),
                 ..TaskClassifierConfig::default()
             },
             TaskClassifierConfig {
-                base_threshold: 0.8,
-                threshold_step: 0.11,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.8,
+                    threshold_step: 0.11,
+                    ..LlmCapabilityConfig::default()
+                }),
                 ..TaskClassifierConfig::default()
             },
             TaskClassifierConfig {
-                base_threshold: 0.5,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..LlmCapabilityConfig::default()
+                }),
                 message_hash_fallback: true,
                 ..TaskClassifierConfig::default()
             },
             TaskClassifierConfig {
-                base_threshold: 0.5,
-                max_output_tokens: 0,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    max_output_tokens: 0,
+                    ..LlmCapabilityConfig::default()
+                }),
                 ..TaskClassifierConfig::default()
             },
         ] {
@@ -1291,7 +1620,10 @@ mod tests {
         // retained target on a message hash when the caller sends no session id.
         for trigger in [ClassifyTrigger::NewSession, ClassifyTrigger::UserTurn] {
             let config = TaskClassifierConfig {
-                base_threshold: 0.5,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..LlmCapabilityConfig::default()
+                }),
                 classify_trigger: trigger,
                 message_hash_fallback: true,
                 ..TaskClassifierConfig::default()
@@ -1303,7 +1635,10 @@ mod tests {
             )?;
         }
         let every_request = TaskClassifierConfig {
-            base_threshold: 0.5,
+            judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                base_threshold: 0.5,
+                ..LlmCapabilityConfig::default()
+            }),
             classify_trigger: ClassifyTrigger::EveryRequest,
             message_hash_fallback: true,
             ..TaskClassifierConfig::default()
@@ -1346,9 +1681,9 @@ mod tests {
 
     #[test]
     fn capability_boundaries_apply_monotonic_threshold_steps() -> Result<()> {
-        let policy = TaskClassifierPolicy::new(&TaskClassifierConfig {
+        let policy = TaskClassifierPolicy::new(&LlmCapabilityConfig {
             threshold_step: 0.1,
-            ..test_config(0.4)
+            ..llm_config(0.4)
         });
 
         assert_eq!(

@@ -172,6 +172,7 @@ impl Algorithm for CompositeRouter {
 
 #[cfg(test)]
 mod tests {
+    use crate::{CapabilityJudgeConfig, LlmCapabilityConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -215,7 +216,10 @@ mod tests {
     fn hash_keyed_router() -> Result<Arc<CompositeRouter>> {
         Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
             judge: TaskClassifierConfig {
-                base_threshold: 0.5,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..LlmCapabilityConfig::default()
+                }),
                 classify_trigger: ClassifyTrigger::UserTurn,
                 message_hash_fallback: true,
                 ..Default::default()
@@ -227,7 +231,10 @@ mod tests {
     fn router() -> Result<Arc<CompositeRouter>> {
         Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
             judge: TaskClassifierConfig {
-                base_threshold: 0.5,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..LlmCapabilityConfig::default()
+                }),
                 classify_trigger: ClassifyTrigger::UserTurn,
                 ..Default::default()
             },

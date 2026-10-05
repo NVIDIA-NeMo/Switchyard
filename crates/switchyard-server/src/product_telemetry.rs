@@ -495,6 +495,7 @@ mod tests {
             match steps.next().await.unwrap().unwrap() {
                 Step::Done(outcome) => outcome.metadata.unwrap(),
                 Step::CallModel(_) => panic!("unexpected model call"),
+                Step::CallDecision(_) => panic!("unexpected decision call"),
             }
         };
         let (first, second) = tokio::join!(run(), run());

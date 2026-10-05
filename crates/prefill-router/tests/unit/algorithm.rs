@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use libsy::{Algorithm, LibsyError, RuntimeModels};
+use libsy::{Algorithm, Call, LibsyError, RuntimeModels};
 use switchyard_protocol::{
     Category, ContentBlock, LlmRequest, Message, ModelId, Request, Role, ToolResult, text_request,
 };
@@ -65,12 +65,26 @@ fn forward() -> (
     )
 }
 
+async fn serve_decision(call: libsy::CallDecision) -> libsy::Result<()> {
+    let response = switchyard_protocol::DecisionResponse {
+        id: None,
+        model: Some(call.model.clone()),
+        answers: Default::default(),
+        usage: Default::default(),
+    };
+    call.respond(Ok(response))
+}
+
 async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<String> {
     let outcome = libsy::drive(
         route,
         request,
         Arc::new(RuntimeModels::new([(Category::Any, target_set())].into())),
         |call| async move {
+            let call = match call {
+                Call::Model(call) => *call,
+                Call::Decision(call) => return serve_decision(*call).await,
+            };
             call.respond(Ok(switchyard_protocol::Response {
                 llm_response: switchyard_protocol::LlmResponse::Agg(
                     switchyard_protocol::text_response(None, "unused"),
