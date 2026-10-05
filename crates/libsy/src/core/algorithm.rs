@@ -5,12 +5,8 @@
 //! algorithm implements and the offload channel it uses for routing-time model calls.
 
 use std::{
-    collections::HashMap,
-    future::Future,
-    panic::AssertUnwindSafe,
-    pin::Pin,
-    sync::{Arc, LazyLock},
-    time::{Instant, SystemTime},
+    collections::HashMap, future::Future, panic::AssertUnwindSafe, pin::Pin, sync::Arc,
+    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -30,17 +26,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{Category, ModelId, Request, Response};
 
-use crate::{DriverError, LibsyError, Result, observability};
-
-static PRODUCT_TELEMETRY_ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    !std::env::var("SWITCHYARD_TELEMETRY_ENABLED").is_ok_and(|value| {
-        ["0", "false", "no", "off"]
-            .iter()
-            .any(|disabled| value.trim().eq_ignore_ascii_case(disabled))
-    })
-});
-
-static PRODUCT_TELEMETRY_SESSION_ID: LazyLock<uuid::Uuid> = LazyLock::new(uuid::Uuid::now_v7);
+use crate::{DriverError, LibsyError, Result, observability, product_telemetry};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -385,27 +371,12 @@ impl Driver {
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let metadata = self.outcome_metadata(&result);
-        // Temporary change do not merge
-        if *PRODUCT_TELEMETRY_ENABLED {
-            use std::io::Write;
-
-            let selected_models = result
-                .as_ref()
-                .ok()
-                .map(|outcome| outcome.selected_model_ids.as_slice())
-                .unwrap_or_default();
-            let record = Self::expand_metadata(&metadata, selected_models);
-            let stdout_result = (|| -> std::io::Result<()> {
-                let mut stdout = std::io::stdout().lock();
-                let _ = stdout.write_all(b"\n*****************\n");
-                serde_json::to_writer_pretty(&mut stdout, &record)?;
-                stdout.write_all(b"\n*****************\n")
-            })();
-            if let Err(error) = stdout_result {
-                tracing::warn!(%error, "could not write routing metadata to stdout");
-            }
-        }
-        // Temporary change do not merge
+        let selected_models = result
+            .as_ref()
+            .ok()
+            .map(|outcome| outcome.selected_model_ids.as_slice())
+            .unwrap_or_default();
+        product_telemetry::emit(&metadata, selected_models);
         let result = result.map(|mut outcome| {
             observability::record_outcome(&metadata, &outcome.selected_model_ids);
             outcome.metadata = Some(metadata);
@@ -462,53 +433,6 @@ impl Driver {
         }
         metadata
     }
-
-    // TODO: Move to telemetry handler.
-    fn expand_metadata(metadata: &crate::OutcomeMetadata, selected_models: &[ModelId]) -> Value {
-        let timestamp = humantime::format_rfc3339_millis(SystemTime::now()).to_string();
-        let mut parameters = serde_json::json!(metadata);
-        parameters["nemoSource"] = serde_json::json!("switchyard");
-        parameters["selected_model_id"] = serde_json::json!(selected_models.first());
-        parameters["fallback_plan_model_ids"] =
-            serde_json::json!(selected_models.get(1..).unwrap_or_default());
-
-        serde_json::json!({
-            "browserType": "undefined",
-            "clientId": "184482118588404",  // NeMo Telemetry client ID
-            "clientType": "Native",
-            "clientVariant": "Release",
-            "clientVer": env!("CARGO_PKG_VERSION"),
-            "cpuArchitecture": std::env::consts::ARCH,
-            "deviceGdprBehOptIn": "None",
-            "deviceGdprFuncOptIn": "None",
-            "deviceGdprTechOptIn": "None",
-            "deviceId": "undefined",
-            "deviceMake": "undefined",
-            "deviceModel": "undefined",
-            "deviceOS": std::env::consts::OS,
-            "deviceOSVersion": "undefined",
-            "deviceType": "undefined",
-            "eventProtocol": "1.6",
-            "eventSchemaVer": "1.12",
-            "eventSysVer": "switchyard-telemetry/1.0",
-            "externalUserId": "undefined",
-            "gdprBehOptIn": "None",
-            "gdprFuncOptIn": "None",
-            "gdprTechOptIn": "None",
-            "idpId": "undefined",
-            "integrationId": "undefined",
-            "productName": "undefined",
-            "productVersion": "undefined",
-            "sentTs": timestamp,
-            "sessionId": PRODUCT_TELEMETRY_SESSION_ID.to_string(),
-            "userId": "undefined",
-            "events": [{
-                "ts": timestamp,
-                "parameters": parameters,
-                "name": "switchyard_outcome",
-            }],
-        })
-    }
 }
 
 /// One item in the stream returned by [`Algorithm::run_stream`].
@@ -530,8 +454,7 @@ pub enum Step {
 /// Calls are served concurrently, so an algorithm that offloads several at once (hedging, fan-out)
 /// gets real parallelism.
 ///
-/// libsy performs no I/O; this is only the mechanics of consuming its own step stream, kept
-/// here so every host does not reimplement the same loop. `switchyard-llm-client`'s `run`
+/// This function consumes the step stream and delegates model I/O to `serve`. `switchyard-llm-client`'s `run`
 /// is this function plus an HTTP client.
 pub async fn drive<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
@@ -879,18 +802,15 @@ mod tests {
     }
 
     #[test]
-    fn expanded_failure_metadata_excludes_raw_errors_and_preserves_unknowns() {
+    fn failure_metadata_excludes_raw_errors_and_preserves_unknowns() {
         let (driver, _) = Driver::new("test", Arc::new(RuntimeModels::default()));
         driver.models_for(&Category::Any);
         let metadata = driver.outcome_metadata(&Err(LibsyError::NoTargets));
-        let record = Driver::expand_metadata(&metadata, &[]);
-        let parameters = &record["events"][0]["parameters"];
+        let parameters = serde_json::json!(metadata);
         assert_eq!(parameters["routing_status"], "error");
         assert_eq!(parameters["routing_error_code"], "no_targets");
         assert_eq!(parameters["no_eligible_target"], true);
         assert_eq!(parameters["considered_model_ids"], serde_json::json!([]));
-        assert_eq!(parameters["selected_model_id"], Value::Null);
-        assert_eq!(parameters["fallback_plan_model_ids"], serde_json::json!([]));
         assert_eq!(parameters["algorithm_version"], Value::Null);
         assert_eq!(parameters["feature_flags"], Value::Null);
         assert_eq!(parameters["exclusion_reason_codes"], Value::Null);
@@ -898,64 +818,10 @@ mod tests {
         let metadata = driver.outcome_metadata(&Err(LibsyError::AlgorithmError {
             message: "private upstream error".to_string(),
         }));
-        let record = Driver::expand_metadata(&metadata, &[]);
-        let parameters = &record["events"][0]["parameters"];
+        let parameters = serde_json::json!(metadata);
         assert_eq!(parameters["routing_error_code"], "algorithm_error");
         assert_eq!(parameters["no_eligible_target"], Value::Null);
-        assert!(!record.to_string().contains("private upstream error"));
-    }
-
-    #[test]
-    fn expanded_metadata_wraps_routing_fields_and_reuses_process_session() {
-        let evidence = serde_json::json!({
-            "source": "fail_open", "reason_code": "transport", "score": 0.5,
-        });
-        let (driver, _) = Driver::new("test", Arc::new(RuntimeModels::default()));
-        driver.set_evidence(evidence.clone());
-        let metadata = driver.outcome_metadata(&Ok(RoutingOutcome::route_to(
-            "selected".into(),
-            target_set(&["fallback-b", "fallback-a"]),
-            request(),
-        )));
-        let selected_models = target_set(&["selected", "fallback-b", "fallback-a"]);
-        let record = Driver::expand_metadata(&metadata, &selected_models);
-        let parameters = &record["events"][0]["parameters"];
-        assert_eq!(parameters["outcome_id"], metadata.outcome_id());
-        assert_eq!(parameters["evidence"], evidence);
-        assert_eq!(parameters["nemoSource"], "switchyard");
-        assert_eq!(parameters["selected_model_id"], "selected");
-        assert_eq!(
-            parameters["fallback_plan_model_ids"],
-            serde_json::json!(["fallback-b", "fallback-a"])
-        );
-        assert_eq!(record["clientVer"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(record["deviceOS"], std::env::consts::OS);
-        assert_eq!(record["cpuArchitecture"], std::env::consts::ARCH);
-        assert_eq!(record["eventSysVer"], "switchyard-telemetry/1.0");
-        assert_eq!(record["events"][0]["name"], "switchyard_outcome");
-        assert_eq!(record["sentTs"], record["events"][0]["ts"]);
-        humantime::parse_rfc3339(record["sentTs"].as_str().unwrap()).unwrap();
-        let session_id = uuid::Uuid::parse_str(record["sessionId"].as_str().unwrap()).unwrap();
-        assert_eq!(session_id.get_version_num(), 7);
-        let other =
-            Driver::expand_metadata(&crate::OutcomeMetadata::new("other".to_string(), None), &[]);
-        assert_eq!(record["sessionId"], other["sessionId"]);
-        for field in [
-            "decision_source",
-            "reason_codes",
-            "selection_score",
-            "fail_open",
-        ] {
-            assert!(
-                parameters.get(field).is_none(),
-                "duplicated evidence: {field}"
-            );
-        }
-        let mut parameters = parameters.clone();
-        for field in ["nemoSource", "selected_model_id", "fallback_plan_model_ids"] {
-            parameters.as_object_mut().unwrap().remove(field);
-        }
-        assert_eq!(parameters, serde_json::json!(metadata));
+        assert!(!parameters.to_string().contains("private upstream error"));
     }
 
     #[tokio::test]

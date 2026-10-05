@@ -47,3 +47,4 @@ pub use algorithms::util::stage::{
 };
 
 mod observability;
+mod product_telemetry;
