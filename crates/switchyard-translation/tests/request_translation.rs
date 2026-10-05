@@ -1654,6 +1654,36 @@ fn anthropic_tool_strictness_is_preserved_for_openai_formats() -> TestResult {
     Ok(())
 }
 
+// Verifies only `strict: true` reaches Anthropic from a Responses request, the path Codex uses.
+// Codex marks its function tools `strict: false`, which Bedrock rejects.
+#[test]
+fn responses_tool_strictness_reaches_anthropic_only_when_true() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt",
+        "input": "Use a tool.",
+        "tools": [
+            {"type": "function", "name": "strict_tool", "parameters": {}, "strict": true},
+            {"type": "function", "name": "non_strict_tool", "parameters": {}, "strict": false},
+            {"type": "function", "name": "unspecified_tool", "parameters": {}}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["tools"][0]["strict"], true);
+    assert!(output["tools"][1].get("strict").is_none());
+    assert!(output["tools"][2].get("strict").is_none());
+    Ok(())
+}
+
 // Verifies OpenAI-compatible Anthropic extension fields are preserved.
 #[test]
 fn anthropic_openai_compatible_extensions_are_preserved_for_openai_chat() -> TestResult {
@@ -3228,7 +3258,8 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
     Ok(())
 }
 
-// Verifies OpenAI tool strictness survives translation to Anthropic.
+// Verifies OpenAI `strict: true` survives translation to Anthropic. `strict: false` is the
+// default and is dropped because Bedrock rejects any `strict` field.
 #[test]
 fn openai_tool_strictness_is_preserved_for_anthropic() -> TestResult {
     let engine = TranslationEngine::default();
@@ -3261,7 +3292,7 @@ fn openai_tool_strictness_is_preserved_for_anthropic() -> TestResult {
         .body;
 
     assert_eq!(output["tools"][0]["strict"], true);
-    assert_eq!(output["tools"][1]["strict"], false);
+    assert!(output["tools"][1].get("strict").is_none());
     assert!(output["tools"][2].get("strict").is_none());
     Ok(())
 }

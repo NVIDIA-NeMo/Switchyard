@@ -1208,8 +1208,10 @@ fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
                     "description": tool.description.clone().unwrap_or_default(),
                     "input_schema": tool.parameters,
                 });
-                if let Some(strict) = tool.strict {
-                    item["strict"] = Value::Bool(strict);
+                // `strict: false` is the default, and Bedrock rejects the field outright, so only
+                // a request for strict mode is sent.
+                if tool.strict == Some(true) {
+                    item["strict"] = Value::Bool(true);
                 }
                 item
             })
