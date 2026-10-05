@@ -485,10 +485,15 @@ impl Driver {
     /// item on failure. Internal: called once by [`run_stream`](Algorithm::run_stream)
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
-        let metadata = self.outcome_metadata(&result);
         let result = result.map(|mut outcome| {
-            observability::record_outcome(&metadata, &outcome.selected_model_ids);
-            outcome.metadata = Some(metadata);
+            let metadata = outcome.metadata.get_or_insert_with(|| {
+                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
+            });
+            if metadata.considered_model_ids.is_none() {
+                metadata.considered_model_ids = self.considered_model_ids.lock().take();
+            }
+            metadata.routing_duration_ms = Some(self.started.elapsed().as_millis() as u64);
+            observability::record_outcome(metadata, &outcome.selected_model_ids);
             outcome
         });
         let selected_model = result
@@ -504,43 +509,6 @@ impl Driver {
             observability::record_decision(&self.algorithm, &selected_model);
         }
         Ok(())
-    }
-
-    fn outcome_metadata(&self, result: &Result<RoutingOutcome>) -> crate::OutcomeMetadata {
-        let mut metadata = result
-            .as_ref()
-            .ok()
-            .and_then(|outcome| outcome.metadata.clone())
-            .unwrap_or_else(|| {
-                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
-            });
-        if metadata.considered_model_ids.is_none() {
-            metadata.considered_model_ids = self.considered_model_ids.lock().take();
-        }
-        metadata.routing_duration_ms = Some(self.started.elapsed().as_millis() as u64);
-        match result {
-            Ok(_) => {
-                metadata.routing_status = Some("success");
-                metadata.no_eligible_target = Some(false);
-                metadata.routing_error_code = None;
-            }
-            Err(error) => {
-                metadata.routing_status = Some("error");
-                metadata.no_eligible_target =
-                    matches!(error, LibsyError::NoTargets).then_some(true);
-                metadata.routing_error_code = Some(match error {
-                    LibsyError::NoTargets => "no_targets",
-                    LibsyError::TargetNotFound { .. } => "target_not_found",
-                    LibsyError::AlgorithmError { .. } => "algorithm_error",
-                    LibsyError::Driver(DriverError::StreamClosed) => "stream_closed",
-                    LibsyError::Driver(DriverError::ResponseDropped) => "response_dropped",
-                    LibsyError::MissingFinalResponse => "missing_final_response",
-                    LibsyError::ClientCall { .. } => "client_call",
-                    LibsyError::External { .. } => "external",
-                });
-            }
-        }
-        metadata
     }
 }
 
@@ -704,9 +672,9 @@ impl RoutingIdentity {
 /// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
 /// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
 /// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
-/// `evidence.threshold` are numbers. These typed attributes omit unknown evidence fields.
-/// `switchyard.outcome` carries the complete metadata and selected-model list as JSON,
-/// including custom evidence, for host tracing layers.
+/// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// `switchyard.outcome` carries explicit product telemetry fields and the selected-model
+/// list as JSON, with the same evidence filter, for host tracing layers.
 /// These fields are span attributes, never metric labels.
 ///
 /// The run/call observability helpers retain `outcome` status and operational metrics,
@@ -874,8 +842,8 @@ mod tests {
         names.iter().map(|name| ModelId::from(*name)).collect()
     }
 
-    #[test]
-    fn metadata_tracks_candidate_reads_across_scopes_without_judge_models() {
+    #[tokio::test]
+    async fn metadata_tracks_candidate_reads_across_scopes_without_judge_models() {
         let models = Arc::new(
             RuntimeModels::new(HashMap::from([
                 (Category::Any, target_set(&["second", "first"])),
@@ -887,7 +855,7 @@ mod tests {
                 target_set(&["child", "first"]),
             )])),
         );
-        let (mut driver, _) = Driver::new("test", models.clone());
+        let (mut driver, mut steps) = Driver::new("test", models.clone());
         driver.started = Instant::now() - std::time::Duration::from_millis(25);
         driver.models_for(&Category::Any);
         driver.clone().models_for(&Category::Capable);
@@ -901,7 +869,11 @@ mod tests {
         let mut outcome =
             RoutingOutcome::route_to("first".into(), target_set(&["second", "third"]), request());
         outcome.metadata = Some(original.clone());
-        let metadata = driver.outcome_metadata(&Ok(outcome));
+        driver.finish(Ok(outcome)).await.unwrap();
+        let Step::Done(outcome) = steps.recv().await.unwrap().unwrap() else {
+            panic!("expected routing outcome");
+        };
+        let metadata = outcome.metadata.unwrap();
         assert_eq!(metadata.outcome_id(), original.outcome_id());
         assert_eq!(metadata.algorithm, original.algorithm);
         assert_eq!(metadata.evidence, original.evidence);
@@ -909,42 +881,22 @@ mod tests {
             metadata.considered_model_ids,
             Some(target_set(&["second", "first", "third", "child"]))
         );
-        assert_eq!(metadata.routing_status, Some("success"));
-        assert_eq!(metadata.no_eligible_target, Some(false));
-        assert_eq!(metadata.routing_error_code, None);
         assert!(metadata.routing_duration_ms.unwrap() >= 25);
 
         // Another run over the same configuration has no candidate observations yet.
-        let (other, _) = Driver::new("test", models);
-        let other = other.outcome_metadata(&Ok(RoutingOutcome::route_to(
-            "first".into(),
-            Vec::new(),
-            request(),
-        )));
-        assert_eq!(other.considered_model_ids, None);
-    }
-
-    #[test]
-    fn failure_metadata_excludes_raw_errors_and_preserves_unknowns() {
-        let (driver, _) = Driver::new("test", Arc::new(RuntimeModels::default()));
-        driver.models_for(&Category::Any);
-        let metadata = driver.outcome_metadata(&Err(LibsyError::NoTargets));
-        let parameters = serde_json::json!(metadata);
-        assert_eq!(parameters["routing_status"], "error");
-        assert_eq!(parameters["routing_error_code"], "no_targets");
-        assert_eq!(parameters["no_eligible_target"], true);
-        assert_eq!(parameters["considered_model_ids"], serde_json::json!([]));
-        assert_eq!(parameters["algorithm_version"], Value::Null);
-        assert_eq!(parameters["feature_flags"], Value::Null);
-        assert_eq!(parameters["exclusion_reason_codes"], Value::Null);
-
-        let metadata = driver.outcome_metadata(&Err(LibsyError::AlgorithmError {
-            message: "private upstream error".to_string(),
-        }));
-        let parameters = serde_json::json!(metadata);
-        assert_eq!(parameters["routing_error_code"], "algorithm_error");
-        assert_eq!(parameters["no_eligible_target"], Value::Null);
-        assert!(!parameters.to_string().contains("private upstream error"));
+        let (other, mut steps) = Driver::new("test", models);
+        other
+            .finish(Ok(RoutingOutcome::route_to(
+                "first".into(),
+                Vec::new(),
+                request(),
+            )))
+            .await
+            .unwrap();
+        let Step::Done(outcome) = steps.recv().await.unwrap().unwrap() else {
+            panic!("expected routing outcome");
+        };
+        assert_eq!(outcome.metadata.unwrap().considered_model_ids, None);
     }
 
     #[tokio::test]
@@ -1293,7 +1245,6 @@ mod tests {
                         .as_ref()
                         .expect("run_stream should attach outcome metadata");
                     assert_eq!(metadata.algorithm, "test");
-                    assert_eq!(metadata.routing_status, Some("success"));
                     assert!(metadata.routing_duration_ms.is_some());
                     assert_eq!(
                         uuid::Uuid::parse_str(metadata.outcome_id())

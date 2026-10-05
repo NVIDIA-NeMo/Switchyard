@@ -323,6 +323,14 @@ fn parse_setting<T: FromStr>(
 fn build_payload(outcome: &OutcomeRecord, session_id: uuid::Uuid) -> Value {
     let timestamp = humantime::format_rfc3339_millis(SystemTime::now()).to_string();
     let mut parameters = Value::Object(outcome.metadata.clone());
+
+    // TODO: Determine if we need to report routing failures and error codes.
+    // If we do, this should be populated by libsy
+    // if we do not, then we don't need these fields at all.
+    // Either way these three lines should be removed prior to merging into main.
+    parameters["routing_status"] = serde_json::json!("success");
+    parameters["no_eligible_target"] = serde_json::json!(false);
+    parameters["routing_error_code"] = Value::Null;
     let selected_models = &outcome.selected_model_ids;
     parameters["nemoSource"] = serde_json::json!("switchyard");
     parameters["selected_model_id"] = serde_json::json!(selected_models.first());
@@ -543,6 +551,9 @@ mod tests {
             );
             let mut expected = serde_json::json!(metadata);
             expected["evidence"] = serde_json::json!({"source": "test"});
+            expected["routing_status"] = serde_json::json!("success");
+            expected["no_eligible_target"] = serde_json::json!(false);
+            expected["routing_error_code"] = Value::Null;
             assert_eq!(Value::Object(parameters), expected);
             assert!(!record.to_string().contains("patient name is Jane Doe"));
         }
@@ -972,6 +983,9 @@ mod tests {
         assert_eq!(parameters["outcome_id"], metadata.outcome_id());
         assert_eq!(parameters["evidence"], evidence);
         assert_eq!(parameters["nemoSource"], "switchyard");
+        assert_eq!(parameters["routing_status"], "success");
+        assert_eq!(parameters["no_eligible_target"], false);
+        assert_eq!(parameters["routing_error_code"], Value::Null);
         assert_eq!(parameters["selected_model_id"], "selected");
         assert_eq!(
             parameters["fallback_plan_model_ids"],
@@ -1006,6 +1020,10 @@ mod tests {
         for field in ["nemoSource", "selected_model_id", "fallback_plan_model_ids"] {
             parameters.as_object_mut().unwrap().remove(field);
         }
-        assert_eq!(parameters, serde_json::json!(metadata));
+        let mut expected = serde_json::json!(metadata);
+        expected["routing_status"] = serde_json::json!("success");
+        expected["no_eligible_target"] = serde_json::json!(false);
+        expected["routing_error_code"] = Value::Null;
+        assert_eq!(parameters, expected);
     }
 }
