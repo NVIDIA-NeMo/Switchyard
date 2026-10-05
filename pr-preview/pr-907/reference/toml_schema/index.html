@@ -2002,6 +2002,12 @@ such clients.</p>
 <td>Values merged into the upstream request when the request does not already set that key.</td>
 </tr>
 <tr>
+<td><code>omit_body_fields</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's <code>format</code>, so use that format's field names, for example <code>reasoning_effort</code> on <code>openai_chat</code> or <code>reasoning</code> on <code>openai_responses</code>. Switchyard applies <code>extra_body</code> and <code>reasoning_effort</code> after the removal, so either can set a removed field again.</td>
+</tr>
+<tr>
 <td><code>reasoning_effort</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
