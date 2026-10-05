@@ -37,7 +37,7 @@ use switchyard_protocol::{
 };
 use switchyard_translation::prepare_request_for_target;
 
-use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
+use crate::observation::{ModelCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
@@ -169,7 +169,7 @@ async fn serve_decision(
     if let Some(observations) = observations {
         observations
             .lock()
-            .push(RunObservation::DecisionCall(LlmCallObservation {
+            .push(RunObservation::DecisionCall(ModelCallObservation {
                 selected_model: call.model.clone(),
                 is_success: result.is_ok(),
                 duration: started.elapsed(),
@@ -249,7 +249,7 @@ async fn call_first_available(
     algorithm: &str,
     request: &Request,
     models: &[ModelId],
-    observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
+    observe: &(dyn Fn(ModelCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
         let request = clients.prepare_completion_request(request.clone(), target);
@@ -326,7 +326,7 @@ async fn call_one(
     model_id: &ModelId,
     request: Request,
     algorithm: &str,
-    observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
+    observe: &(dyn Fn(ModelCallObservation) + Send + Sync),
     // index is for span log
     index: usize,
     // count is for span log
@@ -367,7 +367,7 @@ async fn call_one(
     } else {
         result
     };
-    observe(LlmCallObservation {
+    observe(ModelCallObservation {
         selected_model: model_id.clone(),
         is_success: result.is_ok(),
         duration,
@@ -1386,7 +1386,7 @@ mod tests {
     fn answer_observation_keeps_call_order() {
         let pending = Some(Arc::new(Mutex::new(
             ["answer", "judge"]
-                .map(|model| LlmCallObservation {
+                .map(|model| ModelCallObservation {
                     selected_model: model.into(),
                     is_success: true,
                     duration: std::time::Duration::ZERO,

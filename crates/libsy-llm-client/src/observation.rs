@@ -11,7 +11,7 @@ use switchyard_protocol::{ModelId, Usage};
 
 /// One completed model call observed while serving an algorithm run.
 #[derive(Clone, Debug)]
-pub struct LlmCallObservation {
+pub struct ModelCallObservation {
     /// Model selected for the completed call.
     pub selected_model: ModelId,
     /// Whether the call completed successfully.
@@ -28,11 +28,11 @@ pub enum RunObservation {
     /// Metadata attached to the completed routing outcome.
     Outcome(OutcomeMetadata),
     /// A completed model call requested by the algorithm for routing work.
-    LlmCall(LlmCallObservation),
+    LlmCall(ModelCallObservation),
     /// A completed decision call requested by the algorithm for routing work.
-    DecisionCall(LlmCallObservation),
+    DecisionCall(ModelCallObservation),
     /// A completed terminal model call made from the routing outcome.
-    AnswerCall(LlmCallObservation),
+    AnswerCall(ModelCallObservation),
     /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.
     RoutingOverhead(Duration),
 }

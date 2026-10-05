@@ -1685,7 +1685,7 @@ fn endpoint_listing(has_routing_log: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use switchyard_llm_client::LlmCallObservation;
+    use switchyard_llm_client::ModelCallObservation;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{Notify, oneshot};
 
@@ -1706,7 +1706,7 @@ mod tests {
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
         let call = |model: &str, answer: bool| {
-            let observation = LlmCallObservation {
+            let observation = ModelCallObservation {
                 selected_model: ModelId::from(model),
                 is_success: true,
                 duration: Duration::from_millis(3),
