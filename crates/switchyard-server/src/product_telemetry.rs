@@ -425,7 +425,11 @@ mod tests {
                 if let Step::Done(mut outcome) = step? {
                     let mut metadata = OutcomeMetadata::new(
                         self.name().into(),
-                        Some(serde_json::json!({"custom": "complete evidence"})),
+                        Some(serde_json::json!({
+                            "source": "test",
+                            "custom": "patient name is Jane Doe",
+                            "confidence": "wrong type",
+                        })),
                     );
                     metadata.algorithm_version = Some("1".into());
                     metadata.feature_flags = Some([("test".into(), true)].into());
@@ -537,7 +541,10 @@ mod tests {
                 parameters.remove("fallback_plan_model_ids").unwrap(),
                 serde_json::json!([])
             );
-            assert_eq!(Value::Object(parameters), serde_json::json!(metadata));
+            let mut expected = serde_json::json!(metadata);
+            expected["evidence"] = serde_json::json!({"source": "test"});
+            assert_eq!(Value::Object(parameters), expected);
+            assert!(!record.to_string().contains("patient name is Jane Doe"));
         }
     }
 
