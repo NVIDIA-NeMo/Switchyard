@@ -167,15 +167,8 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
         .ok_or_else(|| LlmClientError::InvalidRequest {
             message: "System One requires a selected model".into(),
         })?;
-    content(&request.context, false, "context")?;
     let mut questions = serde_json::Map::new();
     for (id, question) in &request.questions {
-        let path = format!("questions.{id}");
-        content(
-            &question.instructions,
-            true,
-            &format!("{path}.instructions"),
-        )?;
         let (kind, criteria) = match &question.kind {
             DecisionKind::Boolean {
                 true_description,
@@ -185,7 +178,6 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
                 for (key, description) in [("true", true_description), ("false", false_description)]
                 {
                     if let Some(description) = description {
-                        content(description, true, &format!("{path}.{key}_description"))?;
                         criteria.insert(key.into(), description.clone());
                     }
                 }
@@ -195,24 +187,18 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
                 let mut criteria = serde_json::Map::new();
                 for option in options {
                     let description = option.description.as_ref().unwrap_or(&Value::Null);
-                    content(description, true, &format!("{path}.options.{}", option.id))?;
                     if criteria
                         .insert(option.id.clone(), description.clone())
                         .is_some()
                     {
                         return Err(LlmClientError::InvalidRequest {
-                            message: format!("duplicate option {:?} in {path}", option.id),
+                            message: format!("duplicate option {:?} in questions.{id}", option.id),
                         });
                     }
                 }
                 ("choice", Value::Object(criteria))
             }
-            DecisionKind::Score { levels } => {
-                for (index, level) in levels.iter().enumerate() {
-                    content(level, false, &format!("{path}.levels.{index}"))?;
-                }
-                ("score", json!(levels))
-            }
+            DecisionKind::Score { levels } => ("score", json!(levels)),
         };
         questions.insert(
             id.clone(),
@@ -222,16 +208,6 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
         );
     }
     Ok(json!({"model": model, "state": request.context, "questions": questions}))
-}
-
-fn content(value: &Value, nullable: bool, path: &str) -> Result<()> {
-    if value.is_string() || value.is_object() || value.is_array() || (nullable && value.is_null()) {
-        return Ok(());
-    }
-    Err(LlmClientError::RequestEncoding(format!(
-        "System One cannot represent {path} as {}",
-        value
-    )))
 }
 
 #[derive(Deserialize)]

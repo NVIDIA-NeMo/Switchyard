@@ -1237,6 +1237,11 @@ mod tests {
         for (id, answer) in [
             ("unknown-question", json!({"type": "noul", "noul": 0.9})),
             ("boolean", json!({"type": "score", "score": 0.0})),
+            (
+                "route",
+                json!({"type": "choice", "choice": "unknown-option",
+                    "probabilities": {"advantage": 0.2, "no_advantage": 0.8}}),
+            ),
             ("score", json!({"type": "score", "score": -0.1})),
             (
                 "score",
@@ -1254,16 +1259,20 @@ mod tests {
             }
             invalid_responses.push(invalid);
         }
-        for invalid in invalid_responses {
+        for template in invalid_responses
+            .into_iter()
+            .map(|body| ResponseTemplate::new(200).set_body_json(body))
+            .chain([ResponseTemplate::new(200).set_body_string("invalid JSON")])
+        {
             server.reset().await;
             Mock::given(method("POST"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(invalid))
+                .respond_with(template)
                 .expect(1)
                 .mount(&server)
                 .await;
             assert!(matches!(
                 client.call(mixed.clone()).await,
-                Err(LlmClientError::ResponseTranslation(_))
+                Err(LlmClientError::ResponseTranslation(_) | LlmClientError::InvalidResponse { .. })
             ));
             server.verify().await;
         }
@@ -1294,28 +1303,11 @@ mod tests {
                 },
             )?))
         };
-        let mut undeclared_choice = body.clone();
-        undeclared_choice["answers"]["route"]["choice"] = json!("unknown-option");
         for (template, expected, is_success) in [
             (
                 ResponseTemplate::new(200).set_body_json(&body),
                 "efficient",
                 true,
-            ),
-            (
-                ResponseTemplate::new(200).set_body_json(&undeclared_choice),
-                "capable",
-                false,
-            ),
-            (
-                ResponseTemplate::new(200).set_body_json(json!({"answers": {}})),
-                "capable",
-                false,
-            ),
-            (
-                ResponseTemplate::new(200).set_body_string("invalid JSON"),
-                "capable",
-                false,
             ),
             (
                 ResponseTemplate::new(503).set_body_string("unavailable"),
