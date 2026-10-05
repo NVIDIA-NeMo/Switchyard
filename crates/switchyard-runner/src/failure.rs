@@ -155,7 +155,9 @@ fn client_error_summary(
         LlmClientError::ResponseTranslation(_) => (RouteErrorKind::ResponseTranslation, None),
         LlmClientError::InvalidRequest { .. } => (RouteErrorKind::InvalidRequest, None),
         LlmClientError::Configuration { .. } => (RouteErrorKind::Configuration, None),
-        LlmClientError::Ffi { .. } | LlmClientError::General(_) => (RouteErrorKind::Other, None),
+        LlmClientError::Host { .. } | LlmClientError::Ffi { .. } | LlmClientError::General(_) => {
+            (RouteErrorKind::Other, None)
+        }
         _ => (RouteErrorKind::Other, None),
     };
     summary(kind, phase, upstream_status, target)

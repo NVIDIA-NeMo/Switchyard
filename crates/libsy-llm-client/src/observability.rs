@@ -77,6 +77,10 @@ pub(crate) fn observe_client_call(result: Result<Response>) -> Result<Response> 
                         "client call to target {target:?} failed: upstream HTTP {status}"
                     ),
                 ),
+                LibsyError::ClientCall {
+                    source: LlmClientError::Host { .. },
+                    ..
+                } => record_host_error(&span),
                 _ => record_client_error(&span, &error_type, &error),
             }
             Err(error)
@@ -206,6 +210,7 @@ fn llm_client_error_type(error: &LlmClientError) -> Cow<'static, str> {
         LlmClientError::ContextWindowExceeded { .. } => Cow::Borrowed("context_window_exceeded"),
         LlmClientError::UpstreamHttp { status, .. } => Cow::Owned(status.as_str().to_owned()),
         LlmClientError::InvalidResponse { .. } => Cow::Borrowed("invalid_response"),
+        LlmClientError::Host { .. } => Cow::Borrowed("host"),
         LlmClientError::Ffi { .. } => Cow::Borrowed("ffi"),
         _ => Cow::Borrowed("_OTHER"),
     }
@@ -279,7 +284,10 @@ impl ClientStreamObserver {
             }
             Err(error) => {
                 let error_type = llm_client_error_type(error);
-                record_client_error(&self.span, &error_type, error);
+                match error {
+                    LlmClientError::Host { .. } => record_host_error(&self.span),
+                    _ => record_client_error(&self.span, &error_type, error),
+                }
                 self.outcome = Outcome::Failed;
             }
         }
@@ -324,6 +332,11 @@ impl Drop for ClientStreamObserver {
             self.span.record("outcome", "cancelled");
         }
     }
+}
+
+// Host sources are opaque and may contain caller-owned request data.
+fn record_host_error(span: &Span) {
+    record_client_error(span, "host", &format_args!("host client error"));
 }
 
 fn record_client_error(span: &Span, error_type: &str, error: &dyn std::fmt::Display) {

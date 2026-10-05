@@ -48,8 +48,8 @@ pub(crate) fn safe_error_summary(error: &LibsyError) -> String {
 /// The client half of [`safe_error_summary`].
 ///
 /// `UpstreamHttp` is the sharp edge: its `Display` interpolates the raw upstream
-/// body, which routinely quotes the request back. Boxed transport, decode, and FFI
-/// sources are reduced for the same reason.
+/// body, which routinely quotes the request back. Boxed transport, decode, host, and
+/// FFI sources are reduced for the same reason.
 pub(crate) fn safe_client_error(error: &LlmClientError) -> String {
     match error {
         LlmClientError::UpstreamHttp { status, .. } => format!("upstream HTTP {status}"),
@@ -59,6 +59,7 @@ pub(crate) fn safe_client_error(error: &LlmClientError) -> String {
         LlmClientError::Timeout { .. } => "upstream request timed out".to_string(),
         LlmClientError::Transport { .. } => "upstream transport error".to_string(),
         LlmClientError::InvalidResponse { .. } => "invalid upstream response".to_string(),
+        LlmClientError::Host { .. } => "host client error".to_string(),
         LlmClientError::Ffi { .. } => "foreign function interface error".to_string(),
         LlmClientError::InvalidRequest { .. } => "invalid request".to_string(),
         LlmClientError::RequestTranslation(_) => "request translation failed".to_string(),
@@ -113,6 +114,9 @@ mod tests {
                 source: std::io::Error::other(SECRET).into(),
             },
             LlmClientError::Timeout {
+                source: std::io::Error::other(SECRET).into(),
+            },
+            LlmClientError::Host {
                 source: std::io::Error::other(SECRET).into(),
             },
         ] {
