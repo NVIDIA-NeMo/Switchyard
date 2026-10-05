@@ -1427,6 +1427,17 @@ impl RoutedLlmClient for TimeoutClient {
     }
 }
 
+struct HostErrorClient;
+
+#[async_trait]
+impl RoutedLlmClient for HostErrorClient {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        Err(LlmClientError::Host {
+            source: Box::new(TestError(LEAKED_CONTENT)),
+        })
+    }
+}
+
 #[tokio::test]
 async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
@@ -1552,6 +1563,28 @@ async fn typed_client_failure_records_semantic_error_type() {
         client_span.fields.get("error.type").map(String::as_str),
         Some("timeout")
     );
+}
+
+/// Opaque host errors retain their source for the caller, not for telemetry.
+#[tokio::test]
+async fn host_error_source_is_redacted_from_the_client_call_span() {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const MODEL: &str = "obs-host-error-model";
+    let _ = run(
+        algo("obs-host-error-algo", MODEL),
+        Arc::new(HostErrorClient),
+        request_with_metadata("obs-host-error-session", "obs-host-error-corr"),
+    )
+    .await;
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("error.type").map(String::as_str),
+        Some("host")
+    );
+    assert!(!format!("{client_span:?}").contains(LEAKED_CONTENT));
 }
 
 /// Verifies that the client span retains the HTTP status without the upstream body.
