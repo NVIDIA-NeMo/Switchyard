@@ -26,7 +26,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{Category, ModelId, Request, Response};
 
-use crate::{DriverError, LibsyError, Result, observability, product_telemetry};
+use crate::{DriverError, LibsyError, Result, observability};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -371,12 +371,6 @@ impl Driver {
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let metadata = self.outcome_metadata(&result);
-        let selected_models = result
-            .as_ref()
-            .ok()
-            .map(|outcome| outcome.selected_model_ids.as_slice())
-            .unwrap_or_default();
-        product_telemetry::emit(&metadata, selected_models);
         let result = result.map(|mut outcome| {
             observability::record_outcome(&metadata, &outcome.selected_model_ids);
             outcome.metadata = Some(metadata);

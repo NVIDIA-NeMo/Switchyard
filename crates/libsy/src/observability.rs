@@ -113,10 +113,11 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
     span
 }
 
-/// Projects a successful outcome onto the existing run span. Model IDs are an
-/// ordered OpenTelemetry string array, preserving fallback order. Evidence uses typed fields;
-/// unknown keys and values of the wrong type are omitted.
+/// Emits product telemetry and projects a successful outcome onto the existing run span.
+/// Span model IDs are an ordered OpenTelemetry string array, preserving fallback order.
+/// Span evidence uses typed fields; unknown keys and values of the wrong type are omitted.
 pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
+    crate::product_telemetry::emit(metadata, models);
     let span = Span::current();
     span.record("outcome_id", metadata.outcome_id());
     span.set_attribute(

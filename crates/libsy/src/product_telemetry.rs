@@ -146,6 +146,8 @@ fn parse_setting<T: FromStr>(
 
 /// Logs immediately or schedules an HTTP POST without waiting for delivery.
 pub(crate) fn emit(metadata: &OutcomeMetadata, selected_models: &[ModelId]) {
+    // Whether to emit failed routes remains an open question. The payload builder
+    // retains support for failed outcomes, although only successful routes call emit.
     TELEMETRY.emit(metadata, selected_models);
 }
 
