@@ -7,6 +7,7 @@ mod capabilities;
 pub mod config;
 mod metrics;
 mod observability;
+mod product_telemetry;
 mod redaction;
 mod response;
 mod routing_log;

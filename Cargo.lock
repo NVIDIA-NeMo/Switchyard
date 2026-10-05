@@ -2326,7 +2326,6 @@ dependencies = [
  "async-trait",
  "futures",
  "http",
- "humantime",
  "jsonptr",
  "jsonschema",
  "opentelemetry",
@@ -2334,7 +2333,6 @@ dependencies = [
  "parking_lot",
  "rand 0.10.2",
  "regex",
- "reqwest",
  "serde",
  "serde_json",
  "switchyard-protocol",
@@ -2474,6 +2472,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

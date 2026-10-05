@@ -18,7 +18,6 @@ publish = ["crates-io"]
 
 [dependencies]
 async-trait.workspace = true
-humantime = "2.4"
 serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true
@@ -32,7 +31,6 @@ opentelemetry = { version = "0.32", default-features = false, features = ["metri
 parking_lot.workspace = true
 rand.workspace = true
 regex.workspace = true
-reqwest.workspace = true
 switchyard-protocol.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

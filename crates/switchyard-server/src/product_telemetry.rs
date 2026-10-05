@@ -5,24 +5,214 @@
 
 use std::{
     str::FromStr,
-    sync::{Arc, LazyLock, OnceLock},
-    time::{Duration, SystemTime},
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant, SystemTime},
 };
 
+use parking_lot::{Condvar, Mutex};
 use reqwest::Client;
+use serde::Deserialize;
 use serde_json::Value;
 use switchyard_protocol::ModelId;
+use tokio::sync::mpsc;
+use tracing::instrument::WithSubscriber as _;
+use tracing::{
+    Subscriber,
+    field::{Field, Visit},
+    span::{Attributes, Id, Record},
+};
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
-use crate::OutcomeMetadata;
+#[cfg(test)]
+use libsy::OutcomeMetadata;
 
 const DEFAULT_TELEMETRY_ENDPOINT: &str =
     "https://events.telemetry.data.nvidia.com/v1.1/events/json";
-const LOG_ENDPOINT_DENTINEL: &str = "log";
+const LOG_ENDPOINT_SENTINEL: &str = "log";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_MAX_REDIRECTS: usize = 10;
 
-static TELEMETRY: LazyLock<Telemetry> =
-    LazyLock::new(|| Telemetry::from_env(|name| std::env::var(name).ok()));
+const QUEUE_CAPACITY: usize = 128;
+
+static TELEMETRY: OnceLock<Arc<Telemetry>> = OnceLock::new();
+
+pub(crate) fn layer() -> impl Layer<tracing_subscriber::Registry> {
+    ProductTelemetryLayer {
+        telemetry: TELEMETRY
+            .get_or_init(|| Arc::new(Telemetry::from_env(|name| std::env::var(name).ok())))
+            .clone(),
+    }
+    .filtered()
+}
+
+pub(crate) fn flush() {
+    if let Some(telemetry) = TELEMETRY.get() {
+        telemetry.flush();
+    }
+}
+
+struct ProductTelemetryLayer {
+    telemetry: Arc<Telemetry>,
+}
+
+impl ProductTelemetryLayer {
+    fn filtered(self) -> impl Layer<tracing_subscriber::Registry> {
+        let is_enabled = !matches!(self.telemetry.destination, Destination::Disabled);
+        self.with_filter(tracing_subscriber::filter::filter_fn(move |metadata| {
+            is_enabled
+                && metadata.is_span()
+                && metadata.target() == "libsy"
+                && metadata.name() == "libsy.run"
+        }))
+    }
+}
+
+#[derive(Deserialize)]
+struct OutcomeRecord {
+    metadata: serde_json::Map<String, Value>,
+    selected_model_ids: Vec<ModelId>,
+}
+
+#[derive(Default)]
+struct RunOutcome(Option<OutcomeRecord>);
+
+impl Visit for RunOutcome {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "switchyard.outcome" {
+            match serde_json::from_str(value) {
+                Ok(outcome) => self.0 = Some(outcome),
+                Err(error) => tracing::debug!(%error, "invalid product telemetry outcome"),
+            }
+        }
+    }
+
+    fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
+}
+
+impl<S> Layer<S> for ProductTelemetryLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, context: Context<'_, S>) {
+        if let Some(span) = context.span(id) {
+            let mut outcome = RunOutcome::default();
+            attributes.record(&mut outcome);
+            span.extensions_mut().insert(outcome);
+        }
+    }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
+        if let Some(span) = context.span(id)
+            && let Some(outcome) = span.extensions_mut().get_mut::<RunOutcome>()
+        {
+            values.record(outcome);
+        }
+    }
+
+    fn on_close(&self, id: Id, context: Context<'_, S>) {
+        let outcome = context
+            .span(&id)
+            .and_then(|span| span.extensions_mut().remove::<RunOutcome>())
+            .and_then(|outcome| outcome.0);
+        if let Some(outcome) = outcome {
+            self.telemetry.emit(&outcome);
+        }
+    }
+}
+
+#[derive(Default)]
+struct Pending {
+    count: Mutex<usize>,
+    idle: Condvar,
+}
+
+struct Worker {
+    sender: mpsc::Sender<Value>,
+    pending: Arc<Pending>,
+}
+
+impl Worker {
+    fn new(
+        endpoint: String,
+        timeout: Duration,
+        max_redirects: usize,
+        client: Arc<OnceLock<reqwest::Result<Client>>>,
+    ) -> Result<Self, String> {
+        let (sender, mut receiver) = mpsc::channel::<Value>(QUEUE_CAPACITY);
+        let pending = Arc::new(Pending::default());
+        let worker_pending = pending.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        let dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.downgrade());
+        let delivery = async move {
+            while let Some(payload) = receiver.recv().await {
+                let dispatch = dispatch.upgrade().unwrap_or_default();
+                let send = async {
+                    let client = match client.get_or_init(|| {
+                        Client::builder()
+                            .timeout(timeout)
+                            .redirect(reqwest::redirect::Policy::limited(max_redirects))
+                            .retry(reqwest::retry::never())
+                            .build()
+                    }) {
+                        Ok(client) => client,
+                        Err(error) => {
+                            tracing::debug!(%error, "could not build product telemetry HTTP client");
+                            return;
+                        }
+                    };
+                    if let Err(error) = client
+                        .post(&endpoint)
+                        .json(&payload)
+                        .send()
+                        .await
+                        .and_then(|response| response.error_for_status())
+                    {
+                        tracing::debug!(%error, is_timeout = error.is_timeout(), "product telemetry POST failed");
+                    }
+                };
+                send.with_subscriber(dispatch).await;
+                let mut count = worker_pending.count.lock();
+                *count -= 1;
+                if *count == 0 {
+                    worker_pending.idle.notify_all();
+                }
+            }
+        };
+        std::thread::Builder::new()
+            .name("switchyard-telemetry".into())
+            .spawn(move || runtime.block_on(delivery))
+            .map_err(|error| error.to_string())?;
+        Ok(Self { sender, pending })
+    }
+
+    fn submit(&self, payload: Value) {
+        let mut count = self.pending.count.lock();
+        *count += 1;
+        if let Err(error) = self.sender.try_send(payload) {
+            *count -= 1;
+            tracing::debug!(%error, "product telemetry queue rejected event");
+        }
+    }
+
+    fn flush(&self, timeout: Duration) {
+        let started = Instant::now();
+        let mut count = self.pending.count.lock();
+        while *count > 0 {
+            if self
+                .pending
+                .idle
+                .wait_for(&mut count, timeout.saturating_sub(started.elapsed()))
+                .timed_out()
+            {
+                tracing::debug!(pending = *count, "product telemetry flush timed out");
+                break;
+            }
+        }
+    }
+}
 
 enum Destination {
     Disabled,
@@ -36,6 +226,7 @@ struct Telemetry {
     max_redirects: usize,
     session_id: uuid::Uuid,
     client: Arc<OnceLock<reqwest::Result<Client>>>,
+    worker: OnceLock<Result<Worker, String>>,
 }
 
 impl Telemetry {
@@ -49,7 +240,7 @@ impl Telemetry {
             Destination::Disabled
         } else {
             match read("SWITCHYARD_TELEMETRY_ENDPOINT") {
-                Some(endpoint) if endpoint == LOG_ENDPOINT_DENTINEL => Destination::Log,
+                Some(endpoint) if endpoint == LOG_ENDPOINT_SENTINEL => Destination::Log,
                 endpoint => Destination::Http(
                     endpoint.unwrap_or_else(|| DEFAULT_TELEMETRY_ENDPOINT.to_string()),
                 ),
@@ -72,57 +263,41 @@ impl Telemetry {
             // One session per process; each routing decision has its own outcome ID.
             session_id: uuid::Uuid::now_v7(),
             client: Arc::new(OnceLock::new()),
+            worker: OnceLock::new(),
         }
     }
 
-    fn emit(&self, metadata: &OutcomeMetadata, selected_models: &[ModelId]) {
+    fn emit(&self, outcome: &OutcomeRecord) {
         let endpoint = match &self.destination {
             Destination::Disabled => return,
             Destination::Log => {
-                let payload = expand_metadata(metadata, selected_models, self.session_id);
-                tracing::info!(payload = %payload, "Switchyard product telemetry");
+                let payload = build_payload(outcome, self.session_id);
+                tracing::info!(payload = %format_args!("{payload:#}"), "Switchyard product telemetry");
                 return;
             }
-            Destination::Http(endpoint) => endpoint.clone(),
+            Destination::Http(endpoint) => endpoint,
         };
-        let runtime = match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => runtime,
+        let worker = match self.worker.get_or_init(|| {
+            Worker::new(
+                endpoint.clone(),
+                self.timeout,
+                self.max_redirects,
+                self.client.clone(),
+            )
+        }) {
+            Ok(worker) => worker,
             Err(error) => {
-                tracing::debug!(%error, "could not spawn product telemetry POST");
+                tracing::debug!(%error, "could not start product telemetry worker");
                 return;
             }
         };
-        let metadata = metadata.clone();
-        let selected_models = selected_models.to_vec();
-        let session_id = self.session_id;
-        let client = Arc::clone(&self.client);
-        let timeout = self.timeout;
-        let max_redirects = self.max_redirects;
-        runtime.spawn(async move {
-            let client = match client.get_or_init(|| {
-                Client::builder()
-                    .timeout(timeout)
-                    .redirect(reqwest::redirect::Policy::limited(max_redirects))
-                    .retry(reqwest::retry::never())
-                    .build()
-            }) {
-                Ok(client) => client,
-                Err(error) => {
-                    tracing::debug!(%error, "could not build product telemetry HTTP client");
-                    return;
-                }
-            };
-            let payload = expand_metadata(&metadata, &selected_models, session_id);
-            if let Err(error) = client
-                .post(endpoint)
-                .json(&payload)
-                .send()
-                .await
-                .and_then(|response| response.error_for_status())
-            {
-                tracing::debug!(%error, is_timeout = error.is_timeout(), "product telemetry POST failed");
-            }
-        });
+        worker.submit(build_payload(outcome, self.session_id));
+    }
+
+    fn flush(&self) {
+        if let Some(Ok(worker)) = self.worker.get() {
+            worker.flush(self.timeout);
+        }
     }
 }
 
@@ -144,20 +319,10 @@ fn parse_setting<T: FromStr>(
     }
 }
 
-/// Logs immediately or schedules an HTTP POST without waiting for delivery.
-pub(crate) fn emit(metadata: &OutcomeMetadata, selected_models: &[ModelId]) {
-    // Whether to emit failed routes remains an open question. The payload builder
-    // retains support for failed outcomes, although only successful routes call emit.
-    TELEMETRY.emit(metadata, selected_models);
-}
-
-fn expand_metadata(
-    metadata: &OutcomeMetadata,
-    selected_models: &[ModelId],
-    session_id: uuid::Uuid,
-) -> Value {
+fn build_payload(outcome: &OutcomeRecord, session_id: uuid::Uuid) -> Value {
     let timestamp = humantime::format_rfc3339_millis(SystemTime::now()).to_string();
-    let mut parameters = serde_json::json!(metadata);
+    let mut parameters = Value::Object(outcome.metadata.clone());
+    let selected_models = &outcome.selected_model_ids;
     parameters["nemoSource"] = serde_json::json!("switchyard");
     parameters["selected_model_id"] = serde_json::json!(selected_models.first());
     parameters["fallback_plan_model_ids"] =
@@ -205,14 +370,31 @@ fn expand_metadata(
 mod tests {
     use std::io::Write;
 
+    use futures_util::StreamExt;
+    use libsy::{Algorithm, Driver, Noop, Passthrough, RoutingOutcome, RuntimeModels, Step};
     use parking_lot::Mutex;
+    use switchyard_protocol::Request;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
         sync::oneshot,
     };
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::*;
+
+    fn outcome_record(metadata: &OutcomeMetadata, selected_models: &[ModelId]) -> OutcomeRecord {
+        serde_json::from_value(serde_json::json!({
+            "metadata": metadata, "selected_model_ids": selected_models,
+        }))
+        .unwrap()
+    }
+
+    impl Telemetry {
+        fn emit_metadata(&self, metadata: &OutcomeMetadata, selected_models: &[ModelId]) {
+            self.emit(&outcome_record(metadata, selected_models));
+        }
+    }
 
     fn configured(values: &[(&str, &str)]) -> Telemetry {
         Telemetry::from_env(|name| {
@@ -221,6 +403,155 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| value.to_string())
         })
+    }
+
+    struct NestedRouter;
+
+    #[async_trait::async_trait]
+    impl Algorithm for NestedRouter {
+        fn name(&self) -> &str {
+            "nested"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            _driver: Driver,
+            request: Request,
+        ) -> libsy::Result<RoutingOutcome> {
+            let mut steps =
+                Arc::new(Noop {}).run_stream(request, Arc::new(RuntimeModels::default()));
+            while let Some(step) = steps.next().await {
+                if let Step::Done(mut outcome) = step? {
+                    let mut metadata = OutcomeMetadata::new(
+                        self.name().into(),
+                        Some(serde_json::json!({"custom": "complete evidence"})),
+                    );
+                    metadata.algorithm_version = Some("1".into());
+                    metadata.feature_flags = Some([("test".into(), true)].into());
+                    metadata.exclusion_reason_codes = Some(vec!["test_reason".into()]);
+                    outcome.metadata = Some(metadata);
+                    return Ok(*outcome);
+                }
+            }
+            panic!("nested run produced no outcome");
+        }
+    }
+
+    struct PendingRouter;
+
+    #[async_trait::async_trait]
+    impl Algorithm for PendingRouter {
+        fn name(&self) -> &str {
+            "pending"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            _driver: Driver,
+            _request: Request,
+        ) -> libsy::Result<RoutingOutcome> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn layer_collects_concurrent_nested_runs_without_otlp_or_logs() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/events", listener.local_addr().unwrap());
+        let telemetry = Arc::new(configured(&[("SWITCHYARD_TELEMETRY_ENDPOINT", &endpoint)]));
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                ProductTelemetryLayer {
+                    telemetry: telemetry.clone(),
+                }
+                .filtered(),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_filter(tracing_subscriber::EnvFilter::new("off")),
+            );
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let server = tokio::spawn(async move {
+            let mut payloads = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                payloads.push(read_request(&mut stream).await.1);
+                stream
+                    .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                    .await
+                    .unwrap();
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+            payloads
+        });
+        let run = || async {
+            let mut steps = Arc::new(NestedRouter)
+                .run_stream(Request::default(), Arc::new(RuntimeModels::default()));
+            match steps.next().await.unwrap().unwrap() {
+                Step::Done(outcome) => outcome.metadata.unwrap(),
+                Step::CallModel(_) => panic!("unexpected model call"),
+            }
+        };
+        let (first, second) = tokio::join!(run(), run());
+        let mut failed = Arc::new(Passthrough)
+            .run_stream(Request::default(), Arc::new(RuntimeModels::default()));
+        assert!(failed.next().await.unwrap().is_err());
+        let cancelled = Arc::new(PendingRouter)
+            .run_stream(Request::default(), Arc::new(RuntimeModels::default()));
+        tokio::task::yield_now().await;
+        drop(cancelled);
+        let payloads = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            payloads
+                .iter()
+                .filter(|payload| payload["events"][0]["parameters"]["algorithm"] == "noop")
+                .count(),
+            2
+        );
+        for metadata in [first, second] {
+            let record = payloads
+                .iter()
+                .find(|payload| {
+                    payload["events"][0]["parameters"]["outcome_id"] == metadata.outcome_id()
+                })
+                .unwrap();
+            let mut parameters = record["events"][0]["parameters"]
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(parameters.remove("nemoSource").unwrap(), "switchyard");
+            assert_eq!(
+                parameters.remove("selected_model_id").unwrap(),
+                "switchyard/noop"
+            );
+            assert_eq!(
+                parameters.remove("fallback_plan_model_ids").unwrap(),
+                serde_json::json!([])
+            );
+            assert_eq!(Value::Object(parameters), serde_json::json!(metadata));
+        }
+    }
+
+    #[test]
+    fn full_queue_drops_new_events_and_flush_has_a_deadline() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let worker = Worker {
+            sender,
+            pending: Arc::new(Pending::default()),
+        };
+        worker.submit(serde_json::json!("first"));
+        worker.submit(serde_json::json!("dropped"));
+        assert_eq!(*worker.pending.count.lock(), 1);
+        worker.flush(Duration::from_millis(1));
+        assert_eq!(receiver.try_recv().unwrap(), serde_json::json!("first"));
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -303,7 +634,7 @@ mod tests {
             ]);
             let logs = LogBuffer::default();
             tracing::subscriber::with_default(logs.subscriber(), || {
-                telemetry.emit(&OutcomeMetadata::new("test".into(), None), &[]);
+                telemetry.emit_metadata(&OutcomeMetadata::new("test".into(), None), &[]);
             });
             assert!(matches!(telemetry.destination, Destination::Disabled));
             assert!(telemetry.client.get().is_none());
@@ -319,12 +650,32 @@ mod tests {
 
     #[test]
     fn log_endpoint_emits_complete_payload_at_info_level() {
-        let telemetry = configured(&[("SWITCHYARD_TELEMETRY_ENDPOINT", "log")]);
+        let telemetry = Arc::new(configured(&[("SWITCHYARD_TELEMETRY_ENDPOINT", "log")]));
         let metadata = OutcomeMetadata::new("test".into(), None);
         let selected = [ModelId::from("selected"), ModelId::from("fallback")];
         let logs = LogBuffer::default();
-        tracing::subscriber::with_default(logs.subscriber(), || {
-            telemetry.emit(&metadata, &selected);
+        let buffer = logs.clone();
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                ProductTelemetryLayer {
+                    telemetry: telemetry.clone(),
+                }
+                .filtered(),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .without_time()
+                    .with_ansi(false)
+                    .with_writer(move || buffer.clone()),
+            );
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(target: "libsy", "libsy.run", switchyard.outcome = tracing::field::Empty);
+            let outcome = serde_json::json!({"metadata": metadata, "selected_model_ids": selected});
+            span.record("switchyard.outcome", outcome.to_string().as_str());
+            let retained = span.clone();
+            drop(span);
+            assert!(logs.text().is_empty());
+            drop(retained);
         });
         let text = logs.text();
         assert!(text.contains("INFO"));
@@ -343,15 +694,42 @@ mod tests {
     }
 
     #[test]
-    fn http_without_runtime_is_skipped_with_debug_log() {
-        let telemetry = configured(&[]);
-        let logs = LogBuffer::default();
-        tracing::subscriber::with_default(logs.subscriber(), || {
-            telemetry.emit(&OutcomeMetadata::new("test".into(), None), &[]);
+    fn http_delivery_works_without_a_host_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listener = runtime.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+        let endpoint = format!("http://{}/events", listener.local_addr().unwrap());
+        let telemetry = configured(&[("SWITCHYARD_TELEMETRY_ENDPOINT", &endpoint)]);
+        let server = runtime.spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut stream).await;
+            stream
+                .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            request
         });
-        assert!(logs.text().contains("DEBUG"));
-        assert!(logs.text().contains("could not spawn"));
-        assert!(telemetry.client.get().is_none());
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        telemetry.emit_metadata(&OutcomeMetadata::new("test".into(), None), &[]);
+        let (_, payload) = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap()
+        });
+        telemetry.flush();
+        assert_eq!(payload["events"][0]["parameters"]["algorithm"], "test");
+        assert_eq!(
+            *telemetry
+                .worker
+                .get()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .pending
+                .count
+                .lock(),
+            0
+        );
     }
 
     async fn read_request(stream: &mut TcpStream) -> (String, Value) {
@@ -399,7 +777,7 @@ mod tests {
     async fn background_post_does_not_wait_for_response_and_reuses_client() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/events", listener.local_addr().unwrap());
-        let telemetry = configured(&[("SWITCHYARD_TELEMETRY_ENDPOINT", &endpoint)]);
+        let telemetry = Arc::new(configured(&[("SWITCHYARD_TELEMETRY_ENDPOINT", &endpoint)]));
         let first = OutcomeMetadata::new("test".into(), None);
         let second = OutcomeMetadata::new("test".into(), None);
         let (received_tx, received_rx) = oneshot::channel();
@@ -421,7 +799,7 @@ mod tests {
                 .unwrap();
             request
         });
-        telemetry.emit(&first, &[ModelId::from("selected")]);
+        telemetry.emit_metadata(&first, &[ModelId::from("selected")]);
         let (headers, body) = tokio::time::timeout(Duration::from_secs(2), received_rx)
             .await
             .unwrap()
@@ -437,12 +815,33 @@ mod tests {
             first.outcome_id()
         );
         let client = telemetry.client.get().unwrap() as *const _;
+        telemetry.emit_metadata(&second, &[]);
+        let flushing = {
+            let telemetry = telemetry.clone();
+            tokio::task::spawn_blocking(move || telemetry.flush())
+        };
+        assert!(!flushing.is_finished());
         release_tx.send(()).unwrap();
-        telemetry.emit(&second, &[]);
         let (_, other) = tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .unwrap()
             .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), flushing)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *telemetry
+                .worker
+                .get()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .pending
+                .count
+                .lock(),
+            0
+        );
         assert_eq!(telemetry.client.get().unwrap() as *const _, client);
         assert_eq!(body["sessionId"], other["sessionId"]);
         assert_ne!(
@@ -480,7 +879,7 @@ mod tests {
                 );
                 requests
             });
-            telemetry.emit(&OutcomeMetadata::new("test".into(), None), &[]);
+            telemetry.emit_metadata(&OutcomeMetadata::new("test".into(), None), &[]);
             let requests = tokio::time::timeout(Duration::from_secs(2), server)
                 .await
                 .unwrap()
@@ -519,7 +918,7 @@ mod tests {
                         .is_err()
                 );
             });
-            telemetry.emit(&OutcomeMetadata::new("test".into(), None), &[]);
+            telemetry.emit_metadata(&OutcomeMetadata::new("test".into(), None), &[]);
             wait_for_failure(&logs).await;
             tokio::time::timeout(Duration::from_secs(2), server)
                 .await
@@ -543,7 +942,7 @@ mod tests {
             let mut byte = [0];
             assert_eq!(stream.read(&mut byte).await.unwrap(), 0);
         });
-        telemetry.emit(&OutcomeMetadata::new("test".into(), None), &[]);
+        telemetry.emit_metadata(&OutcomeMetadata::new("test".into(), None), &[]);
         wait_for_failure(&logs).await;
         assert!(logs.text().contains("is_timeout=true"));
         tokio::time::timeout(Duration::from_secs(2), server)
@@ -552,14 +951,14 @@ mod tests {
             .unwrap();
     }
     #[test]
-    fn expanded_metadata_wraps_routing_fields_and_reuses_process_session() {
+    fn payload_wraps_routing_fields_and_reuses_process_session() {
         let evidence = serde_json::json!({
             "source": "fail_open", "reason_code": "transport", "score": 0.5,
         });
         let metadata = OutcomeMetadata::new("test".to_string(), Some(evidence.clone()));
         let session_id = uuid::Uuid::now_v7();
         let selected_models = ["selected", "fallback-b", "fallback-a"].map(ModelId::from);
-        let record = expand_metadata(&metadata, &selected_models, session_id);
+        let record = build_payload(&outcome_record(&metadata, &selected_models), session_id);
         let parameters = &record["events"][0]["parameters"];
         assert_eq!(parameters["outcome_id"], metadata.outcome_id());
         assert_eq!(parameters["evidence"], evidence);
@@ -578,9 +977,8 @@ mod tests {
         humantime::parse_rfc3339(record["sentTs"].as_str().unwrap()).unwrap();
         let session_id = uuid::Uuid::parse_str(record["sessionId"].as_str().unwrap()).unwrap();
         assert_eq!(session_id.get_version_num(), 7);
-        let other = expand_metadata(
-            &OutcomeMetadata::new("other".to_string(), None),
-            &[],
+        let other = build_payload(
+            &outcome_record(&OutcomeMetadata::new("other".to_string(), None), &[]),
             session_id,
         );
         assert_eq!(record["sessionId"], other["sessionId"]);

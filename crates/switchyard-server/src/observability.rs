@@ -17,7 +17,7 @@ use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer as _};
 
-use crate::{ServerError, ServerResult, metrics};
+use crate::{ServerError, ServerResult, metrics, product_telemetry};
 
 const DEFAULT_LOG_FILTER: &str = "info,opentelemetry=warn";
 const DEFAULT_SERVICE_NAME: &str = "switchyard-server";
@@ -36,8 +36,9 @@ pub fn initialize_observability() -> ServerResult<()> {
     }
 }
 
-/// Flushes pending OTLP telemetry without shutting down process-wide providers.
+/// Flushes pending telemetry without shutting down process-wide providers.
 pub fn flush_observability() {
+    product_telemetry::flush();
     if let Some(Ok(observability)) = OBSERVABILITY.get()
         && let Some(provider) = &observability.tracer_provider
         && let Err(error) = provider.force_flush()
@@ -118,6 +119,7 @@ fn initialize() -> Result<Observability, String> {
     if let Some(provider) = &tracer_provider {
         let tracer = provider.tracer("switchyard");
         tracing_subscriber::registry()
+            .with(product_telemetry::layer())
             .with(format)
             .with(
                 tracing_opentelemetry::layer()
@@ -128,6 +130,7 @@ fn initialize() -> Result<Observability, String> {
             .map_err(|error| format!("failed to initialize tracing: {error}"))?;
     } else {
         tracing_subscriber::registry()
+            .with(product_telemetry::layer())
             .with(format)
             .try_init()
             .map_err(|error| format!("failed to initialize tracing: {error}"))?;

@@ -71,6 +71,7 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         "libsy.run",
         algorithm,
         outcome_id = tracing::field::Empty,
+        switchyard.outcome = tracing::field::Empty,
         evidence.source = tracing::field::Empty,
         evidence.score = tracing::field::Empty,
         evidence.confidence = tracing::field::Empty,
@@ -113,12 +114,16 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
     span
 }
 
-/// Emits product telemetry and projects a successful outcome onto the existing run span.
-/// Span model IDs are an ordered OpenTelemetry string array, preserving fallback order.
-/// Span evidence uses typed fields; unknown keys and values of the wrong type are omitted.
+/// Projects a successful outcome onto the existing run span. Model IDs are an
+/// ordered OpenTelemetry string array, preserving fallback order. Evidence uses typed fields;
+/// unknown keys and values of the wrong type are omitted.
 pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
-    crate::product_telemetry::emit(metadata, models);
     let span = Span::current();
+    if span.is_disabled() {
+        return;
+    }
+    let outcome = serde_json::json!({"metadata": metadata, "selected_model_ids": models});
+    span.record("switchyard.outcome", outcome.to_string().as_str());
     span.record("outcome_id", metadata.outcome_id());
     span.set_attribute(
         "selected_model_ids",

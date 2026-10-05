@@ -575,7 +575,9 @@ impl RoutingIdentity {
 /// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
 /// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
 /// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
-/// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// `evidence.threshold` are numbers. These typed attributes omit unknown evidence fields.
+/// `switchyard.outcome` carries the complete metadata and selected-model list as JSON,
+/// including custom evidence, for host tracing layers.
 /// These fields are span attributes, never metric labels.
 ///
 /// The run/call observability helpers retain `outcome` status and operational metrics,
