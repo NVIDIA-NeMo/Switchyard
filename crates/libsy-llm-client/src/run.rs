@@ -1135,10 +1135,18 @@ mod tests {
 
         let server = MockServer::start().await;
         let client = Arc::new(crate::SystemOneClient::new(
-            format!("{}/v1/systemone", server.uri()),
+            format!("{}/v1/systemone", server.uri()).parse()?,
             "test-key".into(),
             Duration::from_secs(2),
         )?);
+        assert!(matches!(
+            crate::SystemOneClient::new(
+                format!("{}/v1/systemone", server.uri()).parse()?,
+                "invalid\nkey".into(),
+                Duration::from_secs(2),
+            ),
+            Err(LlmClientError::Configuration { .. })
+        ));
         let mixed: DecisionRequest = serde_json::from_value(json!({
             "model": "judge", "context": {"task": "A simple task"},
             "questions": {
@@ -1202,6 +1210,12 @@ mod tests {
         );
         server.verify().await;
 
+        let mut partial = body.clone();
+        partial["answers"]
+            .as_object_mut()
+            .unwrap()
+            .remove("boolean");
+        let mut invalid_responses = vec![json!({"answers": {}}), partial];
         for (id, answer) in [
             ("unknown-question", json!({"type": "noul", "noul": 0.9})),
             ("boolean", json!({"type": "score", "score": 0.0})),
@@ -1212,9 +1226,18 @@ mod tests {
                 "probabilities": {"0": 0.4, "1": 0.6}}),
             ),
         ] {
-            server.reset().await;
             let mut invalid = body.clone();
             invalid["answers"][id] = answer;
+            if id == "unknown-question" {
+                invalid["answers"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("boolean");
+            }
+            invalid_responses.push(invalid);
+        }
+        for invalid in invalid_responses {
+            server.reset().await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(invalid))
                 .expect(1)
@@ -1263,6 +1286,11 @@ mod tests {
             ),
             (
                 ResponseTemplate::new(200).set_body_json(&undeclared_choice),
+                "capable",
+                false,
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({"answers": {}})),
                 "capable",
                 false,
             ),

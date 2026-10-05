@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use reqwest::{Url, header::HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
@@ -16,19 +17,24 @@ use switchyard_protocol::{
 };
 
 use crate::client::convert_reqwest_error;
-use crate::{LlmClientError, Result};
+use crate::{LlmClientError, Result, metrics};
 
 /// Serves decision requests through a System One endpoint, such as TypeSafe's Jev API.
 pub struct SystemOneClient {
     client: reqwest::Client,
-    endpoint: String,
+    endpoint: Url,
     api_key: String,
 }
 
 impl SystemOneClient {
     /// `endpoint` is the full URL, including `/v1/systemone`. Each call makes one
     /// attempt; `timeout` covers sending the request and reading the response body.
-    pub fn new(endpoint: impl Into<String>, api_key: String, timeout: Duration) -> Result<Self> {
+    pub fn new(endpoint: Url, api_key: String, timeout: Duration) -> Result<Self> {
+        if HeaderValue::try_from(format!("Bearer {api_key}")).is_err() {
+            return Err(LlmClientError::Configuration {
+                message: "System One API key cannot be encoded as an HTTP header".into(),
+            });
+        }
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
@@ -36,7 +42,7 @@ impl SystemOneClient {
             .map_err(convert_reqwest_error)?;
         Ok(Self {
             client,
-            endpoint: endpoint.into(),
+            endpoint,
             api_key,
         })
     }
@@ -47,14 +53,20 @@ impl RoutedDecisionClient for SystemOneClient {
     async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse> {
         let response = self
             .client
-            .post(&self.endpoint)
+            .post(self.endpoint.clone())
             .bearer_auth(&self.api_key)
             .json(&encode(&request)?)
             .send()
             .await
+            .inspect_err(|_| metrics::record_upstream_attempt(None))
             .map_err(convert_reqwest_error)?;
         let status = response.status();
-        let body = response.bytes().await.map_err(convert_reqwest_error)?;
+        let body = response
+            .bytes()
+            .await
+            .inspect_err(|_| metrics::record_upstream_attempt(None))
+            .map_err(convert_reqwest_error)?;
+        metrics::record_upstream_attempt(Some(status.as_u16()));
         if !status.is_success() {
             return Err(LlmClientError::UpstreamHttp {
                 status,
@@ -65,6 +77,11 @@ impl RoutedDecisionClient for SystemOneClient {
             serde_json::from_slice(&body).map_err(|source| LlmClientError::InvalidResponse {
                 source: Box::new(source),
             })?;
+        if !response.answers.keys().eq(request.questions.keys()) {
+            return Err(LlmClientError::ResponseTranslation(
+                "System One answer keys do not match the requested question keys".into(),
+            ));
+        }
         let answers = response
             .answers
             .into_iter()
