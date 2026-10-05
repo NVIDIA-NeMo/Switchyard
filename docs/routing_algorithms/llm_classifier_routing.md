@@ -119,12 +119,20 @@ for the server merge behavior.
 |---|---|---|
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
-| `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
+| `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it keeps the opening task and the last `N` conversation messages after it, widening the window to keep tool call/result pairs together. `0` excludes later conversation. System/developer message handling is described below. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+
+The judge replaces the request's separate `instructions` field with its own
+prompt. HTTP decoders place client system and developer instructions in that
+field, so those instructions are excluded. Native Python requests may instead
+contain `system` or `developer` entries in normalized `messages`. A configured
+`recent_turn_window`, including `0`, preserves those entries; leaving it unset
+selects user task messages only. The simulator supplies recorded initial context
+through `messages`.
 
 ### Override the classifier prompt
 

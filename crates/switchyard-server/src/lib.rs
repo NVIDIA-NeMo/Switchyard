@@ -736,6 +736,9 @@ async fn decision(
         .map(ModelId::from)
         .unwrap_or_default();
 
+    if let Err(error) = route.validate_decision_targets() {
+        return runner_error(error);
+    }
     let mut outcome = match route.decide(request).await {
         Ok(outcome) => outcome,
         Err(error) => return runner_error(error),
@@ -762,9 +765,9 @@ async fn decision(
     };
     match state.decision_response(&route_model, &outcome, response) {
         Some(response) => Json(response).into_response(),
-        None => {
-            server_error("routing outcome contains a model with no callable target configuration")
-        }
+        None => server_error(
+            "routing outcome contains a model with no unambiguous callable target configuration",
+        ),
     }
 }
 

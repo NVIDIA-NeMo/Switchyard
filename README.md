@@ -41,7 +41,9 @@ Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 
 ### Embed the library in your harness
 
-[Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application. For Python, see the [embedding example](examples/libsy.py).
+[Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application.
+For Python, use the [configured decision API](docs/simulation.md#use-the-python-decision-api)
+or the [algorithm stream example](examples/libsy.py).
 
 ## Routing algorithms
 
@@ -63,6 +65,8 @@ The [routing overview](docs/routing_algorithms/overview.md) retains the full cat
 ![Task completion versus cost for Switchyard classification, stage, and escalation routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.png)
 
 Results depend on the benchmark, model pool, serving stack, and routing configuration.
+Use the Python [task routing evaluator](docs/simulation.md) to compare routing decisions against ATIF trajectories, custom recordings, or Harbor Claude and Codex runs.
+See its [architecture](docs/simulation-architecture.md) for the ATIF converter boundary, routing and scoring flow, and future replay extension.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
 
 ### Further reading

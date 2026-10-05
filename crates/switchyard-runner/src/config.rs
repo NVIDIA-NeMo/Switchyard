@@ -4,6 +4,7 @@
 //! Version-1 TOML deployment loading for the shared runner.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::env::VarError;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -238,7 +239,7 @@ impl DeploymentConfig {
                 self.build_anthropic_auxiliary_target(config, &clients);
             let responses_auxiliary_target =
                 self.build_responses_auxiliary_target(config, &clients);
-            let decision_targets = config
+            let decision_targets: Vec<_> = config
                 .routing_target_names()
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
@@ -464,6 +465,8 @@ impl DeploymentConfig {
         let response = self.targets.get(response_name).ok_or_else(|| {
             RunnerError::configuration(format!("route references unknown target {response_name}"))
         })?;
+        // Keep execution metadata even when this target has no prompt override.
+        policy.routing_answer_target = Some(response.id.clone());
         if !policy.prompts.contains_key(&response.id) {
             return Ok(policy);
         }
@@ -476,7 +479,6 @@ impl DeploymentConfig {
                 response.id,
             )));
         }
-        policy.routing_answer_target = Some(response.id.clone());
         Ok(policy)
     }
 
@@ -698,8 +700,12 @@ fn build_backend(
                 )));
             }
             let api_key = std::env::var(variable).map_err(|error| {
+                let reason = match error {
+                    VarError::NotPresent => "environment variable not found",
+                    VarError::NotUnicode(_) => "environment variable was not valid Unicode",
+                };
                 RunnerError::configuration(format!(
-                    "llm client {client_name} could not read api_key_env {variable}: {error}"
+                    "llm client {client_name} could not read api_key_env {variable}: {reason}"
                 ))
             })?;
             if api_key.trim().is_empty() {
@@ -1188,7 +1194,14 @@ new = ["send_message"]
             "base_threshold = 0.5",
             "base_threshold = 0.5\nescalation = { confirmations = 2 }",
         );
-        runner_from_toml(&escalating)?;
+        let runner = runner_from_toml(&escalating)?;
+        assert_eq!(
+            runner
+                .route("switchyard/classifier")
+                .and_then(Route::routing_answer_target)
+                .map(ModelId::as_str),
+            Some("weak/model")
+        );
 
         let reversible = VALID_CONFIG.replace(
             "base_threshold = 0.5",
@@ -1573,6 +1586,95 @@ target = "smart"
                 .collect::<Vec<_>>(),
             ["switchyard/fast", "switchyard/smart"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_target_aliases_load_but_cannot_return_named_decisions() -> RunnerResult<()> {
+        const ALIASED_TARGETS: &str = r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+[targets.first]
+id = "shared/model"
+llm_client = "primary"
+[targets.second]
+id = "shared/model"
+llm_client = "primary"
+[targets.judge]
+id = "judge/model"
+llm_client = "primary"
+"#;
+        for algorithm in [
+            "type = \"random\"\ntargets = [\"first\", \"second\"]\nweights = [1, 99]",
+            "type = \"random\"\ntargets = [\"first\", \"second\"]\nweights = [0, 1]",
+            "type = \"llm_classifier\"\nclassifier_target = \"judge\"\nstrong_target = \"second\"\nweak_target = \"first\"\nbase_threshold = 0.5",
+            "type = \"passthrough\"\ntarget = \"first\"\n[routes.shared.subagents]\ntype = \"passthrough\"\ntarget = \"second\"",
+        ] {
+            let configured = format!(
+                "{ALIASED_TARGETS}\n[routes.shared]\nid = \"switchyard/shared\"\n{algorithm}"
+            );
+            let runner = runner_from_toml(&configured)?;
+            let route = runner
+                .route("switchyard/shared")
+                .expect("shared route should load");
+            let message = route
+                .validate_decision_targets()
+                .expect_err("aliased completion targets cannot identify a named decision")
+                .to_string();
+            assert!(
+                message.contains("completion targets first and second")
+                    && message.contains("shared/model")
+                    && message.contains("distinct model ids"),
+                "{algorithm}: {message}"
+            );
+            assert_eq!(
+                route.validate_decision_targets().unwrap_err().to_string(),
+                message
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn completion_target_can_be_reused_by_parent_and_subagent() -> RunnerResult<()> {
+        let configured = format!(
+            "{VALID_CONFIG}\n[routes.passthrough.subagents]\ntype = \"passthrough\"\ntarget = \"weak\""
+        );
+        let runner = runner_from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("passthrough route should exist");
+        route.validate_decision_targets()?;
+        route.validate_decision_targets()?;
+        assert_eq!(
+            route
+                .decision_targets()
+                .iter()
+                .map(|target| target.target.as_str())
+                .collect::<Vec<_>>(),
+            ["weak", "weak"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn routing_judge_can_share_a_completion_model_id() -> RunnerResult<()> {
+        let configured = VALID_CONFIG.replace(
+            "id = \"classifier/model\"\nllm_client = \"primary\"",
+            "id = \"weak/model\"\nllm_client = \"anthropic\"",
+        );
+        let runner = runner_from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/classifier")
+            .expect("classifier route should exist");
+        route.validate_decision_targets()?;
+        assert_eq!(
+            route.models().models_for(&Category::Judge),
+            route.models().models_for(&Category::Efficient)
+        );
+        assert_eq!(route.decision_targets().len(), 2);
         Ok(())
     }
 

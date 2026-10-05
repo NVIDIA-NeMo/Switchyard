@@ -3,6 +3,7 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 
@@ -117,6 +118,8 @@ pub struct Route {
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
+    // Targets are immutable; only named-decision consumers surface this error.
+    decision_target_error: Option<String>,
     models: Arc<RuntimeModels>,
 }
 
@@ -139,6 +142,18 @@ impl Route {
         decision_targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
+        let decision_target_error = {
+            let mut names_by_model = HashMap::new();
+            decision_targets.iter().find_map(|target| {
+                let first_name = names_by_model.insert(&target.model, &target.target)?;
+                (first_name != &target.target).then(|| {
+                    format!(
+                        "completion targets {first_name} and {} both use model {}; routing decisions identify models, so reuse one target key, use distinct model ids, or put these targets in separate routes",
+                        target.target, target.model
+                    )
+                })
+            })
+        };
         Self {
             algorithm,
             clients,
@@ -147,6 +162,7 @@ impl Route {
             anthropic_auxiliary_target,
             responses_auxiliary_target,
             decision_targets,
+            decision_target_error,
             models: Arc::new(models),
         }
     }
@@ -154,6 +170,27 @@ impl Route {
     /// Returns the configured libsy algorithm name.
     pub fn algorithm_name(&self) -> &str {
         self.algorithm.name()
+    }
+
+    /// Configured target that may produce an answer during routing.
+    pub fn routing_answer_target(&self) -> Option<&ModelId> {
+        self.clients.routing_answer_target()
+    }
+
+    /// Configured completion targets available to routing decisions.
+    pub fn decision_targets(&self) -> &[DecisionTarget] {
+        &self.decision_targets
+    }
+
+    /// Checks that model IDs identify unambiguous completion target names.
+    ///
+    /// Serving and raw model-ID decisions may use identical aliases. Consumers
+    /// returning named targets must check this before making routing-time calls.
+    pub fn validate_decision_targets(&self) -> Result<(), RunnerError> {
+        match &self.decision_target_error {
+            Some(message) => Err(RunnerError::configuration(message.clone())),
+            None => Ok(()),
+        }
     }
 
     /// Returns model-list capability metadata.
@@ -166,12 +203,16 @@ impl Route {
         self.caller_auth
     }
 
-    /// Resolves a selected model to this route's non-secret target metadata.
+    /// Resolves a selected model when its configured target name is unambiguous.
     pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.decision_targets
+        let mut matches = self
+            .decision_targets
             .iter()
-            .find(|target| target.model == *model)
-            .cloned()
+            .filter(|target| target.model == *model);
+        let target = matches.next()?;
+        matches
+            .all(|candidate| candidate.target == target.target)
+            .then(|| target.clone())
     }
 
     /// Returns the models grouped for one algorithm execution.
@@ -211,11 +252,21 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        switchyard_llm_client::decide(
+        self.decide_with_observer(request, None).await
+    }
+
+    /// Completes routing-time calls with request-scoped observations.
+    pub async fn decide_with_observer(
+        &self,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> Result<RoutingOutcome, RunnerError> {
+        switchyard_llm_client::decide_with_observer(
             Arc::clone(&self.algorithm),
             self.clients.clone(),
             request,
             Arc::clone(&self.models),
+            observer,
         )
         .await
         .map_err(Into::into)
@@ -240,5 +291,86 @@ impl Route {
             .call_auxiliary(&target.model, request, operation)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libsy::Passthrough;
+    use switchyard_protocol::Category;
+
+    use super::*;
+    use crate::{DecisionDescription, Runner};
+
+    async fn describe_programmatic_decision(
+        targets: &[(&str, &str)],
+    ) -> Result<Option<DecisionDescription>, RunnerError> {
+        let route = Route::new(
+            Arc::new(Passthrough),
+            ClientRouter::new(Default::default()),
+            None,
+            ModelCapabilities::default(),
+            None,
+            None,
+            targets
+                .iter()
+                .map(|(target, model)| DecisionTarget {
+                    target: (*target).to_string(),
+                    model: (*model).into(),
+                    format: WireFormat::OpenAiChat,
+                    base_url: "http://localhost/v1".to_string(),
+                    extra_body: Default::default(),
+                })
+                .collect(),
+            RuntimeModels::new(
+                [(
+                    Category::Any,
+                    vec!["selected/model".into(), "fallback/model".into()],
+                )]
+                .into(),
+            ),
+        );
+        let runner = Runner::new(vec![("auto".into(), route)]);
+        let outcome = runner
+            .route("auto")
+            .unwrap()
+            .decide(Request::default())
+            .await?;
+        Ok(runner.describe_decision(&"auto".into(), &outcome))
+    }
+
+    #[tokio::test]
+    async fn programmatic_decision_rejects_ambiguous_selected_and_fallback_targets()
+    -> Result<(), RunnerError> {
+        for model in ["selected/model", "fallback/model"] {
+            let description = describe_programmatic_decision(&[
+                ("selected", "selected/model"),
+                ("fallback", "fallback/model"),
+                ("alias", model),
+            ])
+            .await?;
+            assert!(
+                description.is_none(),
+                "ambiguous model {model} must not resolve to its first target"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn programmatic_decision_accepts_repeated_references_to_one_target()
+    -> Result<(), RunnerError> {
+        let description = describe_programmatic_decision(&[
+            ("unrelated", "other/model"),
+            ("selected", "selected/model"),
+            ("selected", "selected/model"),
+            ("fallback", "fallback/model"),
+        ])
+        .await?
+        .expect("each selected model identifies one target");
+        assert_eq!(description.selected.target, "selected");
+        assert_eq!(description.fallbacks.len(), 1);
+        assert_eq!(description.fallbacks[0].target, "fallback");
+        Ok(())
     }
 }
