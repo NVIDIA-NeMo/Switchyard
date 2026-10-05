@@ -1180,7 +1180,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let response = client.call(mixed).await?;
+        let response = client.call(mixed.clone()).await?;
         assert_eq!(response.model.as_deref(), Some("jev-1.13.0"));
         assert_eq!(response.id, None);
         assert_eq!(response.usage.input_tokens, Some(42));
@@ -1201,6 +1201,31 @@ mod tests {
             Some(0.7)
         );
         server.verify().await;
+
+        for (id, answer) in [
+            ("unknown-question", json!({"type": "noul", "noul": 0.9})),
+            ("boolean", json!({"type": "score", "score": 0.0})),
+            ("score", json!({"type": "score", "score": -0.1})),
+            (
+                "score",
+                json!({"type": "score", "score": 1.1,
+                "probabilities": {"0": 0.4, "1": 0.6}}),
+            ),
+        ] {
+            server.reset().await;
+            let mut invalid = body.clone();
+            invalid["answers"][id] = answer;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(invalid))
+                .expect(1)
+                .mount(&server)
+                .await;
+            assert!(matches!(
+                client.call(mixed.clone()).await,
+                Err(LlmClientError::ResponseTranslation(_))
+            ));
+            server.verify().await;
+        }
 
         body["answers"].as_object_mut().unwrap().remove("boolean");
         body["answers"].as_object_mut().unwrap().remove("score");
@@ -1228,11 +1253,18 @@ mod tests {
                 },
             )?))
         };
+        let mut undeclared_choice = body.clone();
+        undeclared_choice["answers"]["route"]["choice"] = json!("unknown-option");
         for (template, expected, is_success) in [
             (
                 ResponseTemplate::new(200).set_body_json(&body),
                 "efficient",
                 true,
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(&undeclared_choice),
+                "capable",
+                false,
             ),
             (
                 ResponseTemplate::new(200).set_body_string("invalid JSON"),

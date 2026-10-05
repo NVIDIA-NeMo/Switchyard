@@ -69,30 +69,33 @@ impl RoutedDecisionClient for SystemOneClient {
             .answers
             .into_iter()
             .map(|(id, answer)| {
-                let value = match answer.value {
-                    WireValue::Noul { noul } => {
+                let value = match (request.questions.get(&id).map(|q| &q.kind), answer.value) {
+                    (Some(DecisionKind::Boolean { .. }), WireValue::Noul { noul }) => {
                         DecisionValue::Boolean(BooleanEstimate::ProbabilityTrue(noul))
                     }
-                    WireValue::Choice {
-                        choice,
-                        probabilities,
-                    } => DecisionValue::Choice {
-                        selected: choice,
-                        probabilities,
-                    },
-                    WireValue::Score {
-                        score,
-                        probabilities,
-                    } => {
+                    (
+                        Some(DecisionKind::Choice { options }),
+                        WireValue::Choice {
+                            choice,
+                            probabilities,
+                        },
+                    ) if options.iter().any(|option| option.id == choice) => {
+                        DecisionValue::Choice {
+                            selected: choice,
+                            probabilities,
+                        }
+                    }
+                    (
+                        Some(DecisionKind::Score { levels }),
+                        WireValue::Score {
+                            score,
+                            probabilities,
+                        },
+                    ) if !levels.is_empty()
+                        && (0.0..=(levels.len() - 1) as f64).contains(&score.0) =>
+                    {
                         let probabilities = probabilities
                             .map(|mut probabilities| {
-                                let Some(DecisionKind::Score { levels }) =
-                                    request.questions.get(&id).map(|q| &q.kind)
-                                else {
-                                    return Err(LlmClientError::ResponseTranslation(format!(
-                                        "score answer {id:?} has no matching score question"
-                                    )));
-                                };
                                 let invalid_rubric = || {
                                     LlmClientError::ResponseTranslation(format!(
                                         "score probabilities for {id:?} do not match its rubric"
@@ -115,6 +118,11 @@ impl RoutedDecisionClient for SystemOneClient {
                             value: score,
                             probabilities,
                         }
+                    }
+                    _ => {
+                        return Err(LlmClientError::ResponseTranslation(format!(
+                            "answer {id:?} has an unexpected question ID, kind, or value"
+                        )));
                     }
                 };
                 Ok((
