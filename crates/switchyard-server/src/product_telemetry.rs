@@ -154,6 +154,7 @@ impl Worker {
                         Client::builder()
                             .timeout(timeout)
                             .redirect(reqwest::redirect::Policy::limited(max_redirects))
+                            // Product telemetry is best effort; errors and timeouts are not retried.
                             .retry(reqwest::retry::never())
                             .build()
                     }) {
