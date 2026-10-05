@@ -5,8 +5,8 @@
 //!
 //! [`switchyard_libsy::Algorithm::run_stream`] is the whole libsy API: it yields a stream of
 //! steps and expects its consumer to serve every offloaded model call. [`run()`] is that
-//! consumer — it drives the stream with [`switchyard_libsy::drive`], resolves a typed client
-//! for each call, and serves the terminal routing outcome.
+//! consumer — it drives the stream with [`switchyard_libsy::drive`], hands routing-time calls to
+//! a [`RoutedLlmClient`], and serves the terminal routing outcome.
 //!
 //! libsy owns the stream mechanics; what this module adds is per-target request preparation,
 //! ordered candidate fallback, and the `libsy.client_call` span around each candidate. Each
@@ -49,7 +49,7 @@ use crate::{metrics, observability};
 /// `clients` resolves each offloaded call to the client for the target the algorithm
 /// selected — an algorithm may route among targets served by different providers, so this is
 /// a per-call lookup, not one client for the whole run. Use
-/// [`ClientRouter::single`](ClientRouter::single) when one client serves every LLM target.
+/// [`ClientRouter::single`](ClientRouter::single) when one client serves every target.
 ///
 /// Routing calls are buffered; client failures stop the request unless the call enables recovery.
 /// Once routing completes, non-timeout failures may try the outcome's ordered fallback candidates.
@@ -66,7 +66,7 @@ pub async fn run(
     // This says if we have an observer, put Some(..) in routing_observations.
     // No observer means we don't want any routing_observations.
     let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
-    let outcome = match clients.inner.response_state.stored_state_owner(&request) {
+    let outcome = match clients.stored_state_owner(&request) {
         Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
         None => {
             drive(algorithm, request, models, {
@@ -134,7 +134,7 @@ pub async fn decide(
     models: Arc<RuntimeModels>,
 ) -> Result<RoutingOutcome> {
     let routing_clients = clients.clone();
-    let mut outcome = match clients.inner.response_state.stored_state_owner(&request) {
+    let mut outcome = match clients.stored_state_owner(&request) {
         Some(owner) => continue_on(owner, algorithm.name(), request),
         None => {
             drive(algorithm, request, models, move |call| {
@@ -144,10 +144,7 @@ pub async fn decide(
         }
     };
     let selected_model_id = outcome.selected_model_id()?.clone();
-    outcome.request = clients
-        .inner
-        .llm_policy
-        .prepare_completion_request(outcome.request, &selected_model_id);
+    outcome.request = clients.prepare_completion_request(outcome.request, &selected_model_id);
     outcome.response = outcome
         .response
         .map(|response| clients.remember_state_owner(&outcome.request, response))
@@ -165,7 +162,7 @@ async fn serve_decision(
     call: CallDecision,
     observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
 ) -> Result<()> {
-    let client = clients.inner.clients.route_decision(&call.model);
+    let client = clients.route_decision(&call.model);
     let started = Instant::now();
     let result = async { client?.call(call.request.clone()).await }.await;
     tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
@@ -227,10 +224,7 @@ async fn serve(
         }
     };
     let target = call.models.first().ok_or(LibsyError::NoTargets)?;
-    let request = clients
-        .inner
-        .llm_policy
-        .prepare_routing_request(call.request.clone(), target);
+    let request = clients.prepare_routing_request(call.request.clone(), target);
     match call_one(
         &clients,
         target,
@@ -258,10 +252,7 @@ async fn call_first_available(
     observe: &(dyn Fn(ModelCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
-        let request = clients
-            .inner
-            .llm_policy
-            .prepare_completion_request(request.clone(), target);
+        let request = clients.prepare_completion_request(request.clone(), target);
         match call_one(
             clients,
             target,
@@ -593,136 +584,34 @@ fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
 /// host's concern, and two targets in one run may sit on different providers. A router owns
 /// that mapping and resolves the client for each kind of call.
 ///
-/// Use [`Self::builder`] to register multiple call kinds. Cloning shares client mappings,
-/// LLM request policy, and conversation state across runs.
+/// Cloning is cheap — the mapping is shared, so one router can serve every request.
 #[derive(Clone)]
 pub struct ClientRouter {
     inner: Arc<ClientRouting>,
 }
 
 struct ClientRouting {
-    clients: ClientRegistry,
-    llm_policy: LlmRequestPolicy,
-    response_state: ResponseState,
-}
-
-struct ClientRegistry {
-    llm: LlmClients,
-    decision: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
-}
-
-#[derive(Default)]
-struct LlmRequestPolicy {
+    routing: Routing,
+    decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
     target_prompts: HashMap<ModelId, String>,
     routing_answer_target: Option<ModelId>,
-}
-
-struct ResponseState {
     /// Provider-owned routing pins and materialized cross-format history.
-    owners: Mutex<StateOwners>,
+    state_owners: Mutex<StateOwners>,
     /// Native Responses state only needs a routing pin when answer targets span clients.
     track_provider_state: bool,
 }
 
-enum LlmClients {
-    /// One client serves every LLM target.
+enum Routing {
+    /// One client serves every model.
     Single(Arc<dyn RoutedLlmClient>),
     /// Each model is served by the client configured for it.
     ByModel(HashMap<ModelId, Arc<dyn RoutedLlmClient>>),
 }
 
-/// Configure clients and LLM request policy before sharing a router across runs.
-/// Registration ends at [`Self::build`]; cloned routers share the same clients and state.
-pub struct ClientRouterBuilder {
-    clients: ClientRegistry,
-    llm_policy: LlmRequestPolicy,
-    completion_targets: Option<Vec<ModelId>>,
-}
-
-impl ClientRouterBuilder {
-    /// Replace the LLM routing table with explicit model-to-client mappings.
-    pub fn llm_clients(mut self, clients: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
-        self.clients.llm = LlmClients::ByModel(clients);
-        self
-    }
-
-    /// Use one LLM client for every model, leaving model lookup to that client.
-    pub fn single_llm_client(mut self, client: Arc<dyn RoutedLlmClient>) -> Self {
-        self.clients.llm = LlmClients::Single(client);
-        self
-    }
-
-    /// Replace the decision routing table. Decision calls require an explicit mapping.
-    pub fn decision_clients(
-        mut self,
-        clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
-    ) -> Self {
-        self.clients.decision = clients;
-        self
-    }
-
-    /// Set LLM answer prompts keyed by resolved model ID, not deployment target name.
-    pub fn target_prompts(mut self, prompts: HashMap<ModelId, String>) -> Self {
-        self.llm_policy.target_prompts = prompts;
-        self
-    }
-
-    /// Apply its target prompt to a routing-time LLM call whose response can be the answer.
-    pub fn routing_answer_target(mut self, target: Option<ModelId>) -> Self {
-        self.llm_policy.routing_answer_target = target;
-        self
-    }
-
-    /// Use these completion targets to decide whether native Responses need a provider pin.
-    /// If omitted, every mapped LLM is considered a possible completion target.
-    pub fn completion_targets(mut self, targets: Vec<ModelId>) -> Self {
-        self.completion_targets = Some(targets);
-        self
-    }
-
-    /// Finish registration and share the immutable configuration and conversation state.
-    pub fn build(self) -> ClientRouter {
-        let track_provider_state = match &self.clients.llm {
-            LlmClients::Single(_) => false,
-            LlmClients::ByModel(by_model) => {
-                let targets = self
-                    .completion_targets
-                    .unwrap_or_else(|| by_model.keys().cloned().collect());
-                let mut clients = targets.iter().filter_map(|model| by_model.get(model));
-                clients
-                    .next()
-                    .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)))
-            }
-        };
-        ClientRouter {
-            inner: Arc::new(ClientRouting {
-                clients: self.clients,
-                llm_policy: self.llm_policy,
-                response_state: ResponseState {
-                    owners: Mutex::default(),
-                    track_provider_state,
-                },
-            }),
-        }
-    }
-}
-
 impl ClientRouter {
-    /// Start with no clients. Register each call kind before building the shared router.
-    pub fn builder() -> ClientRouterBuilder {
-        ClientRouterBuilder {
-            clients: ClientRegistry {
-                llm: LlmClients::ByModel(HashMap::new()),
-                decision: HashMap::new(),
-            },
-            llm_policy: LlmRequestPolicy::default(),
-            completion_targets: None,
-        }
-    }
-
     /// Build a router over `model name -> client`, for targets spread across providers.
     pub fn new(by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>) -> Self {
-        Self::builder().llm_clients(by_model).build()
+        Self::new_with_target_prompts(by_model, HashMap::new(), None)
     }
 
     /// Build a router with target prompts used by [`run`] and [`decide`].
@@ -738,11 +627,13 @@ impl ClientRouter {
         target_prompts: HashMap<ModelId, String>,
         routing_answer_target: Option<ModelId>,
     ) -> Self {
-        Self::builder()
-            .llm_clients(by_model)
-            .target_prompts(target_prompts)
-            .routing_answer_target(routing_answer_target)
-            .build()
+        let completion_targets = by_model.keys().cloned().collect::<Vec<_>>();
+        Self::new_with_completion_targets(
+            by_model,
+            target_prompts,
+            routing_answer_target,
+            &completion_targets,
+        )
     }
 
     /// Build a router with an explicit list of models that can answer requests.
@@ -758,21 +649,66 @@ impl ClientRouter {
         routing_answer_target: Option<ModelId>,
         completion_targets: &[ModelId],
     ) -> Self {
-        Self::builder()
-            .llm_clients(by_model)
-            .target_prompts(target_prompts)
-            .routing_answer_target(routing_answer_target)
-            .completion_targets(completion_targets.to_vec())
-            .build()
+        Self::new_with_decision_clients(
+            by_model,
+            HashMap::new(),
+            target_prompts,
+            routing_answer_target,
+            completion_targets,
+        )
     }
 
-    /// A router that serves every LLM target with one client — the single-provider case.
+    /// Build a router with separate LLM and decision mappings, shared across clones.
+    /// LLM prompt and completion settings follow [`Self::new_with_completion_targets`].
+    pub fn new_with_decision_clients(
+        by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>,
+        decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
+        target_prompts: HashMap<ModelId, String>,
+        routing_answer_target: Option<ModelId>,
+        completion_targets: &[ModelId],
+    ) -> Self {
+        let mut clients = completion_targets
+            .iter()
+            .filter_map(|model| by_model.get(model));
+        let spans_providers = clients
+            .next()
+            .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)));
+        Self {
+            inner: Arc::new(ClientRouting {
+                routing: Routing::ByModel(by_model),
+                decision_clients,
+                target_prompts,
+                routing_answer_target,
+                state_owners: Mutex::default(),
+                track_provider_state: spans_providers,
+            }),
+        }
+    }
+
+    /// A router that serves every model with one client — the single-provider case.
     ///
     /// [`TranslatingLlmClient`](crate::TranslatingLlmClient) already maps model names to
     /// backends internally and rejects ones it does not know, so enumerating them here would
     /// only duplicate that.
     pub fn single(client: Arc<dyn RoutedLlmClient>) -> Self {
-        Self::builder().single_llm_client(client).build()
+        Self::single_with_decision_clients(client, HashMap::new())
+    }
+
+    /// Use one client for all LLM targets and explicit clients for decision targets.
+    pub fn single_with_decision_clients(
+        client: Arc<dyn RoutedLlmClient>,
+        decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(ClientRouting {
+                routing: Routing::Single(client),
+                decision_clients,
+                target_prompts: HashMap::new(),
+                routing_answer_target: None,
+                state_owners: Mutex::default(),
+                track_provider_state: false,
+            }),
+        }
     }
 
     /// The client that serves `model`.
@@ -783,18 +719,9 @@ impl ClientRouter {
         &self,
         model: &ModelId,
     ) -> std::result::Result<&Arc<dyn RoutedLlmClient>, LlmClientError> {
-        self.inner.clients.route_llm(model)
-    }
-}
-
-impl ClientRegistry {
-    fn route_llm(
-        &self,
-        model: &ModelId,
-    ) -> std::result::Result<&Arc<dyn RoutedLlmClient>, LlmClientError> {
-        match &self.llm {
-            LlmClients::Single(client) => Ok(client),
-            LlmClients::ByModel(by_model) => {
+        match &self.inner.routing {
+            Routing::Single(client) => Ok(client),
+            Routing::ByModel(by_model) => {
                 by_model
                     .get(model)
                     .ok_or_else(|| LlmClientError::Configuration {
@@ -809,15 +736,14 @@ impl ClientRegistry {
         &self,
         model: &ModelId,
     ) -> std::result::Result<&Arc<dyn RoutedDecisionClient>, LlmClientError> {
-        self.decision
+        self.inner
+            .decision_clients
             .get(model)
             .ok_or_else(|| LlmClientError::Configuration {
                 message: format!("no decision client is configured for model {model:?}"),
             })
     }
-}
 
-impl ResponseState {
     /// Return the recorded model for the requested response or conversation ID.
     fn stored_state_owner(&self, request: &Request) -> Option<StateOwner> {
         let fields = &request.llm_request.extensions.fields;
@@ -825,7 +751,7 @@ impl ResponseState {
             Some(id) => ("previous_response_id", id),
             None => ("conversation", conversation_id(fields)?),
         };
-        let state = self.owners.lock().owner(id)?.clone();
+        let state = self.inner.state_owners.lock().owner(id)?.clone();
         Some(StateOwner {
             model: state.model,
             trigger,
@@ -840,7 +766,7 @@ impl ResponseState {
             .fields
             .get("previous_response_id")
             .and_then(Value::as_str)
-            .and_then(|id| self.owners.lock().owner(id)?.history.clone());
+            .and_then(|id| self.inner.state_owners.lock().owner(id)?.history.clone());
         let parent_len = parent.as_ref().map_or(0, |history| history.len);
         let (parent, messages) = match request.llm_request.messages.get(parent_len..) {
             Some(messages) => (parent, messages.to_vec()),
@@ -851,9 +777,7 @@ impl ResponseState {
             messages: Arc::from(messages),
         }
     }
-}
 
-impl ClientRouter {
     /// Record provider-owned Responses state or canonical history for a cross-format response.
     fn remember_state_owner(&self, request: &Request, mut response: Response) -> Result<Response> {
         let Some(model) = response.served_model().cloned() else {
@@ -870,22 +794,19 @@ impl ClientRouter {
             .contains_key(&responses_format)
             || fields.contains_key("previous_response_id")
             || fields.contains_key("conversation");
-        let state = &self.inner.response_state;
-        if !responses_request && !state.track_provider_state {
+        if !responses_request && !self.inner.track_provider_state {
             return Ok(response);
         }
-        let canonical_input = responses_request.then(|| state.canonical_input(request));
+        let canonical_input = responses_request.then(|| self.canonical_input(request));
         response.llm_response = match response.llm_response {
             LlmResponse::Agg(agg) => {
                 if let Some(body) = agg.preservation.responses.get(&responses_format) {
-                    if state.track_provider_state {
-                        state
-                            .remember_response(body, &model, store, conversation.as_deref())
+                    if self.inner.track_provider_state {
+                        self.remember_response(body, &model, store, conversation.as_deref())
                             .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                     }
                 } else if let Some(input) = &canonical_input {
-                    state
-                        .remember_canonical_response(&agg, &model, store, input)
+                    self.remember_canonical_response(&agg, &model, store, input)
                         .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                 }
                 LlmResponse::Agg(agg)
@@ -913,13 +834,12 @@ impl ClientRouter {
                         mut native_responses,
                         mut valid,
                     )| async move {
-                        let state = &router.inner.response_state;
                         let Some(event) = stream.next().await else {
                             if let Some(input) = &canonical_input
                                 && !native_responses
                                 && valid
                             {
-                                state.remember_canonical_response(
+                                router.remember_canonical_response(
                                     &accumulator.finish(),
                                     &model,
                                     store,
@@ -933,10 +853,10 @@ impl ClientRouter {
                             && preserved.source().as_str() == WireFormat::OpenAiResponses.as_str()
                         {
                             native_responses = true;
-                            if state.track_provider_state
+                            if router.inner.track_provider_state
                                 && let Some(body) = preserved.raw().get("response")
                             {
-                                state.remember_response(
+                                router.remember_response(
                                     body,
                                     &model,
                                     store,
@@ -976,9 +896,7 @@ impl ClientRouter {
         };
         Ok(response)
     }
-}
 
-impl ResponseState {
     /// Check both IDs from a response or stream event before recording either. The response's
     /// `store` value overrides the request value; `false` skips only the response ID.
     fn remember_response(
@@ -988,7 +906,7 @@ impl ResponseState {
         store: bool,
         conversation: Option<&str>,
     ) -> std::result::Result<(), LlmClientError> {
-        let mut owners = self.owners.lock();
+        let mut owners = self.inner.state_owners.lock();
         let response_id = body
             .get("id")
             .and_then(Value::as_str)
@@ -1025,10 +943,11 @@ impl ResponseState {
             input.parent.clone(),
             Arc::from(segment),
         ));
-        let result = self
-            .owners
-            .lock()
-            .remember(response_id, None, model, Some(history));
+        let result =
+            self.inner
+                .state_owners
+                .lock()
+                .remember(response_id, None, model, Some(history));
         if let Err(error) = result {
             if matches!(error, LlmClientError::ResponseStateLimitExceeded { .. }) {
                 tracing::warn!(%error, "cross-format Responses state capacity reached; history was not retained");
@@ -1039,20 +958,18 @@ impl ResponseState {
         }
         Ok(())
     }
-}
 
-impl LlmRequestPolicy {
     /// Prepare a completion candidate with its configured target prompt.
     fn prepare_completion_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = self.target_prompts.get(target).map(String::as_str);
+        let prompt = self.inner.target_prompts.get(target).map(String::as_str);
         prepare_request_for_target(&mut request.llm_request, target, prompt);
         request
     }
 
     /// Prepare a routing call, adding a target prompt only when it generates a candidate answer.
     fn prepare_routing_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = if self.routing_answer_target.as_ref() == Some(target) {
-            self.target_prompts.get(target).map(String::as_str)
+        let prompt = if self.inner.routing_answer_target.as_ref() == Some(target) {
+            self.inner.target_prompts.get(target).map(String::as_str)
         } else {
             None
         };
@@ -1365,12 +1282,12 @@ mod tests {
                     config: TaskClassifierConfig {
                         judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                             cutoff: 0.4,
-                            instructions: Some(json!({"task": "Compare candidate outcomes"})),
+                            instructions: None,
                             candidates: BTreeMap::from([
                                 ("a".into(), "capable".into()),
                                 ("b".into(), "efficient".into()),
                             ]),
-                            evidence: json!({"cases": ["reference task"]}),
+                            evidence: json!({}),
                         }),
                         ..TaskClassifierConfig::default()
                     },
@@ -1409,12 +1326,6 @@ mod tests {
             server.reset().await;
             Mock::given(method("POST"))
                 .and(path("/v1/systemone"))
-                .and(body_partial_json(json!({
-                    "state": {"evidence": {"cases": ["reference task"]}},
-                    "questions": {"route": {
-                        "instructions": {"task": "Compare candidate outcomes"}
-                    }}
-                })))
                 .respond_with(template)
                 .expect(2)
                 .mount(&server)
@@ -1424,26 +1335,15 @@ mod tests {
                 requests: Mutex::default(),
                 first: FirstOutcome::Unauthorized,
             });
-            let clients = ClientRouter::builder()
-                .single_llm_client(llm.clone())
-                .decision_clients(HashMap::from([(
+            let clients = ClientRouter::single_with_decision_clients(
+                llm.clone(),
+                HashMap::from([(
                     ModelId::from("judge"),
                     client.clone() as Arc<dyn RoutedDecisionClient>,
-                )]))
-                .target_prompts(HashMap::from([
-                    ("judge".into(), "LLM judge prompt".into()),
-                    ("efficient".into(), "Answer prompt".into()),
-                    ("capable".into(), "Answer prompt".into()),
-                ]))
-                .routing_answer_target(Some("judge".into()))
-                .build();
-            assert!(matches!(
-                clients.inner.clients.route_decision(&"efficient".into()),
-                Err(LlmClientError::Configuration { .. })
-            ));
+                )]),
+            );
             let outcome = decide(algorithm()?, clients.clone(), request(), models.clone()).await?;
             assert_eq!(outcome.selected_model_id()?, expected);
-            assert_eq!(instruction_text(&outcome.request), ["Answer prompt"]);
             assert!(llm.calls.lock().is_empty());
             let events = Arc::new(Mutex::new(Vec::new()));
             let captured = events.clone();
@@ -1457,7 +1357,6 @@ mod tests {
             .await?;
             assert_eq!(selected, expected);
             assert_eq!(&*llm.calls.lock(), &[ModelId::from(expected)]);
-            assert_eq!(instruction_text(&llm.requests.lock()[0]), ["Answer prompt"]);
             {
                 let events = events.lock();
                 let RunObservation::DecisionCall(call) = &events[0] else {
@@ -1885,8 +1784,6 @@ mod tests {
             metadata: None,
         };
         let history = clients
-            .inner
-            .response_state
             .stored_state_owner(&third)
             .and_then(|owner| owner.history)
             .expect("chained canonical history");
@@ -1977,13 +1874,7 @@ mod tests {
                 is_error: None,
             })],
         }];
-        assert!(
-            clients
-                .inner
-                .response_state
-                .stored_state_owner(&follow)
-                .is_none()
-        );
+        assert!(clients.stored_state_owner(&follow).is_none());
         response
             .llm_response
             .into_agg()
@@ -1992,8 +1883,6 @@ mod tests {
 
         let outcome = continue_on(
             clients
-                .inner
-                .response_state
                 .stored_state_owner(&follow)
                 .expect("completed stream state"),
             "passthrough",
@@ -2047,13 +1936,7 @@ mod tests {
             .extensions
             .fields
             .insert("previous_response_id".to_string(), json!("msg_not_stored"));
-        assert!(
-            clients
-                .inner
-                .response_state
-                .stored_state_owner(&follow)
-                .is_none()
-        );
+        assert!(clients.stored_state_owner(&follow).is_none());
         Ok(())
     }
 
@@ -2069,7 +1952,7 @@ mod tests {
             client as Arc<dyn RoutedLlmClient>,
         )]));
         let model = ModelId::from("weak");
-        clients.inner.response_state.owners.lock().by_id = (0..MAX_STATE_OWNERS)
+        clients.inner.state_owners.lock().by_id = (0..MAX_STATE_OWNERS)
             .map(|id| {
                 (
                     format!("existing_{id}"),
@@ -2119,7 +2002,7 @@ mod tests {
             .map_err(|error| LibsyError::client_call("weak", error))?;
 
         assert_eq!(
-            clients.inner.response_state.owners.lock().by_id.len(),
+            clients.inner.state_owners.lock().by_id.len(),
             MAX_STATE_OWNERS
         );
         Ok(())

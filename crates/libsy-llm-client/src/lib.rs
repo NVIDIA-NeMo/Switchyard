@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! HTTP clients for Switchyard's neutral LLM and decision requests.
+//! HTTP LLM client that speaks Switchyard's neutral IR directly.
 //!
 //! [`TranslatingLlmClient`] maps a model name (and the wire format resolved from
 //! the request) to a [`Backend`],
@@ -12,7 +12,8 @@
 //! streamed responses.
 //!
 //! [`SystemOneClient`] serves typed decision requests. Register decision targets
-//! with [`ClientRouterBuilder::decision_clients`] to serve them alongside LLM calls.
+//! with [`ClientRouter::new_with_decision_clients`] or
+//! [`ClientRouter::single_with_decision_clients`] to serve them alongside LLM calls.
 //!
 //! [`run()`] pairs the client with a libsy algorithm: it drives
 //! [`switchyard_libsy::Algorithm::run_stream`], serves routing-time calls, and makes the terminal
@@ -34,7 +35,7 @@ pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use observation::{ModelCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
-pub use run::{ClientRouter, ClientRouterBuilder, decide, run};
+pub use run::{ClientRouter, decide, run};
 pub use switchyard_translation::RawEventStream;
 pub use system_one::SystemOneClient;
 
