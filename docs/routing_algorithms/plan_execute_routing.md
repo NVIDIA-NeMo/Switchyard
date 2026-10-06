@@ -1,8 +1,8 @@
 # Plan/Execute Routing
 
 Plan/execute routing uses a capable model to inspect and plan a coding task,
-then switches to an efficient model after the first file mutation. It does not
-make a classifier call.
+then switches to an efficient model after the first recognized edit or write
+tool call. It does not make a classifier call.
 
 ```toml
 schema_version = 1
@@ -71,8 +71,19 @@ edit missing from the request history.
 
 | Key | Behavior |
 |---|---|
+| `tool_semantics.mutate` | Lists custom tools that trigger handoff. |
 | `planning_prompt` | Replaces the built-in planning instruction. |
 | `handoff_prompt` | Adds an instruction to the handoff request. |
 | `planner_reasoning_as_text` | Converts visible planner reasoning summaries to assistant text at handoff. |
+
+To make a custom tool trigger handoff:
+
+```toml
+[routes.plan_execute.tool_semantics]
+mutate = ["persist_source_file"]
+```
+
+This uses the same [tool matching rules](stage_router_routing.md#optional-custom-tool-semantics)
+as Stage. The other custom tool categories do not trigger handoff.
 
 Use a stable session ID with handoff processing or history compaction.
