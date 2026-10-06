@@ -582,7 +582,7 @@ mod tests {
             "restricted-auxiliary",
         );
         let classifier_calls = Arc::new(AtomicUsize::new(0));
-        let classifier = SemanticPrivacyClassifier::new(
+        let classifier = SemanticPrivacyClassifier::decision(
             "privacy-judge".into(),
             Arc::new(VerdictClient {
                 calls: Arc::clone(&classifier_calls),

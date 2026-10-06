@@ -94,8 +94,18 @@ struct PrivacyConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PrivacyClassifierConfig {
+    #[serde(default, rename = "type")]
+    kind: PrivacyClassifierKind,
     target: String,
     clear_threshold: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PrivacyClassifierKind {
+    #[default]
+    Decision,
+    Llm,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,7 +406,9 @@ impl DeploymentConfig {
         let classifier = self.build_privacy_classifier(
             route_name,
             config.classifier.as_ref(),
+            standard,
             standard_decision,
+            clients,
             decision_clients,
         )?;
         let (restricted, _) = self.build_lane(
@@ -422,7 +434,9 @@ impl DeploymentConfig {
         &self,
         route_name: &str,
         classifier: Option<&PrivacyClassifierConfig>,
+        standard: &LaneTargets<'_>,
         standard_decision: Option<ResolvedDecisionTarget<'_>>,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
         decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<Option<SemanticPrivacyClassifier>> {
         let Some(classifier) = classifier else {
@@ -434,21 +448,80 @@ impl DeploymentConfig {
                 classifier.clear_threshold
             )));
         }
-        let target =
-            self.resolve_decision_target(route_name, &classifier.target, decision_clients)?;
-        if standard_decision.is_some_and(|standard| {
-            standard.model == target.model && Arc::ptr_eq(standard.client, target.client)
-        }) {
-            return Err(RunnerError::configuration(format!(
-                "route {route_name} privacy classifier target {} overlaps the standard execution lane",
-                classifier.target
-            )));
-        }
-        Ok(Some(SemanticPrivacyClassifier::new(
-            target.model.clone(),
-            Arc::clone(target.client),
-            classifier.clear_threshold,
-        )))
+        let classifier = match classifier.kind {
+            PrivacyClassifierKind::Decision => {
+                let target =
+                    self.resolve_decision_target(route_name, &classifier.target, decision_clients)?;
+                if standard_decision.is_some_and(|standard| {
+                    standard.model == target.model && Arc::ptr_eq(standard.client, target.client)
+                }) {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier target {} overlaps the standard execution lane",
+                        classifier.target
+                    )));
+                }
+                SemanticPrivacyClassifier::decision(
+                    target.model.clone(),
+                    Arc::clone(target.client),
+                    classifier.clear_threshold,
+                )
+            }
+            PrivacyClassifierKind::Llm => {
+                let target = self.targets.get(&classifier.target).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier references unknown target {}",
+                        classifier.target
+                    ))
+                })?;
+                if standard.values().any(|candidate| {
+                    candidate.config.id == target.id
+                        && candidate.config.llm_client == target.llm_client
+                }) {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier target {} overlaps the standard execution lane",
+                        classifier.target
+                    )));
+                }
+                if target.system_prompt.is_some()
+                    || !target.extra_body.is_empty()
+                    || !target.omit_body_fields.is_empty()
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier target {} cannot configure request modifiers",
+                        classifier.target
+                    )));
+                }
+                let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "target {} references unknown llm client {}",
+                        classifier.target, target.llm_client
+                    ))
+                })?;
+                if client_config.forward_auth {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier cannot use forward_auth"
+                    )));
+                }
+                if client_config.timeout_ms.is_none() {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier requires an llm client timeout_ms"
+                    )));
+                }
+                let client = Arc::clone(clients.get(&target.llm_client).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "target {} has no constructed llm client",
+                        classifier.target
+                    ))
+                })?);
+                let client: Arc<dyn RoutedLlmClient> = client;
+                SemanticPrivacyClassifier::llm(
+                    target.id.clone(),
+                    client,
+                    classifier.clear_threshold,
+                )
+            }
+        };
+        Ok(Some(classifier))
     }
 
     fn uses_forward_auth(&self, targets: &LaneTargets<'_>) -> bool {
@@ -1352,6 +1425,30 @@ clear_threshold = 0.9
         )
     }
 
+    fn llm_semantic_privacy_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[llm_clients.privacy_classifier]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+timeout_ms = 30000
+
+[targets.privacy_classifier]
+id = "privacy/model"
+llm_client = "privacy_classifier"
+
+[routes.passthrough.privacy.restricted_targets]
+weak = "strong"
+
+[routes.passthrough.privacy.classifier]
+type = "llm"
+target = "privacy_classifier"
+clear_threshold = 0.9
+"#
+        )
+    }
+
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
@@ -1452,17 +1549,19 @@ clear_threshold = 0.9
     }
 
     #[test]
-    fn semantic_privacy_classifier_config_is_bounded_and_isolated() -> RunnerResult<()> {
-        let configured = semantic_privacy_config();
-        Runner::from_toml(&configured)?;
+    fn semantic_privacy_classifier_configs_are_bounded_and_isolated() -> RunnerResult<()> {
+        let decision = semantic_privacy_config();
+        let llm = llm_semantic_privacy_config();
+        Runner::from_toml(&decision)?;
+        Runner::from_toml(&llm)?;
 
         for (invalid, expected) in [
             (
-                configured.replace("target = \"privacy_judge\"", "target = \"missing\""),
+                decision.replace("target = \"privacy_judge\"", "target = \"missing\""),
                 "requires unknown decision target missing",
             ),
             (
-                configured.replace("clear_threshold = 0.9", "clear_threshold = 1.1"),
+                decision.replace("clear_threshold = 0.9", "clear_threshold = 1.1"),
                 "clear_threshold must be between 0 and 1",
             ),
             (
@@ -1472,6 +1571,32 @@ clear_threshold = 0.9
                     decision_privacy_config()
                 ),
                 "overlaps the standard execution lane",
+            ),
+            (
+                llm.replace("target = \"privacy_classifier\"", "target = \"missing\""),
+                "privacy classifier references unknown target missing",
+            ),
+            (
+                llm.replace("target = \"privacy_classifier\"", "target = \"weak\""),
+                "overlaps the standard execution lane",
+            ),
+            (
+                llm.replace(
+                    "llm_client = \"privacy_classifier\"",
+                    "llm_client = \"privacy_classifier\"\nomit_body_fields = [\"store\"]",
+                ),
+                "cannot configure request modifiers",
+            ),
+            (
+                llm.replace("timeout_ms = 30000\n", ""),
+                "requires an llm client timeout_ms",
+            ),
+            (
+                llm.replace(
+                    "timeout_ms = 30000",
+                    "timeout_ms = 30000\nforward_auth = true",
+                ),
+                "cannot use forward_auth",
             ),
         ] {
             assert!(error_message(&invalid).contains(expected));
