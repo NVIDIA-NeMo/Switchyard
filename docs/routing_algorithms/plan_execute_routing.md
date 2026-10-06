@@ -32,6 +32,22 @@ The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.
 
+## Session capacity
+
+Each router instance retains up to 4,096 executing identities in memory. Root
+requests use the session ID. Subagent requests use the session ID and agent ID.
+Once retained, an identity stays on the efficient target after history compaction
+until a request marks it with `session_final: true` or the router restarts.
+
+At capacity, a new identity's handoff returns an error before calling a model.
+Existing identities keep their execution phase. Mark an existing identity's last
+request with `session_final: true` to free its slot, then retry the handoff with
+the mutation history intact. The server accepts this flag through the
+`x-switchyard-session-final: true` header.
+
+A handoff marked final needs no saved slot and can still run at capacity.
+Requests that are still planning or have no stable identity also use no slots.
+
 ## Responses API history requirement
 
 Plan/execute needs the conversation history to detect edits and hand the task to
