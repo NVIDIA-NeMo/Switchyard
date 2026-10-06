@@ -191,7 +191,7 @@ impl ExternalProcessor for Server {
                     return;
                 }
             };
-            let response_deadline = Instant::now() + RESPONSE_TIMEOUT;
+            let mut response_deadline = Instant::now() + RESPONSE_TIMEOUT;
             // v1.0 selects the route when this header reply arrives, before reading the body.
             yield Ok(reply(Output::RequestHeaders(ext::HeadersResponse {
                 response: Some(ext::CommonResponse {
@@ -211,6 +211,7 @@ impl ExternalProcessor for Server {
                     chunk.to_vec(), (i + 1) * CHUNK_SIZE >= prepared.body.len(),
                 ))));
             }
+            response_deadline = Instant::now() + RESPONSE_TIMEOUT;
             let mut headers_seen = false;
             let mut trailers_seen = false;
             loop {
@@ -226,6 +227,7 @@ impl ExternalProcessor for Server {
                         return;
                     }
                 };
+                response_deadline = Instant::now() + RESPONSE_TIMEOUT;
                 let (output, done) = match next.request {
                     Some(Input::ResponseHeaders(h)) if !headers_seen => {
                         headers_seen = true;
@@ -444,6 +446,51 @@ mod tests {
             }
         }
         assert!(rx.message().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn response_timeout_tracks_inactivity() {
+        async fn elapse(duration: Duration) {
+            // Resume before socket I/O so idle network polls cannot auto-advance time.
+            tokio::time::pause();
+            tokio::time::advance(duration).await;
+            tokio::time::resume();
+        }
+
+        let (mut client, _) = start().await;
+        let (tx, receive) = mpsc::channel(8);
+        send(&tx, headers()).await;
+        let mut rx = client
+            .process(ReceiverStream::new(receive))
+            .await
+            .unwrap()
+            .into_inner();
+        send(
+            &tx,
+            Input::RequestBody(body(
+                br#"{"model":"auto","messages":[{"role":"user","content":"hello"}]}"#,
+                true,
+            )),
+        )
+        .await;
+        assert!(matches!(next(&mut rx).await, Output::RequestHeaders(_)));
+        assert!(matches!(next(&mut rx).await, Output::RequestBody(_)));
+        send(&tx, Input::ResponseHeaders(ext::HttpHeaders::default())).await;
+        assert!(matches!(next(&mut rx).await, Output::ResponseHeaders(_)));
+
+        for _ in 0..3 {
+            elapse(RESPONSE_TIMEOUT / 2).await;
+            send(&tx, Input::ResponseBody(body(b"data: hello\n\n", false))).await;
+            let Output::ResponseBody(b) = next(&mut rx).await else {
+                panic!()
+            };
+            assert_eq!(streamed(b).body, b"data: hello\n\n");
+        }
+        elapse(RESPONSE_TIMEOUT + Duration::from_secs(1)).await;
+        assert_eq!(
+            rx.message().await.unwrap_err().code(),
+            tonic::Code::DeadlineExceeded
+        );
     }
 
     #[tokio::test]
