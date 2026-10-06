@@ -6,6 +6,9 @@
 mod deterministic;
 mod semantic;
 
+use std::collections::HashSet;
+
+use parking_lot::Mutex;
 use serde_json::Value;
 use strum_macros::{EnumString, IntoStaticStr};
 use switchyard_protocol::{LlmClientError, Request, WireFormat};
@@ -15,12 +18,20 @@ pub(crate) use deterministic::DeterministicDetector;
 use deterministic::{Assessment, Inspector};
 pub(crate) use semantic::SemanticPrivacyClassifier;
 pub(crate) const SELECTED_LANE_KEY: &str = "switchyard.internal.privacy_lane";
+const MAX_TASK_ID_BYTES: usize = 512;
+const MAX_RESTRICTED_TASKS: usize = 4_096;
 const RESPONSES_STATE_FIELDS: [&str; 2] = ["previous_response_id", "conversation"];
 
 pub(crate) struct PrivacyPolicy {
     accept_external_signal: bool,
     inspector: Option<Inspector>,
     classifier: Option<SemanticPrivacyClassifier>,
+    task_restrictions: Option<TaskRestrictions>,
+}
+
+#[derive(Default)]
+struct TaskRestrictions {
+    restricted: Mutex<HashSet<String>>,
 }
 
 /// Target set allowed to serve one request.
@@ -72,6 +83,7 @@ pub(crate) enum PrivacySource {
     ExternalSignal,
     Deterministic,
     SemanticClassifier,
+    TaskRetention,
 }
 
 impl PrivacySource {
@@ -108,6 +120,14 @@ impl PrivacyDecision {
 
     const fn all_clear() -> Self {
         Self::new(PrivacyLane::Standard, PrivacySource::Policy, "all_clear")
+    }
+
+    const fn task_restriction(reason_code: &'static str) -> Self {
+        Self::new(
+            PrivacyLane::Restricted,
+            PrivacySource::TaskRetention,
+            reason_code,
+        )
     }
 }
 
@@ -152,17 +172,39 @@ impl PrivacyPolicy {
             accept_external_signal,
             inspector,
             classifier,
+            task_restrictions: None,
         })
+    }
+
+    pub(crate) fn with_task_retention(mut self) -> Self {
+        self.task_restrictions = Some(TaskRestrictions::default());
+        self
     }
 
     pub(crate) async fn decide(
         &self,
         request: &Request,
     ) -> Result<PrivacyDecision, LlmClientError> {
+        if has_external_restriction(request) && !self.accept_external_signal {
+            return Err(external_signal_not_accepted());
+        }
+        let Some(tasks) = &self.task_restrictions else {
+            return self.assess(request).await;
+        };
+        let task_id = match task_id(request) {
+            Ok(task_id) => task_id,
+            Err(reason_code) => return Ok(PrivacyDecision::task_restriction(reason_code)),
+        };
+        if let Some(decision) = tasks.restriction(task_id) {
+            return Ok(decision);
+        }
+
+        let decision = self.assess(request).await?;
+        Ok(tasks.retain(task_id, decision))
+    }
+
+    async fn assess(&self, request: &Request) -> Result<PrivacyDecision, LlmClientError> {
         if has_external_restriction(request) {
-            if !self.accept_external_signal {
-                return Err(external_signal_not_accepted());
-            }
             return Ok(PrivacyDecision::new(
                 PrivacyLane::Restricted,
                 PrivacySource::ExternalSignal,
@@ -193,6 +235,48 @@ impl PrivacyPolicy {
             Some(classifier) => classifier.assess(request).await,
             None => PrivacyDecision::all_clear(),
         })
+    }
+}
+
+fn task_id(request: &Request) -> Result<&str, &'static str> {
+    let Some(task_id) = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.task_id.as_deref())
+    else {
+        return Err("missing_task_id");
+    };
+    if task_id.is_empty() || task_id.trim() != task_id || task_id.len() > MAX_TASK_ID_BYTES {
+        return Err("invalid_task_id");
+    }
+    Ok(task_id)
+}
+
+impl TaskRestrictions {
+    fn restriction(&self, task_id: &str) -> Option<PrivacyDecision> {
+        let restricted = self.restricted.lock();
+        if restricted.contains(task_id) {
+            Some(PrivacyDecision::task_restriction("retained_restriction"))
+        } else if restricted.len() >= MAX_RESTRICTED_TASKS {
+            Some(PrivacyDecision::task_restriction("capacity_exhausted"))
+        } else {
+            None
+        }
+    }
+
+    fn retain(&self, task_id: &str, decision: PrivacyDecision) -> PrivacyDecision {
+        // Recheck because another request may restrict the task while assessment awaits.
+        let mut restricted = self.restricted.lock();
+        if restricted.contains(task_id) {
+            return PrivacyDecision::task_restriction("retained_restriction");
+        }
+        if restricted.len() >= MAX_RESTRICTED_TASKS {
+            return PrivacyDecision::task_restriction("capacity_exhausted");
+        }
+        if matches!(decision.lane, PrivacyLane::Restricted) {
+            restricted.insert(task_id.to_string());
+        }
+        decision
     }
 }
 
@@ -243,6 +327,7 @@ mod tests {
         assert!(
             PrivacyPolicy::new(false, None, None)
                 .expect("empty detector configuration should compile")
+                .with_task_retention()
                 .decide(&request)
                 .await
                 .is_err()
@@ -339,5 +424,19 @@ mod tests {
             Value::String("responses state".to_string()),
         );
         assert!(validate_mixed_request(&untagged).is_err());
+    }
+
+    #[test]
+    fn task_retention_rechecks_state_and_capacity() {
+        let tasks = TaskRestrictions::default();
+        tasks
+            .restricted
+            .lock()
+            .extend((0..MAX_RESTRICTED_TASKS).map(|id| id.to_string()));
+
+        let retained = tasks.retain("0", PrivacyDecision::all_clear());
+        let exhausted = tasks.retain("another-task", PrivacyDecision::all_clear());
+        assert_eq!(retained.reason_code, "retained_restriction");
+        assert_eq!(exhausted.reason_code, "capacity_exhausted");
     }
 }

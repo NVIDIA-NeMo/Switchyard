@@ -85,10 +85,20 @@ struct RouteConfig {
 struct PrivacyConfig {
     restricted_targets: BTreeMap<String, String>,
     restricted_decision_target: Option<String>,
+    #[serde(default)]
+    restriction_scope: RestrictionScope,
     deterministic: Option<DeterministicConfig>,
     classifier: Option<PrivacyClassifierConfig>,
     #[serde(default)]
     accept_external_signal: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RestrictionScope {
+    #[default]
+    Request,
+    Task,
 }
 
 #[derive(Debug, Deserialize)]
@@ -411,6 +421,16 @@ impl DeploymentConfig {
             clients,
             decision_clients,
         )?;
+        let mut policy = PrivacyPolicy::new(config.accept_external_signal, detectors, classifier)
+            .map_err(|error| {
+            RunnerError::configuration_source(
+                format!("route {route_name} privacy detectors could not be compiled"),
+                error,
+            )
+        })?;
+        if matches!(config.restriction_scope, RestrictionScope::Task) {
+            policy = policy.with_task_retention();
+        }
         let (restricted, _) = self.build_lane(
             route_name,
             route,
@@ -418,16 +438,7 @@ impl DeploymentConfig {
             restricted_decision,
             clients,
         )?;
-        Ok(Some(BuiltPrivacy {
-            policy: PrivacyPolicy::new(config.accept_external_signal, detectors, classifier)
-                .map_err(|error| {
-                    RunnerError::configuration_source(
-                        format!("route {route_name} privacy detectors could not be compiled"),
-                        error,
-                    )
-                })?,
-            restricted,
-        }))
+        Ok(Some(BuiltPrivacy { policy, restricted }))
     }
 
     fn build_privacy_classifier(
@@ -1401,6 +1412,14 @@ detectors = ["bearer_token"]
         )
     }
 
+    fn task_retained_privacy_config() -> String {
+        deterministic_privacy_config().replace(
+            "[routes.passthrough.privacy.restricted_targets]",
+            "[routes.passthrough.privacy]\nrestriction_scope = \"task\"\n\n\
+             [routes.passthrough.privacy.restricted_targets]",
+        )
+    }
+
     fn semantic_privacy_config() -> String {
         format!(
             r#"{VALID_CONFIG}
@@ -1545,6 +1564,46 @@ clear_threshold = 0.9
 
         let empty = configured.replace("detectors = [\"bearer_token\"]", "detectors = []");
         assert!(error_message(&empty).contains("must configure at least one detector"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
+        let runner = Runner::from_toml(&task_retained_privacy_config())?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("privacy route should exist");
+        let request = |task_id: Option<&str>, text: &str| {
+            let mut request = Request::default();
+            request
+                .llm_request
+                .messages
+                .push(Message::text(Role::User, text));
+            request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
+            request
+        };
+
+        for (task_id, text, expected) in [
+            (Some("task-a"), "ordinary turn", "weak/model"),
+            (
+                Some("task-a"),
+                "Authorization: Bearer abcdefghijklmnop",
+                "strong/model",
+            ),
+            (Some("task-a"), "later clear turn", "strong/model"),
+            (Some("task-b"), "independent clear task", "weak/model"),
+            (None, "unkeyed task", "strong/model"),
+            (Some(" "), "invalid task id", "strong/model"),
+        ] {
+            assert_eq!(
+                route
+                    .decide(request(task_id, text))
+                    .await?
+                    .selected_model_id()?,
+                expected,
+                "{text}"
+            );
+        }
         Ok(())
     }
 
