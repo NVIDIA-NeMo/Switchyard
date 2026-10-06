@@ -949,6 +949,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#session-capacity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session capacity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#responses-api-history-requirement" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1441,6 +1452,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#session-capacity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session capacity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#responses-api-history-requirement" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1511,6 +1533,18 @@ make a classifier call.</p>
 The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.</p>
+<h2 id="session-capacity">Session capacity<a class="headerlink" href="#session-capacity" title="Permanent link">&para;</a></h2>
+<p>Each router instance retains up to 4,096 executing identities in memory. Root
+requests use the session ID. Subagent requests use the session ID and agent ID.
+Once retained, an identity stays on the efficient target after history compaction
+until a request marks it with <code>session_final: true</code> or the router restarts.</p>
+<p>At capacity, a new identity's handoff returns an error before calling a model.
+Existing identities keep their execution phase. Mark an existing identity's last
+request with <code>session_final: true</code> to free its slot, then retry the handoff with
+the mutation history intact. The server accepts this flag through the
+<code>x-switchyard-session-final: true</code> header.</p>
+<p>A handoff marked final needs no saved slot and can still run at capacity.
+Requests that are still planning or have no stable identity also use no slots.</p>
 <h2 id="responses-api-history-requirement">Responses API history requirement<a class="headerlink" href="#responses-api-history-requirement" title="Permanent link">&para;</a></h2>
 <p>Plan/execute needs the conversation history to detect edits and hand the task to
 the executor. Continuing with only <code>previous_response_id</code> or a provider
