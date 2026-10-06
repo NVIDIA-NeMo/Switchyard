@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use switchyard_protocol::{Category, ContentBlock, Request};
 
 use super::util::prompts::{append_note, drop_exact_replay, prepend_system_prompt};
-use super::util::tool_signals::ToolSignals;
+use super::util::tool_signals::{ToolSemantics, ToolSignals};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::{LibsyError, Result, RoutingOutcome};
 
@@ -23,6 +23,8 @@ const MAX_EXECUTING_SESSIONS: usize = 4_096;
 /// Configuration for [`PlanExecute`].
 #[derive(Clone, Debug)]
 pub struct PlanExecuteConfig {
+    /// Additional tool names whose mutations trigger handoff.
+    pub tool_semantics: ToolSemantics,
     /// System instruction added until the first edit or write tool call.
     pub planning_prompt: String,
     /// Optional instruction appended to the handoff request.
@@ -34,6 +36,7 @@ pub struct PlanExecuteConfig {
 impl Default for PlanExecuteConfig {
     fn default() -> Self {
         Self {
+            tool_semantics: ToolSemantics::default(),
             planning_prompt: DEFAULT_PLANNING_PROMPT.trim().to_string(),
             handoff_prompt: None,
             planner_reasoning_as_text: false,
@@ -58,7 +61,7 @@ pub struct PlanExecute {
 impl PlanExecute {
     /// Creates a plan/execute router.
     ///
-    /// Returns an error when either configured prompt is blank.
+    /// Returns an error when a prompt is blank or tool semantics are invalid.
     pub fn new(config: PlanExecuteConfig) -> Result<Self> {
         if config.planning_prompt.trim().is_empty() {
             return Err(LibsyError::AlgorithmError {
@@ -74,6 +77,7 @@ impl PlanExecute {
                 message: "handoff_prompt must not be empty".to_string(),
             });
         }
+        config.tool_semantics.validate()?;
         Ok(Self {
             config,
             executing_sessions: Mutex::new(HashSet::new()),
@@ -81,7 +85,8 @@ impl PlanExecute {
     }
 
     fn phase(&self, request: &Request) -> Result<Phase> {
-        let signals = ToolSignals::from_request(request, None);
+        let signals =
+            ToolSignals::from_request_with_semantics(request, None, &self.config.tool_semantics);
         let mutation_seen = signals.edit_count > 0 || signals.write_count > 0;
         let Some(identity) = RoutingIdentity::from_request(request) else {
             return Ok(if mutation_seen {
