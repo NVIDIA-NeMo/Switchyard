@@ -1662,7 +1662,7 @@ inside the TOML file. Their <code>id</code> fields have different external meani
 putting that ID in its <code>model</code> field. The native Rust server does not discover
 or register additional provider models automatically. Each entry reports the route's
 declared <code>context_window</code> as its top-level <code>context_length</code> field (see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3f9b696207f093d576f51f430ee07011a97082e8/crates/switchyard-server/README.md#model-discovery">model discovery</a>). The
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/edd251d7482f0eba5f35c8be3f27373a08f36233/crates/switchyard-server/README.md#model-discovery">model discovery</a>). The
 response includes an empty Codex <code>models</code> array so Codex keeps its own catalog and instructions. Select route
 aliases explicitly; they do not appear automatically in Codex's model picker.</p>
 <h2 id="routing-algorithms">Routing Algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h2>
@@ -1717,8 +1717,8 @@ selected target uses a different upstream protocol.</p>
 <li><a href="../cli_reference/">Server CLI Reference</a>: standalone server arguments.</li>
 <li><a href="../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a>: configure classifier routing.</li>
 <li><a href="../architecture/">Architecture</a>: follow a request through the server and Rust crates.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3f9b696207f093d576f51f430ee07011a97082e8/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3f9b696207f093d576f51f430ee07011a97082e8/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/edd251d7482f0eba5f35c8be3f27373a08f36233/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/edd251d7482f0eba5f35c8be3f27373a08f36233/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol documentation.</li>
 </ul>
 
