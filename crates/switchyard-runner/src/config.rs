@@ -84,6 +84,7 @@ struct RouteConfig {
 #[serde(deny_unknown_fields)]
 struct PrivacyConfig {
     restricted_targets: BTreeMap<String, String>,
+    restricted_decision_target: Option<String>,
     #[serde(default)]
     accept_external_signal: bool,
 }
@@ -287,7 +288,14 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let privacy = self.build_privacy(route_name, config, &standard_targets, &clients)?;
+            let privacy = self.build_privacy(
+                route_name,
+                config,
+                &standard_targets,
+                decision,
+                &clients,
+                &decision_clients,
+            )?;
             let (standard, caller_auth) =
                 self.build_lane(route_name, config, &standard_targets, decision, &clients)?;
             let mut route = Route::from_lane(standard, caller_auth, capabilities);
@@ -307,16 +315,13 @@ impl DeploymentConfig {
         route_name: &str,
         route: &RouteConfig,
         standard: &LaneTargets<'_>,
+        standard_decision: Option<ResolvedDecisionTarget<'_>>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<Option<BuiltPrivacy>> {
         let Some(config) = &route.privacy else {
             return Ok(None);
         };
-        if route.algorithm.decision_judge().is_some() {
-            return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot combine privacy with a typed decision judge"
-            )));
-        }
         if !route.algorithm.supports_privacy_lanes() {
             return Err(RunnerError::configuration(format!(
                 "route {route_name} cannot use privacy with prefill_router"
@@ -329,13 +334,37 @@ impl DeploymentConfig {
         }
         let restricted_targets =
             self.resolve_lane_targets(route_name, route, Some(&config.restricted_targets))?;
+        let restricted_decision = match (
+            standard_decision,
+            config.restricted_decision_target.as_deref(),
+        ) {
+            (Some(_), Some(target)) => {
+                Some(self.resolve_decision_target(route_name, target, decision_clients)?)
+            }
+            (Some(_), None) => {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} privacy must configure restricted_decision_target"
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} privacy cannot configure restricted_decision_target without a typed decision judge"
+                )));
+            }
+            (None, None) => None,
+        };
         if self.uses_forward_auth(standard) || self.uses_forward_auth(&restricted_targets) {
             return Err(RunnerError::configuration(format!(
                 "route {route_name} cannot use privacy with forward_auth"
             )));
         }
-        let (restricted, _) =
-            self.build_lane(route_name, route, &restricted_targets, None, clients)?;
+        let (restricted, _) = self.build_lane(
+            route_name,
+            route,
+            &restricted_targets,
+            restricted_decision,
+            clients,
+        )?;
         Ok(Some(BuiltPrivacy {
             policy: PrivacyPolicy::new(config.accept_external_signal),
             restricted,
@@ -1163,6 +1192,48 @@ capable_target = "strong"
 efficient_target = "weak"
 "#;
 
+    fn decision_privacy_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[decision_clients.privacy]
+format = "system_one"
+endpoint = "https://example.test/v1/systemone"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.standard]
+id = "decision/standard"
+decision_client = "privacy"
+
+[decision_targets.restricted]
+id = "decision/restricted"
+decision_client = "privacy"
+
+[routes.typed]
+id = "switchyard/typed"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "standard"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.typed.decision]
+cutoff = 0.4
+candidates = {{ a = "strong", b = "weak" }}
+evidence = {{}}
+
+[routes.typed.privacy]
+accept_external_signal = true
+restricted_decision_target = "restricted"
+
+[routes.typed.privacy.restricted_targets]
+strong = "strong"
+weak = "weak"
+"#
+        )
+    }
+
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
@@ -1199,6 +1270,36 @@ efficient_target = "weak"
             [ModelId::from("weak/model")]
         );
         assert!(runner.route("switchyard/passthrough").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn privacy_requires_a_decision_target_for_each_lane() -> RunnerResult<()> {
+        let configured = decision_privacy_config();
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/typed")
+            .expect("typed privacy route should exist");
+        assert_eq!(
+            route.models().models_for(&Category::Judge),
+            [ModelId::from("decision/standard")]
+        );
+
+        for (config, expected) in [
+            (
+                configured.replace("restricted_decision_target = \"restricted\"\n", ""),
+                "must configure restricted_decision_target",
+            ),
+            (
+                configured.replace(
+                    "restricted_decision_target = \"restricted\"",
+                    "restricted_decision_target = \"missing\"",
+                ),
+                "requires unknown decision target missing",
+            ),
+        ] {
+            assert!(error_message(&config).contains(expected));
+        }
         Ok(())
     }
 
