@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::DecisionTarget;
 use crate::privacy::{
-    PrivacyLane, PrivacyPolicy, external_signal_not_accepted, has_external_restriction,
-    record_selected_lane, selected_lane, validate_mixed_request,
+    PrivacyDecision, PrivacyLane, PrivacyPolicy, external_signal_not_accepted,
+    has_external_restriction, record_selected_lane, selected_lane, validate_mixed_request,
 };
 
 /// Capabilities declared for one route.
@@ -209,7 +209,7 @@ impl Route {
     async fn select_lane(
         &self,
         request: &Request,
-    ) -> Result<(&ExecutionLane, Option<PrivacyLane>), RunnerError> {
+    ) -> Result<(&ExecutionLane, Option<PrivacyDecision>), RunnerError> {
         let Some(privacy) = &self.privacy else {
             if has_external_restriction(request) {
                 return Err(external_signal_not_accepted().into());
@@ -223,18 +223,18 @@ impl Route {
         tracing::info!(
             switchyard.route = route,
             switchyard.algorithm = algorithm,
-            privacy.lane = decision.lane.as_str(),
-            privacy.source = decision.source.as_str(),
-            privacy.reason_code = decision.reason_code,
-            privacy.clear_score = decision.clear_score,
-            privacy.clear_threshold = decision.clear_threshold,
+            privacy.lane = decision.lane(),
+            privacy.source = decision.source(),
+            privacy.reason_code = decision.reason_code(),
+            privacy.clear_score = decision.clear_score(),
+            privacy.clear_threshold = decision.clear_threshold(),
             "privacy lane selected"
         );
-        let lane = match decision.lane {
+        let lane = match decision.selected_lane() {
             PrivacyLane::Standard => &self.lane,
             PrivacyLane::Restricted => &privacy.restricted,
         };
-        Ok((lane, Some(decision.lane)))
+        Ok((lane, Some(decision)))
     }
 
     /// Returns the configured libsy algorithm name.
@@ -290,7 +290,21 @@ impl Route {
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
-        let (lane, _) = self.select_lane(&request).await?;
+        self.execute_with_privacy_observer(request, observer, |_| {})
+            .await
+    }
+
+    /// Executes the route and reports a configured privacy decision before its lane runs.
+    pub async fn execute_with_privacy_observer(
+        &self,
+        request: Request,
+        observer: Option<RunObserver>,
+        on_privacy_decision: impl FnOnce(&PrivacyDecision) + Send,
+    ) -> Result<RunOutput, RunnerError> {
+        let (lane, privacy_decision) = self.select_lane(&request).await?;
+        if let Some(decision) = &privacy_decision {
+            on_privacy_decision(decision);
+        }
         let (selected_model, response) = switchyard_llm_client::run(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -307,7 +321,7 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        let (lane, selected_privacy_lane) = self.select_lane(&request).await?;
+        let (lane, privacy_decision) = self.select_lane(&request).await?;
         let mut outcome = switchyard_llm_client::decide(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -316,8 +330,8 @@ impl Route {
         )
         .await
         .map_err(RunnerError::from)?;
-        if let Some(selected_privacy_lane) = selected_privacy_lane {
-            record_selected_lane(&mut outcome.request, selected_privacy_lane);
+        if let Some(decision) = privacy_decision {
+            record_selected_lane(&mut outcome.request, decision.selected_lane());
         }
         Ok(outcome)
     }
@@ -530,10 +544,17 @@ mod tests {
             restricted,
         );
 
+        let mut observed = None;
         let output = route
-            .execute(restricted_request(), None)
+            .execute_with_privacy_observer(restricted_request(), None, |decision| {
+                observed = Some((decision.lane(), decision.source(), decision.reason_code()));
+            })
             .await
             .expect("restricted fallback should answer");
+        assert_eq!(
+            observed,
+            Some(("restricted", "external_signal", "restricted"))
+        );
         assert_eq!(output.selected_model, "restricted-primary");
         assert_eq!(
             output.response.served_model().map(ModelId::as_str),

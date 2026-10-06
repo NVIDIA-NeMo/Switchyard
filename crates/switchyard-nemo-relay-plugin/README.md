@@ -235,7 +235,7 @@ retains ownership of the outer LLM lifecycle.
 When Relay is configured with OTLP logs and metrics exporters, the plugin emits
 typed telemetry through Relay's native plugin runtime:
 
-- Routing request, decision, and overhead marks are Info logs.
+- Routing request, privacy decision, routing decision, and overhead marks are Info logs.
 - Per-model call marks are Debug logs with `call_role`, outcome, and latency,
   but no token usage. Streaming marks cover stream creation; later failures are
   reported separately.
@@ -266,6 +266,7 @@ meaning requires a new schema version.
 | Mark | Data fields |
 | --- | --- |
 | `switchyard.routing.requested` | `algorithm` |
+| `switchyard.privacy.decision` | `lane`, `source`, `reason_code`, optional `clear_score`, and optional `clear_threshold` |
 | `switchyard.routing.llm_call` | `call_index`, `selected_model`, `call_role`, `outcome`, `latency_ms` |
 | `switchyard.routing.overhead` | `latency_ms` |
 | `switchyard.routing.decision` | `algorithm`, optional `outcome_id`, `selected_model`, nullable `served_model`, nullable `fallback_used`, and optional `evidence` |
@@ -276,6 +277,10 @@ meaning requires a new schema version.
 `evidence` is an object containing the supported string fields `source`, `verdict`,
 `trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
 String values longer than 64 bytes are omitted and should be stable, non-sensitive labels.
+After successful lane selection, privacy-enabled routes record one privacy decision mark. The
+mark is retained if the selected lane later fails. `clear_score` is the classifier probability
+assigned to `no_sensitive_content`; `clear_threshold` is the minimum score required for the
+standard lane. Routes without privacy configuration do not emit this mark.
 
 ## Failure policy
 

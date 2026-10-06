@@ -68,12 +68,13 @@ pub(crate) fn selected_lane(request: &Request) -> Option<PrivacyLane> {
         .and_then(|lane| lane.parse().ok())
 }
 
-pub(crate) struct PrivacyDecision {
-    pub(crate) lane: PrivacyLane,
-    pub(crate) source: PrivacySource,
-    pub(crate) reason_code: &'static str,
-    pub(crate) clear_score: Option<f64>,
-    pub(crate) clear_threshold: Option<f64>,
+/// Bounded explanation of the privacy lane selected for one request.
+pub struct PrivacyDecision {
+    lane: PrivacyLane,
+    source: PrivacySource,
+    reason_code: &'static str,
+    clear_score: Option<f64>,
+    clear_threshold: Option<f64>,
 }
 
 #[derive(Clone, Copy, IntoStaticStr)]
@@ -93,6 +94,35 @@ impl PrivacySource {
 }
 
 impl PrivacyDecision {
+    /// Returns the selected execution lane.
+    pub fn lane(&self) -> &'static str {
+        self.lane.as_str()
+    }
+
+    /// Returns the policy component that selected the lane.
+    pub fn source(&self) -> &'static str {
+        self.source.as_str()
+    }
+
+    /// Returns a bounded reason for the decision.
+    pub const fn reason_code(&self) -> &'static str {
+        self.reason_code
+    }
+
+    /// Returns the classifier probability assigned to clear content, when available.
+    pub const fn clear_score(&self) -> Option<f64> {
+        self.clear_score
+    }
+
+    /// Returns the minimum clear score required for the standard lane, when applicable.
+    pub const fn clear_threshold(&self) -> Option<f64> {
+        self.clear_threshold
+    }
+
+    pub(crate) const fn selected_lane(&self) -> PrivacyLane {
+        self.lane
+    }
+
     const fn new(lane: PrivacyLane, source: PrivacySource, reason_code: &'static str) -> Self {
         Self {
             lane,
