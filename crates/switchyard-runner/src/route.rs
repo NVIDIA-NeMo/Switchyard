@@ -206,7 +206,7 @@ impl Route {
         self
     }
 
-    fn select_lane(
+    async fn select_lane(
         &self,
         request: &Request,
     ) -> Result<(&ExecutionLane, Option<PrivacyLane>), RunnerError> {
@@ -217,11 +217,13 @@ impl Route {
             return Ok((&self.lane, None));
         };
         validate_mixed_request(request)?;
-        let decision = privacy.policy.decide(request)?;
+        let decision = privacy.policy.decide(request).await?;
         tracing::info!(
             privacy.lane = decision.lane.as_str(),
             privacy.source = decision.source.as_str(),
             privacy.reason_code = decision.reason_code,
+            privacy.clear_score = decision.clear_score,
+            privacy.clear_threshold = decision.clear_threshold,
             "privacy lane selected"
         );
         let lane = match decision.lane {
@@ -284,7 +286,7 @@ impl Route {
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
-        let (lane, _) = self.select_lane(&request)?;
+        let (lane, _) = self.select_lane(&request).await?;
         let (selected_model, response) = switchyard_llm_client::run(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -301,7 +303,7 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        let (lane, selected_privacy_lane) = self.select_lane(&request)?;
+        let (lane, selected_privacy_lane) = self.select_lane(&request).await?;
         let mut outcome = switchyard_llm_client::decide(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -322,7 +324,7 @@ impl Route {
         request: Request,
         operation: AuxiliaryOperation,
     ) -> Result<Value, RunnerError> {
-        let (lane, _) = self.select_lane(&request)?;
+        let (lane, _) = self.select_lane(&request).await?;
         let target = match operation {
             AuxiliaryOperation::AnthropicCountTokens => &lane.anthropic_auxiliary_target,
             AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
@@ -341,15 +343,21 @@ impl Route {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use libsy::{Driver, Passthrough};
     use reqwest::StatusCode;
-    use switchyard_protocol::{Category, LlmResponse, RoutedLlmClient, text_response};
+    use switchyard_protocol::{
+        Category, DecisionAnswer, DecisionRequest, DecisionResponse, DecisionValue, LlmResponse,
+        Message, Probability, Role, RoutedDecisionClient, RoutedLlmClient, Usage, text_response,
+    };
 
     use super::*;
-    use crate::privacy::mark_privacy_restricted;
+    use crate::privacy::{
+        DeterministicDetector, SemanticPrivacyClassifier, mark_privacy_restricted,
+    };
 
     struct JudgeThenRoute;
 
@@ -386,6 +394,10 @@ mod tests {
         calls: Arc<Mutex<Vec<ModelId>>>,
     }
 
+    struct VerdictClient {
+        calls: Arc<AtomicUsize>,
+    }
+
     #[async_trait::async_trait]
     impl RoutedLlmClient for RecordingClient {
         async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
@@ -405,6 +417,44 @@ mod tests {
                 llm_response: LlmResponse::Agg(text_response(Some(model.to_string()), "ok")),
                 metadata: None,
                 upstream_headers: Default::default(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RoutedDecisionClient for VerdictClient {
+        async fn call(
+            &self,
+            _request: DecisionRequest,
+        ) -> Result<DecisionResponse, LlmClientError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let mut probabilities = [
+                "no_sensitive_content",
+                "personal_data",
+                "credentials",
+                "confidential_data",
+                "regulated_data",
+                "uncertain",
+            ]
+            .into_iter()
+            .map(|id| (id.into(), Probability(0.0)))
+            .collect::<BTreeMap<_, _>>();
+            probabilities.insert("no_sensitive_content".into(), Probability(0.95));
+            probabilities.insert("uncertain".into(), Probability(0.05));
+            Ok(DecisionResponse {
+                id: None,
+                model: None,
+                answers: BTreeMap::from([(
+                    "privacy".into(),
+                    DecisionAnswer {
+                        value: DecisionValue::Choice {
+                            selected: "no_sensitive_content".into(),
+                            probabilities: Some(probabilities),
+                        },
+                        provider_confidence: None,
+                    },
+                )]),
+                usage: Usage::default(),
             })
         }
     }
@@ -471,7 +521,8 @@ mod tests {
             "restricted-auxiliary",
         );
         let route = Route::from_lane(standard, None, ModelCapabilities::default()).with_privacy(
-            PrivacyPolicy::new(true, None).expect("empty detector configuration should compile"),
+            PrivacyPolicy::new(true, None, None)
+                .expect("empty detector configuration should compile"),
             restricted,
         );
 
@@ -504,5 +555,74 @@ mod tests {
             error.to_string().contains("restricted-auxiliary"),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn semantic_privacy_runs_after_deterministic_checks() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(RecordingClient {
+            calls: Arc::clone(&calls),
+        });
+        let standard = lane(
+            Arc::new(Passthrough),
+            Arc::clone(&client),
+            RuntimeModels::new(HashMap::from([(
+                Category::Any,
+                vec!["standard-primary".into()],
+            )])),
+            "standard-auxiliary",
+        );
+        let restricted = lane(
+            Arc::new(Passthrough),
+            client,
+            RuntimeModels::new(HashMap::from([(
+                Category::Any,
+                vec!["restricted-primary".into()],
+            )])),
+            "restricted-auxiliary",
+        );
+        let classifier_calls = Arc::new(AtomicUsize::new(0));
+        let classifier = SemanticPrivacyClassifier::new(
+            "privacy-judge".into(),
+            Arc::new(VerdictClient {
+                calls: Arc::clone(&classifier_calls),
+            }),
+            0.9,
+        );
+        let route = Route::from_lane(standard, None, ModelCapabilities::default()).with_privacy(
+            PrivacyPolicy::new(
+                true,
+                Some(vec![DeterministicDetector::BearerToken]),
+                Some(classifier),
+            )
+            .expect("static detector configuration should compile"),
+            restricted,
+        );
+
+        assert_eq!(
+            route
+                .decide(Request::default())
+                .await
+                .expect("classifier verdict should select a lane")
+                .selected_model_id()
+                .expect("selected model"),
+            "standard-primary"
+        );
+
+        let mut sensitive = Request::default();
+        sensitive.llm_request.messages.push(Message::text(
+            Role::User,
+            "Authorization: Bearer abcdefghijklmnop",
+        ));
+        assert_eq!(
+            route
+                .decide(sensitive)
+                .await
+                .expect("deterministic restriction")
+                .selected_model_id()
+                .expect("selected model"),
+            "restricted-primary"
+        );
+        assert_eq!(classifier_calls.load(Ordering::Relaxed), 1);
     }
 }

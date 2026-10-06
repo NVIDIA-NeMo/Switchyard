@@ -74,8 +74,15 @@ pub(super) enum Assessment {
 }
 
 pub(super) struct Inspector {
-    patterns: RegexSet,
-    detectors: Vec<DeterministicDetector>,
+    rules: InspectionRules,
+}
+
+enum InspectionRules {
+    Structural,
+    Detect {
+        patterns: RegexSet,
+        detectors: Vec<DeterministicDetector>,
+    },
 }
 
 impl Inspector {
@@ -87,39 +94,54 @@ impl Inspector {
                 .map(DeterministicDetector::pattern),
         )?;
         Ok(Self {
-            patterns,
-            detectors,
+            rules: InspectionRules::Detect {
+                patterns,
+                detectors,
+            },
         })
+    }
+
+    pub(super) fn structural() -> Self {
+        Self {
+            rules: InspectionRules::Structural,
+        }
     }
 
     pub(super) fn inspect(&self, request: &Request) -> Assessment {
         let mut scan = Scan {
             bytes: 0,
             steps: 0,
-            text: String::new(),
+            text: matches!(&self.rules, InspectionRules::Detect { .. }).then(String::new),
         };
         match scan.request(&request.llm_request) {
             Ok(()) => self
-                .match_text(&scan.text)
+                .match_text(scan.text.as_deref())
                 .map(Assessment::Restricted)
                 .unwrap_or(Assessment::Clear),
             Err(assessment) => assessment,
         }
     }
 
-    fn match_text(&self, text: &str) -> Option<&'static str> {
-        self.patterns
-            .matches(text)
+    fn match_text(&self, text: Option<&str>) -> Option<&'static str> {
+        let InspectionRules::Detect {
+            patterns,
+            detectors,
+        } = &self.rules
+        else {
+            return None;
+        };
+        patterns
+            .matches(text?)
             .iter()
             .next()
-            .map(|index| self.detectors[index].as_str())
+            .map(|index| detectors[index].as_str())
     }
 }
 
 struct Scan {
     bytes: usize,
     steps: usize,
-    text: String,
+    text: Option<String>,
 }
 
 impl Scan {
@@ -276,12 +298,14 @@ impl Scan {
         if self.bytes > MAX_SCAN_BYTES {
             return Err(Assessment::Indeterminate("scan_limit"));
         }
-        if !continues_text && !self.text.is_empty() {
-            // Keep unrelated values from forming one match across a structural boundary.
-            self.text.push_str(STRUCTURAL_SEPARATOR);
+        if let Some(scanned) = &mut self.text {
+            if !continues_text && !scanned.is_empty() {
+                // Keep unrelated values from forming one match across a structural boundary.
+                scanned.push_str(STRUCTURAL_SEPARATOR);
+            }
+            // Adjacent text blocks stay contiguous so splitting one value cannot bypass a rule.
+            scanned.push_str(text);
         }
-        // Adjacent text blocks stay contiguous so splitting one value cannot bypass a rule.
-        self.text.push_str(text);
         Ok(())
     }
 

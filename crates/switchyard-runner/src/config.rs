@@ -19,7 +19,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
-use crate::privacy::{DeterministicDetector, PrivacyPolicy};
+use crate::privacy::{DeterministicDetector, PrivacyPolicy, SemanticPrivacyClassifier};
 use crate::route::ExecutionLane;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -86,8 +86,16 @@ struct PrivacyConfig {
     restricted_targets: BTreeMap<String, String>,
     restricted_decision_target: Option<String>,
     deterministic: Option<DeterministicConfig>,
+    classifier: Option<PrivacyClassifierConfig>,
     #[serde(default)]
     accept_external_signal: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyClassifierConfig {
+    target: String,
+    clear_threshold: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -346,7 +354,10 @@ impl DeploymentConfig {
                 "route {route_name} cannot use privacy with prefill_router"
             )));
         }
-        if !config.accept_external_signal && config.deterministic.is_none() {
+        if !config.accept_external_signal
+            && config.deterministic.is_none()
+            && config.classifier.is_none()
+        {
             return Err(RunnerError::configuration(format!(
                 "route {route_name} privacy must configure at least one request input"
             )));
@@ -382,6 +393,12 @@ impl DeploymentConfig {
                 "route {route_name} cannot use privacy with forward_auth"
             )));
         }
+        let classifier = self.build_privacy_classifier(
+            route_name,
+            config.classifier.as_ref(),
+            standard_decision,
+            decision_clients,
+        )?;
         let (restricted, _) = self.build_lane(
             route_name,
             route,
@@ -390,16 +407,48 @@ impl DeploymentConfig {
             clients,
         )?;
         Ok(Some(BuiltPrivacy {
-            policy: PrivacyPolicy::new(config.accept_external_signal, detectors).map_err(
-                |error| {
+            policy: PrivacyPolicy::new(config.accept_external_signal, detectors, classifier)
+                .map_err(|error| {
                     RunnerError::configuration_source(
                         format!("route {route_name} privacy detectors could not be compiled"),
                         error,
                     )
-                },
-            )?,
+                })?,
             restricted,
         }))
+    }
+
+    fn build_privacy_classifier(
+        &self,
+        route_name: &str,
+        classifier: Option<&PrivacyClassifierConfig>,
+        standard_decision: Option<ResolvedDecisionTarget<'_>>,
+        decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
+    ) -> RunnerResult<Option<SemanticPrivacyClassifier>> {
+        let Some(classifier) = classifier else {
+            return Ok(None);
+        };
+        if !(0.0..=1.0).contains(&classifier.clear_threshold) {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy classifier clear_threshold must be between 0 and 1, got {}",
+                classifier.clear_threshold
+            )));
+        }
+        let target =
+            self.resolve_decision_target(route_name, &classifier.target, decision_clients)?;
+        if standard_decision.is_some_and(|standard| {
+            standard.model == target.model && Arc::ptr_eq(standard.client, target.client)
+        }) {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy classifier target {} overlaps the standard execution lane",
+                classifier.target
+            )));
+        }
+        Ok(Some(SemanticPrivacyClassifier::new(
+            target.model.clone(),
+            Arc::clone(target.client),
+            classifier.clear_threshold,
+        )))
     }
 
     fn uses_forward_auth(&self, targets: &LaneTargets<'_>) -> bool {
@@ -1279,6 +1328,30 @@ detectors = ["bearer_token"]
         )
     }
 
+    fn semantic_privacy_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[decision_clients.privacy]
+format = "system_one"
+endpoint = "https://example.test/v1/systemone"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.privacy_judge]
+id = "privacy/model"
+decision_client = "privacy"
+
+[routes.passthrough.privacy.restricted_targets]
+weak = "strong"
+
+[routes.passthrough.privacy.classifier]
+target = "privacy_judge"
+clear_threshold = 0.9
+"#
+        )
+    }
+
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
@@ -1375,6 +1448,34 @@ detectors = ["bearer_token"]
 
         let empty = configured.replace("detectors = [\"bearer_token\"]", "detectors = []");
         assert!(error_message(&empty).contains("must configure at least one detector"));
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_privacy_classifier_config_is_bounded_and_isolated() -> RunnerResult<()> {
+        let configured = semantic_privacy_config();
+        Runner::from_toml(&configured)?;
+
+        for (invalid, expected) in [
+            (
+                configured.replace("target = \"privacy_judge\"", "target = \"missing\""),
+                "requires unknown decision target missing",
+            ),
+            (
+                configured.replace("clear_threshold = 0.9", "clear_threshold = 1.1"),
+                "clear_threshold must be between 0 and 1",
+            ),
+            (
+                format!(
+                    "{}\n[routes.typed.privacy.classifier]\n\
+                     target = \"standard\"\nclear_threshold = 0.9\n",
+                    decision_privacy_config()
+                ),
+                "overlaps the standard execution lane",
+            ),
+        ] {
+            assert!(error_message(&invalid).contains(expected));
+        }
         Ok(())
     }
 
