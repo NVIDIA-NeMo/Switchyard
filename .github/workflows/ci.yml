@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  SWITCHYARD_TELEMETRY_ENABLED: "off"
+  SWITCHYARD_PRODUCT_TELEMETRY: "off"
 
 permissions:
   contents: read

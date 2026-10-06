@@ -183,7 +183,7 @@ impl Worker {
             }
         };
         std::thread::Builder::new()
-            .name("switchyard-telemetry".into())
+            .name("switchyard-product-telemetry".into())
             .spawn(move || runtime.block_on(delivery))
             .map_err(|error| error.to_string())?;
         Ok(Self { sender, pending })
@@ -232,7 +232,7 @@ struct Telemetry {
 
 impl Telemetry {
     fn from_env(read: impl Fn(&str) -> Option<String>) -> Self {
-        let disabled = read("SWITCHYARD_TELEMETRY_ENABLED").is_some_and(|value| {
+        let disabled = read("SWITCHYARD_PRODUCT_TELEMETRY").is_some_and(|value| {
             ["0", "false", "no", "off"]
                 .iter()
                 .any(|disabled| value.trim().eq_ignore_ascii_case(disabled))
@@ -649,7 +649,7 @@ mod tests {
     fn opt_out_does_no_logging_or_client_initialization() {
         for disabled in ["0", "false", "no", "off", " FALSE ", "No", "OFF"] {
             let telemetry = configured(&[
-                ("SWITCHYARD_TELEMETRY_ENABLED", disabled),
+                ("SWITCHYARD_PRODUCT_TELEMETRY", disabled),
                 ("SWITCHYARD_TELEMETRY_ENDPOINT", "log"),
             ]);
             let logs = LogBuffer::default();
@@ -662,7 +662,7 @@ mod tests {
         }
         for enabled in ["1", "true", "yes", "on", ""] {
             assert!(matches!(
-                configured(&[("SWITCHYARD_TELEMETRY_ENABLED", enabled)]).destination,
+                configured(&[("SWITCHYARD_PRODUCT_TELEMETRY", enabled)]).destination,
                 Destination::Http(_)
             ));
         }
