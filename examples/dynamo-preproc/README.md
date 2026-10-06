@@ -43,7 +43,7 @@ docker push "$PREPROC_IMAGE"
 ```
 
 Set that image in Dynamo's Kustomization and follow its deployment instructions.
-The image uses published Switchyard SDK 0.3.0 crates and precompiled Envoy bindings;
+The image uses the workspace Switchyard crates and precompiled Envoy bindings;
 it uses the repository's shared lockfile and does not require a Dynamo checkout or a protobuf compiler.
 
 ## Configure routing

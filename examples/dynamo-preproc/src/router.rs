@@ -21,8 +21,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use protocol::ModelId;
 use serde_json::value::{RawValue, to_raw_value};
+use switchyard_protocol::ModelId;
 use switchyard_runner::Runner;
 
 use crate::request;

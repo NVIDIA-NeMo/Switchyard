@@ -22,22 +22,22 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-switchyard-runner = "=0.3.0"
-protocol = { package = "switchyard-protocol", version = "=0.3.0" }
-switchyard-translation = "=0.3.0"
+switchyard-runner.workspace = true
+switchyard-protocol.workspace = true
+switchyard-translation.workspace = true
 anyhow = "1"
-async-stream = "0.3"
+async-stream.workspace = true
 axum = "0.8"
 futures-core = "0.3"
-http = "1"
+http.workspace = true
 envoy-types = "=0.6.1"
-serde_json = { version = "1", features = ["raw_value"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net"] }
+serde_json = { workspace = true, features = ["raw_value"] }
+tokio.workspace = true
 tonic = "0.13.1"
-thiserror = "2"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { version = "0.1", features = ["net"] }
