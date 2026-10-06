@@ -500,6 +500,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "envoy-types"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4cda7cdc9e3fc567e65d34b8e710c97d8a1f5e3dfd4e9aa08976f5d5dd3e196"
+dependencies = [
+ "futures-core",
+ "prost 0.13.5",
+ "tonic",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -856,6 +867,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper-timeout"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b90d566bffbce6a75bd8b09a05aa8c2cb1fabb6cb348f8840c9e4c90a0d83b0"
+dependencies = [
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "tokio",
+ "tower-service",
+]
+
+[[package]]
 name = "hyper-util"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -872,7 +896,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -1420,7 +1444,7 @@ dependencies = [
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.14.4",
  "reqwest",
  "thiserror 2.0.18",
 ]
@@ -1446,7 +1470,7 @@ checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
- "prost",
+ "prost 0.14.4",
 ]
 
 [[package]]
@@ -1502,6 +1526,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "pin-project"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924"
+dependencies = [
+ "pin-project-internal",
+]
+
+[[package]]
+name = "pin-project-internal"
+version = "1.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1544,8 +1588,8 @@ dependencies = [
  "async-trait",
  "pyo3",
  "pyo3-build-config",
- "switchyard-libsy",
- "switchyard-protocol",
+ "switchyard-libsy 0.3.0",
+ "switchyard-protocol 0.3.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1587,12 +1631,35 @@ dependencies = [
 
 [[package]]
 name = "prost"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
+dependencies = [
+ "bytes",
+ "prost-derive 0.13.5",
+]
+
+[[package]]
+name = "prost"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
 dependencies = [
  "bytes",
- "prost-derive",
+ "prost-derive 0.14.4",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1723,7 +1790,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2",
+ "socket2 0.6.5",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1762,7 +1829,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2272,6 +2339,16 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
@@ -2335,13 +2412,39 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "switchyard-protocol",
+ "switchyard-protocol 0.3.0",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "switchyard-libsy"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0646b0891f703d91ba97492d1d0527a7fdeb7b0269c53757e7b9388953550c16"
+dependencies = [
+ "async-trait",
+ "futures",
+ "http",
+ "jsonptr",
+ "jsonschema",
+ "opentelemetry",
+ "parking_lot",
+ "rand 0.10.2",
+ "regex",
+ "serde",
+ "serde_json",
+ "switchyard-protocol 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-opentelemetry",
  "uuid",
 ]
 
@@ -2360,15 +2463,38 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "switchyard-libsy",
- "switchyard-protocol",
- "switchyard-translation",
+ "switchyard-libsy 0.3.0",
+ "switchyard-protocol 0.3.0",
+ "switchyard-translation 0.3.0",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "wiremock",
+]
+
+[[package]]
+name = "switchyard-llm-client"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c07bffb8f677431f9530fc8335140134a743d3e1618c595cfd6953ed3b009360"
+dependencies = [
+ "async-trait",
+ "futures",
+ "futures-util",
+ "http",
+ "httpdate",
+ "opentelemetry",
+ "parking_lot",
+ "reqwest",
+ "serde_json",
+ "switchyard-libsy 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "switchyard-protocol 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "switchyard-translation 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -2380,10 +2506,10 @@ dependencies = [
  "nemo-relay-plugin",
  "serde",
  "serde_json",
- "switchyard-llm-client",
- "switchyard-protocol",
- "switchyard-runner",
- "switchyard-translation",
+ "switchyard-llm-client 0.3.0",
+ "switchyard-protocol 0.3.0",
+ "switchyard-runner 0.3.0",
+ "switchyard-translation 0.3.0",
  "tempfile",
  "tokio",
  "toml",
@@ -2391,8 +2517,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-preproc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "envoy-types",
+ "futures-core",
+ "http",
+ "serde_json",
+ "switchyard-protocol 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "switchyard-runner 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "switchyard-translation 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "switchyard-protocol"
 version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "http",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "switchyard-protocol"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c49a9e7884e7f50669250463a58a21bc79084adb87ef03647cbe7ba5c3b22ee"
 dependencies = [
  "async-trait",
  "futures",
@@ -2413,8 +2575,8 @@ dependencies = [
  "pythonize",
  "serde",
  "serde_json",
- "switchyard-libsy",
- "switchyard-protocol",
+ "switchyard-libsy 0.3.0",
+ "switchyard-protocol 0.3.0",
  "switchyard-server",
  "tokio",
 ]
@@ -2430,11 +2592,29 @@ dependencies = [
  "serde",
  "serde_json",
  "strum_macros",
- "switchyard-libsy",
- "switchyard-llm-client",
- "switchyard-protocol",
+ "switchyard-libsy 0.3.0",
+ "switchyard-llm-client 0.3.0",
+ "switchyard-protocol 0.3.0",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "switchyard-runner"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cbaeff25e505e0b5f06beec4dd6a6db58d844b0c08c80bc9e5c4f0f8e6c7079"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "strum_macros",
+ "switchyard-libsy 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "switchyard-llm-client 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "switchyard-protocol 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "thiserror 2.0.18",
  "toml",
  "tracing",
 ]
@@ -2462,11 +2642,11 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "switchyard-libsy",
- "switchyard-llm-client",
- "switchyard-protocol",
- "switchyard-runner",
- "switchyard-translation",
+ "switchyard-libsy 0.3.0",
+ "switchyard-llm-client 0.3.0",
+ "switchyard-protocol 0.3.0",
+ "switchyard-runner 0.3.0",
+ "switchyard-translation 0.3.0",
  "tempfile",
  "tokio",
  "tower",
@@ -2512,7 +2692,23 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
- "switchyard-protocol",
+ "switchyard-protocol 0.3.0",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "switchyard-translation"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "629f9c47cb198da7e92569384fec4da8486852c38a7af922e0c9d6b62ed74fa1"
+dependencies = [
+ "async-stream",
+ "base64",
+ "futures",
+ "serde",
+ "serde_json",
+ "switchyard-protocol 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -2664,7 +2860,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2",
+ "socket2 0.6.5",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -2755,6 +2951,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
+name = "tonic"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e581ba15a835f4d9ea06c55ab1bd4dce26fc53752c69a04aac00703bfb49ba9"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "bytes",
+ "h2",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-timeout",
+ "hyper-util",
+ "percent-encoding",
+ "pin-project",
+ "prost 0.13.5",
+ "socket2 0.5.10",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2762,9 +2987,12 @@ checksum = "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4"
 dependencies = [
  "futures-core",
  "futures-util",
+ "indexmap",
  "pin-project-lite",
+ "slab",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",

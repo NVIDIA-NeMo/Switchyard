@@ -38,13 +38,13 @@ your cluster can pull from:
 
 ```bash
 export PREPROC_IMAGE=registry.example.com/your-project/switchyard-preproc:example
-docker build -t "$PREPROC_IMAGE" examples/dynamo-preproc
+docker build -f examples/dynamo-preproc/Dockerfile -t "$PREPROC_IMAGE" .
 docker push "$PREPROC_IMAGE"
 ```
 
 Set that image in Dynamo's Kustomization and follow its deployment instructions.
 The image uses published Switchyard SDK 0.3.0 crates and precompiled Envoy bindings;
-it does not require a Dynamo checkout or a protobuf compiler.
+it uses the repository's shared lockfile and does not require a Dynamo checkout or a protobuf compiler.
 
 ## Configure routing
 

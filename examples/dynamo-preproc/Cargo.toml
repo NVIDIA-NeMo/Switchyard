@@ -40,6 +40,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio-stream = { version = "0.1", features = ["net"] }
-
-# Build this example independently with the published SDK.
-[workspace]
