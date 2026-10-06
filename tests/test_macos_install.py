@@ -75,14 +75,20 @@ def test_install_escapes_switchyard_path_in_launch_agent(setup):
     assert values["StandardErrorPath"].text == str(switchyard_home / "logs" / "server.err.log")
 
 
-def test_missing_codex_config_creates_routed_config_and_empty_backup(setup):
-    _, home, _, _ = setup
+def test_missing_codex_config_creates_only_standalone_profile(setup):
+    _, _, switchyard_home, env = setup
+    env["SY_PORT"] = "5123"
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
-    codex = home / ".codex"
-    assert 'model_provider = "sy"' in read_config(codex / "config.sy.toml")
-    assert read_config(codex / "config.toml") == read_config(codex / "config.sy.toml")
-    assert (codex / "config.toml.direct").read_text() == ""
+    codex = Path(env["CODEX_HOME"])
+    assert sorted(path.name for path in codex.iterdir()) == ["sy.config.toml"]
+    expected = read_config(REPO / "scripts" / "config" / "codex.sy.toml").replace(
+        "@SY_PORT@", "5123"
+    )
+    assert read_config(codex / "sy.config.toml") == expected
+    assert read_config(switchyard_home / "composite.toml") == read_config(
+        REPO / "scripts" / "config" / "composite.toml"
+    )
 
 
 def test_install_prints_profile_usage_without_editing_shell_files(setup):
@@ -100,72 +106,58 @@ def test_install_prints_profile_usage_without_editing_shell_files(setup):
     assert bashrc.read_text() == "bash settings\n"
 
 
-def test_provider_table_with_comment_is_replaced_and_shared_template_is_used(setup):
-    _, home, switchyard_home, env = setup
-    codex = Path(env["CODEX_HOME"])
-    codex.mkdir()
-    config = codex / "config.toml"
-    original = '''theme = "dark"
-
-[model_providers.sy] # old provider
-name = "Old"
-base_url = "http://old"
-
-[other]
-model_provider = "sy"
-'''
-    config.write_text(original)
-    (codex / "config.toml.direct").write_text(original)
-    result = run(setup, "install.sh")
-    assert result.returncode == 0, result.stderr
-    generated = read_config(codex / "config.sy.toml")
-    assert generated.count("[model_providers.sy]") == 1
-    assert 'name = "Old"' not in generated
-    assert '[other]\nmodel_provider = "sy"' in generated
-    assert read_config(config) == generated
-    assert read_config(switchyard_home / "composite.toml") == read_config(
-        REPO / "scripts" / "config" / "composite.toml"
-    )
-    assert read_config(codex / "config.toml.direct") == original
-    backups = list(codex.glob("config.toml.switchyard-backup.*"))
-    assert len(backups) == 1
-    assert backups[0].read_text() == original
-
-
-def test_provider_table_marker_keeps_existing_snapshot(setup):
-    _, home, _, env = setup
-    codex = Path(env["CODEX_HOME"])
-    codex.mkdir()
-    (codex / "config.toml").write_text('[model_providers.sy]\nname = "Switchyard"\n')
-    snapshot = codex / "config.toml.direct"
-    snapshot.write_text("original direct config\n")
-    result = run(setup, "install.sh")
-    assert result.returncode == 0, result.stderr
-    assert snapshot.read_text() == "original direct config\n"
-    assert (codex / "config.sy.toml").is_file()
-
-
-def test_provider_setting_without_table_gets_snapshotted(setup):
+@pytest.mark.parametrize("script", ["install.sh", "uninstall.sh"])
+@pytest.mark.parametrize(
+    "original",
+    [
+        'model_provider = "sy"\n[model_providers."sy"]\nname = "Old"\n',
+        'developer_instructions = """\nmodel = "example"\n'
+        "# >>> switchyard sy profile >>>\n[model_providers.sy]\n"
+        '# <<< switchyard sy profile <<<\n"""\n'
+        '# >>> switchyard sy profile >>>\n[profiles.sy]\nmodel_provider = "sy"\n'
+        "# <<< switchyard sy profile <<<\n",
+        "invalid TOML that must be left alone\n",
+    ],
+)
+def test_scripts_leave_main_config_and_legacy_files_untouched(setup, script, original):
     _, _, _, env = setup
     codex = Path(env["CODEX_HOME"])
     codex.mkdir()
-    original = 'model_provider = "sy"\n'
-    (codex / "config.toml").write_text(original)
-    result = run(setup, "install.sh")
+    files = {
+        "config.toml": original,
+        "config.toml.direct": 'model = "direct"\n',
+        "config.sy.toml": 'model = "previous routed config"\n',
+    }
+    for name, content in files.items():
+        (codex / name).write_text(content)
+    (codex / "sy.config.toml").write_text('model = "old profile"\n')
+
+    result = run(setup, script)
+
     assert result.returncode == 0, result.stderr
-    assert (codex / "config.toml.direct").read_text() == original
+    for name, content in files.items():
+        assert (codex / name).read_text() == content
+    assert not list(codex.glob("config.toml.switchyard-*"))
+    if script == "uninstall.sh":
+        assert not (codex / "sy.config.toml").exists()
+    else:
+        assert (codex / "sy.config.toml").read_text() == read_config(
+            REPO / "scripts" / "config" / "codex.sy.toml"
+        ).replace("@SY_PORT@", env.get("SY_PORT", "4123"))
+        backups = list(codex.glob("sy.config.toml.switchyard-backup.*"))
+        assert len(backups) == 1
+        assert backups[0].read_text() == 'model = "old profile"\n'
 
 
-def test_uninstall_preserves_routed_config_before_restoring_snapshot(setup):
-    _, home, _, env = setup
-    codex = Path(env["CODEX_HOME"])
-    codex.mkdir()
-    current = '[model_providers.sy]\nname = "Switchyard"\nuser_setting = "keep me"\n'
-    (codex / "config.toml").write_text(current)
-    (codex / "config.toml.direct").write_text("model = \"original\"\n")
-    result = run(setup, "uninstall.sh")
+def test_install_dry_run_does_not_create_codex_files(setup):
+    scripts, _, _, env = setup
+    result = subprocess.run(
+        ["bash", str(scripts / "install.sh"), "--dry-run"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
     assert result.returncode == 0, result.stderr
-    assert (codex / "config.toml").read_text() == 'model = "original"\n'
-    backups = list(codex.glob("config.toml.switchyard-current.*"))
-    assert len(backups) == 1
-    assert backups[0].read_text() == current
+    assert "Use it with: codex -p sy" in result.stdout
+    assert not Path(env["CODEX_HOME"]).exists()
