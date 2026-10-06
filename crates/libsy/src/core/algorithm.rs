@@ -116,6 +116,8 @@ pub struct CallModel {
     /// How to send the response back to the algorithm. `None` once the call is recorded.
     reply: Option<oneshot::Sender<Result<Response>>>,
     started: Instant,
+    // Retain the originating span even if the waiting algorithm is cancelled first.
+    span: tracing::Span,
 }
 
 impl CallModel {
@@ -124,6 +126,9 @@ impl CallModel {
     /// can only be fulfilled once.
     pub fn respond(mut self, result: Result<Response>) -> Result<()> {
         self.record(result.is_ok());
+        if let Ok(response) = &result {
+            observability::record_llm_response(response, &self.span);
+        }
         self.reply
             .take()
             .ok_or(DriverError::ResponseDropped)?
@@ -149,6 +154,8 @@ impl CallModel {
             self.started.elapsed(),
             is_ok,
         );
+        self.span
+            .record("outcome", if is_ok { "ok" } else { "error" });
     }
 }
 
@@ -331,9 +338,9 @@ impl Driver {
     /// Errors if the stream is closed or the call failed.
     /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
     /// the algorithm observes it (host queueing/serving included; a streamed
-    /// response resolves when its stream handle arrives). The host records call metrics
-    /// through [`CallModel::respond`] or [`CallModel::fail`]; outcome and token usage
-    /// are recorded on the span when the promise resolves. The provider call itself is the
+    /// response resolves when its stream handle arrives). The host records call metrics,
+    /// outcome, and buffered token usage when it completes or drops the call, even if the
+    /// waiting algorithm has been cancelled. The provider call itself is the
     /// host's, and is instrumented by whoever makes it.
     pub async fn call_model(&self, request: Request, models: Vec<ModelId>) -> Result<Response> {
         self.call_model_with_error_recovery(request, models, false)
@@ -375,19 +382,15 @@ impl Driver {
             recover_errors,
             reply: Some(reply),
             started,
+            span: tracing::Span::current(),
         };
-        let result = async {
-            self.step_tx
-                .send(Ok(Step::CallModel(Box::new(call))))
-                .await
-                .map_err(|_| DriverError::StreamClosed)?;
-            response
-                .await
-                .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
-        }
-        .await;
-        observability::record_llm_call_span(&result, &tracing::Span::current());
-        result
+        self.step_tx
+            .send(Ok(Step::CallModel(Box::new(call))))
+            .await
+            .map_err(|_| DriverError::StreamClosed)?;
+        response
+            .await
+            .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
     }
 
     /// Override the request's model with `model` and wait for the host to reply.

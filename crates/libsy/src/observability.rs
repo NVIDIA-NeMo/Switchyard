@@ -256,15 +256,10 @@ pub(crate) fn record_llm_call(
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
 }
 
-/// Records the outcome and token fields on the algorithm's call span.
-pub(crate) fn record_llm_call_span(result: &Result<Response>, span: &Span) {
-    span.record("outcome", outcome_value(result));
-    if let Ok(response) = result {
-        // Token usage exists only once a response is buffered; a streamed
-        // response resolves before its usage is known, so none is recorded.
-        let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) else {
-            return;
-        };
+/// Records buffered token usage on the algorithm's call span.
+pub(crate) fn record_llm_response(response: &Response, span: &Span) {
+    // A streamed response resolves before its usage is known.
+    if let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) {
         record_call_usage(usage, span);
     }
 }
