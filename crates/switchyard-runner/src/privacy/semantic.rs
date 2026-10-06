@@ -4,6 +4,7 @@
 //! Semantic preflight for contextual privacy decisions.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -13,8 +14,9 @@ use strum_macros::{EnumString, IntoStaticStr};
 use switchyard_protocol::{
     ChoiceOption, ContentBlock, DecisionKind, DecisionQuestion, DecisionRequest, DecisionResponse,
     DecisionValue, InstructionBlock, LlmRequest, LlmResponse, Message, ModelId, OutputParams,
-    Request, Role, RoutedDecisionClient, RoutedLlmClient, completion_text,
+    Request, Role, RoutedDecisionClient, RoutedLlmClient, Usage, completion_text,
 };
+use tracing::Instrument;
 
 use super::{PrivacyDecision, PrivacyLane};
 
@@ -45,6 +47,91 @@ struct SemanticVerdict {
     clear_score: f64,
 }
 
+// Keeps classifier spans complete when the assessment future is cancelled.
+struct ClassifierCall {
+    span: tracing::Span,
+    is_finished: bool,
+}
+
+impl ClassifierCall {
+    fn new(kind: &'static str, target: &ModelId, route: &str, algorithm: &str) -> Self {
+        Self {
+            span: tracing::info_span!(
+                target: "switchyard_runner",
+                "switchyard.privacy_classifier_call",
+                switchyard.route = route,
+                switchyard.algorithm = algorithm,
+                privacy.classifier.kind = kind,
+                selected_model = %target,
+                openinference.span.kind = "CHAIN",
+                outcome = tracing::field::Empty,
+                error.type = tracing::field::Empty,
+                input_tokens = tracing::field::Empty,
+                output_tokens = tracing::field::Empty,
+                total_tokens = tracing::field::Empty,
+                reasoning_tokens = tracing::field::Empty,
+                gen_ai.response.id = tracing::field::Empty,
+                gen_ai.response.model = tracing::field::Empty,
+            ),
+            is_finished: false,
+        }
+    }
+
+    async fn observe<T, E>(
+        mut self,
+        future: impl Future<Output = Result<T, E>>,
+        record_response: impl FnOnce(&tracing::Span, &T),
+    ) -> Result<T, &'static str> {
+        let span = self.span.clone();
+        match future.instrument(span).await {
+            Ok(response) => {
+                record_response(&self.span, &response);
+                self.finish("ok", None);
+                Ok(response)
+            }
+            Err(_) => {
+                self.finish("error", Some("classifier_failed"));
+                Err("classifier_failed")
+            }
+        }
+    }
+
+    fn finish(&mut self, outcome: &'static str, error_type: Option<&'static str>) {
+        self.span.record("outcome", outcome);
+        if let Some(error_type) = error_type {
+            self.span.record("error.type", error_type);
+        }
+        self.is_finished = true;
+    }
+}
+
+fn record_response(span: &tracing::Span, id: Option<&str>, model: Option<&str>, usage: &Usage) {
+    if let Some(id) = id {
+        span.record("gen_ai.response.id", id);
+    }
+    if let Some(model) = model {
+        span.record("gen_ai.response.model", model);
+    }
+    for (field, value) in [
+        ("input_tokens", usage.input_tokens),
+        ("output_tokens", usage.output_tokens),
+        ("total_tokens", usage.total_tokens),
+        ("reasoning_tokens", usage.reasoning_tokens),
+    ] {
+        if let Some(value) = value {
+            span.record(field, value);
+        }
+    }
+}
+
+impl Drop for ClassifierCall {
+    fn drop(&mut self) {
+        if !self.is_finished {
+            self.finish("cancelled", Some("cancelled"));
+        }
+    }
+}
+
 impl SemanticPrivacyClassifier {
     pub(crate) fn decision(
         target: ModelId,
@@ -72,14 +159,24 @@ impl SemanticPrivacyClassifier {
         }
     }
 
-    pub(crate) async fn assess(&self, request: &Request) -> PrivacyDecision {
-        match self.verdict(request).await {
+    pub(crate) async fn assess(
+        &self,
+        request: &Request,
+        route: &str,
+        algorithm: &str,
+    ) -> PrivacyDecision {
+        match self.verdict(request, route, algorithm).await {
             Ok(verdict) => self.apply(verdict),
             Err(reason) => self.restricted(reason, None),
         }
     }
 
-    async fn verdict(&self, request: &Request) -> Result<SemanticVerdict, &'static str> {
+    async fn verdict(
+        &self,
+        request: &Request,
+        route: &str,
+        algorithm: &str,
+    ) -> Result<SemanticVerdict, &'static str> {
         let context = semantic_context(request).map_err(|()| "input_unavailable")?;
         match &self.backend {
             SemanticBackend::Decision {
@@ -92,10 +189,16 @@ impl SemanticPrivacyClassifier {
                     question,
                     context.into_value().map_err(|()| "input_unavailable")?,
                 );
-                let response = client
-                    .call(request)
-                    .await
-                    .map_err(|_| "classifier_failed")?;
+                let response = ClassifierCall::new("decision", target, route, algorithm)
+                    .observe(client.call(request), |span, response| {
+                        record_response(
+                            span,
+                            response.id.as_deref(),
+                            response.model.as_ref().map(ModelId::as_str),
+                            &response.usage,
+                        );
+                    })
+                    .await?;
                 decision_verdict(&response).ok_or("invalid_verdict")
             }
             SemanticBackend::Llm { target, client } => {
@@ -103,10 +206,18 @@ impl SemanticPrivacyClassifier {
                     target,
                     context.into_string().map_err(|()| "input_unavailable")?,
                 );
-                let response = client
-                    .call(request)
-                    .await
-                    .map_err(|_| "classifier_failed")?;
+                let response = ClassifierCall::new("llm", target, route, algorithm)
+                    .observe(client.call(request), |span, response| {
+                        if let LlmResponse::Agg(response) = &response.llm_response {
+                            record_response(
+                                span,
+                                response.id.as_deref(),
+                                response.model.as_deref(),
+                                &response.usage,
+                            );
+                        }
+                    })
+                    .await?;
                 let LlmResponse::Agg(response) = response.llm_response else {
                     return Err("invalid_verdict");
                 };
@@ -356,7 +467,8 @@ fn response_format() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::future::{Future, pending};
+    use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
     use serde_json::json;
@@ -364,8 +476,12 @@ mod tests {
         ContentBlock, DecisionAnswer, InstructionBlock, LlmClientError, Message, Probability,
         Response, Role, ToolCall, ToolDefinition, ToolResult, Usage, text_response,
     };
+    use tokio::sync::Notify;
+    use tracing_subscriber::fmt::format::FmtSpan;
 
     use super::*;
+
+    static CLASSIFIER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct ReplyClient(Mutex<Option<Result<DecisionResponse, LlmClientError>>>);
 
@@ -394,6 +510,53 @@ mod tests {
                 .take()
                 .expect("one classifier call")
         }
+    }
+
+    struct PendingClient(Arc<Notify>);
+
+    #[async_trait]
+    impl RoutedDecisionClient for PendingClient {
+        async fn call(
+            &self,
+            _request: DecisionRequest,
+        ) -> Result<DecisionResponse, LlmClientError> {
+            self.0.notify_one();
+            pending().await
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct LogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log lock").extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs<F: Future>(future: F) -> (F::Output, String) {
+        let writer = LogWriter::default();
+        let logs = Arc::clone(&writer.0);
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_writer(move || writer.clone())
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let output = tracing::dispatcher::with_default(&dispatch, || runtime.block_on(future));
+        let logs = logs.lock().expect("log lock").clone();
+        (output, String::from_utf8(logs).expect("utf-8 logs"))
     }
 
     fn response(selected: &str, clear_score: Option<f64>) -> DecisionResponse {
@@ -567,6 +730,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_verdicts_and_failures_fail_closed() {
+        let _guard = CLASSIFIER_TEST_LOCK.lock().await;
         let failure = LlmClientError::Configuration {
             message: "unavailable".into(),
         };
@@ -618,7 +782,9 @@ mod tests {
                 None,
             ),
         ] {
-            let decision = classifier(reply).assess(&Request::default()).await;
+            let decision = classifier(reply)
+                .assess(&Request::default(), "test/route", "test_algorithm")
+                .await;
             assert_eq!(decision.lane.as_str(), lane.as_str());
             assert_eq!(decision.reason_code, reason);
             assert_eq!(decision.clear_score, score);
@@ -627,6 +793,7 @@ mod tests {
 
     #[tokio::test]
     async fn llm_verdicts_and_failures_fail_closed() {
+        let _guard = CLASSIFIER_TEST_LOCK.lock().await;
         let failure = LlmClientError::Configuration {
             message: "unavailable".into(),
         };
@@ -660,10 +827,72 @@ mod tests {
                 None,
             ),
         ] {
-            let decision = llm_classifier(reply).assess(&Request::default()).await;
+            let decision = llm_classifier(reply)
+                .assess(&Request::default(), "test/route", "test_algorithm")
+                .await;
             assert_eq!(decision.lane.as_str(), lane.as_str());
             assert_eq!(decision.reason_code, reason);
             assert_eq!(decision.clear_score, score);
+        }
+    }
+
+    #[test]
+    fn classifier_call_spans_record_terminal_state() {
+        let _guard = CLASSIFIER_TEST_LOCK.blocking_lock();
+        let mut reply = response("no_sensitive_content", Some(0.95));
+        reply.id = Some("decision-123".into());
+        reply.model = Some("privacy/provider-model".into());
+        reply.usage.input_tokens = Some(17);
+        let started = Arc::new(Notify::new());
+        let pending = SemanticPrivacyClassifier::decision(
+            "privacy/model".into(),
+            Arc::new(PendingClient(Arc::clone(&started))),
+            0.9,
+        );
+        let secret = "provider body containing private data";
+
+        let ((success, failure), logs) = capture_logs(async move {
+            let success = classifier(Ok(reply))
+                .assess(&Request::default(), "test/route", "stage")
+                .await;
+            let failure = llm_classifier(Err(LlmClientError::Configuration {
+                message: secret.into(),
+            }))
+            .assess(&Request::default(), "test/route", "stage")
+            .await;
+            let task = tokio::spawn(async move {
+                pending
+                    .assess(&Request::default(), "test/route", "stage")
+                    .await
+            });
+            started.notified().await;
+            task.abort();
+            assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+            (success, failure)
+        });
+
+        assert!(matches!(success.lane, PrivacyLane::Standard));
+        assert_eq!(failure.reason_code, "classifier_failed");
+        assert!(!logs.contains(secret), "{logs}");
+        assert_eq!(
+            logs.matches("switchyard.privacy_classifier_call").count(),
+            3,
+            "{logs}"
+        );
+        for expected in [
+            "test/route",
+            "stage",
+            "privacy/model",
+            "decision-123",
+            "privacy/provider-model",
+            "input_tokens=17",
+            "outcome=\"ok\"",
+            "outcome=\"error\"",
+            "outcome=\"cancelled\"",
+            "error.type=\"classifier_failed\"",
+            "error.type=\"cancelled\"",
+        ] {
+            assert!(logs.contains(expected), "missing {expected:?} in {logs}");
         }
     }
 }
