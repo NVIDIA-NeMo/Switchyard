@@ -1506,8 +1506,8 @@
 
 <h1 id="planexecute-routing">Plan/Execute Routing<a class="headerlink" href="#planexecute-routing" title="Permanent link">&para;</a></h1>
 <p>Plan/execute routing uses a capable model to inspect and plan a coding task,
-then switches to an efficient model after the first file mutation. It does not
-make a classifier call.</p>
+then switches to an efficient model after the first recognized edit or write
+tool call. It does not make a classifier call.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.provider]</span>
@@ -1569,6 +1569,10 @@ edit missing from the request history.</p>
 </thead>
 <tbody>
 <tr>
+<td><code>tool_semantics.mutate</code></td>
+<td>Lists custom tools that trigger handoff.</td>
+</tr>
+<tr>
 <td><code>planning_prompt</code></td>
 <td>Replaces the built-in planning instruction.</td>
 </tr>
@@ -1582,6 +1586,12 @@ edit missing from the request history.</p>
 </tr>
 </tbody>
 </table>
+<p>To make a custom tool trigger handoff:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[routes.plan_execute.tool_semantics]</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">mutate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;persist_source_file&quot;</span><span class="p">]</span>
+</span></code></pre></div>
+<p>This uses the same <a href="../stage_router_routing/#optional-custom-tool-semantics">tool matching rules</a>
+as Stage. The other custom tool categories do not trigger handoff.</p>
 <p>Use a stable session ID with handoff processing or history compaction.</p>
 
 
