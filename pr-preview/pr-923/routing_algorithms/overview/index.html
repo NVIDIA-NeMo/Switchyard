@@ -921,17 +921,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#tool-detection" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tool detection
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#common-route-shape" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1586,17 +1575,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#tool-detection" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tool detection
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#common-route-shape" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1720,7 +1698,7 @@ the required targets.</p>
 <tbody>
 <tr>
 <td><a href="../plan_execute_routing/">Plan/Execute</a></td>
-<td>Use a capable model to inspect and plan, then switch to an efficient model after a recognized edit or write tool call in the request history.</td>
+<td>Use a capable model to inspect and plan, then switch to an efficient model after the first file mutation.</td>
 <td><code>plan_execute</code></td>
 </tr>
 <tr>
@@ -1764,36 +1742,6 @@ the required targets.</p>
 <p><a href="../../reference/toml_schema/#prefill_router">Prefill Router</a> uses a
 checkpoint-backed classifier. It is experimental in v0.3.0. Switchyard does not
 provide or support a checkpoint, exporter, or compatible encoder assets.</p>
-<h2 id="tool-detection">Tool detection<a class="headerlink" href="#tool-detection" title="Permanent link">&para;</a></h2>
-<p>Stage, Composite, and Plan/Execute share the same tool signal detector. It reads
-recorded tool calls. It does not watch the filesystem or infer what a tool does
-from its description, schema, or success message.</p>
-<p>Built-in edit and write names are matched without regard to case:</p>
-<ul>
-<li>Writes: <code>write</code>, <code>create_file</code>, <code>new_file</code>, <code>write_file</code>.</li>
-<li>Edits: <code>edit</code>, <code>multiedit</code>, <code>notebookedit</code>, <code>str_replace</code>,
-  <code>str_replace_based_edit_tool</code>, <code>apply_patch</code>, <code>text_editor</code>, <code>patch</code>.</li>
-</ul>
-<p>For <code>str_replace_based_edit_tool</code> and <code>text_editor</code>, <code>command = "view"</code> is
-read-only. Other recognized edit or write calls count even if the tool reports
-failure.</p>
-<p>Shell tools such as <code>bash</code>, <code>exec_command</code>, and <code>shell_command</code> use built-in
-command patterns. Examples include <code>echo hello &gt; task.txt</code>, <code>sed -i</code>, and
-<code>git apply</code>. The detector reads the <code>command</code>, <code>cmd</code>, or <code>input</code> argument. It does
-not detect every script that changes files. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cc78593848e96a27f36a73e1c912e3efe89ffbc8/crates/libsy/src/algorithms/util/tool_signals.rs">tool and shell recognition rules</a>
-for the full supported vocabulary.</p>
-<p>Custom tools can still be passed to the model. To tell the router what their
-calls mean, Stage and Composite support <code>tool_semantics</code> mappings. For example,
-<code>mutate = ["persist_source_file"]</code> makes that name count as a write. See
-<a href="../stage_router_routing/#optional-custom-tool-semantics">Stage custom tool semantics</a>
-and the <a href="../composite_routing/#configuration">Composite configuration</a>.
-Plan/Execute uses only the built-in rules and has no <code>tool_semantics</code> setting.</p>
-<p>MCP names such as <code>mcp__filesystem__write_file</code> are matched by their bare tool
-name (<code>write_file</code>) on current main. This support was added after v0.3.0 in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/pull/831">PR #831</a>. Published v0.3.0
-recognizes <code>write_file</code> but not <code>mcp__filesystem__write_file</code>. A custom name still
-needs a mapping, whether or not it has an MCP prefix.</p>
 <h2 id="common-route-shape">Common route shape<a class="headerlink" href="#common-route-shape" title="Permanent link">&para;</a></h2>
 <p>A deployment has three layers. LLM clients describe how to reach a provider,
 targets name models on those clients, and routes decide which target serves a

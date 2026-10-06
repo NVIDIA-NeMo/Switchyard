@@ -2150,9 +2150,7 @@ see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing
 </table>
 <h3 id="plan_execute"><code>plan_execute</code><a class="headerlink" href="#plan_execute" title="Permanent link">&para;</a></h3>
 <p>Plans on a capable target, then switches to an efficient target after the first
-recognized edit or write tool call in the request history. Unrecognized custom
-tool names do not trigger handoff, and this route has no <code>tool_semantics</code> setting.
-See <a href="../../routing_algorithms/plan_execute_routing/#handoff-detection">handoff detection</a>.</p>
+recognized edit or write tool call. See <a href="../../routing_algorithms/plan_execute_routing/">Plan/Execute Routing</a>.</p>
 <table>
 <thead>
 <tr>
@@ -2173,7 +2171,13 @@ See <a href="../../routing_algorithms/plan_execute_routing/#handoff-detection">h
 <td><code>efficient_target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>-</td>
-<td>Target used after the first recognized edit or write tool call.</td>
+<td>Target used after the first edit or write.</td>
+</tr>
+<tr>
+<td><code>tool_semantics.mutate</code></td>
+<td style="text-align: center;">No</td>
+<td><code>[]</code></td>
+<td>Additional tool names that trigger handoff. See the <a href="../../routing_algorithms/plan_execute_routing/#optional-settings">example</a>.</td>
 </tr>
 <tr>
 <td><code>planning_prompt</code></td>
