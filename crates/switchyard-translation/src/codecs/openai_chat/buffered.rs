@@ -140,7 +140,7 @@ impl FormatCodec for OpenAiChatCodec {
                         content: vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id,
                             content: vec![ContentBlock::Text { text }],
-                            is_error: None,
+                            is_error: message.get("is_error").and_then(Value::as_bool),
                         })],
                     });
                     continue;
