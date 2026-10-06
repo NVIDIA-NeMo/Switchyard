@@ -48,21 +48,12 @@ it uses the repository's shared lockfile and does not require a Dynamo checkout 
 
 ## Configure routing
 
-The supplied [routes.toml](config/routes.toml) uses StageRouter with `efficient_first` to
-choose between `Qwen/Qwen3-0.6B` and `Qwen/Qwen3-1.7B`. A neutral request chooses the small
-model; a critical tool failure chooses the larger model. Requests use the route ID `auto`
-as their `model`. Set `X-Switchyard-Session-Id` to preserve routing state across requests.
+The supplied [routes.toml](config/routes.toml) uses StageRouter to choose between the two
+Qwen models. Send `model: "auto"`; add `X-Switchyard-Session-Id` to retain routing state.
 
-For Kubernetes, edit the routing TOML in the Dynamo deployment example and reapply its
-Kustomization. Keep its target model IDs consistent with the HTTPRoutes and InferencePools.
-Use policies that select a model without generating a response or changing request semantics.
+To change routing, edit the TOML in the Dynamo deployment example and reapply its
+Kustomization. Keep model IDs aligned with the HTTPRoutes and InferencePools.
+Policies must select a model without generating a response or rewriting the request.
 
-PreProc listens for ExtProc gRPC on port 9002. Its health and readiness endpoints are
-`/healthz` and `/readyz` on port 9003. The image reads `/etc/switchyard/routes.toml`; mount
-your configuration there or set `ROUTES_CONFIG` to another path.
-
-This example accepts text and function-tool history on `/v1/chat/completions`, with a 2 MiB
-request limit and a 120-second response timeout. It admits up to 4,096 session identities
-active within the past hour. The SDK reclaims idle state on its own hourly sweep.
-Run one replica to keep routing state in one process; restarts reset that state.
-The example does not use Dynamo load or cache signals and does not provide high availability.
+This example supports text and tool history with one PreProc replica. Routing state resets
+on restart; Dynamo load and cache signals are not used.
