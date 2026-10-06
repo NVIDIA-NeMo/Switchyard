@@ -13,13 +13,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{
+    pin::{Pin, pin},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, ensure};
-use futures_core::Stream;
+use futures_util::{Stream, StreamExt};
 use tokio::{
-    sync::Semaphore,
-    time::{Instant, timeout_at},
+    sync::{Semaphore, mpsc},
+    task::JoinSet,
+    time::{Instant, timeout, timeout_at},
 };
 use tonic::{Request, Response, Status, Streaming};
 
@@ -66,15 +71,15 @@ pub struct Server {
 struct Prepared {
     body: Vec<u8>,
     headers: ext::HeaderMutation,
-    trailers: bool,
+    has_trailers: bool,
 }
 
 impl Server {
-    pub fn new(router: Arc<Router>) -> Self {
+    pub fn new(router: Arc<Router>, max_active_streams: usize) -> Self {
         Self {
             router,
             requests: Arc::new(Semaphore::new(8)),
-            streams: Arc::new(Semaphore::new(16)),
+            streams: Arc::new(Semaphore::new(max_active_streams)),
         }
     }
 
@@ -110,13 +115,13 @@ impl Server {
             .collect::<anyhow::Result<Vec<_>>>()?;
         let (headers, mut remove_headers) = headers(&values)?;
         let mut body = Vec::new();
-        let mut trailers = false;
+        let mut has_trailers = false;
         loop {
             let next = input.message().await?.context("incomplete request body")?;
             match next.request {
                 Some(Input::RequestBody(chunk)) => {
                     ensure!(
-                        !trailers || (chunk.body.is_empty() && chunk.end_of_stream),
+                        !has_trailers || (chunk.body.is_empty() && chunk.end_of_stream),
                         "expected body end after request trailers"
                     );
                     if chunk.body.len() > MAX_BODY - body.len() {
@@ -128,7 +133,7 @@ impl Server {
                     }
                 }
                 // Stock agentgateway 1.0 sends an empty body EOS after trailers.
-                Some(Input::RequestTrailers(_)) if !trailers => trailers = true,
+                Some(Input::RequestTrailers(_)) if !has_trailers => has_trailers = true,
                 _ => anyhow::bail!("expected request body"),
             }
         }
@@ -143,7 +148,7 @@ impl Server {
                 set_headers: vec![set_header(MODEL_HEADER, &model)],
                 remove_headers,
             },
-            trailers,
+            has_trailers,
         })
     }
 }
@@ -199,7 +204,7 @@ impl ExternalProcessor for Server {
                     ..Default::default()
                 }),
             })));
-            if prepared.trailers {
+            if prepared.has_trailers {
                 yield Ok(reply(Output::RequestTrailers(ext::TrailersResponse::default())));
             }
             for (i, chunk) in prepared.body.chunks(CHUNK_SIZE).enumerate() {
@@ -212,8 +217,8 @@ impl ExternalProcessor for Server {
                 ))));
             }
             response_deadline = Instant::now() + RESPONSE_TIMEOUT;
-            let mut headers_seen = false;
-            let mut trailers_seen = false;
+            let mut has_headers = false;
+            let mut has_trailers = false;
             loop {
                 let next = match timeout_at(response_deadline, input.message()).await {
                     Ok(Ok(Some(next))) => next,
@@ -228,20 +233,20 @@ impl ExternalProcessor for Server {
                     }
                 };
                 response_deadline = Instant::now() + RESPONSE_TIMEOUT;
-                let (output, done) = match next.request {
-                    Some(Input::ResponseHeaders(h)) if !headers_seen => {
-                        headers_seen = true;
+                let (output, is_done) = match next.request {
+                    Some(Input::ResponseHeaders(h)) if !has_headers => {
+                        has_headers = true;
                         (Output::ResponseHeaders(ext::HeadersResponse {
                             response: Some(ext::CommonResponse::default()),
                         }), h.end_of_stream)
                     }
-                    Some(Input::ResponseBody(b)) if headers_seen
-                        && (!trailers_seen || (b.body.is_empty() && b.end_of_stream)) => {
-                        let done = b.end_of_stream;
-                        (Output::ResponseBody(body_reply(b.body, done)), done)
+                    Some(Input::ResponseBody(b)) if has_headers
+                        && (!has_trailers || (b.body.is_empty() && b.end_of_stream)) => {
+                        let is_done = b.end_of_stream;
+                        (Output::ResponseBody(body_reply(b.body, is_done)), is_done)
                     }
-                    Some(Input::ResponseTrailers(_)) if headers_seen && !trailers_seen => {
-                        trailers_seen = true;
+                    Some(Input::ResponseTrailers(_)) if has_headers && !has_trailers => {
+                        has_trailers = true;
                         // ACK trailers, then consume agentgateway's synthetic body EOS.
                         (Output::ResponseTrailers(ext::TrailersResponse::default()), false)
                     }
@@ -251,10 +256,42 @@ impl ExternalProcessor for Server {
                     }
                 };
                 yield Ok(reply(output));
-                if done { return; }
+                if is_done { return; }
             }
         };
-        Ok(Response::new(Box::pin(output)))
+        Ok(Response::new(Box::pin(with_output_timeout(output))))
+    }
+}
+
+fn with_output_timeout(
+    output: impl Stream<Item = Result<ext::ProcessingResponse, Status>> + Send + 'static,
+) -> impl Stream<Item = Result<ext::ProcessingResponse, Status>> + Send {
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut tasks = JoinSet::new();
+    // Poll independently of tonic so a stalled reader cannot retain admission permits.
+    tasks.spawn(async move {
+        let mut output = pin!(output);
+        while let Some(response) = output.next().await {
+            if timeout(RESPONSE_TIMEOUT, tx.send(response))
+                .await
+                .map_err(|_| Status::deadline_exceeded("processor output stalled"))?
+                .is_err()
+            {
+                break;
+            }
+        }
+        Ok::<_, Status>(())
+    });
+    async_stream::stream! {
+        // Owning the JoinSet also cancels the producer when this stream is dropped.
+        while let Some(response) = rx.recv().await {
+            yield response;
+        }
+        match tasks.join_next().await {
+            Some(Ok(Err(error))) => yield Err(error),
+            Some(Err(_)) => yield Err(Status::internal("processor task failed")),
+            _ => {}
+        }
     }
 }
 
@@ -265,14 +302,14 @@ fn reply(response: Output) -> ext::ProcessingResponse {
     }
 }
 
-fn body_reply(body: Vec<u8>, end_of_stream: bool) -> ext::BodyResponse {
+fn body_reply(body: Vec<u8>, is_end_of_stream: bool) -> ext::BodyResponse {
     ext::BodyResponse {
         response: Some(ext::CommonResponse {
             body_mutation: Some(ext::BodyMutation {
                 mutation: Some(ext::body_mutation::Mutation::StreamedResponse(
                     ext::StreamedBodyResponse {
                         body,
-                        end_of_stream,
+                        end_of_stream: is_end_of_stream,
                     },
                 )),
             }),
@@ -315,17 +352,16 @@ fn reject(error: Error) -> ext::ProcessingResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
     use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 
     type Client =
         ext::external_processor_client::ExternalProcessorClient<tonic::transport::Channel>;
 
-    async fn start() -> (Client, Arc<Semaphore>) {
+    async fn start(max_active_streams: usize) -> (Client, Arc<Semaphore>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let runner = switchyard_runner::Runner::from_toml(include_str!("../config/routes.toml"));
-        let server = Server::new(Arc::new(Router::new(runner.unwrap())));
+        let server = Server::new(Arc::new(Router::new(runner.unwrap())), max_active_streams);
         let requests = server.requests.clone();
         tokio::spawn(async move {
             tonic::transport::Server::builder()
@@ -353,10 +389,10 @@ mod tests {
         }
     }
 
-    fn body(bytes: &[u8], end_of_stream: bool) -> ext::HttpBody {
+    fn body(bytes: &[u8], is_end_of_stream: bool) -> ext::HttpBody {
         ext::HttpBody {
             body: bytes.to_vec(),
-            end_of_stream,
+            end_of_stream: is_end_of_stream,
         }
     }
 
@@ -396,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn routes_upload_and_passes_response_through_trailers_to_eos() {
-        let (mut client, requests) = start().await;
+        let (mut client, requests) = start(16).await;
         let (tx, receive) = mpsc::channel(8);
         send(&tx, headers()).await;
         let receive = ReceiverStream::new(receive);
@@ -430,17 +466,17 @@ mod tests {
         assert_eq!(requests.available_permits(), 8);
         send(&tx, Input::ResponseHeaders(ext::HttpHeaders::default())).await;
         assert!(matches!(next(&mut rx).await, Output::ResponseHeaders(_)));
-        for (bytes, done) in [
+        for (bytes, is_done) in [
             (b"data: hello\n\n".as_slice(), false),
             (b"".as_slice(), true),
         ] {
-            send(&tx, Input::ResponseBody(body(bytes, done))).await;
+            send(&tx, Input::ResponseBody(body(bytes, is_done))).await;
             let Output::ResponseBody(b) = next(&mut rx).await else {
                 panic!()
             };
             let b = streamed(b);
-            assert_eq!((b.body.as_slice(), b.end_of_stream), (bytes, done));
-            if !done {
+            assert_eq!((b.body.as_slice(), b.end_of_stream), (bytes, is_done));
+            if !is_done {
                 send(&tx, Input::ResponseTrailers(ext::HttpTrailers::default())).await;
                 assert!(matches!(next(&mut rx).await, Output::ResponseTrailers(_)));
             }
@@ -457,7 +493,7 @@ mod tests {
             tokio::time::resume();
         }
 
-        let (mut client, _) = start().await;
+        let (mut client, _) = start(1).await;
         let (tx, receive) = mpsc::channel(8);
         send(&tx, headers()).await;
         let mut rx = client
@@ -478,6 +514,16 @@ mod tests {
         send(&tx, Input::ResponseHeaders(ext::HttpHeaders::default())).await;
         assert!(matches!(next(&mut rx).await, Output::ResponseHeaders(_)));
 
+        let mut rejected = client
+            .process(tokio_stream::iter([input(headers())]))
+            .await
+            .unwrap()
+            .into_inner();
+        let Output::ImmediateResponse(error) = next(&mut rejected).await else {
+            panic!()
+        };
+        assert_eq!(error.status.unwrap().code, 503);
+
         for _ in 0..3 {
             elapse(RESPONSE_TIMEOUT / 2).await;
             send(&tx, Input::ResponseBody(body(b"data: hello\n\n", false))).await;
@@ -495,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_cumulative_body_limit_before_routing_headers() {
-        let (mut client, _) = start().await;
+        let (mut client, _) = start(16).await;
         let messages = tokio_stream::iter([
             input(headers()),
             input(Input::RequestBody(body(&vec![b' '; MAX_BODY], false))),

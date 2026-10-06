@@ -23,6 +23,8 @@ sequenceDiagram
     EPP-->>Gateway: Worker endpoint
     Gateway->>Worker: Forward request
     Worker-->>Gateway: JSON or SSE response
+    Gateway->>Proc: Response headers and chunks
+    Proc-->>Gateway: Pass through unchanged
     Gateway-->>Client: JSON or SSE response
 ```
 
@@ -50,6 +52,8 @@ it uses the repository's shared lockfile and does not require a Dynamo checkout 
 
 The supplied [routes.toml](config/routes.toml) uses StageRouter to choose between the two
 Qwen models. Send `model: "auto"`; add `X-Switchyard-Session-Id` to retain routing state.
+Send `X-Switchyard-Session-Final: true` on the final request to release its session admission
+slot after a successful routing decision. Otherwise, idle slots expire after one hour.
 
 To change routing, edit the TOML in the Dynamo deployment example and reapply its
 Kustomization. Keep model IDs aligned with the HTTPRoutes and InferencePools.
@@ -57,3 +61,17 @@ Policies must select a model without generating a response or rewriting the requ
 
 This example supports text and tool history with one PreProc replica. Routing state resets
 on restart; Dynamo load and cache signals are not used.
+
+## Concurrency and timeouts
+
+agentgateway 1.0.0 sends responses through PreProc and cannot disable those phases.
+Each request holds a stream slot until its response finishes. Set `MAX_ACTIVE_STREAMS` to change
+the default of 16 per replica. Preprocessing also has a separate limit of eight concurrent
+requests; reaching either limit returns HTTP 503. Raising the stream limit increases memory
+and response-forwarding work.
+
+PreProc allows 120 seconds of response inactivity, resetting the deadline on each message.
+It also releases stream slots if output forwarding stalls for 120 seconds.
+The Dynamo example's HTTPRoute uses a separate 120-second request deadline: in agentgateway
+1.0.0 it bounds the wait for upstream response headers, measured from request start, rather
+than the duration of an active response stream.

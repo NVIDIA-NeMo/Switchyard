@@ -28,7 +28,7 @@ switchyard-translation.workspace = true
 anyhow = "1"
 async-stream.workspace = true
 axum = "0.8"
-futures-core = "0.3"
+futures-util.workspace = true
 http.workspace = true
 envoy-types = "=0.6.1"
 serde_json = { workspace = true, features = ["raw_value"] }

@@ -28,8 +28,9 @@ use std::{
     time::Duration,
 };
 
+use anyhow::{Context, ensure};
 use axum::{Router as HttpRouter, extract::State, http::StatusCode, routing::get};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tonic::transport::Server;
 
 use crate::{preprocessor::MAX_BODY, router::Router};
@@ -49,6 +50,15 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+    let max_active_streams = std::env::var("MAX_ACTIVE_STREAMS")
+        .unwrap_or_else(|_| "16".into())
+        .parse::<usize>()
+        .context("MAX_ACTIVE_STREAMS must be a positive integer")?;
+    ensure!(
+        (1..=Semaphore::MAX_PERMITS).contains(&max_active_streams),
+        "MAX_ACTIVE_STREAMS must be between 1 and {}",
+        Semaphore::MAX_PERMITS
+    );
     let router = Arc::new(Router::load(
         std::env::var("ROUTES_CONFIG").unwrap_or_else(|_| "config/routes.toml".into()),
     )?);
@@ -70,14 +80,14 @@ async fn main() -> anyhow::Result<()> {
             })
             .await
     });
-    let processor = server::Server::new(router)
+    let processor = server::Server::new(router, max_active_streams)
         .into_service()
         .max_decoding_message_size(MAX_BODY + 65536)
         .max_encoding_message_size(MAX_BODY + 65536);
     let addr = std::env::var("GRPC_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:9002".into())
         .parse()?;
-    tracing::info!(%addr, "configured decision-only preprocessor listening");
+    tracing::info!(%addr, max_active_streams, "configured decision-only preprocessor listening");
     let grpc = Server::builder()
         .http2_keepalive_interval(Some(Duration::from_secs(30)))
         .add_service(processor)

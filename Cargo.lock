@@ -2475,7 +2475,7 @@ dependencies = [
  "async-stream",
  "axum",
  "envoy-types",
- "futures-core",
+ "futures-util",
  "http",
  "serde_json",
  "switchyard-protocol",

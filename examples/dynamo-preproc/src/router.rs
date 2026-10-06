@@ -76,7 +76,9 @@ impl Router {
             agent.as_ref().is_none_or(|id| id.len() <= 256),
             "agent id exceeds 256 bytes"
         );
-        if let Some(session) = request
+        let is_session_final =
+            request.metadata.as_ref().and_then(|m| m.session_final) == Some(true);
+        let admission = if let Some(session) = request
             .metadata
             .as_ref()
             .and_then(|m| m.session_id.as_ref())
@@ -94,14 +96,24 @@ impl Router {
                 );
             }
             // The SDK can retain session state even when decide fails or is cancelled.
-            sessions.insert(identity, now);
-        }
+            sessions.insert(identity.clone(), now);
+            Some((identity, now))
+        } else {
+            None
+        };
         let mut original_ir = request.llm_request.clone();
         original_ir.model = None;
         let outcome = tokio::time::timeout(Duration::from_secs(1), route.decide(request))
             .await
             .map_err(|_| crate::server::Error::new(504, "SDK routing deadline exceeded"))?
             .map_err(|_| crate::server::Error::new(500, "SDK routing failed"))?;
+        if is_session_final && let Some((identity, seen)) = admission {
+            let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
+            // A newer request for this identity must retain its admission slot.
+            if sessions.get(&identity) == Some(&seen) {
+                sessions.remove(&identity);
+            }
+        }
         ensure!(outcome.response.is_none(), "routing-only contract violated");
         let model = outcome.selected_model_id()?.clone();
         let mut selected_ir = outcome.request.llm_request;
@@ -164,6 +176,12 @@ mod tests {
                 .status_code,
             503
         );
+        let mut final_headers = session("0");
+        final_headers.insert("x-switchyard-session-final", "true".parse().unwrap());
+        r.decide(&quiet, &final_headers).await.unwrap();
+        assert_eq!(r.sessions.lock().unwrap().len(), 4095);
+        r.decide(&quiet, &session("new")).await.unwrap();
+        assert_eq!(r.sessions.lock().unwrap().len(), 4096);
         {
             let mut sessions = r.sessions.lock().unwrap();
             for seen in sessions.values_mut() {
