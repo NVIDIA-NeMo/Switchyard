@@ -113,7 +113,7 @@ impl Runner {
     ) -> Option<DecisionDescription> {
         let route = self.route(model.as_str())?;
         let resolve = |selected: &ModelId| {
-            let mut target = route.decision_target(selected)?;
+            let mut target = route.decision_target(selected, &outcome.request)?;
             let mut url = reqwest::Url::parse(&target.base_url).ok()?;
             let query: Vec<_> = url
                 .query_pairs()

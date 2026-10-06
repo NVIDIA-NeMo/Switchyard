@@ -19,6 +19,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::privacy::PrivacyPolicy;
 use crate::route::ExecutionLane;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -75,7 +76,16 @@ struct RouteConfig {
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
     vision: Option<bool>,
+    privacy: Option<PrivacyConfig>,
     algorithm: AlgorithmSpec,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyConfig {
+    restricted_targets: BTreeMap<String, String>,
+    #[serde(default)]
+    accept_external_signal: bool,
 }
 
 struct TargetPromptPolicy {
@@ -97,6 +107,11 @@ struct ResolvedDecisionTarget<'a> {
     client: &'a Arc<dyn RoutedDecisionClient>,
 }
 
+struct BuiltPrivacy {
+    policy: PrivacyPolicy,
+    restricted: ExecutionLane,
+}
+
 impl<'de> Deserialize<'de> for RouteConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -108,6 +123,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let privacy = take_optional(&mut table, "privacy")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -116,6 +132,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             tool_calling,
             reasoning,
             vision,
+            privacy,
             algorithm,
         })
     }
@@ -258,7 +275,7 @@ impl DeploymentConfig {
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
-            let targets = self.resolve_lane_targets(config)?;
+            let standard_targets = self.resolve_lane_targets(route_name, config, None)?;
             let decision = config
                 .algorithm
                 .decision_judge()
@@ -270,9 +287,13 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let (lane, caller_auth) =
-                self.build_lane(route_name, config, &targets, decision, &clients)?;
-            let route = Route::from_lane(lane, caller_auth, capabilities);
+            let privacy = self.build_privacy(route_name, config, &standard_targets, &clients)?;
+            let (standard, caller_auth) =
+                self.build_lane(route_name, config, &standard_targets, decision, &clients)?;
+            let mut route = Route::from_lane(standard, caller_auth, capabilities);
+            if let Some(privacy) = privacy {
+                route = route.with_privacy(privacy.policy, privacy.restricted);
+            }
             routes.push((config.id.clone(), route));
         }
         let runner = Runner::new(routes)
@@ -281,18 +302,100 @@ impl DeploymentConfig {
         Ok(runner)
     }
 
-    fn resolve_lane_targets<'a>(&'a self, route: &'a RouteConfig) -> RunnerResult<LaneTargets<'a>> {
-        route
-            .llm_callable_target_names()
+    fn build_privacy(
+        &self,
+        route_name: &str,
+        route: &RouteConfig,
+        standard: &LaneTargets<'_>,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> RunnerResult<Option<BuiltPrivacy>> {
+        let Some(config) = &route.privacy else {
+            return Ok(None);
+        };
+        if route.algorithm.decision_judge().is_some() {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} cannot combine privacy with a typed decision judge"
+            )));
+        }
+        if !route.algorithm.supports_privacy_lanes() {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} cannot use privacy with prefill_router"
+            )));
+        }
+        if !config.accept_external_signal {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy must configure at least one request input"
+            )));
+        }
+        let restricted_targets =
+            self.resolve_lane_targets(route_name, route, Some(&config.restricted_targets))?;
+        if self.uses_forward_auth(standard) || self.uses_forward_auth(&restricted_targets) {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} cannot use privacy with forward_auth"
+            )));
+        }
+        let (restricted, _) =
+            self.build_lane(route_name, route, &restricted_targets, None, clients)?;
+        Ok(Some(BuiltPrivacy {
+            policy: PrivacyPolicy::new(config.accept_external_signal),
+            restricted,
+        }))
+    }
+
+    fn uses_forward_auth(&self, targets: &LaneTargets<'_>) -> bool {
+        targets.values().any(|target| {
+            self.llm_clients
+                .get(&target.config.llm_client)
+                .is_some_and(|client| client.forward_auth)
+        })
+    }
+
+    fn resolve_lane_targets<'a>(
+        &'a self,
+        route_name: &str,
+        route: &'a RouteConfig,
+        aliases: Option<&'a BTreeMap<String, String>>,
+    ) -> RunnerResult<LaneTargets<'a>> {
+        let callable = route.llm_callable_target_names();
+        if let Some(aliases) = aliases {
+            let callable_set = callable.iter().copied().collect::<BTreeSet<_>>();
+            if let Some(name) = callable_set
+                .iter()
+                .find(|name| !aliases.contains_key(**name))
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} privacy is missing restricted target {name}"
+                )));
+            }
+            if let Some(name) = aliases
+                .keys()
+                .find(|name| !callable_set.contains(name.as_str()))
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} privacy maps unused target {name}"
+                )));
+            }
+        }
+        callable
             .into_iter()
             .map(|name| {
-                let config = self.targets.get(name).ok_or_else(|| {
-                    RunnerError::configuration(format!("route references unknown target {name}"))
+                let target_name = aliases
+                    .and_then(|aliases| aliases.get(name).map(String::as_str))
+                    .unwrap_or(name);
+                let config = self.targets.get(target_name).ok_or_else(|| {
+                    let message = if aliases.is_some() {
+                        format!(
+                            "route {route_name} privacy references unknown target {target_name}"
+                        )
+                    } else {
+                        format!("route references unknown target {target_name}")
+                    };
+                    RunnerError::configuration(message)
                 })?;
                 Ok((
                     name,
                     ResolvedTarget {
-                        target_name: name,
+                        target_name,
                         config,
                     },
                 ))

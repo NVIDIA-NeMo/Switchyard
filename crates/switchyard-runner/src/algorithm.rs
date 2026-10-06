@@ -562,6 +562,11 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
+    /// Whether the algorithm can be built independently for two target maps.
+    pub(crate) const fn supports_privacy_lanes(&self) -> bool {
+        !matches!(self, Self::PrefillRouter { .. })
+    }
+
     pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
         match self {
             Self::LlmClassifier { config, .. } => config
