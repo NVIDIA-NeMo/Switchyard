@@ -3556,6 +3556,53 @@ fn openai_chat_request_accepts_legacy_function_role() {
     }
 }
 
+// Anthropic server tools (here the advisor) are run by the provider, so a
+// translated request must not offer them to the model as functions, nor force
+// a call to one. Same-format replay forwards both unchanged for an upstream
+// that knows them.
+#[test]
+fn anthropic_server_tools_are_not_translated_into_functions() -> TestResult {
+    let engine = TranslationEngine::default();
+    // The production default keeps the source body for same-format replay.
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "route", "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {"name": "Bash", "input_schema": {"type": "object"}},
+            {"type": "advisor_20260301", "name": "advisor", "model": "advisor-model"}
+        ],
+        "tool_choice": {"type": "tool", "name": "advisor"}
+    });
+    let request = engine
+        .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+        .request;
+
+    let chat = engine
+        .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+        .body;
+    let names = chat["tools"]
+        .as_array()
+        .ok_or("expected chat tools")?
+        .iter()
+        .map(|tool| tool["function"]["name"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names, [json!("Bash")]);
+    assert!(chat.get("tool_choice").is_none());
+
+    let responses = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+    assert!(responses.get("tool_choice").is_none());
+
+    let replayed = engine
+        .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .body;
+    assert_eq!(replayed["tools"], body["tools"]);
+    assert_eq!(replayed["tool_choice"], body["tool_choice"]);
+    Ok(())
+}
+
 // When all tools are dropped during Responses→Chat translation, tool_choice must
 // also be omitted — emitting tool_choice without tools causes upstream 400s.
 #[test]
