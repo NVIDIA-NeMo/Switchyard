@@ -106,7 +106,7 @@ impl RunnerError {
 }
 
 // Configured algorithm and targets for one execution lane.
-struct ExecutionLane {
+pub(crate) struct ExecutionLane {
     algorithm: Arc<dyn Algorithm>,
     // Resolves each offloaded call to the client configured for the target the algorithm
     // selected. A route is a synthetic model with no upstream of its own, so this is a
@@ -116,6 +116,26 @@ struct ExecutionLane {
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
     models: Arc<RuntimeModels>,
+}
+
+impl ExecutionLane {
+    pub(crate) fn new(
+        algorithm: Arc<dyn Algorithm>,
+        clients: ClientRouter,
+        anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+        responses_auxiliary_target: Option<AuxiliaryTarget>,
+        decision_targets: Vec<DecisionTarget>,
+        models: RuntimeModels,
+    ) -> Self {
+        Self {
+            algorithm,
+            clients,
+            anthropic_auxiliary_target,
+            responses_auxiliary_target,
+            decision_targets,
+            models: Arc::new(models),
+        }
+    }
 }
 
 /// A configured algorithm and the per-target clients its calls resolve through.
@@ -144,15 +164,27 @@ impl Route {
         decision_targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
-        Self {
-            lane: ExecutionLane {
+        Self::from_lane(
+            ExecutionLane::new(
                 algorithm,
                 clients,
                 anthropic_auxiliary_target,
                 responses_auxiliary_target,
                 decision_targets,
-                models: Arc::new(models),
-            },
+                models,
+            ),
+            caller_auth,
+            capabilities,
+        )
+    }
+
+    pub(crate) fn from_lane(
+        lane: ExecutionLane,
+        caller_auth: Option<CallerAuthKind>,
+        capabilities: ModelCapabilities,
+    ) -> Self {
+        Self {
+            lane,
             caller_auth,
             capabilities,
         }
