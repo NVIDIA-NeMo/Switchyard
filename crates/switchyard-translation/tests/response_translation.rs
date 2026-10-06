@@ -1029,6 +1029,46 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     Ok(())
 }
 
+// Verifies Anthropic's context-window stop is reported as a token limit.
+#[test]
+fn anthropic_context_window_stop_translates_to_token_limit() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet",
+        "content": [{"type": "text", "text": "Half an ans"}],
+        "stop_reason": "model_context_window_exceeded",
+        "usage": {"input_tokens": 12, "output_tokens": 7}
+    });
+
+    let chat = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(chat["choices"][0]["finish_reason"], "length");
+
+    let responses = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(responses["status"], "incomplete");
+    assert_eq!(
+        responses["incomplete_details"],
+        json!({"reason": "max_output_tokens"})
+    );
+    Ok(())
+}
+
 #[test]
 fn failed_responses_return_upstream_failure_with_provider_message() -> TestResult {
     let engine = TranslationEngine::default();

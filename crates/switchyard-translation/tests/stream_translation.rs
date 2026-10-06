@@ -2424,6 +2424,65 @@ fn anthropic_max_tokens_stop_translates_to_responses_incomplete_event() -> TestR
     Ok(())
 }
 
+// Verifies a streamed Anthropic context-window stop is reported as a token limit.
+#[test]
+fn anthropic_context_window_stop_streams_as_token_limit() -> TestResult {
+    let engine = TranslationEngine::default();
+    let delta = json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": "model_context_window_exceeded"},
+        "usage": {"output_tokens": 1}
+    });
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiChat,
+        &delta,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
+    let finish_reasons: Vec<&Value> = events
+        .iter()
+        .map(|event| &event["choices"][0]["finish_reason"])
+        .filter(|reason| !reason.is_null())
+        .collect();
+    assert_eq!(finish_reasons, vec!["length"]);
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiResponses);
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &delta,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Responses event".into());
+    };
+    assert_eq!(terminal["type"], "response.incomplete");
+    assert_eq!(
+        terminal["response"]["incomplete_details"],
+        json!({"reason": "max_output_tokens"})
+    );
+
+    // The server buffers a stream through the accumulator before encoding it.
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::AnthropicMessages);
+    let decoded = engine.decode_stream_event(&mut state, WireFormat::AnthropicMessages, delta)?;
+    let mut accumulator = ResponseAccumulator::new();
+    for chunk in decoded.normalized() {
+        accumulator.push(chunk.clone());
+    }
+    assert_eq!(
+        accumulator.finish().outputs[0].stop_reason,
+        Some(StopReason::MaxTokens)
+    );
+    Ok(())
+}
+
 // Verifies a streamed response.incomplete from a Responses upstream reaches a Chat client.
 #[test]
 fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
