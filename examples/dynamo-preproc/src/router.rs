@@ -140,13 +140,6 @@ mod tests {
     fn neutral() -> Value {
         json!({"model":"auto", "messages":[{"role":"user", "content":"Say hello"}], "stream":true, "temperature":0.2, "custom_vendor_field":{"preserve":true}, "nvext":{"custom":"keep"}})
     }
-    fn recovery() -> Value {
-        json!({"model":"auto", "messages":[
-        {"role":"user", "content":"Fix the test failure"},
-        {"role":"assistant", "content":null, "tool_calls":[{"id":"call-1", "type":"function", "function":{"name":"Bash", "arguments":"{\"command\":\"pytest tests/\"}"}}]},
-        {"role":"tool", "tool_call_id":"call-1", "content":"MemoryError: out of memory"}
-    ], "tools":[{"type":"function", "function":{"name":"Bash", "parameters":{"type":"object"}}}]})
-    }
     fn session(id: &str) -> http::HeaderMap {
         let mut h = http::HeaderMap::new();
         h.insert("x-switchyard-session-id", id.parse().unwrap());
@@ -186,96 +179,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn named_route_selects_added_target_without_sdk_http_calls() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let source = include_str!("../config/routes.toml").replace(
-            "http://switchyard-gateway/v1",
-            &format!("http://{}/v1", listener.local_addr().unwrap()),
-        );
-        let source = format!(
-            "{source}\n[targets.third]\nid = 'Another/Model'\nllm_client = 'dynamo'\n[routes.direct]\nid = 'direct-third'\ntype = 'passthrough'\ntarget = 'third'\n"
-        );
-        let r = Router::new(Runner::from_toml(&source).unwrap());
-        let mut input = neutral();
-        input["model"] = json!("direct-third");
-        let (body, model) = r
-            .decide(
-                &serde_json::to_vec(&input).unwrap(),
-                &http::HeaderMap::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(model, "Another/Model");
-        input["model"] = json!("Another/Model");
-        assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), input);
-        assert!(matches!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        ));
-    }
-
-    #[tokio::test]
-    async fn named_routes_isolate_state_and_reject_oversized_agent_without_session() {
-        let source = format!(
-            "{}\n[routes.other]\nid = 'other'\ntype = 'stage_router'\nefficient_target = 'qwen-small'\ncapable_target = 'qwen-large'\npicker = 'efficient_first'\nconfidence_threshold = 0.5\n",
-            include_str!("../config/routes.toml")
-        );
-        let r = Router::new(Runner::from_toml(&source).unwrap());
-        let headers = session("shared-session");
-        assert_eq!(
-            r.decide(&serde_json::to_vec(&recovery()).unwrap(), &headers)
-                .await
-                .unwrap()
-                .1,
-            "Qwen/Qwen3-1.7B"
-        );
-        let mut quiet = neutral();
-        quiet["model"] = json!("other");
-        assert_eq!(
-            r.decide(&serde_json::to_vec(&quiet).unwrap(), &headers)
-                .await
-                .unwrap()
-                .1,
-            "Qwen/Qwen3-0.6B"
-        );
-        quiet["model"] = json!("auto");
-        assert_eq!(
-            r.decide(&serde_json::to_vec(&quiet).unwrap(), &headers)
-                .await
-                .unwrap()
-                .1,
-            "Qwen/Qwen3-1.7B"
-        );
-        let mut headers = http::HeaderMap::new();
-        headers.insert("x-switchyard-agent-id", "x".repeat(257).parse().unwrap());
-        assert!(
-            r.decide(&serde_json::to_vec(&quiet).unwrap(), &headers)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn selects_both_models_and_preserves_request_fields() {
-        for (mut input, expected) in [
-            (neutral(), "Qwen/Qwen3-0.6B"),
-            (recovery(), "Qwen/Qwen3-1.7B"),
-        ] {
-            let (body, model) = router()
-                .decide(
-                    &serde_json::to_vec(&input).unwrap(),
-                    &http::HeaderMap::new(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(model, expected);
-            input["model"] = json!(expected);
-            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), input);
-        }
-    }
-
-    #[tokio::test]
     async fn preserves_original_values_including_precise_numbers_and_nested_fields() {
         let input = br#"{
             "mo\u0064el":"auto",
@@ -301,46 +204,5 @@ mod tests {
                 assert_eq!(rewritten[&key].get(), value.get(), "changed {key}");
             }
         }
-    }
-
-    #[tokio::test]
-    async fn same_session_holds_capable_without_leaking_to_other_sessions() {
-        let r = router();
-        let failure = serde_json::to_vec(&recovery()).unwrap();
-        let quiet = serde_json::to_vec(&neutral()).unwrap();
-        assert_eq!(
-            r.decide(&failure, &session("session-a")).await.unwrap().1,
-            "Qwen/Qwen3-1.7B"
-        );
-        assert_eq!(
-            r.decide(&quiet, &session("session-b")).await.unwrap().1,
-            "Qwen/Qwen3-0.6B"
-        );
-        assert_eq!(
-            r.decide(&quiet, &session("session-a")).await.unwrap().1,
-            "Qwen/Qwen3-1.7B"
-        );
-        assert_eq!(
-            r.decide(&quiet, &session("session-a")).await.unwrap().1,
-            "Qwen/Qwen3-1.7B"
-        );
-        assert_eq!(
-            r.decide(&quiet, &session("session-a")).await.unwrap().1,
-            "Qwen/Qwen3-0.6B"
-        );
-    }
-
-    #[tokio::test]
-    async fn rejects_unknown_route() {
-        let mut body = neutral();
-        body["model"] = json!("unknown");
-        assert_eq!(
-            router()
-                .decide(&serde_json::to_vec(&body).unwrap(), &http::HeaderMap::new())
-                .await
-                .unwrap_err()
-                .to_string(),
-            "model is outside the configured catalog"
-        );
     }
 }

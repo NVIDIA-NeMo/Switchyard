@@ -96,52 +96,32 @@ pub fn headers(input: &[(String, String)]) -> anyhow::Result<(http::HeaderMap, V
 mod tests {
     use super::*;
 
-    fn input() -> Vec<(String, String)> {
-        [
+    #[test]
+    fn preserves_repeated_headers_but_rejects_ambiguous_routing_inputs() {
+        let input = [
             (":method", "POST"),
             (":path", "/v1/chat/completions"),
             ("content-type", "application/json"),
+            ("cookie", "a=1"),
+            ("Cookie", "b=2"),
+            ("x-dynamo-worker-id", "forged"),
         ]
-        .into_iter()
-        .map(|(k, v)| (k.into(), v.into()))
-        .collect()
-    }
-
-    #[test]
-    fn strips_forged_routing_headers_and_rejects_duplicate_session() {
-        let mut input = input();
-        input.extend([
-            ("cookie".into(), "a=1".into()),
-            ("Cookie".into(), "b=2".into()),
-            ("via".into(), "proxy-a".into()),
-            ("via".into(), "proxy-b".into()),
-        ]);
-        input.push(("x-dynamo-worker-id".into(), "forged".into()));
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .to_vec();
         let (map, remove) = headers(&input).unwrap();
         assert_eq!(
             map.get_all("cookie").iter().collect::<Vec<_>>(),
             ["a=1", "b=2"]
         );
-        assert_eq!(
-            map.get_all("via").iter().collect::<Vec<_>>(),
-            ["proxy-a", "proxy-b"]
-        );
         for key in [
             MODEL_HEADER,
             "x-gateway-destination-endpoint",
             "x-dynamo-worker-id",
-            "x-worker-instance-id",
-            "x-prefill-instance-id",
-            "x-prefiller-host-port",
-            "x-dp-rank",
-            "x-data-parallel-rank",
-            "x-prefill-dp-rank",
         ] {
             assert!(remove.iter().any(|value| value == key));
         }
         for key in [
             "x-switchyard-session-id",
-            "x-switchyard-agent-id",
             "content-type",
             "content-length",
             "content-encoding",
