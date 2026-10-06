@@ -32,12 +32,12 @@ use switchyard_libsy::{
 };
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
-    ModelId, Request, Response, ResponseAccumulator, RoutedLlmClient, RoutingFallbackReason,
-    WireFormat,
+    ModelId, Request, Response, ResponseAccumulator, RoutedDecisionClient, RoutedLlmClient,
+    RoutingFallbackReason, WireFormat,
 };
 use switchyard_translation::prepare_request_for_target;
 
-use crate::observation::{LlmCallObservation, RunObservation, RunObserver};
+use crate::observation::{ModelCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
 
 /// Run one request to completion, serving every offloaded model call with `client`.
@@ -152,18 +152,38 @@ pub async fn decide(
     Ok(outcome)
 }
 
-async fn unsupported_decision(call: CallDecision) -> Result<()> {
-    let model = call.model.clone();
-    call.respond(Err(LibsyError::client_call(
-        model,
-        LlmClientError::General("decision calls are not supported by this client".to_string()),
-    )))
+#[tracing::instrument(
+    name = "libsy.decision_client_call",
+    skip_all,
+    fields(algorithm = %call.algorithm, selected_model = %call.model, outcome = tracing::field::Empty),
+)]
+async fn serve_decision(
+    clients: &ClientRouter,
+    call: CallDecision,
+    observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
+) -> Result<()> {
+    let client = clients.route_decision(&call.model);
+    let started = Instant::now();
+    let result = async { client?.call(call.request.clone()).await }.await;
+    tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
+    if let Some(observations) = observations {
+        observations
+            .lock()
+            .push(RunObservation::DecisionCall(ModelCallObservation {
+                selected_model: call.model.clone(),
+                is_success: result.is_ok(),
+                duration: started.elapsed(),
+                usage: result.as_ref().ok().map(|response| response.usage.clone()),
+            }));
+    }
+    let result = result.map_err(|error| LibsyError::client_call(call.model.clone(), error));
+    call.respond(result)
 }
 
 /// Emits completed routing calls after the outcome reveals whether one response became the answer.
 fn emit_routing_observations(
     observer: &Option<RunObserver>,
-    observations: &Option<Arc<Mutex<Vec<LlmCallObservation>>>>,
+    observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
     answered_model: Option<&ModelId>,
 ) {
     let (Some(observer), Some(observations)) = (observer, observations) else {
@@ -171,31 +191,36 @@ fn emit_routing_observations(
     };
     let mut answer_observed = false;
     for observation in observations.lock().drain(..) {
-        if !answer_observed && answered_model == Some(&observation.selected_model) {
-            answer_observed = true;
-            observer(RunObservation::AnswerCall(observation));
-        } else {
-            observer(RunObservation::LlmCall(observation));
-        }
+        observer(match observation {
+            RunObservation::LlmCall(call)
+                if !answer_observed && answered_model == Some(&call.selected_model) =>
+            {
+                answer_observed = true;
+                RunObservation::AnswerCall(call)
+            }
+            observation => observation,
+        });
     }
 }
 
 /// Serve one offloaded call and fulfill its promise.
 ///
-/// LLM failures stop the run unless the call enables recovery. Unsupported decisions
-/// return an error to the algorithm.
+/// LLM failures stop the run unless the call enables recovery. Decision results,
+/// including client failures, go back to the algorithm for its routing policy.
 async fn serve(
     clients: ClientRouter,
     call: Call,
-    observations: Option<Arc<Mutex<Vec<LlmCallObservation>>>>,
+    observations: Option<Arc<Mutex<Vec<RunObservation>>>>,
 ) -> Result<()> {
     let call = match call {
         Call::Model(call) => *call,
-        Call::Decision(call) => return unsupported_decision(*call).await,
+        Call::Decision(call) => return serve_decision(&clients, *call, &observations).await,
     };
     let observe = |observation| {
         if let Some(observations) = &observations {
-            observations.lock().push(observation);
+            observations
+                .lock()
+                .push(RunObservation::LlmCall(observation));
         }
     };
     let target = call.models.first().ok_or(LibsyError::NoTargets)?;
@@ -224,7 +249,7 @@ async fn call_first_available(
     algorithm: &str,
     request: &Request,
     models: &[ModelId],
-    observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
+    observe: &(dyn Fn(ModelCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
         let request = clients.prepare_completion_request(request.clone(), target);
@@ -301,7 +326,7 @@ async fn call_one(
     model_id: &ModelId,
     request: Request,
     algorithm: &str,
-    observe: &(dyn Fn(LlmCallObservation) + Send + Sync),
+    observe: &(dyn Fn(ModelCallObservation) + Send + Sync),
     // index is for span log
     index: usize,
     // count is for span log
@@ -342,7 +367,7 @@ async fn call_one(
     } else {
         result
     };
-    observe(LlmCallObservation {
+    observe(ModelCallObservation {
         selected_model: model_id.clone(),
         is_success: result.is_ok(),
         duration,
@@ -557,8 +582,7 @@ fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
 ///
 /// An algorithm routes among named targets; which provider each target lives on is the
 /// host's concern, and two targets in one run may sit on different providers. A router owns
-/// that mapping. It is *not* itself a client: it hands back a [`RoutedLlmClient`] and the
-/// caller makes the call.
+/// that mapping and resolves the client for each kind of call.
 ///
 /// Cloning is cheap — the mapping is shared, so one router can serve every request.
 #[derive(Clone)]
@@ -568,6 +592,7 @@ pub struct ClientRouter {
 
 struct ClientRouting {
     routing: Routing,
+    decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
     target_prompts: HashMap<ModelId, String>,
     routing_answer_target: Option<ModelId>,
     /// Provider-owned routing pins and materialized cross-format history.
@@ -613,13 +638,31 @@ impl ClientRouter {
 
     /// Build a router with an explicit list of models that can answer requests.
     ///
-    /// `by_model` contains every callable model, including classifiers. Only the model IDs in
+    /// `by_model` contains callable LLMs, including LLM classifiers. Only the model IDs in
     /// `completion_targets` determine whether native Responses state needs a routing pin.
     /// Cross-format state is recorded lazily when a Responses request uses a Chat or Anthropic
     /// target. `target_prompts` and `routing_answer_target` have the same meaning as in
     /// [`Self::new_with_target_prompts`].
     pub fn new_with_completion_targets(
         by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>,
+        target_prompts: HashMap<ModelId, String>,
+        routing_answer_target: Option<ModelId>,
+        completion_targets: &[ModelId],
+    ) -> Self {
+        Self::new_with_decision_clients(
+            by_model,
+            HashMap::new(),
+            target_prompts,
+            routing_answer_target,
+            completion_targets,
+        )
+    }
+
+    /// Build a router with separate LLM and decision mappings, shared across clones.
+    /// LLM prompt and completion settings follow [`Self::new_with_completion_targets`].
+    pub fn new_with_decision_clients(
+        by_model: HashMap<ModelId, Arc<dyn RoutedLlmClient>>,
+        decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
         target_prompts: HashMap<ModelId, String>,
         routing_answer_target: Option<ModelId>,
         completion_targets: &[ModelId],
@@ -633,6 +676,7 @@ impl ClientRouter {
         Self {
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
+                decision_clients,
                 target_prompts,
                 routing_answer_target,
                 state_owners: Mutex::default(),
@@ -647,9 +691,18 @@ impl ClientRouter {
     /// backends internally and rejects ones it does not know, so enumerating them here would
     /// only duplicate that.
     pub fn single(client: Arc<dyn RoutedLlmClient>) -> Self {
+        Self::single_with_decision_clients(client, HashMap::new())
+    }
+
+    /// Use one client for all LLM targets and explicit clients for decision targets.
+    pub fn single_with_decision_clients(
+        client: Arc<dyn RoutedLlmClient>,
+        decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
+    ) -> Self {
         Self {
             inner: Arc::new(ClientRouting {
                 routing: Routing::Single(client),
+                decision_clients,
                 target_prompts: HashMap::new(),
                 routing_answer_target: None,
                 state_owners: Mutex::default(),
@@ -676,6 +729,19 @@ impl ClientRouter {
                     })
             }
         }
+    }
+
+    /// Resolve a decision target without falling back to an LLM client.
+    fn route_decision(
+        &self,
+        model: &ModelId,
+    ) -> std::result::Result<&Arc<dyn RoutedDecisionClient>, LlmClientError> {
+        self.inner
+            .decision_clients
+            .get(model)
+            .ok_or_else(|| LlmClientError::Configuration {
+                message: format!("no decision client is configured for model {model:?}"),
+            })
     }
 
     /// Return the recorded model for the requested response or conversation ID.
@@ -1072,6 +1138,239 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn system_one_serves_decisions_and_returns_failures_to_the_classifier()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+        use switchyard_libsy::{
+            CapabilityJudgeConfig, DecisionJudgeConfig, LlmClassifierConfig, LlmTaskClassifier,
+            TaskClassifierConfig,
+        };
+        use switchyard_protocol::{
+            BooleanEstimate, DecisionRequest, DecisionValue, Probability, ScoreValue,
+        };
+        use wiremock::matchers::{body_partial_json, header, path};
+
+        let server = MockServer::start().await;
+        let client = Arc::new(crate::SystemOneClient::new(
+            format!("{}/v1/systemone", server.uri()).parse()?,
+            "test-key".into(),
+            Duration::from_secs(2),
+        )?);
+        assert!(matches!(
+            crate::SystemOneClient::new(
+                format!("{}/v1/systemone", server.uri()).parse()?,
+                "invalid\nkey".into(),
+                Duration::from_secs(2),
+            ),
+            Err(LlmClientError::Configuration { .. })
+        ));
+        let mixed: DecisionRequest = serde_json::from_value(json!({
+            "model": "judge", "context": {"task": "A simple task"},
+            "questions": {
+                "boolean": {"instructions": "Is it simple?", "kind": {"type": "boolean", "data": {
+                    "true_description": ["Simple"], "false_description": null
+                }}},
+                "route": {"instructions": {"task": "Choose"}, "kind": {"type": "choice", "data": {
+                    "options": [{"id": "advantage", "description": "A wins"}, {"id": "no_advantage"}]
+                }}},
+                "score": {"instructions": "Rate difficulty", "kind": {"type": "score", "data": {
+                    "levels": ["Easy", {"description": "Hard"}]
+                }}}
+            }
+        }))?;
+        let mut body = json!({
+            "model": "jev-1.13.0", "usage": {"input_tokens": 42, "output_tokens": 3},
+            "answers": {
+                "boolean": {"type": "noul", "noul": 0.9},
+                "route": {"type": "choice", "choice": "no_advantage", "confidence": 0.7,
+                    "probabilities": {"advantage": 0.2, "no_advantage": 0.8}},
+                "score": {"type": "score", "score": 0.6, "confidence": 0.3,
+                    "legend": {"0": "Easy", "1": {"description": "Hard"}},
+                    "probabilities": {"1": 0.6, "0": 0.4}}
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(body_partial_json(json!({
+                "model": "judge", "state": mixed.context,
+                "questions": {
+                    "boolean": {"type": "noul", "criteria": {"true": ["Simple"]}},
+                    "route": {"type": "choice", "instructions": {"task": "Choose"},
+                        "criteria": {"advantage": "A wins", "no_advantage": null}},
+                    "score": {"type": "score", "criteria": ["Easy", {"description": "Hard"}]}
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client.call(mixed.clone()).await?;
+        assert_eq!(response.model.as_deref(), Some("jev-1.13.0"));
+        assert_eq!(response.id, None);
+        assert_eq!(response.usage.input_tokens, Some(42));
+        assert_eq!(response.usage.total_tokens, None);
+        assert_eq!(
+            response.answers["boolean"].value,
+            DecisionValue::Boolean(BooleanEstimate::ProbabilityTrue(Probability(0.9)))
+        );
+        assert_eq!(
+            response.answers["score"].value,
+            DecisionValue::Score {
+                value: ScoreValue(0.6),
+                probabilities: Some(vec![Probability(0.4), Probability(0.6)]),
+            }
+        );
+        assert_eq!(
+            response.answers["route"].provider_confidence.map(|c| c.0),
+            Some(0.7)
+        );
+        server.verify().await;
+
+        let mut partial = body.clone();
+        partial["answers"]
+            .as_object_mut()
+            .unwrap()
+            .remove("boolean");
+        let mut invalid_responses = vec![json!({"answers": {}}), partial];
+        for (id, answer) in [
+            ("unknown-question", json!({"type": "noul", "noul": 0.9})),
+            ("boolean", json!({"type": "score", "score": 0.0})),
+            (
+                "route",
+                json!({"type": "choice", "choice": "unknown-option",
+                    "probabilities": {"advantage": 0.2, "no_advantage": 0.8}}),
+            ),
+            ("score", json!({"type": "score", "score": -0.1})),
+            (
+                "score",
+                json!({"type": "score", "score": 1.1,
+                "probabilities": {"0": 0.4, "1": 0.6}}),
+            ),
+        ] {
+            let mut invalid = body.clone();
+            invalid["answers"][id] = answer;
+            if id == "unknown-question" {
+                invalid["answers"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("boolean");
+            }
+            invalid_responses.push(invalid);
+        }
+        for template in invalid_responses
+            .into_iter()
+            .map(|body| ResponseTemplate::new(200).set_body_json(body))
+            .chain([ResponseTemplate::new(200).set_body_string("invalid JSON")])
+        {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .respond_with(template)
+                .expect(1)
+                .mount(&server)
+                .await;
+            assert!(matches!(
+                client.call(mixed.clone()).await,
+                Err(LlmClientError::ResponseTranslation(_) | LlmClientError::InvalidResponse { .. })
+            ));
+            server.verify().await;
+        }
+
+        body["answers"].as_object_mut().unwrap().remove("boolean");
+        body["answers"].as_object_mut().unwrap().remove("score");
+        let models = Arc::new(RuntimeModels::new(HashMap::from([
+            (Category::Judge, vec!["judge".into()]),
+            (Category::Capable, vec!["capable".into()]),
+            (Category::Efficient, vec!["efficient".into()]),
+            (Category::Any, vec!["efficient".into(), "capable".into()]),
+        ])));
+        let algorithm = || -> Result<Arc<dyn Algorithm>> {
+            Ok(Arc::new(LlmTaskClassifier::new(
+                LlmClassifierConfig::Capability {
+                    config: TaskClassifierConfig {
+                        judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
+                            cutoff: 0.4,
+                            instructions: None,
+                            candidates: BTreeMap::from([
+                                ("a".into(), "capable".into()),
+                                ("b".into(), "efficient".into()),
+                            ]),
+                            evidence: json!({}),
+                        }),
+                        ..TaskClassifierConfig::default()
+                    },
+                },
+            )?))
+        };
+        for (template, expected, is_success) in [
+            (
+                ResponseTemplate::new(200).set_body_json(&body),
+                "efficient",
+                true,
+            ),
+            (
+                ResponseTemplate::new(503).set_body_string("unavailable"),
+                "capable",
+                false,
+            ),
+        ] {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/systemone"))
+                .respond_with(template)
+                .expect(2)
+                .mount(&server)
+                .await;
+            let llm = Arc::new(CandidateClient {
+                calls: Mutex::default(),
+                requests: Mutex::default(),
+                first: FirstOutcome::Unauthorized,
+            });
+            let clients = ClientRouter::single_with_decision_clients(
+                llm.clone(),
+                HashMap::from([(
+                    ModelId::from("judge"),
+                    client.clone() as Arc<dyn RoutedDecisionClient>,
+                )]),
+            );
+            let outcome = decide(algorithm()?, clients.clone(), request(), models.clone()).await?;
+            assert_eq!(outcome.selected_model_id()?, expected);
+            assert!(llm.calls.lock().is_empty());
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let (selected, _) = run(
+                algorithm()?,
+                clients,
+                request(),
+                models.clone(),
+                Some(Arc::new(move |event| captured.lock().push(event))),
+            )
+            .await?;
+            assert_eq!(selected, expected);
+            assert_eq!(&*llm.calls.lock(), &[ModelId::from(expected)]);
+            {
+                let events = events.lock();
+                let RunObservation::DecisionCall(call) = &events[0] else {
+                    panic!("missing decision observation")
+                };
+                assert_eq!(call.selected_model, "judge");
+                assert_eq!(call.is_success, is_success);
+                assert_eq!(
+                    call.usage.as_ref().and_then(|u| u.input_tokens),
+                    is_success.then_some(42)
+                );
+                assert!(
+                    events
+                        .iter()
+                        .any(|event| matches!(event, RunObservation::AnswerCall(_)))
+                );
+            }
+            server.verify().await;
+        }
+        Ok(())
+    }
+
     fn instruction_text(request: &Request) -> Vec<&str> {
         request
             .llm_request
@@ -1159,12 +1458,13 @@ mod tests {
     fn answer_observation_keeps_call_order() {
         let pending = Some(Arc::new(Mutex::new(
             ["answer", "judge"]
-                .map(|model| LlmCallObservation {
+                .map(|model| ModelCallObservation {
                     selected_model: model.into(),
                     is_success: true,
                     duration: std::time::Duration::ZERO,
                     usage: None,
                 })
+                .map(RunObservation::LlmCall)
                 .into(),
         )));
         let emitted = Arc::new(Mutex::new(Vec::new()));

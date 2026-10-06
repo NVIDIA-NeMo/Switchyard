@@ -4,6 +4,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "examples/dynamo-preproc",
     "crates/libsy",
     "crates/libsy-llm-client",
     "crates/prefill-router",

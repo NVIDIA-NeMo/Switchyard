@@ -2170,7 +2170,7 @@ async fn in_flight_gauge_reads_a_run_parked_on_an_unanswered_routing_call()
 #[tokio::test]
 async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (_, exporter, provider, _, _) = telemetry();
+    let (store, exporter, provider, _, _) = telemetry();
     const ALGO: &str = "obs-abandoned-algo";
     const MODEL: &str = "obs-abandoned-model";
     let algorithm = Arc::new(RoutingCallAlgo {
@@ -2214,6 +2214,11 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
         ),
         Some(0),
         "an abandoned run must not strand the gauge above zero"
+    );
+    let call_span = find_span(&store.spans(), "libsy.llm_call", "selected_model", MODEL);
+    assert_eq!(
+        call_span.fields.get("outcome").map(String::as_str),
+        Some("error")
     );
     Ok(())
 }

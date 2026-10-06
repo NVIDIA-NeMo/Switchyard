@@ -3311,6 +3311,30 @@ fn openai_stop_string_maps_to_anthropic_stop_sequences() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn openai_tool_result_error_flag_survives_decoding() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (flag, expected) in [
+        (Some(json!(true)), Some(true)),
+        (Some(json!(false)), Some(false)),
+        (None, None),
+        (Some(Value::Null), None),
+        (Some(json!("true")), None),
+    ] {
+        let mut message = json!({"role": "tool", "tool_call_id": "call_1", "content": "result"});
+        if let Some(flag) = flag {
+            message["is_error"] = flag;
+        }
+        let body = json!({"model": "route", "messages": [message]});
+        let decoded = engine.decode_request(WireFormat::OpenAiChat, &body, &normalized_policy())?;
+        let ContentBlock::ToolResult(result) = &decoded.request.messages[0].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(result.is_error, expected);
+    }
+    Ok(())
+}
+
 // Verifies OpenAI tool results merge into Anthropic user tool-result content.
 #[test]
 fn openai_tool_results_are_merged_when_translating_to_anthropic() -> TestResult {

@@ -15,9 +15,9 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    TranslatingLlmClient,
+    SystemOneClient, TranslatingLlmClient,
 };
-use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
+use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -60,6 +60,10 @@ pub(crate) struct DeploymentConfig {
     #[serde(default)]
     llm_clients: BTreeMap<String, LlmClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
+    #[serde(default)]
+    decision_clients: BTreeMap<String, DecisionClientConfig>,
+    #[serde(default)]
+    decision_targets: BTreeMap<String, DecisionTargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
 }
 
@@ -211,16 +215,49 @@ impl DeploymentConfig {
 
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
+        let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;
+        for (name, target) in &self.decision_targets {
+            validate_value("decision target name", name)?;
+            validate_value(&format!("decision target {name} id"), &target.id)?;
+            if self.targets.contains_key(name) {
+                return Err(RunnerError::configuration(format!(
+                    "target {name} is defined as both an LLM and decision target"
+                )));
+            }
+            if !decision_clients.contains_key(&target.decision_client) {
+                return Err(RunnerError::configuration(format!(
+                    "decision target {name} references unknown decision client {}",
+                    target.decision_client
+                )));
+            }
+        }
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
-            for target_name in config.callable_target_names() {
-                self.targets.get(target_name).ok_or_else(|| {
-                    RunnerError::configuration(format!(
-                        "route references unknown target {target_name}"
-                    ))
-                })?;
+            let decision_judge = config.algorithm.decision_judge();
+            for name in config.callable_target_names() {
+                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
+                    (self.decision_targets.contains_key(name), "decision")
+                } else {
+                    (self.targets.contains_key(name), "LLM")
+                };
+                if !exists {
+                    return Err(RunnerError::configuration(format!(
+                        "route references unknown target {name}; route {route_name} requires target kind {kind}"
+                    )));
+                }
+            }
+            for name in config.routing_target_names().into_iter().chain(
+                decision_judge
+                    .into_iter()
+                    .flat_map(|(_, judge)| judge.candidates.values().map(String::as_str)),
+            ) {
+                if !self.targets.contains_key(name) {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} completion and candidate target {name} must be an LLM target"
+                    )));
+                }
             }
             let capabilities = config.capabilities();
             if capabilities.context_window == Some(0) {
@@ -233,7 +270,7 @@ impl DeploymentConfig {
                 .build(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
-                self.build_route_clients(route_name, config, &clients)?;
+                self.build_route_clients(route_name, config, &clients, &decision_clients)?;
             let anthropic_auxiliary_target =
                 self.build_anthropic_auxiliary_target(config, &clients);
             let responses_auxiliary_target =
@@ -343,10 +380,49 @@ impl DeploymentConfig {
         Ok(clients)
     }
 
+    fn build_decision_clients(
+        &self,
+        provider_api_keys: &mut Vec<String>,
+    ) -> RunnerResult<BTreeMap<String, Arc<dyn RoutedDecisionClient>>> {
+        self.decision_clients
+            .iter()
+            .map(|(name, config)| {
+                validate_value("decision client name", name)?;
+                let DecisionClientConfig::SystemOne {
+                    endpoint,
+                    api_key_env,
+                    timeout_ms,
+                } = config;
+                if *timeout_ms == 0 {
+                    return Err(RunnerError::configuration(format!(
+                        "decision client {name} timeout_ms must be at least 1"
+                    )));
+                }
+                let api_key = read_api_key(&format!("decision client {name}"), api_key_env)?;
+                let client = SystemOneClient::new(
+                    endpoint.0.clone(),
+                    api_key.clone(),
+                    Duration::from_millis(*timeout_ms),
+                )
+                .map_err(|error| RunnerError::configuration(error.to_string()))?;
+                provider_api_keys.push(api_key);
+                Ok((
+                    name.clone(),
+                    Arc::new(client) as Arc<dyn RoutedDecisionClient>,
+                ))
+            })
+            .collect()
+    }
+
     fn build_targets(&self) -> BTreeMap<String, ModelId> {
         self.targets
             .iter()
             .map(|(name, config)| (name.clone(), config.id.clone()))
+            .chain(
+                self.decision_targets
+                    .iter()
+                    .map(|(name, config)| (name.clone(), config.id.clone())),
+            )
             .collect()
     }
 
@@ -358,6 +434,7 @@ impl DeploymentConfig {
         route_name: &str,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<(ClientRouter, Option<CallerAuthKind>)> {
         let TargetPromptPolicy {
             prompts,
@@ -368,7 +445,20 @@ impl DeploymentConfig {
         let mut caller_auth = None;
         let mut has_mixed_families = false;
         let mut forwarding_origins = BTreeSet::new();
+        let mut decisions_by_model = HashMap::new();
         for name in route.callable_target_names() {
+            if route
+                .algorithm
+                .decision_judge()
+                .is_some_and(|(judge, _)| judge == name)
+            {
+                let target = &self.decision_targets[name];
+                decisions_by_model.insert(
+                    target.id.clone(),
+                    decision_clients[&target.decision_client].clone(),
+                );
+                continue;
+            }
             let target = self.targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
             })?;
@@ -417,8 +507,9 @@ impl DeploymentConfig {
             .into_iter()
             .map(|name| self.targets[name].id.clone())
             .collect::<Vec<_>>();
-        let router = ClientRouter::new_with_completion_targets(
+        let router = ClientRouter::new_with_decision_clients(
             by_model,
+            decisions_by_model,
             prompts,
             routing_answer_target,
             &completion_targets,
@@ -600,6 +691,23 @@ struct LlmClientConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
+enum DecisionClientConfig {
+    SystemOne {
+        endpoint: HttpBaseUrl,
+        api_key_env: String,
+        timeout_ms: u64,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionTargetConfig {
+    id: ModelId,
+    decision_client: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
     id: ModelId,
@@ -691,24 +799,7 @@ fn build_backend(
     let api_key = config
         .api_key_env
         .as_deref()
-        .map(|variable| {
-            if variable.trim().is_empty() {
-                return Err(RunnerError::configuration(format!(
-                    "llm client {client_name} api_key_env must not be empty"
-                )));
-            }
-            let api_key = std::env::var(variable).map_err(|error| {
-                RunnerError::configuration(format!(
-                    "llm client {client_name} could not read api_key_env {variable}: {error}"
-                ))
-            })?;
-            if api_key.trim().is_empty() {
-                return Err(RunnerError::configuration(format!(
-                    "llm client {client_name} api_key_env {variable} is empty"
-                )));
-            }
-            Ok(api_key)
-        })
+        .map(|variable| read_api_key(&format!("llm client {client_name}"), variable))
         .transpose()?;
     let http = HttpBackendConfig {
         base_url: config.base_url.as_str().to_string(),
@@ -728,6 +819,25 @@ fn build_backend(
         ClientFormat::AnthropicMessages => Backend::Anthropic(http),
     };
     Ok(backend)
+}
+
+fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
+    if variable.trim().is_empty() {
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env must not be empty"
+        )));
+    }
+    let api_key = std::env::var(variable).map_err(|error| {
+        RunnerError::configuration(format!(
+            "{client} could not read api_key_env {variable}: {error}"
+        ))
+    })?;
+    if api_key.trim().is_empty() {
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env {variable} is empty"
+        )));
+    }
+    Ok(api_key)
 }
 
 // A function so that serde default can use it.
