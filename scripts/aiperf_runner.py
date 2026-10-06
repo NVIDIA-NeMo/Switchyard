@@ -13,7 +13,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
-SUPPORTED_AIPERF_VERSION = "0.11.0"
+SUPPORTED_AIPERF_VERSION = "0.12.0"
 PROCESS_GROUP_GRACE_SECONDS = 5
 _T_CRITICAL_95 = {
     2: 12.706,

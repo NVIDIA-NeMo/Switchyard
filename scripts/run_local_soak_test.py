@@ -250,7 +250,7 @@ def run_local_soak_test(args: argparse.Namespace) -> Path:
                 "AIPerf",
                 "AIPERF_BIN",
                 os.environ.get("AIPERF_BIN", "aiperf"),
-                "Install AIPerf with: uv tool install --python 3.12 'aiperf==0.11.0'",
+                "Install AIPerf with: uv tool install --python 3.12 'aiperf==0.12.0'",
             ),
         )
     )
