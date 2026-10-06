@@ -149,15 +149,64 @@ def test_scripts_leave_main_config_and_legacy_files_untouched(setup, script, ori
         assert backups[0].read_text() == 'model = "old profile"\n'
 
 
-def test_install_dry_run_does_not_create_codex_files(setup):
-    scripts, _, _, env = setup
+@pytest.mark.parametrize("script", ["install.sh", "uninstall.sh"])
+def test_scripts_dry_run_does_not_create_files(setup, script):
+    scripts, home, _, env = setup
     result = subprocess.run(
-        ["bash", str(scripts / "install.sh"), "--dry-run"],
+        ["bash", str(scripts / script), "--dry-run"],
         env=env,
         capture_output=True,
         text=True,
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert "Use it with: codex -p sy" in result.stdout
-    assert not Path(env["CODEX_HOME"]).exists()
+    assert "would" in result.stdout
+    assert list(home.iterdir()) == []
+
+
+@pytest.mark.parametrize("script", ["install.sh", "uninstall.sh"])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--dryrun"],
+        ["unknown"],
+        [""],
+        ["--dry-run", "extra"],
+        ["--dry-run", "--dry-run"],
+    ],
+)
+def test_scripts_reject_unknown_arguments_before_any_work(setup, script, args):
+    scripts, home, _, env = setup
+    profile = Path(env["CODEX_HOME"]) / "sy.config.toml"
+    plist = home / "Library" / "LaunchAgents" / "com.nvidia.switchyard.server.plist"
+    for path in (profile, plist):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("existing file\n")
+    before = {
+        path.relative_to(home): path.read_bytes() for path in home.rglob("*") if path.is_file()
+    }
+    command_log = home.parent / "commands.log"
+    env["SY_TEST_COMMAND_LOG"] = str(command_log)
+    for stub in Path(env["PATH"].split(":")[0]).iterdir():
+        stub.write_text(
+            stub.read_text().replace(
+                "set -eu\n", 'set -eu\nprintf "%s\\n" "$0" >> "$SY_TEST_COMMAND_LOG"\n', 1
+            )
+        )
+
+    result = subprocess.run(
+        ["bash", str(scripts / script), *args],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "Usage:" in result.stderr
+    assert result.stdout == ""
+    assert not command_log.exists()
+    after = {
+        path.relative_to(home): path.read_bytes() for path in home.rglob("*") if path.is_file()
+    }
+    assert after == before

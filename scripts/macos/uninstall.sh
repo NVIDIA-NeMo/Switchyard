@@ -13,7 +13,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+case "$#:${1:-}" in
+  0:) ;;
+  1:--dry-run) DRY_RUN=1 ;;
+  *) printf 'Usage: %s [--dry-run]\n' "$0" >&2; exit 2 ;;
+esac
 
 # shellcheck source=scripts/macos/common.sh
 source "$SCRIPT_DIR/common.sh"
