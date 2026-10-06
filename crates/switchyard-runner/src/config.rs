@@ -19,7 +19,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
-use crate::privacy::PrivacyPolicy;
+use crate::privacy::{DeterministicDetector, PrivacyPolicy};
 use crate::route::ExecutionLane;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -85,8 +85,27 @@ struct RouteConfig {
 struct PrivacyConfig {
     restricted_targets: BTreeMap<String, String>,
     restricted_decision_target: Option<String>,
+    deterministic: Option<DeterministicConfig>,
     #[serde(default)]
     accept_external_signal: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeterministicConfig {
+    #[serde(default)]
+    detectors: BTreeSet<DeterministicDetector>,
+}
+
+impl DeterministicConfig {
+    fn build(&self, route_name: &str) -> RunnerResult<Vec<DeterministicDetector>> {
+        if self.detectors.is_empty() {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy deterministic must configure at least one detector"
+            )));
+        }
+        Ok(self.detectors.iter().copied().collect())
+    }
 }
 
 struct TargetPromptPolicy {
@@ -327,11 +346,16 @@ impl DeploymentConfig {
                 "route {route_name} cannot use privacy with prefill_router"
             )));
         }
-        if !config.accept_external_signal {
+        if !config.accept_external_signal && config.deterministic.is_none() {
             return Err(RunnerError::configuration(format!(
                 "route {route_name} privacy must configure at least one request input"
             )));
         }
+        let detectors = config
+            .deterministic
+            .as_ref()
+            .map(|config| config.build(route_name))
+            .transpose()?;
         let restricted_targets =
             self.resolve_lane_targets(route_name, route, Some(&config.restricted_targets))?;
         let restricted_decision = match (
@@ -366,7 +390,14 @@ impl DeploymentConfig {
             clients,
         )?;
         Ok(Some(BuiltPrivacy {
-            policy: PrivacyPolicy::new(config.accept_external_signal),
+            policy: PrivacyPolicy::new(config.accept_external_signal, detectors).map_err(
+                |error| {
+                    RunnerError::configuration_source(
+                        format!("route {route_name} privacy detectors could not be compiled"),
+                        error,
+                    )
+                },
+            )?,
             restricted,
         }))
     }
@@ -1135,6 +1166,7 @@ bogus = true
 mod deployment_tests {
     use super::*;
     use serde_json::json;
+    use switchyard_protocol::{Message, Request, Role};
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -1234,6 +1266,19 @@ weak = "weak"
         )
     }
 
+    fn deterministic_privacy_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[routes.passthrough.privacy.restricted_targets]
+weak = "strong"
+
+[routes.passthrough.privacy.deterministic]
+detectors = ["bearer_token"]
+"#
+        )
+    }
+
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
@@ -1300,6 +1345,36 @@ weak = "weak"
         ] {
             assert!(error_message(&config).contains(expected));
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deterministic_privacy_selects_the_restricted_lane() -> RunnerResult<()> {
+        let configured = deterministic_privacy_config();
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("privacy route should exist");
+
+        assert_eq!(
+            route
+                .decide(Request::default())
+                .await?
+                .selected_model_id()?,
+            "weak/model"
+        );
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message::text(
+            Role::User,
+            "Authorization: Bearer abcdefghijklmnop",
+        ));
+        assert_eq!(
+            route.decide(request).await?.selected_model_id()?,
+            "strong/model"
+        );
+
+        let empty = configured.replace("detectors = [\"bearer_token\"]", "detectors = []");
+        assert!(error_message(&empty).contains("must configure at least one detector"));
         Ok(())
     }
 

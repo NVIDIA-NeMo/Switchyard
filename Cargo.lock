@@ -2525,6 +2525,7 @@ dependencies = [
  "async-trait",
  "futures-util",
  "prefill-router",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

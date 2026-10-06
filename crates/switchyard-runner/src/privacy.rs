@@ -3,16 +3,21 @@
 
 //! Privacy policy used to select a route's execution lane.
 
+mod deterministic;
+
 use serde_json::Value;
 use strum_macros::{EnumString, IntoStaticStr};
 use switchyard_protocol::{LlmClientError, Request, WireFormat};
 
 const EXTERNAL_RESTRICTION_KEY: &str = "switchyard.internal.external_privacy_restriction";
+pub(crate) use deterministic::DeterministicDetector;
+use deterministic::{Assessment, Inspector};
 pub(crate) const SELECTED_LANE_KEY: &str = "switchyard.internal.privacy_lane";
 const RESPONSES_STATE_FIELDS: [&str; 2] = ["previous_response_id", "conversation"];
 
 pub(crate) struct PrivacyPolicy {
     accept_external_signal: bool,
+    inspector: Option<Inspector>,
 }
 
 /// Target set allowed to serve one request.
@@ -60,6 +65,7 @@ pub(crate) struct PrivacyDecision {
 pub(crate) enum PrivacySource {
     Policy,
     ExternalSignal,
+    Deterministic,
 }
 
 impl PrivacySource {
@@ -79,28 +85,6 @@ impl PrivacyDecision {
 
     const fn all_clear() -> Self {
         Self::new(PrivacyLane::Standard, PrivacySource::Policy, "all_clear")
-    }
-}
-
-impl PrivacyPolicy {
-    pub(crate) const fn new(accept_external_signal: bool) -> Self {
-        Self {
-            accept_external_signal,
-        }
-    }
-
-    pub(crate) fn decide(&self, request: &Request) -> Result<PrivacyDecision, LlmClientError> {
-        if !has_external_restriction(request) {
-            return Ok(PrivacyDecision::all_clear());
-        }
-        if !self.accept_external_signal {
-            return Err(external_signal_not_accepted());
-        }
-        Ok(PrivacyDecision::new(
-            PrivacyLane::Restricted,
-            PrivacySource::ExternalSignal,
-            "restricted",
-        ))
     }
 }
 
@@ -127,6 +111,44 @@ pub(crate) fn has_external_restriction(request: &Request) -> bool {
 pub(crate) fn external_signal_not_accepted() -> LlmClientError {
     LlmClientError::InvalidRequest {
         message: "route does not accept external privacy signals".to_string(),
+    }
+}
+
+impl PrivacyPolicy {
+    pub(crate) fn new(
+        accept_external_signal: bool,
+        detectors: Option<Vec<DeterministicDetector>>,
+    ) -> Result<Self, regex::Error> {
+        Ok(Self {
+            accept_external_signal,
+            inspector: detectors.map(Inspector::new).transpose()?,
+        })
+    }
+
+    pub(crate) fn decide(&self, request: &Request) -> Result<PrivacyDecision, LlmClientError> {
+        if has_external_restriction(request) {
+            if !self.accept_external_signal {
+                return Err(external_signal_not_accepted());
+            }
+            return Ok(PrivacyDecision::new(
+                PrivacyLane::Restricted,
+                PrivacySource::ExternalSignal,
+                "restricted",
+            ));
+        }
+        let Some(inspector) = &self.inspector else {
+            return Ok(PrivacyDecision::all_clear());
+        };
+        Ok(match inspector.inspect(request) {
+            Assessment::Restricted(reason_code) | Assessment::Indeterminate(reason_code) => {
+                PrivacyDecision::new(
+                    PrivacyLane::Restricted,
+                    PrivacySource::Deterministic,
+                    reason_code,
+                )
+            }
+            Assessment::Clear => PrivacyDecision::all_clear(),
+        })
     }
 }
 
@@ -167,20 +189,61 @@ fn has_responses_state(body: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use switchyard_protocol::{ContentBlock, Message, Role};
 
     #[test]
     fn external_restriction_requires_route_opt_in() {
         let mut request = Request::default();
         mark_privacy_restricted(&mut request);
 
-        assert!(PrivacyPolicy::new(false).decide(&request).is_err());
+        assert!(
+            PrivacyPolicy::new(false, None)
+                .expect("empty detector configuration should compile")
+                .decide(&request)
+                .is_err()
+        );
         assert!(matches!(
-            PrivacyPolicy::new(true).decide(&request),
+            PrivacyPolicy::new(true, None)
+                .expect("empty detector configuration should compile")
+                .decide(&request),
             Ok(PrivacyDecision {
                 lane: PrivacyLane::Restricted,
                 ..
             })
         ));
+
+        let mut opaque = Request::default();
+        opaque.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Unknown {
+                provider: "custom".into(),
+                raw: Value::Null,
+            }],
+        });
+        let decision = PrivacyPolicy::new(true, None)
+            .expect("empty detector configuration should compile")
+            .decide(&opaque)
+            .expect("unmarked request should remain valid");
+        assert!(matches!(decision.lane, PrivacyLane::Standard));
+    }
+
+    #[test]
+    fn deterministic_inspection_fails_closed_on_opaque_content() {
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Unknown {
+                provider: "custom".into(),
+                raw: Value::Null,
+            }],
+        });
+
+        let decision = PrivacyPolicy::new(false, Some(vec![DeterministicDetector::Email]))
+            .expect("static detector patterns should compile")
+            .decide(&request)
+            .expect("opaque content should select a lane");
+        assert!(matches!(decision.lane, PrivacyLane::Restricted));
+        assert_eq!(decision.reason_code, "opaque_content");
     }
 
     #[test]

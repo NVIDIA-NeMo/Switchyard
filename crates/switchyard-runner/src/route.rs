@@ -470,8 +470,10 @@ mod tests {
             ])),
             "restricted-auxiliary",
         );
-        let route = Route::from_lane(standard, None, ModelCapabilities::default())
-            .with_privacy(PrivacyPolicy::new(true), restricted);
+        let route = Route::from_lane(standard, None, ModelCapabilities::default()).with_privacy(
+            PrivacyPolicy::new(true, None).expect("empty detector configuration should compile"),
+            restricted,
+        );
 
         let output = route
             .execute(restricted_request(), None)
