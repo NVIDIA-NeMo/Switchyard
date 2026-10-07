@@ -485,6 +485,65 @@ fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
 }
 
 #[test]
+fn anthropic_reconstruction_preserves_fallback_credit_token() -> TestResult {
+    let engine = TranslationEngine::default();
+    for token in [
+        json!("example-token-from-refusal"),
+        json!({"token": "example-token-from-refusal"}),
+        json!({"token": "example-token-from-refusal", "mode": "strict"}),
+        json!({"token": "example-token-from-refusal", "mode": "best_effort"}),
+    ] {
+        let body = json!({
+            "model": "claude-opus-4-8",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Review this code for security flaws."}],
+            "fallback_credit_token": token
+        });
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            let output = engine.translate_request(
+                WireFormat::AnthropicMessages,
+                WireFormat::AnthropicMessages,
+                &body,
+                &policy,
+            )?;
+            assert_eq!(
+                output.body.get("fallback_credit_token"),
+                Some(&token),
+                "fallback credit token must survive {:?} preservation",
+                policy.preservation,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_reconstruction_rejects_fallbacks_with_credit_token() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-opus-4-8",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "Review this code for security flaws."}],
+        "fallback_credit_token": "example-token-from-refusal",
+        "fallbacks": [{"model": "claude-opus-5"}]
+    });
+    let error = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("fallback_credit_token cannot be combined with fallbacks");
+    assert!(matches!(
+        error,
+        TranslationError::InvalidValue { path, message }
+            if path == "$.fallback_credit_token"
+                && message == "fallback_credit_token cannot be combined with fallbacks"
+    ));
+}
+
+#[test]
 fn anthropic_reconstruction_preserves_thinking() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = normalized_policy();
@@ -3249,6 +3308,30 @@ fn openai_stop_string_maps_to_anthropic_stop_sequences() -> TestResult {
         .body;
 
     assert_eq!(output["stop_sequences"], json!(["END"]));
+    Ok(())
+}
+
+#[test]
+fn openai_tool_result_error_flag_survives_decoding() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (flag, expected) in [
+        (Some(json!(true)), Some(true)),
+        (Some(json!(false)), Some(false)),
+        (None, None),
+        (Some(Value::Null), None),
+        (Some(json!("true")), None),
+    ] {
+        let mut message = json!({"role": "tool", "tool_call_id": "call_1", "content": "result"});
+        if let Some(flag) = flag {
+            message["is_error"] = flag;
+        }
+        let body = json!({"model": "route", "messages": [message]});
+        let decoded = engine.decode_request(WireFormat::OpenAiChat, &body, &normalized_policy())?;
+        let ContentBlock::ToolResult(result) = &decoded.request.messages[0].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(result.is_error, expected);
+    }
     Ok(())
 }
 

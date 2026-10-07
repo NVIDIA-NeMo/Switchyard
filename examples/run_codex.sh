@@ -46,6 +46,20 @@ classify_trigger = "user_turn"
 capable_target = "capable"
 efficient_target = "efficient"
 confidence_threshold = 0.5
+
+# With "Approve for me" on, Codex sends each review request to the model
+# codex-auto-review, unless Codex is logged in with an OpenAI API key. This
+# route forwards those requests unchanged to codex-auto-review on the ChatGPT
+# backend. To review with another model, point `target` at a small, fast
+# model; Codex waits for each review and asks for low reasoning effort.
+[targets.reviewer]
+id = "codex-auto-review"
+llm_client = "chatgpt_backend"
+
+[routes.codex_auto_review]
+id = "codex-auto-review"
+type = "passthrough"
+target = "reviewer"
 EOF
 
 ./target/release/switchyard-server --config /tmp/composite.toml --dry-run

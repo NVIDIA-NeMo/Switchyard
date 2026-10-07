@@ -4,6 +4,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "examples/dynamo-preproc",
     "crates/libsy",
     "crates/libsy-llm-client",
     "crates/prefill-router",
@@ -23,11 +24,12 @@ authors = ["NVIDIA Corporation"]
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/NVIDIA-NeMo/Switchyard"
+# Minimum support Rust version. Always older than rust-toolchain.toml.
 rust-version = "1.96.1"
 
 [workspace.dependencies]
 async-stream = "0.3"
-async-trait = "0.1"
+async-trait = "0.1.92"
 base64 = "0.22"
 futures = "0.3"
 futures-util = "0.3"

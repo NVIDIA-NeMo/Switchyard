@@ -15,9 +15,9 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    ReasoningFormat, TranslatingLlmClient,
+    ReasoningFormat, SystemOneClient, TranslatingLlmClient,
 };
-use switchyard_protocol::{Category, ModelId, RoutedLlmClient, WireFormat};
+use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -60,6 +60,10 @@ pub(crate) struct DeploymentConfig {
     #[serde(default)]
     llm_clients: BTreeMap<String, LlmClientConfig>,
     targets: BTreeMap<String, TargetConfig>,
+    #[serde(default)]
+    decision_clients: BTreeMap<String, DecisionClientConfig>,
+    #[serde(default)]
+    decision_targets: BTreeMap<String, DecisionTargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
 }
 
@@ -212,16 +216,49 @@ impl DeploymentConfig {
 
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
+        let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;
+        for (name, target) in &self.decision_targets {
+            validate_value("decision target name", name)?;
+            validate_value(&format!("decision target {name} id"), &target.id)?;
+            if self.targets.contains_key(name) {
+                return Err(RunnerError::configuration(format!(
+                    "target {name} is defined as both an LLM and decision target"
+                )));
+            }
+            if !decision_clients.contains_key(&target.decision_client) {
+                return Err(RunnerError::configuration(format!(
+                    "decision target {name} references unknown decision client {}",
+                    target.decision_client
+                )));
+            }
+        }
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
-            for target_name in config.callable_target_names() {
-                self.targets.get(target_name).ok_or_else(|| {
-                    RunnerError::configuration(format!(
-                        "route references unknown target {target_name}"
-                    ))
-                })?;
+            let decision_judge = config.algorithm.decision_judge();
+            for name in config.callable_target_names() {
+                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
+                    (self.decision_targets.contains_key(name), "decision")
+                } else {
+                    (self.targets.contains_key(name), "LLM")
+                };
+                if !exists {
+                    return Err(RunnerError::configuration(format!(
+                        "route references unknown target {name}; route {route_name} requires target kind {kind}"
+                    )));
+                }
+            }
+            for name in config.routing_target_names().into_iter().chain(
+                decision_judge
+                    .into_iter()
+                    .flat_map(|(_, judge)| judge.candidates.values().map(String::as_str)),
+            ) {
+                if !self.targets.contains_key(name) {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} completion and candidate target {name} must be an LLM target"
+                    )));
+                }
             }
             let capabilities = config.capabilities();
             if capabilities.context_window == Some(0) {
@@ -234,7 +271,7 @@ impl DeploymentConfig {
                 .build(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
-                self.build_route_clients(route_name, config, &clients)?;
+                self.build_route_clients(route_name, config, &clients, &decision_clients)?;
             let anthropic_auxiliary_target =
                 self.build_anthropic_auxiliary_target(config, &clients);
             let responses_auxiliary_target =
@@ -355,18 +392,61 @@ impl DeploymentConfig {
         Ok(clients)
     }
 
+    fn build_decision_clients(
+        &self,
+        provider_api_keys: &mut Vec<String>,
+    ) -> RunnerResult<BTreeMap<String, Arc<dyn RoutedDecisionClient>>> {
+        self.decision_clients
+            .iter()
+            .map(|(name, config)| {
+                validate_value("decision client name", name)?;
+                let DecisionClientConfig::SystemOne {
+                    endpoint,
+                    api_key_env,
+                    timeout_ms,
+                } = config;
+                if *timeout_ms == 0 {
+                    return Err(RunnerError::configuration(format!(
+                        "decision client {name} timeout_ms must be at least 1"
+                    )));
+                }
+                let api_key = read_api_key(&format!("decision client {name}"), api_key_env)?;
+                let client = SystemOneClient::new(
+                    endpoint.0.clone(),
+                    api_key.clone(),
+                    Duration::from_millis(*timeout_ms),
+                )
+                .map_err(|error| RunnerError::configuration(error.to_string()))?;
+                provider_api_keys.push(api_key);
+                Ok((
+                    name.clone(),
+                    Arc::new(client) as Arc<dyn RoutedDecisionClient>,
+                ))
+            })
+            .collect()
+    }
+
     fn build_targets(&self) -> BTreeMap<String, ModelId> {
         self.targets
             .iter()
             .map(|(name, config)| (name.clone(), config.id.clone()))
+            .chain(
+                self.decision_targets
+                    .iter()
+                    .map(|(name, config)| (name.clone(), config.id.clone())),
+            )
             .collect()
     }
 
+    /// Builds the client router for one route. The second value is the caller credential family
+    /// that the route's forwarding clients need, or `None` when no client forwards the caller's
+    /// credential. A request through the other family's APIs fails before any upstream call.
     fn build_route_clients(
         &self,
         route_name: &str,
         route: &RouteConfig,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<(ClientRouter, Option<CallerAuthKind>)> {
         let TargetPromptPolicy {
             prompts,
@@ -375,7 +455,22 @@ impl DeploymentConfig {
         let mut by_model = HashMap::new();
         let mut targets_by_model: HashMap<&str, (&str, &TargetConfig)> = HashMap::new();
         let mut caller_auth = None;
+        let mut has_mixed_families = false;
+        let mut forwarding_origins = BTreeSet::new();
+        let mut decisions_by_model = HashMap::new();
         for name in route.callable_target_names() {
+            if route
+                .algorithm
+                .decision_judge()
+                .is_some_and(|(judge, _)| judge == name)
+            {
+                let target = &self.decision_targets[name];
+                decisions_by_model.insert(
+                    target.id.clone(),
+                    decision_clients[&target.decision_client].clone(),
+                );
+                continue;
+            }
             let target = self.targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
             })?;
@@ -398,23 +493,35 @@ impl DeploymentConfig {
             })?;
             if client_config.forward_auth {
                 let target_auth = client_config.format.caller_auth_kind();
-                if caller_auth.is_some_and(|kind| kind != target_auth) {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name} cannot forward both Anthropic and OpenAI caller credentials"
-                    )));
-                }
+                has_mixed_families |= caller_auth.is_some_and(|kind| kind != target_auth);
                 caller_auth = Some(target_auth);
+                forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
             }
             let client: Arc<dyn RoutedLlmClient> = client.clone();
             by_model.insert(target.id.clone(), client);
+        }
+        // Only forwarding clients count: an api_key_env client sends the server's own key.
+        // Forwarding clients must share one credential family unless they all use the same
+        // scheme, host, and port, such as one LLM gateway that accepts the caller's gateway key
+        // on every endpoint. Such a route serves Chat Completions and Responses callers because
+        // Anthropic clients forward the caller's `authorization` header unchanged.
+        if has_mixed_families {
+            if forwarding_origins.len() > 1 {
+                let origins = Vec::from_iter(forwarding_origins).join(", ");
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} cannot forward both Anthropic and OpenAI caller credentials to different origins ({origins}); point all of its forwarding clients at one origin (same scheme, host, and port), such as an LLM gateway, or set api_key_env instead of forward_auth on one provider's clients"
+                )));
+            }
+            caller_auth = Some(CallerAuthKind::OpenAi);
         }
         let completion_targets = route
             .routing_target_names()
             .into_iter()
             .map(|name| self.targets[name].id.clone())
             .collect::<Vec<_>>();
-        let router = ClientRouter::new_with_completion_targets(
+        let router = ClientRouter::new_with_decision_clients(
             by_model,
+            decisions_by_model,
             prompts,
             routing_answer_target,
             &completion_targets,
@@ -596,6 +703,23 @@ struct LlmClientConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
+enum DecisionClientConfig {
+    SystemOne {
+        endpoint: HttpBaseUrl,
+        api_key_env: String,
+        timeout_ms: u64,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionTargetConfig {
+    id: ModelId,
+    decision_client: String,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetConfig {
     id: ModelId,
@@ -691,24 +815,7 @@ fn build_backend(
     let api_key = config
         .api_key_env
         .as_deref()
-        .map(|variable| {
-            if variable.trim().is_empty() {
-                return Err(RunnerError::configuration(format!(
-                    "llm client {client_name} api_key_env must not be empty"
-                )));
-            }
-            let api_key = std::env::var(variable).map_err(|error| {
-                RunnerError::configuration(format!(
-                    "llm client {client_name} could not read api_key_env {variable}: {error}"
-                ))
-            })?;
-            if api_key.trim().is_empty() {
-                return Err(RunnerError::configuration(format!(
-                    "llm client {client_name} api_key_env {variable} is empty"
-                )));
-            }
-            Ok(api_key)
-        })
+        .map(|variable| read_api_key(&format!("llm client {client_name}"), variable))
         .transpose()?;
     let http = HttpBackendConfig {
         base_url: config.base_url.as_str().to_string(),
@@ -728,6 +835,25 @@ fn build_backend(
         ClientFormat::AnthropicMessages => Backend::Anthropic(http),
     };
     Ok(backend)
+}
+
+fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
+    if variable.trim().is_empty() {
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env must not be empty"
+        )));
+    }
+    let api_key = std::env::var(variable).map_err(|error| {
+        RunnerError::configuration(format!(
+            "{client} could not read api_key_env {variable}: {error}"
+        ))
+    })?;
+    if api_key.trim().is_empty() {
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env {variable} is empty"
+        )));
+    }
+    Ok(api_key)
 }
 
 // A function so that serde default can use it.
@@ -923,6 +1049,35 @@ target = "strong"
             ),
             "{error}"
         );
+    }
+
+    #[tokio::test]
+    async fn plan_execute_applies_custom_tool_semantics() -> RunnerResult<()> {
+        use switchyard_protocol::{ContentBlock, Message, Request, Role, ToolCall};
+
+        let configured = format!(
+            "{VALID_CONFIG}\n[routes.plan_execute.tool_semantics]\nmutate = [\"persist_source_file\"]"
+        );
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "write-1".to_string(),
+                name: "mcp__files__Persist_Source_File".to_string(),
+                arguments: json!({"path": "task.py", "content": "print('hello')"}),
+            })],
+        });
+
+        for (config, expected) in [
+            (VALID_CONFIG, "strong/model"),
+            (configured.as_str(), "weak/model"),
+        ] {
+            let runner = Runner::from_toml(config)?;
+            let route = runner.route("switchyard/plan-execute").unwrap();
+            let outcome = route.decide(request.clone()).await?;
+            assert_eq!(outcome.selected_model_ids[0], expected);
+        }
+        Ok(())
     }
 
     fn error_message(toml: &str) -> String {
@@ -1986,6 +2141,72 @@ confidence_threshold = 0.5
                     .contains(&format!("extra_headers cannot set \"{header}\""))
             );
         }
+    }
+
+    /// Returns a config whose `mixed` route has a GPT target on a Responses client and a Claude
+    /// target on a Messages client at `messages_url`. Its `claude` route uses Claude only.
+    fn mixed_forwarding_config(messages_url: &str) -> String {
+        format!(
+            r#"
+schema_version = 1
+
+[llm_clients.responses]
+format = "openai_responses"
+base_url = "https://gateway.example.test/v1"
+forward_auth = true
+
+[llm_clients.messages]
+format = "anthropic_messages"
+base_url = "{messages_url}"
+forward_auth = true
+
+[targets]
+gpt = {{ id = "gpt/model", llm_client = "responses" }}
+claude = {{ id = "claude/model", llm_client = "messages" }}
+
+[routes.mixed]
+id = "switchyard/mixed"
+type = "random"
+targets = ["gpt", "claude"]
+
+[routes.claude]
+id = "switchyard/claude"
+type = "passthrough"
+target = "claude"
+"#
+        )
+    }
+
+    /// A forwarding route can mix OpenAI and Anthropic clients only when they all use the same
+    /// scheme, host, and port.
+    #[test]
+    fn forwarding_route_mixes_formats_only_on_one_host() -> RunnerResult<()> {
+        // Same host, different paths: the mixed route serves OpenAI callers, and the route that
+        // uses only the Messages client keeps serving Messages callers.
+        let runner = runner_from_toml(&mixed_forwarding_config("https://gateway.example.test"))?;
+        let caller_auth = |id| runner.route(id).and_then(Route::caller_auth);
+        assert_eq!(
+            caller_auth("switchyard/mixed"),
+            Some(CallerAuthKind::OpenAi)
+        );
+        assert_eq!(
+            caller_auth("switchyard/claude"),
+            Some(CallerAuthKind::Anthropic)
+        );
+
+        // A different host, port, or scheme fails, and the error names it.
+        for other in [
+            "https://api.anthropic.test",
+            "https://gateway.example.test:8443",
+            "http://gateway.example.test",
+        ] {
+            let error = error_message(&mixed_forwarding_config(other));
+            assert!(
+                error.contains("different origins") && error.contains(other),
+                "{error}"
+            );
+        }
+        Ok(())
     }
 
     const ADVISOR_CONFIG: &str = r#"

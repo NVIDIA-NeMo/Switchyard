@@ -257,7 +257,7 @@ static NUMERIC_FAILURE_KEYWORDS: &[&str] = &["failed", "failure", "failures", "e
 /// passing a window to [`ToolSignals::from_request`].
 pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
-/// Exact tool-name semantics added to the stage router's built-in vocabulary.
+/// Exact tool-name semantics added to the built-in vocabulary.
 ///
 /// Matching is ASCII case-insensitive. An MCP or Codex namespaced tool also
 /// matches by its bare tool name. These lists are additive: built-in tool names

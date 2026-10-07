@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`TranslatingLlmClient`] — the crate's single public entry point: encode a neutral
+//! [`TranslatingLlmClient`]: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -692,8 +692,9 @@ impl TranslatingLlmClient {
     /// `http_headers` are carried through as the request's
     /// [`Metadata::http_headers`]. Backends with `forward_auth` disabled forward only
     /// allowed metadata headers; `forward_auth` backends forward all application
-    /// headers. All backends reachable through a forwarding route must use the same
-    /// provider. Transport headers are always rebuilt. Pass `None` to forward nothing.
+    /// headers. The forwarding backends in one route must use one credential family
+    /// unless they all use the same scheme, host, and port. Transport headers are always
+    /// rebuilt. Pass `None` to forward nothing.
     pub async fn call_rewrite_model_raw(
         &self,
         raw_http_request: Value,
@@ -948,7 +949,7 @@ fn record_gen_ai_request(url: &str, model: &str, streaming: bool) {
     }
 }
 
-fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
+pub(crate) fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // Reqwest labels truncated or otherwise unreadable response bodies as decode
     // errors, so distinguish them from serde JSON failures at the call site.
     let error = error.without_url();

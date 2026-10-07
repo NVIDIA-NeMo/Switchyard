@@ -116,6 +116,8 @@ pub struct CallModel {
     /// How to send the response back to the algorithm. `None` once the call is recorded.
     reply: Option<oneshot::Sender<Result<Response>>>,
     started: Instant,
+    // Retain the originating span even if the waiting algorithm is cancelled first.
+    span: tracing::Span,
 }
 
 impl CallModel {
@@ -124,6 +126,9 @@ impl CallModel {
     /// can only be fulfilled once.
     pub fn respond(mut self, result: Result<Response>) -> Result<()> {
         self.record(result.is_ok());
+        if let Ok(response) = &result {
+            observability::record_llm_response(response, &self.span);
+        }
         self.reply
             .take()
             .ok_or(DriverError::ResponseDropped)?
@@ -149,6 +154,8 @@ impl CallModel {
             self.started.elapsed(),
             is_ok,
         );
+        self.span
+            .record("outcome", if is_ok { "ok" } else { "error" });
     }
 }
 
@@ -161,6 +168,7 @@ impl Drop for CallModel {
 }
 
 /// A host-owned decision call. Dropping it without replying yields [`DriverError::ResponseDropped`].
+/// Completion or drop records one call and its duration, including time waiting for the host.
 pub struct CallDecision {
     /// Algorithm name for attributing host telemetry.
     pub algorithm: String,
@@ -168,20 +176,50 @@ pub struct CallDecision {
     pub request: DecisionRequest,
     /// Target ID for client lookup.
     pub model: ModelId,
-    reply: oneshot::Sender<Result<DecisionResponse>>,
+    reply: Option<oneshot::Sender<Result<DecisionResponse>>>,
+    started: Instant,
+    // Retain the originating span even if the waiting algorithm is cancelled first.
+    span: tracing::Span,
 }
 
 impl CallDecision {
     /// Return a response or provider error to the algorithm so it can continue or fall back.
-    pub fn respond(self, result: Result<DecisionResponse>) -> Result<()> {
+    pub fn respond(mut self, result: Result<DecisionResponse>) -> Result<()> {
+        self.record(result.is_ok());
+        if let Ok(response) = &result {
+            observability::record_decision_response(response, &self.span);
+        }
         self.reply
+            .take()
+            .ok_or(DriverError::ResponseDropped)?
             .send(result)
             .map_err(|_| DriverError::ResponseDropped.into())
     }
 
     /// Returning this error from the host handler aborts [`drive`].
-    pub fn fail(self, error: LibsyError) -> Result<()> {
+    pub fn fail(mut self, error: LibsyError) -> Result<()> {
+        self.reply = None;
+        self.record(false);
         Err(error)
+    }
+
+    fn record(&self, is_ok: bool) {
+        observability::record_decision_call(
+            &self.algorithm,
+            &self.model,
+            self.started.elapsed(),
+            is_ok,
+        );
+        self.span
+            .record("outcome", if is_ok { "ok" } else { "error" });
+    }
+}
+
+impl Drop for CallDecision {
+    fn drop(&mut self) {
+        if self.reply.is_some() {
+            self.record(false);
+        }
     }
 }
 
@@ -300,9 +338,9 @@ impl Driver {
     /// Errors if the stream is closed or the call failed.
     /// The await is wrapped in a `libsy.llm_call` span measuring *fulfillment* as
     /// the algorithm observes it (host queueing/serving included; a streamed
-    /// response resolves when its stream handle arrives). The host records call metrics
-    /// through [`CallModel::respond`] or [`CallModel::fail`]; outcome and token usage
-    /// are recorded on the span when the promise resolves. The provider call itself is the
+    /// response resolves when its stream handle arrives). The host records call metrics,
+    /// outcome, and buffered token usage when it completes or drops the call, even if the
+    /// waiting algorithm has been cancelled. The provider call itself is the
     /// host's, and is instrumented by whoever makes it.
     pub async fn call_model(&self, request: Request, models: Vec<ModelId>) -> Result<Response> {
         self.call_model_with_error_recovery(request, models, false)
@@ -344,19 +382,15 @@ impl Driver {
             recover_errors,
             reply: Some(reply),
             started,
+            span: tracing::Span::current(),
         };
-        let result = async {
-            self.step_tx
-                .send(Ok(Step::CallModel(Box::new(call))))
-                .await
-                .map_err(|_| DriverError::StreamClosed)?;
-            response
-                .await
-                .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
-        }
-        .await;
-        observability::record_llm_call_span(&result, &tracing::Span::current());
-        result
+        self.step_tx
+            .send(Ok(Step::CallModel(Box::new(call))))
+            .await
+            .map_err(|_| DriverError::StreamClosed)?;
+        response
+            .await
+            .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
     }
 
     /// Override the request's model with `model` and wait for the host to reply.
@@ -364,7 +398,18 @@ impl Driver {
         target = "libsy",
         name = "libsy.decision_call",
         skip_all,
-        fields(algorithm = self.algorithm, selected_model = %model),
+        fields(
+            algorithm = self.algorithm,
+            selected_model = %model,
+            openinference.span.kind = "CHAIN",
+            outcome = tracing::field::Empty,
+            input_tokens = tracing::field::Empty,
+            output_tokens = tracing::field::Empty,
+            total_tokens = tracing::field::Empty,
+            reasoning_tokens = tracing::field::Empty,
+            gen_ai.response.id = tracing::field::Empty,
+            gen_ai.response.model = tracing::field::Empty,
+        ),
     )]
     pub async fn call_decision(
         &self,
@@ -372,12 +417,15 @@ impl Driver {
         model: ModelId,
     ) -> Result<DecisionResponse> {
         request.model = Some(model.clone());
+        let started = Instant::now();
         let (reply, response) = oneshot::channel();
         let call = CallDecision {
             algorithm: self.algorithm.clone(),
             request,
             model,
-            reply,
+            reply: Some(reply),
+            started,
+            span: tracing::Span::current(),
         };
         self.step_tx
             .send(Ok(Step::CallDecision(Box::new(call))))
@@ -598,7 +646,9 @@ impl RoutingIdentity {
 /// # Observability
 ///
 /// [`run_stream`](Self::run_stream) creates a `libsy.run` span, and each offloaded model
-/// call creates a nested `libsy.llm_call` span. Successful outcomes record their
+/// call creates a nested span for its call kind, with outcome and available token usage.
+/// Call metrics include host queueing and count unfulfilled drops as errors.
+/// Successful outcomes record their
 /// [`OutcomeMetadata::outcome_id`](crate::OutcomeMetadata::outcome_id) on `libsy.run`,
 /// alongside `selected_model_ids` (an ordered OpenTelemetry string array).
 /// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].

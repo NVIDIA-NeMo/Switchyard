@@ -28,8 +28,8 @@ opentelemetry = { version = "0.32", default-features = false, features = ["metri
 parking_lot.workspace = true
 http.workspace = true
 httpdate.workspace = true
-serde.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true

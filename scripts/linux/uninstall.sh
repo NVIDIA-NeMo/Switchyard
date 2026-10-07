@@ -22,19 +22,6 @@ esac
 # shellcheck source=scripts/linux/common.sh
 source "$SCRIPT_DIR/common.sh"
 
-# Deletes a file this script owns.
-remove_file() {
-  local path="$1"
-  if [[ ! -e "$path" ]]; then
-    say "  nothing to remove at $path"
-  elif (( DRY_RUN )); then
-    say "  would delete $path"
-  else
-    rm -f "$path"
-    say "  deleted $path"
-  fi
-}
-
 step "Removing the sy Codex profile"
 remove_file "$CODEX_PROFILE_CONFIG"
 

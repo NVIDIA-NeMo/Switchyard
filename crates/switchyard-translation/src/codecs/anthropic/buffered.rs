@@ -44,6 +44,16 @@ impl FormatCodec for AnthropicMessagesCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
+        if body
+            .get("fallback_credit_token")
+            .is_some_and(|value| !value.is_null())
+            && body.get("fallbacks").is_some_and(|value| !value.is_null())
+        {
+            return Err(TranslationError::InvalidValue {
+                path: "$.fallback_credit_token".to_string(),
+                message: "fallback_credit_token cannot be combined with fallbacks".to_string(),
+            });
+        }
         let mut diagnostics = Vec::new();
         let max_output_tokens = body
             .get("max_tokens")
@@ -265,6 +275,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "container",
                 "speed",
                 "diagnostics",
+                "fallback_credit_token",
             ] {
                 if let Some(value) = request.extensions.fields.get(field) {
                     body.insert(field.to_string(), value.clone());
