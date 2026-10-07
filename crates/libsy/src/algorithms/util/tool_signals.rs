@@ -746,6 +746,7 @@ fn extract_tool_signals_with_window_and_semantics(
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     // IDs whose latest call is a retrieval tool.
     let mut retrieval_calls: HashSet<&str> = HashSet::new();
+    let mut shell_read_calls: HashSet<&str> = HashSet::new();
     let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
@@ -784,6 +785,19 @@ fn extract_tool_signals_with_window_and_semantics(
                         } else {
                             retrieval_calls.remove(call.id.as_str());
                         }
+                        if BASH_TOOL_NAMES.contains(&name.to_lowercase().as_str())
+                            && command.as_deref().is_some_and(|command| {
+                                !command.trim().is_empty()
+                                    && shell_segments(command).all(|segment| {
+                                        classify_tool_call(name, Some(segment))
+                                            == ToolSemantic::Observe
+                                    })
+                            })
+                        {
+                            shell_read_calls.insert(call.id.as_str());
+                        } else {
+                            shell_read_calls.remove(call.id.as_str());
+                        }
                     }
                     tool_calls.push(ObservedToolCall {
                         name: call.name.clone(),
@@ -801,8 +815,18 @@ fn extract_tool_signals_with_window_and_semantics(
                         .collect::<Vec<_>>()
                         .join("\n");
                     let is_error = result.is_error == Some(true);
-                    let is_retrieval_result =
-                        !is_error && retrieval_calls.contains(result.tool_call_id.as_str());
+                    // Shell reads can return bare JSON from a file. Hermes wraps
+                    // terminal output with output and exit_code fields.
+                    let is_shell_read_json = shell_read_calls
+                        .contains(result.tool_call_id.as_str())
+                        && serde_json::from_str::<Value>(&text).is_ok_and(|value| {
+                            value.is_object()
+                                && !(value.get("output").is_some_and(Value::is_string)
+                                    && value.get("exit_code").is_some())
+                        });
+                    let is_retrieval_result = !is_error
+                        && (retrieval_calls.contains(result.tool_call_id.as_str())
+                            || is_shell_read_json);
                     // An explicit failure remains a signal even without text.
                     if !text.is_empty() || is_error {
                         // Read and search results show file contents, not the outcome
@@ -1721,6 +1745,101 @@ mod tests {
         assert_eq!(signal.severity, HARD);
         assert!(!signal.tests_passed);
         assert_eq!(signal.tool_result_count, 3);
+    }
+
+    #[test]
+    fn shell_reads_distinguish_json_contents_from_tool_failures() {
+        for (command, text, is_error, severity) in [
+            ("cat config.json", r#"{"error":"fixture data"}"#, false, 0.0),
+            (
+                "jq . config.json",
+                r#"{"success":false,"exit_code":7}"#,
+                false,
+                0.0,
+            ),
+            ("cat config.json", r#"{"error":"fixture data"}"#, true, HARD),
+            (
+                "python check.py",
+                r#"{"error":"check rejected"}"#,
+                false,
+                HARD,
+            ),
+            (
+                "cat config.json && python check.py",
+                r#"{"error":"check rejected"}"#,
+                false,
+                HARD,
+            ),
+            (
+                "cat config.json",
+                "{\"error\":\"fixture data\"}\ncat: second.json: No such file or directory",
+                false,
+                HARD,
+            ),
+            (
+                "cat missing.json",
+                "cat: missing.json: No such file or directory",
+                false,
+                HARD,
+            ),
+            (
+                "cat missing.json",
+                r#"{"output":"","exit_code":7,"error":null}"#,
+                false,
+                SOFT,
+            ),
+            (
+                "cat missing.json",
+                r#"{"output":"","exit_code":1,"error":"Read rejected"}"#,
+                false,
+                HARD,
+            ),
+            (
+                "cat config.json",
+                r#"{"output":"{\"error\":\"fixture data\"}","exit_code":0,"error":null}"#,
+                false,
+                0.0,
+            ),
+        ] {
+            for name in ["Bash", "terminal", "mcp__shell__terminal"] {
+                let request = with_messages(
+                    (0..2)
+                        .flat_map(|index| {
+                            let id = format!("read_{index}");
+                            [
+                                Message {
+                                    role: Role::Assistant,
+                                    content: vec![ContentBlock::ToolCall(ToolCall {
+                                        id: id.clone(),
+                                        name: name.to_string(),
+                                        arguments: json!({"command": command}),
+                                    })],
+                                },
+                                Message {
+                                    role: Role::User,
+                                    content: vec![ContentBlock::ToolResult(ToolResult {
+                                        tool_call_id: id,
+                                        content: vec![ContentBlock::Text {
+                                            text: text.to_string(),
+                                        }],
+                                        is_error: Some(is_error),
+                                    })],
+                                },
+                            ]
+                        })
+                        .collect(),
+                );
+                let signal = ToolSignals::from_request(&request, None);
+                assert_eq!(signal.severity, severity, "{name}: {text}");
+                assert_eq!(
+                    signal.no_error_streak,
+                    if severity > 0.0 { 0 } else { 2 },
+                    "{name}: {text}"
+                );
+                assert_eq!(signal.repeated_failure, severity >= HARD, "{name}: {text}");
+                assert_eq!(signal.tool_result_count, 2);
+            }
+        }
     }
 
     #[test]
