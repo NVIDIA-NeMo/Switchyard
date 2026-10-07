@@ -104,14 +104,12 @@ impl FormatCodec for AnthropicMessagesCodec {
             ..LlmRequest::default()
         };
         let mut cache_controls = Map::new();
+        let mut system_cache_blocks = Vec::new();
         if let Some(system) = body.get("system")
-            && let Some(content) = decode_anthropic_system(system)?
+            && let Some(content) = decode_anthropic_system(system, &mut system_cache_blocks)?
         {
             if has_block_cache_control(system) {
-                cache_controls.insert(
-                    "system".to_string(),
-                    Value::Array(capture_anthropic_cache_blocks(&content, system)?),
-                );
+                cache_controls.insert("system".to_string(), Value::Array(system_cache_blocks));
             }
             request.instructions.push(InstructionBlock {
                 role: Role::System,
@@ -156,6 +154,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                     }
                 };
                 generated_id += 1;
+                let mut blocks = Vec::new();
                 let content = decode_anthropic_content(
                     message
                         .get("content")
@@ -164,12 +163,9 @@ impl FormatCodec for AnthropicMessagesCodec {
                     generated_id,
                     &mut diagnostics,
                     policy,
+                    has_cache_control.then_some(&mut blocks),
                 )?;
                 if has_cache_control {
-                    let mut blocks = capture_anthropic_cache_blocks(
-                        &content,
-                        message.get("content").unwrap_or(&Value::Null),
-                    )?;
                     for block in &mut blocks {
                         block["assistant"] = Value::Bool(role == Role::Assistant);
                     }
@@ -725,14 +721,14 @@ fn has_block_cache_control(content: &Value) -> bool {
     })
 }
 
-fn capture_anthropic_cache_blocks(content: &[ContentBlock], source: &Value) -> Result<Vec<Value>> {
-    let source_blocks = source
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_else(|| std::slice::from_ref(source));
-    let mut cache_blocks = Vec::new();
+fn capture_anthropic_cache_blocks(
+    content: &[ContentBlock],
+    source: &Value,
+    cache_blocks: &mut Vec<Value>,
+) -> Result<()> {
+    // All decoded content here belongs to this single source block.
     // Include unmarked blocks so repeated content keeps its original breakpoint order.
-    for (block, source) in content.iter().zip(source_blocks) {
+    for block in content {
         for encoded in encode_one_anthropic_block(block)? {
             cache_blocks.push(json!({
                 "block": encoded,
@@ -740,7 +736,7 @@ fn capture_anthropic_cache_blocks(content: &[ContentBlock], source: &Value) -> R
             }));
         }
     }
-    Ok(cache_blocks)
+    Ok(())
 }
 
 fn restore_anthropic_cache_blocks(
@@ -770,24 +766,36 @@ fn restore_anthropic_cache_blocks(
 }
 
 // Decodes Anthropic's `system` field into instruction blocks.
-fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
+fn decode_anthropic_system(
+    value: &Value,
+    cache_blocks: &mut Vec<Value>,
+) -> Result<Option<Vec<ContentBlock>>> {
     match value {
         Value::String(text) if !text.is_empty() => {
             Ok(Some(vec![ContentBlock::Text { text: text.clone() }]))
         }
         Value::String(_) | Value::Null => Ok(None),
         Value::Array(blocks) => {
+            let has_cache_control = has_block_cache_control(value);
             let mut content = Vec::new();
             for block in blocks {
-                if let Some(block) = block.as_object()
-                    && block.get("type").and_then(Value::as_str) == Some("text")
+                if let Some(object) = block.as_object()
+                    && object.get("type").and_then(Value::as_str) == Some("text")
                 {
-                    let text = block
+                    let text = object
                         .get("text")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    content.push(ContentBlock::Text { text });
+                    let decoded = ContentBlock::Text { text };
+                    if has_cache_control {
+                        capture_anthropic_cache_blocks(
+                            std::slice::from_ref(&decoded),
+                            block,
+                            cache_blocks,
+                        )?;
+                    }
+                    content.push(decoded);
                 }
             }
             Ok((!content.is_empty()).then_some(content))
@@ -806,16 +814,17 @@ fn decode_anthropic_content(
     generated_counter: usize,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
+    mut cache_blocks: Option<&mut Vec<Value>>,
 ) -> Result<Vec<ContentBlock>> {
-    match value {
-        Value::String(text) => Ok(vec![ContentBlock::Text { text: text.clone() }]),
-        Value::Null => Ok(vec![ContentBlock::Text {
+    let content = match value {
+        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
+        Value::Null => vec![ContentBlock::Text {
             text: String::new(),
-        }]),
+        }],
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for (index, block) in blocks.iter().enumerate() {
-                let Some(block) = block.as_object() else {
+                let Some(object) = block.as_object() else {
                     push_lossy(
                         diagnostics,
                         policy,
@@ -823,25 +832,35 @@ fn decode_anthropic_content(
                     )?;
                     continue;
                 };
-                content.extend(decode_anthropic_content_block(
-                    block,
+                let decoded = decode_anthropic_content_block(
+                    object,
                     role,
                     generated_counter + index,
                     diagnostics,
                     policy,
-                )?);
+                )?;
+                if let Some(cache_blocks) = cache_blocks.as_deref_mut() {
+                    capture_anthropic_cache_blocks(&decoded, block, cache_blocks)?;
+                }
+                content.extend(decoded);
             }
             if content.is_empty() {
                 content.push(ContentBlock::Text {
                     text: String::new(),
                 });
             }
-            Ok(content)
+            content
         }
-        other => Ok(vec![ContentBlock::Text {
+        other => vec![ContentBlock::Text {
             text: string_value(other).unwrap_or_default(),
-        }]),
+        }],
+    };
+    if !value.is_array()
+        && let Some(cache_blocks) = cache_blocks
+    {
+        capture_anthropic_cache_blocks(&content, value, cache_blocks)?;
     }
+    Ok(content)
 }
 
 // Decodes one Anthropic content block into one or more IR blocks.
