@@ -52,6 +52,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `base_url` | Yes | — | Upstream base URL. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
+| `forward_beta` | No | `"oauth"` | `"oauth"` forwards only OAuth beta values; `"all"` forwards the caller's complete `anthropic-beta` header unchanged. Requires `format = "anthropic_messages"` and `forward_auth = true`. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
@@ -102,7 +103,21 @@ forward_auth = true
 `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
 forward `authorization` or `x-api-key`; for Claude subscription OAuth, they also
 forward `oauth-*` values from `anthropic-beta` and remove all other inbound beta
-values.
+values by default. Set `forward_beta = "all"` to pass every beta header value
+unchanged, including repeated headers. Use this when the upstream supports the
+caller's betas, such as Claude Code routed to `api.anthropic.com`:
+
+```toml
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "https://api.anthropic.com"
+forward_auth = true
+forward_beta = "all"
+```
+
+`forward_beta` accepts `"oauth"` or `"all"`. It can only be set on an
+`anthropic_messages` client with `forward_auth = true`. Both modes still reject
+`anthropic-beta` in `extra_headers`.
 
 This setting gives `base_url` the caller's login. Enable it only when that
 upstream should receive the credential, and use HTTPS unless the upstream runs

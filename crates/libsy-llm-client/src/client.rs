@@ -1343,6 +1343,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
             forward_auth: false,
+            forward_beta: Default::default(),
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
@@ -2949,6 +2950,87 @@ mod tests {
             panic!("expected an upstream HTTP error");
         };
         assert_eq!(body, r#"{"error":{"message":"rejected [REDACTED]"}}"#);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn forward_beta_all_reaches_completion_and_token_counting()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        const BETAS: [&str; 2] = [
+            "oauth-2025-04-20,  adaptive-thinking-2026-01-01",
+            "safeguards-2026-01-01,context-1m-2025-08-07",
+        ];
+        for endpoint in ["/v1/messages", "/v1/messages/count_tokens"] {
+            Mock::given(method("POST"))
+                .and(path(endpoint))
+                .and(|request: &wiremock::Request| {
+                    request
+                        .headers
+                        .get_all("anthropic-beta")
+                        .iter()
+                        .map(|value| value.as_bytes())
+                        .collect::<Vec<_>>()
+                        == BETAS
+                            .iter()
+                            .map(|value| value.as_bytes())
+                            .collect::<Vec<_>>()
+                })
+                .and(wiremock::matchers::header(
+                    "authorization",
+                    "Bearer caller-key",
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "msg_test", "type": "message", "role": "assistant",
+                    "model": "claude", "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn", "stop_sequence": null,
+                    "usage": {"input_tokens": 1, "output_tokens": 1}, "input_tokens": 1
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let mut config = forwarding_config(&server.uri());
+        config.forward_beta = crate::ForwardBeta::All;
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(config),
+            None,
+        )])?;
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer caller-key".parse()?);
+        for value in BETAS {
+            headers.append("anthropic-beta", value.parse()?);
+        }
+        let raw = json!({
+            "model": "claude", "max_tokens": 8,
+            "messages": [{"role": "user", "content": "hello"}],
+            "safeguards": {"example": true}
+        });
+        client
+            .call_rewrite_model_raw(
+                raw.clone(),
+                Some(headers.clone()),
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
+            )
+            .await?;
+        let counted = client
+            .call_auxiliary(
+                &ModelId::from("claude"),
+                request_with_headers("claude", headers),
+                AuxiliaryOperation::AnthropicCountTokens,
+            )
+            .await?;
+        assert_eq!(counted["input_tokens"], 1);
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("missing request recording")?;
+        assert_eq!(
+            received[0].body_json::<Value>()?["safeguards"],
+            raw["safeguards"]
+        );
         Ok(())
     }
 

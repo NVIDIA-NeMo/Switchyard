@@ -753,6 +753,7 @@ fn random_state_with_retries(
         base_url: base_url.to_string(),
         api_key: Some("test-key".to_string()),
         forward_auth: false,
+        forward_beta: Default::default(),
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         omit_body_fields: BTreeSet::new(),

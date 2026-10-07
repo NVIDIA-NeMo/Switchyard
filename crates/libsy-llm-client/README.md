@@ -59,7 +59,7 @@ switchyard-translation = { path = "../switchyard-translation" }   # for WireForm
 ### Build a client
 
 ```rust
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use switchyard_llm_client::{
     Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient,
 };
@@ -69,8 +69,10 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: std::env::var("OPENAI_API_KEY").ok(),
         forward_auth: false,
+        forward_beta: Default::default(),
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        omit_body_fields: BTreeSet::new(),
         reasoning_effort: None,
         max_retries: 2,
         failure_cooldown: std::time::Duration::from_secs(5),
@@ -241,7 +243,9 @@ fn build_multi_format_client(
   backend's configured key and forwards other application headers. OpenAI backends
   normalize `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`.
   Anthropic backends forward `authorization` or `x-api-key`; they also keep
-  `oauth-*` values from `anthropic-beta` and remove other caller-supplied beta values.
+  `oauth-*` values from `anthropic-beta` and remove other caller-supplied beta values by
+  default. Set `HttpBackendConfig::forward_beta` to `ForwardBeta::All` to forward all
+  beta header values unchanged, including repeated headers.
   The forwarding backends in one route must use one credential family (OpenAI or
   Anthropic) unless they all use the same scheme, host, and port, such as one LLM
   gateway that accepts the caller's gateway key on every endpoint. Such a route

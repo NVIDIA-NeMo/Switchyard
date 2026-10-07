@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    SystemOneClient, TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, ForwardBeta, HttpBackendConfig,
+    ModelConfig, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -679,6 +679,7 @@ struct LlmClientConfig {
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
+    forward_beta: Option<ForwardBeta>,
     #[serde(default)]
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
@@ -796,6 +797,13 @@ fn build_backend(
             "llm client {client_name} cannot set both forward_auth and api_key_env"
         )));
     }
+    if config.forward_beta.is_some()
+        && (!config.forward_auth || !matches!(config.format, ClientFormat::AnthropicMessages))
+    {
+        return Err(RunnerError::configuration(format!(
+            "llm client {client_name} forward_beta requires anthropic_messages with forward_auth = true"
+        )));
+    }
     let api_key = config
         .api_key_env
         .as_deref()
@@ -805,6 +813,7 @@ fn build_backend(
         base_url: config.base_url.as_str().to_string(),
         api_key,
         forward_auth: config.forward_auth,
+        forward_beta: config.forward_beta.unwrap_or_default(),
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         omit_body_fields: omit_body_fields.clone(),
@@ -2017,6 +2026,69 @@ confidence_threshold = 0.5
     }
 
     #[test]
+    fn forward_beta_accepts_anthropic_forwarding() -> RunnerResult<()> {
+        for (setting, expected) in [
+            ("", ForwardBeta::Oauth),
+            (r#"forward_beta = "oauth""#, ForwardBeta::Oauth),
+            (r#"forward_beta = "all""#, ForwardBeta::All),
+        ] {
+            let configured = VALID_CONFIG.replacen(
+                r#"base_url = "https://example.test""#,
+                &format!("base_url = \"https://example.test\"\nforward_auth = true\n{setting}"),
+                1,
+            );
+            runner_from_toml(&configured)?;
+            let parsed: DeploymentConfig = toml::from_str(&configured)
+                .map_err(|error| RunnerError::configuration(error.to_string()))?;
+            let backend = build_backend(
+                "anthropic",
+                &parsed.llm_clients["anthropic"],
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                None,
+            )?;
+            let Backend::Anthropic(http) = backend else {
+                panic!("expected Anthropic backend");
+            };
+            assert_eq!(http.forward_beta, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn forward_beta_rejects_inactive_or_unknown_settings() {
+        for (format, forward_auth, setting, expected) in [
+            (
+                "openai_chat",
+                true,
+                "all",
+                "requires anthropic_messages with forward_auth = true",
+            ),
+            (
+                "openai_responses",
+                true,
+                "all",
+                "requires anthropic_messages with forward_auth = true",
+            ),
+            (
+                "anthropic_messages",
+                false,
+                "all",
+                "requires anthropic_messages with forward_auth = true",
+            ),
+            ("anthropic_messages", true, "unknown", "unknown variant"),
+        ] {
+            let configured = format!(
+                "{VALID_CONFIG}\n[llm_clients.unused]\nformat = \"{format}\"\n\
+                 base_url = \"https://example.test\"\n\
+                 forward_auth = {forward_auth}\nforward_beta = \"{setting}\""
+            );
+            let message = error_message(&configured);
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    #[test]
     fn forward_auth_rejects_conflicting_credentials() {
         let competing_auth = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
@@ -2039,9 +2111,17 @@ confidence_threshold = 0.5
         assert!(error_message(&static_auth).contains("extra_headers cannot set \"Authorization\""));
 
         let static_beta = static_auth.replace("Authorization", "anthropic-beta");
-        assert!(
-            error_message(&static_beta).contains("extra_headers cannot set \"anthropic-beta\"")
-        );
+        for configured in [
+            static_beta.clone(),
+            static_beta.replace(
+                "forward_auth = true",
+                "forward_auth = true\nforward_beta = \"all\"",
+            ),
+        ] {
+            assert!(
+                error_message(&configured).contains("extra_headers cannot set \"anthropic-beta\"")
+            );
+        }
 
         for header in ["chatgpt-account-id", "x-openai-fedramp"] {
             let static_context = VALID_CONFIG.replacen(
