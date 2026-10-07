@@ -5,6 +5,10 @@
 ARG RUST_VERSION=1.96.1
 FROM rust:${RUST_VERSION}-bookworm AS builder
 
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y cmake \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /opt/switchyard
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 # .cargo/config.toml carries the workspace rustflags (target-cpu, force-frame-pointers).

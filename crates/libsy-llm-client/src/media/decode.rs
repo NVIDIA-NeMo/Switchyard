@@ -7,13 +7,16 @@ use std::io::Cursor;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, metadata::Orientation};
+use dynamo_multimodal::image::resize::resize_lanczos_rgb;
+use image::{
+    DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbImage, metadata::Orientation,
+};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
-use crate::{MediaError, Result};
+use super::{MediaError, Result};
 
 const MAX_DIMENSION: u32 = 16_384;
 const MAX_ALLOC: u64 = 128 * 1024 * 1024;
@@ -30,7 +33,7 @@ pub(crate) async fn resize(
     tokio::task::spawn_blocking(move || {
         // Keep the permit in the worker even if the caller cancels its wait.
         let _permit = permit;
-        // Adapted from Dynamo's ImageReaderBackend; see README.md for provenance.
+        // Adapted from Dynamo's ImageReaderBackend; see docs/media.md for provenance.
         let mut reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
         let mut limits = image::Limits::default();
         limits.max_image_width = Some(MAX_DIMENSION);
@@ -54,7 +57,27 @@ pub(crate) async fn resize(
         }
         decoded.apply_orientation(orientation);
         let resized = if decoded.width() > edge || decoded.height() > edge {
-            decoded.resize(edge, edge, image::imageops::FilterType::Triangle)
+            if decoded.color().has_alpha() {
+                // Dynamo's RGB resampler cannot preserve transparency.
+                decoded.resize(edge, edge, image::imageops::FilterType::Triangle)
+            } else {
+                let rgb = decoded.into_rgb8();
+                let (width, height) = rgb.dimensions();
+                let scale = f64::from(edge) / f64::from(width.max(height));
+                let out_width = (f64::from(width) * scale).round().max(1.0) as u32;
+                let out_height = (f64::from(height) * scale).round().max(1.0) as u32;
+                let pixels = resize_lanczos_rgb(
+                    rgb.as_raw(),
+                    height as usize,
+                    width as usize,
+                    out_height as usize,
+                    out_width as usize,
+                );
+                DynamicImage::ImageRgb8(
+                    RgbImage::from_raw(out_width, out_height, pixels)
+                        .ok_or(MediaError::Invalid("invalid resized image dimensions"))?,
+                )
+            }
         } else {
             decoded
         };
@@ -235,6 +258,25 @@ pub(crate) async fn frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn rgb_resize_keeps_thin_images_nonempty_and_does_not_upscale() {
+        let slots = Arc::new(Semaphore::new(1));
+        for (width, height, expected) in [(80, 1, (20, 1)), (1, 80, (1, 20)), (8, 4, (8, 4))] {
+            let image = RgbImage::from_pixel(width, height, image::Rgb([210, 40, 20]));
+            let mut input = Cursor::new(Vec::new());
+            image.write_to(&mut input, ImageFormat::Png).unwrap();
+            let original = input.into_inner();
+            let (_, output) = resize(original.clone(), 20, slots.clone()).await.unwrap();
+            let resized = image::load_from_memory(&output).unwrap();
+            assert_eq!((resized.width(), resized.height()), expected);
+            let pixel = resized.to_rgb8().get_pixel(0, 0).0;
+            assert!(pixel[0] > 190 && pixel[1] < 60 && pixel[2] < 40);
+            if width <= 20 && height <= 20 {
+                assert_eq!(output, original);
+            }
+        }
+    }
 
     #[test]
     fn sampling_covers_clip_and_centers_one_frame() {

@@ -1,8 +1,18 @@
-# switchyard-media
+# Media preparation
 
-Prepares media in an outgoing provider JSON body. `libsy-llm-client` invokes this
-crate after translation and endpoint overrides, before retries. Core `libsy` has
-no dependency on this crate. The caller's original routing request is unchanged.
+`libsy-llm-client` prepares media in the outgoing provider JSON body after
+translation and endpoint overrides, before retries. Core `libsy` has no media
+processing dependency. The caller's original routing request is unchanged.
+
+The client's internal `MediaProcessor` calls `dynamo-multimodal` 0.1 for RGB
+resizing with its Lanczos resampler. The `image` crate handles bounded decoding,
+EXIF orientation, encoding, and resizing images with transparency. URL loading
+and FFmpeg frame extraction remain in the client because Dynamo 0.1 does not
+implement them. No model tensor processor is used for hosted HTTP requests.
+
+Building from source requires CMake and a C/C++ toolchain for Dynamo's bundled
+libjpeg-turbo dependency. Dynamo's optional Rayon pool is disabled; processing
+uses the client's existing bounded blocking workers.
 
 Supported content: Chat `image_url` / `video_url`, Responses `input_image` /
 `input_video`, Anthropic image/video source blocks, and Gemini-on-Hub video
@@ -90,6 +100,5 @@ fn judge_endpoint(backend: Backend) -> ModelConfig {
 }
 ```
 
-`MediaProcessor` can also prepare an owned provider JSON body directly. Discard the
-body if preparation fails; it may be partially modified. The LLM client follows
-this rule and never modifies the routing driver's original request.
+`MediaProcessor` is internal to the client. Failed preparation discards the owned
+outgoing body and never modifies the routing driver's original request.

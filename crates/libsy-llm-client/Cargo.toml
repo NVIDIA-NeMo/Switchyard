@@ -18,11 +18,17 @@ publish = ["crates-io"]
 
 [dependencies]
 switchyard-libsy.workspace = true
-switchyard-media.workspace = true
 switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true
+base64.workspace = true
+dynamo-multimodal = { version = "0.1.0", default-features = false }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+ipnet = "2"
+serde.workspace = true
+tempfile = "3"
+thiserror.workspace = true
 futures.workspace = true
 futures-util.workspace = true
 opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
@@ -37,6 +43,5 @@ tracing-opentelemetry.workspace = true
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
-thiserror.workspace = true
 tracing-subscriber.workspace = true
 wiremock = "0.6"
