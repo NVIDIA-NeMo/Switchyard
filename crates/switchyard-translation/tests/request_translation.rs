@@ -512,28 +512,45 @@ fn anthropic_reconstruction_preserves_nested_cache_control() -> TestResult {
             }]
         });
         for policy in [TranslationPolicy::default(), normalized_policy()] {
-            let output = engine.translate_request(
-                WireFormat::AnthropicMessages,
-                WireFormat::AnthropicMessages,
-                &body,
-                &policy,
-            )?;
-            assert_eq!(
-                json!({
-                    "cache_control": output.body["cache_control"],
-                    "system": output.body["system"],
-                    "messages": output.body["messages"],
-                    "tool_cache_control": output.body["tools"][0]["cache_control"]
-                }),
-                json!({
-                    "cache_control": body["cache_control"],
-                    "system": body["system"],
-                    "messages": body["messages"],
-                    "tool_cache_control": body["tools"][0]["cache_control"]
-                }),
-                "cache markers ({tool_ttl}, {system_ttl}, {message_ttl}) and block boundaries must survive {:?} preservation",
-                policy.preservation,
-            );
+            for prompt in [None, Some("target prompt"), Some("Be helpful")] {
+                let mut expected = body.clone();
+                let output = if let Some(prompt) = prompt {
+                    let mut request = engine
+                        .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+                        .request;
+                    prepare_request_for_target(&mut request, &"target/model".into(), Some(prompt));
+                    expected["system"]
+                        .as_array_mut()
+                        .ok_or("expected system blocks")?
+                        .insert(0, json!({"type": "text", "text": prompt}));
+                    expected["model"] = json!("target/model");
+                    engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+                } else {
+                    engine.translate_request(
+                        WireFormat::AnthropicMessages,
+                        WireFormat::AnthropicMessages,
+                        &body,
+                        &policy,
+                    )?
+                };
+                assert_eq!(output.body["model"], expected["model"]);
+                assert_eq!(
+                    json!({
+                        "cache_control": output.body["cache_control"],
+                        "system": output.body["system"],
+                        "messages": output.body["messages"],
+                        "tool_cache_control": output.body["tools"][0]["cache_control"]
+                    }),
+                    json!({
+                        "cache_control": expected["cache_control"],
+                        "system": expected["system"],
+                        "messages": expected["messages"],
+                        "tool_cache_control": expected["tools"][0]["cache_control"]
+                    }),
+                    "cache markers ({tool_ttl}, {system_ttl}, {message_ttl}) and block boundaries must survive {:?} preservation with prompt {prompt:?}",
+                    policy.preservation,
+                );
+            }
         }
     }
     Ok(())

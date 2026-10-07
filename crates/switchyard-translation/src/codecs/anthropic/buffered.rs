@@ -310,7 +310,9 @@ impl FormatCodec for AnthropicMessagesCodec {
                     blocks.extend(encode_one_anthropic_block(block)?);
                 }
             }
-            restore_anthropic_cache_blocks(&mut blocks, cache_blocks, &mut 0, false);
+            // Target prompts are prepended; the original system blocks remain at the end.
+            let start = blocks.len().saturating_sub(cache_blocks.len());
+            restore_anthropic_cache_blocks(&mut blocks[start..], cache_blocks, &mut 0, false);
             if !blocks.is_empty() {
                 body.insert("system".to_string(), Value::Array(blocks));
             }
@@ -1619,6 +1621,9 @@ fn cache_ttl(cache_control: &Value, path: &str) -> Result<u16> {
             message: "expected ephemeral cache type".to_string(),
         });
     }
+
+    // Only "5m" and "1h" are valid TTL values; omission defaults to "5m".
+    // https://platform.claude.com/docs/en/api/messages/create#code_execution_tool_result_block_param.cache_control
     match object.get("ttl") {
         None => Ok(300),
         Some(Value::String(ttl)) if ttl == "5m" => Ok(300),
