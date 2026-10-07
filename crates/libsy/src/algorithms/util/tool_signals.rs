@@ -746,6 +746,7 @@ fn extract_tool_signals_with_window_and_semantics(
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     // IDs whose latest call is a retrieval tool.
     let mut retrieval_calls: HashSet<&str> = HashSet::new();
+    let mut shell_read_calls: HashSet<&str> = HashSet::new();
     let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
@@ -784,6 +785,19 @@ fn extract_tool_signals_with_window_and_semantics(
                         } else {
                             retrieval_calls.remove(call.id.as_str());
                         }
+                        if BASH_TOOL_NAMES.contains(&name.to_lowercase().as_str())
+                            && command.as_deref().is_some_and(|command| {
+                                !command.trim().is_empty()
+                                    && shell_segments(command).all(|segment| {
+                                        classify_tool_call(name, Some(segment))
+                                            == ToolSemantic::Observe
+                                    })
+                            })
+                        {
+                            shell_read_calls.insert(call.id.as_str());
+                        } else {
+                            shell_read_calls.remove(call.id.as_str());
+                        }
                     }
                     tool_calls.push(ObservedToolCall {
                         name: call.name.clone(),
@@ -801,8 +815,18 @@ fn extract_tool_signals_with_window_and_semantics(
                         .collect::<Vec<_>>()
                         .join("\n");
                     let is_error = result.is_error == Some(true);
-                    let is_retrieval_result =
-                        !is_error && retrieval_calls.contains(result.tool_call_id.as_str());
+                    // Shell reads can return bare JSON from a file. Hermes wraps
+                    // terminal output with output and exit_code fields.
+                    let is_shell_read_json = shell_read_calls
+                        .contains(result.tool_call_id.as_str())
+                        && serde_json::from_str::<Value>(&text).is_ok_and(|value| {
+                            value.is_object()
+                                && !(value["output"].is_string()
+                                    && value.get("exit_code").is_some())
+                        });
+                    let is_retrieval_result = !is_error
+                        && (retrieval_calls.contains(result.tool_call_id.as_str())
+                            || is_shell_read_json);
                     // An explicit failure remains a signal even without text.
                     if !text.is_empty() || is_error {
                         // Read and search results show file contents, not the outcome
@@ -1095,7 +1119,7 @@ fn content_to_text(content: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Match `text` against the error pattern table.
+/// Match tool text and structured result fields against error patterns.
 ///
 /// Returns `(max_severity, matched_pattern_names)`.
 pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
@@ -1108,11 +1132,25 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
             severity = severity.max(*sev);
         }
     }
-    if has_nonzero_exit_status(&lower) && !patterns.iter().any(|p| p == "exit_nonzero") {
+    // Hermes can append a loop warning after the JSON result.
+    let result = serde_json::Deserializer::from_str(text)
+        .into_iter::<Value>()
+        .next()
+        .and_then(|result| result.ok())
+        .unwrap_or_default();
+    let nonzero_exit = result["exit_code"].as_i64().is_some_and(|code| code != 0);
+    let tool_error = result["success"].as_bool() == Some(false)
+        || result["error"]
+            .as_str()
+            .is_some_and(|error| !error.trim().is_empty());
+    if (nonzero_exit || has_nonzero_exit_status(&lower))
+        && !patterns.iter().any(|p| p == "exit_nonzero")
+    {
         patterns.push("exit_nonzero".to_string());
         severity = severity.max(SOFT);
     }
     for (name, matched) in [
+        ("tool_error", tool_error),
         ("compile_error", has_compiler_diagnostic(&lower)),
         ("runtime_exception", has_runtime_exception(&lower)),
         ("runtime_panic", has_runtime_panic(&lower)),
@@ -1404,6 +1442,34 @@ mod tests {
     }
 
     #[test]
+    fn structured_tool_failures_affect_recovery_signals() {
+        for (text, severity) in [
+            (r#"{"output":"","exit_code":7,"error":null}"#, SOFT),
+            (r#"{"output":"","exit_code":-1,"error":null}"#, SOFT),
+            (r#"{"success":false,"error":"No matching text"}"#, HARD),
+            (r#"{"success":false,"error":null}"#, HARD),
+            (
+                r#"{"error":"Overwrite refused","stale_write_blocked":true}"#,
+                HARD,
+            ),
+            (r#"{"output":"out of memory","exit_code":1}"#, CRITICAL),
+            (r#"{"output":"done","exit_code":0,"error":null}"#, 0.0),
+            (r#"{"success":true,"error":"  "}"#, 0.0),
+            (r#"{"output":"running","exit_code":null,"error":null}"#, 0.0),
+            (r#"{"output":{"success":false},"exit_code":0}"#, 0.0),
+        ] {
+            let warned = format!("{text}\n\n[Tool loop warning: repeated identical call]");
+            let request = with_messages(vec![tr("5 passed in 0.12s"), tr(text), tr(&warned)]);
+            let signal = ToolSignals::from_request(&request, None);
+            let clean = severity == 0.0;
+            assert_eq!(signal.severity, severity, "{text}");
+            assert_eq!(signal.no_error_streak, if clean { 3 } else { 0 }, "{text}");
+            assert_eq!(signal.repeated_failure, severity >= HARD, "{text}");
+            assert_eq!(signal.tests_passed, clean, "{text}");
+        }
+    }
+
+    #[test]
     fn traceback_is_hard() {
         let (sev, patterns) = classify_text("Traceback (most recent call last):\n  ValueError");
         assert_eq!(sev, HARD);
@@ -1637,7 +1703,10 @@ mod tests {
                 call("a", "Bash", json!({"command": "pytest"})),
                 result("a", "Traceback (most recent call last):\nValueError"),
                 call("b", "Read", json!({"file_path": "notes.md"})),
-                result("b", "the worker ran out of memory"),
+                result(
+                    "b",
+                    r#"{"success":false,"error":"out of memory","exit_code":7}"#,
+                ),
                 call("c", "Grep", json!({"pattern": "passed"})),
                 result("c", "CHANGELOG.md: all tests passed"),
             ]),
@@ -1647,6 +1716,30 @@ mod tests {
         assert_eq!(signal.severity, HARD);
         assert!(!signal.tests_passed);
         assert_eq!(signal.tool_result_count, 3);
+
+        for (command, text, severity) in [
+            ("cat config.json", r#"{"error":"fixture data"}"#, 0.0),
+            (
+                "cat missing.json",
+                r#"{"output":"","exit_code":7,"error":null}"#,
+                SOFT,
+            ),
+            (
+                "cat config.json && python check.py",
+                r#"{"error":"check rejected"}"#,
+                HARD,
+            ),
+        ] {
+            let request = with_messages(vec![
+                call("shell", "Bash", json!({"command": command})),
+                result("shell", text),
+            ]);
+            assert_eq!(
+                ToolSignals::from_request(&request, None).severity,
+                severity,
+                "{text}"
+            );
+        }
     }
 
     #[test]
