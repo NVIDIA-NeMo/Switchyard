@@ -1095,7 +1095,7 @@ fn content_to_text(content: Option<&Value>) -> Option<String> {
     }
 }
 
-/// Match `text` against the error pattern table.
+/// Match tool text and structured result fields against error patterns.
 ///
 /// Returns `(max_severity, matched_pattern_names)`.
 pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
@@ -1108,11 +1108,31 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
             severity = severity.max(*sev);
         }
     }
-    if has_nonzero_exit_status(&lower) && !patterns.iter().any(|p| p == "exit_nonzero") {
+    // Hermes can append a loop warning after the JSON result.
+    let result = serde_json::Deserializer::from_str(text)
+        .into_iter::<serde_json::Value>()
+        .next()
+        .and_then(|result| result.ok());
+    let nonzero_exit = result
+        .as_ref()
+        .and_then(|value| value.get("exit_code"))
+        .and_then(serde_json::Value::as_i64)
+        .is_some_and(|code| code != 0);
+    let tool_error = result.as_ref().is_some_and(|value| {
+        value.get("success").and_then(serde_json::Value::as_bool) == Some(false)
+            || value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|error| !error.trim().is_empty())
+    });
+    if (nonzero_exit || has_nonzero_exit_status(&lower))
+        && !patterns.iter().any(|p| p == "exit_nonzero")
+    {
         patterns.push("exit_nonzero".to_string());
         severity = severity.max(SOFT);
     }
     for (name, matched) in [
+        ("tool_error", tool_error),
         ("compile_error", has_compiler_diagnostic(&lower)),
         ("runtime_exception", has_runtime_exception(&lower)),
         ("runtime_panic", has_runtime_panic(&lower)),
@@ -1404,6 +1424,57 @@ mod tests {
     }
 
     #[test]
+    fn structured_tool_failures_affect_recovery_signals() {
+        for (output, severity) in [
+            (json!({"output": "", "exit_code": 7, "error": null}), SOFT),
+            (json!({"output": "", "exit_code": -1, "error": null}), SOFT),
+            (json!({"success": false, "error": "No matching text"}), HARD),
+            (json!({"success": false, "error": null}), HARD),
+            (
+                json!({"error": "Overwrite refused", "stale_write_blocked": true}),
+                HARD,
+            ),
+            (
+                json!({"output": "out of memory", "exit_code": 1, "error": null}),
+                CRITICAL,
+            ),
+            (
+                json!({"output": "done", "exit_code": 0, "error": null}),
+                0.0,
+            ),
+            (json!({"success": true, "error": "  "}), 0.0),
+            (
+                json!({"output": "running", "exit_code": null, "error": null}),
+                0.0,
+            ),
+            (json!({"output": {"success": false}, "exit_code": 0}), 0.0),
+        ] {
+            let text = output.to_string();
+            let request = with_messages(vec![tr("5 passed in 0.12s"), tr(&text), tr(&text)]);
+            let signal = ToolSignals::from_request(&request, None);
+            assert_eq!(signal.severity, severity, "{text}");
+            assert_eq!(
+                signal.no_error_streak,
+                if severity > 0.0 { 0 } else { 3 },
+                "{text}"
+            );
+            assert_eq!(signal.repeated_failure, severity >= HARD, "{text}");
+            assert_eq!(signal.tests_passed, severity == 0.0, "{text}");
+        }
+    }
+
+    #[test]
+    fn structured_failures_with_trailing_warnings_remain_failures() {
+        let failure = r#"{"success":false,"error":"No matching text"}"#;
+        let warned = format!("{failure}\n\n[Tool loop warning: repeated identical call]");
+        let request = with_messages(vec![tr(failure), tr(&warned)]);
+        let signal = ToolSignals::from_request(&request, None);
+        assert_eq!(signal.severity, HARD);
+        assert_eq!(signal.no_error_streak, 0);
+        assert!(signal.repeated_failure);
+    }
+
+    #[test]
     fn traceback_is_hard() {
         let (sev, patterns) = classify_text("Traceback (most recent call last):\n  ValueError");
         assert_eq!(sev, HARD);
@@ -1637,7 +1708,10 @@ mod tests {
                 call("a", "Bash", json!({"command": "pytest"})),
                 result("a", "Traceback (most recent call last):\nValueError"),
                 call("b", "Read", json!({"file_path": "notes.md"})),
-                result("b", "the worker ran out of memory"),
+                result(
+                    "b",
+                    r#"{"success":false,"error":"out of memory","exit_code":7}"#,
+                ),
                 call("c", "Grep", json!({"pattern": "passed"})),
                 result("c", "CHANGELOG.md: all tests passed"),
             ]),
