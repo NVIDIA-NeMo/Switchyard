@@ -897,7 +897,13 @@ fn extract_tool_signals_with_window_and_semantics(
                 // stays in the prefix on every later turn, so this self-latches
                 // once it fires.
                 ContentBlock::Text { text } => {
-                    compacted |= text.to_lowercase().contains(COMPACTION_MARKER);
+                    let text = text.to_lowercase();
+                    compacted |= text.contains(COMPACTION_MARKER)
+                        || text.lines().any(|line| {
+                            HERMES_COMPACTION_MARKERS
+                                .iter()
+                                .any(|marker| line.trim_start().starts_with(marker))
+                        });
                 }
                 _ => {}
             }
@@ -920,6 +926,12 @@ fn extract_tool_signals_with_window_and_semantics(
 /// Distinctive preamble Claude Code injects as a user message when it compacts an
 /// overflowed context. Matched case-insensitively; normal task text never contains it.
 const COMPACTION_MARKER: &str = "session is being continued";
+
+// Hermes can merge the summary into an existing message or restate an active task.
+const HERMES_COMPACTION_MARKERS: &[&str] = &[
+    "[context compaction \u{2014} reference only]",
+    "[still in progress \u{2014} this is the active request, restated after the compaction boundary",
+];
 
 /// The tool part of an `mcp__<server>__<tool>` name, the form Claude Code uses
 /// for MCP tools. The server name is assumed not to contain `__`; the tool name
@@ -2053,6 +2065,41 @@ mod tests {
             bash("ls"),
         ]);
         assert!(ToolSignals::from_request(&request, None).compacted);
+    }
+
+    #[test]
+    fn hermes_compaction_headers_set_compacted() {
+        for header in [
+            "[CONTEXT COMPACTION \u{2014} REFERENCE ONLY] Earlier turns were compacted into the summary below.",
+            "[STILL IN PROGRESS \u{2014} this is the active request, restated after the compaction boundary because it was not finished yet. Continue it\u{3b} do not start over.]",
+        ] {
+            for role in [Role::User, Role::Assistant] {
+                let request = with_messages(vec![
+                    Message::text(role, format!("{header}\nContinue the task.")),
+                    bash("ls"),
+                ]);
+                assert!(ToolSignals::from_request(&request, None).compacted);
+            }
+            let request = with_messages(vec![Message::text(
+                Role::User,
+                format!("Prior context.\n\n  {header}\nContinue the task."),
+            )]);
+            assert!(ToolSignals::from_request(&request, None).compacted);
+            let request = with_messages(vec![tr(header)]);
+            assert!(!ToolSignals::from_request(&request, None).compacted);
+        }
+    }
+
+    #[test]
+    fn ordinary_compaction_text_stays_uncompacted() {
+        for text in [
+            "The task is still in progress after the compaction boundary.",
+            "Explain [CONTEXT COMPACTION \u{2014} REFERENCE ONLY] in the docs.",
+            "[STILL IN PROGRESS] Continue the task.",
+        ] {
+            let request = with_messages(vec![Message::text(Role::User, text)]);
+            assert!(!ToolSignals::from_request(&request, None).compacted);
+        }
     }
 
     #[test]
