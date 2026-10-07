@@ -60,9 +60,9 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 
 For `openai_responses`, `responses_reasoning` controls replay of reasoning
 history. Every client defaults to `"preserve_encrypted"`: reasoning items with
-non-empty `encrypted_content` are retained with empty `content`, and unsigned
-reasoning is removed. Set `responses_reasoning = "drop"` explicitly for a backend
-that cannot consume encrypted provider state. Both modes keep messages, tool
+non-empty `encrypted_content` or a stored reasoning `id` are retained with empty
+`content`. Reasoning without either is removed. Set `responses_reasoning = "drop"` explicitly for a backend
+that cannot consume provider reasoning. Both modes keep messages, tool
 calls and tool results. The setting is rejected on other client formats, even
 when no target uses the client. It is not inferred from the model name or URL.
 

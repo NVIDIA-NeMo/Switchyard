@@ -5354,7 +5354,7 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
 async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let base_url = upstream.base_url.replace("/v1", "/buffered");
-    for (setting, expected_reasoning) in [("", 1), ("responses_reasoning = \"drop\"", 0)] {
+    for (setting, expected_reasoning) in [("", 2), ("responses_reasoning = \"drop\"", 0)] {
         let config = format!(
             r#"
 schema_version = 1
@@ -5375,6 +5375,7 @@ target = "answer"
             "model": "route", "input": [
                 {"type": "message", "role": "user", "content": "continue"},
                 {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
+                {"type": "reasoning", "id": "rs_stored", "summary": []},
                 {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "local"}], "summary": []}
             ]
         }))).await?;

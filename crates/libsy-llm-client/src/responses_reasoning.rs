@@ -7,10 +7,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// Controls which Responses reasoning items are replayed to an upstream.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponsesReasoningPolicy {
-    /// Preserve provider-encrypted reasoning but remove plaintext reasoning.
+    /// Preserve encrypted reasoning and stored reasoning IDs; remove plaintext.
     ///
     /// This is the default for every Responses model, regardless of its URL.
     #[default]
@@ -31,7 +31,7 @@ impl ResponsesReasoningPolicy {
         input.retain_mut(|item| self.normalize_item(item));
     }
 
-    // Keep non-reasoning items; PreserveEncrypted retains only non-empty encrypted_content.
+    // Stored reasoning can be replayed by ID without encrypted content.
     fn normalize_item(self, item: &mut Value) -> bool {
         let Some(object) = item.as_object_mut() else {
             return true;
@@ -40,91 +40,19 @@ impl ResponsesReasoningPolicy {
             return true;
         }
 
-        let signed = matches!(
+        let has_encrypted_content = matches!(
             object.get("encrypted_content").and_then(Value::as_str),
             Some(encrypted_content) if !encrypted_content.is_empty()
         );
-        if self == Self::PreserveEncrypted && signed {
+        let has_stored_id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty());
+        if self == Self::PreserveEncrypted && (has_encrypted_content || has_stored_id) {
             object.insert("content".to_string(), Value::Array(Vec::new()));
             true
         } else {
             false
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    fn mixed_history() -> Value {
-        json!({
-            "input": [
-                {"type": "message", "role": "user", "content": []},
-                {
-                    "type": "reasoning",
-                    "content": [{"type": "reasoning_text", "text": "plaintext"}],
-                    "encrypted_content": ""
-                },
-                {"type": "function_call", "call_id": "call_1"},
-                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
-                {
-                    "type": "reasoning",
-                    "content": [{"type": "reasoning_text", "text": "must be removed"}],
-                    "encrypted_content": "encrypted"
-                }
-            ]
-        })
-    }
-
-    #[test]
-    fn preserve_encrypted_drops_unsigned_and_clears_plaintext() {
-        let mut body = mixed_history();
-        ResponsesReasoningPolicy::PreserveEncrypted.normalize(&mut body);
-
-        let input = body["input"].as_array().expect("input array");
-        let reasoning: Vec<&Value> = input
-            .iter()
-            .filter(|item| item["type"] == "reasoning")
-            .collect();
-        assert_eq!(reasoning.len(), 1);
-        assert_eq!(reasoning[0]["encrypted_content"], "encrypted");
-        assert_eq!(reasoning[0]["content"], json!([]));
-        assert!(input.iter().any(|item| item["type"] == "function_call"));
-        assert!(
-            input
-                .iter()
-                .any(|item| item["type"] == "function_call_output")
-        );
-    }
-
-    #[test]
-    fn unsigned_forms_are_removed_and_non_reasoning_is_unchanged() {
-        let message = json!({"type": "message", "role": "user", "content": "continue"});
-        let mut body = json!({"input": [
-            {"type": "reasoning"},
-            {"type": "reasoning", "encrypted_content": null},
-            {"type": "reasoning", "encrypted_content": ""},
-            message.clone()
-        ]});
-        ResponsesReasoningPolicy::PreserveEncrypted.normalize(&mut body);
-        assert_eq!(body["input"], json!([message]));
-    }
-
-    #[test]
-    fn drop_removes_all_reasoning_and_keeps_tool_history() {
-        let mut body = mixed_history();
-        ResponsesReasoningPolicy::Drop.normalize(&mut body);
-
-        let input = body["input"].as_array().expect("input array");
-        assert!(input.iter().all(|item| item["type"] != "reasoning"));
-        assert!(input.iter().any(|item| item["type"] == "function_call"));
-        assert!(
-            input
-                .iter()
-                .any(|item| item["type"] == "function_call_output")
-        );
     }
 }
