@@ -706,6 +706,73 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#claude-through-an-llm-gateway" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude through an LLM gateway
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude through an LLM gateway">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prompt-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prompt caching
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prompt caching">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#estimate-the-cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimate the cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thinking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thinking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forwarded-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forwarded keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1506,6 +1573,73 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#claude-through-an-llm-gateway" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude through an LLM gateway
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude through an LLM gateway">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#prompt-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prompt caching
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prompt caching">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#estimate-the-cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimate the cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thinking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thinking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forwarded-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forwarded keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1564,7 +1698,9 @@ with route id <code>switchyard</code>.</p>
 <ul>
 <li><code>models[].id</code> must equal a route <code>id</code> from your TOML file. Add one entry per route.</li>
 <li><code>apiKey</code> is a placeholder. Switchyard ignores client keys unless an LLM client sets
-  <code>forward_auth = true</code>. pi still needs some value here before it lists the model.</li>
+  <code>forward_auth = true</code>. pi still needs some value here before it lists the model. To
+  send your gateway key through a route that forwards it, see
+  <a href="#forwarded-keys">Forwarded keys</a>.</li>
 <li><code>contextWindow</code> and <code>maxTokens</code> set pi's compaction limit and output cap. pi does not
   read these values from the server. Use the smallest context window among the route's
   targets.</li>
@@ -1626,8 +1762,190 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/45c8992d019a6c3da131f56bb858687f6aa26277/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ddf2b9e1832fb5531f11ffaaf498c6c63027db63/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
+<h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
+<p>An LLM gateway, such as a LiteLLM proxy, can serve Claude on three endpoints:
+<code>/v1/chat/completions</code>, <code>/v1/responses</code>, and <code>/v1/messages</code>. Switchyard calls the
+endpoint that matches the <code>format</code> of the Claude target's LLM client, whichever <code>api</code> pi
+uses. Give Claude targets an LLM client with <code>format = "anthropic_messages"</code>:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[llm_clients.gateway_claude]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic_messages&quot;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://gateway.example.com&quot;</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;GATEWAY_API_KEY&quot;</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="k">[targets.claude]</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-sonnet-5&quot;</span><span class="w">  </span><span class="c1"># the gateway&#39;s model ID</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_claude&quot;</span>
+</span></code></pre></div>
+<p>On the tested gateway, both OpenAI formats returned HTTP 400 when pi sent a thinking
+level, and <code>openai_responses</code> never read the prompt cache:</p>
+<table>
+<thead>
+<tr>
+<th>Claude LLM client <code>format</code></th>
+<th>Gateway endpoint</th>
+<th>Prompt cache</th>
+<th>pi's thinking level</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>anthropic_messages</code></td>
+<td><code>/v1/messages</code></td>
+<td>Read on repeated prompts</td>
+<td>Works</td>
+</tr>
+<tr>
+<td><code>openai_chat</code></td>
+<td><code>/v1/chat/completions</code></td>
+<td>Read on repeated prompts</td>
+<td>HTTP 400</td>
+</tr>
+<tr>
+<td><code>openai_responses</code></td>
+<td><code>/v1/responses</code></td>
+<td>Never read</td>
+<td>HTTP 400</td>
+</tr>
+</tbody>
+</table>
+<p><a href="#prompt-caching">Prompt caching</a> and <a href="#thinking">Thinking</a> explain both failures. To
+use each developer's own gateway key instead of a key that the server holds, see
+<a href="#forwarded-keys">Forwarded keys</a>.</p>
+<h3 id="prompt-caching">Prompt caching<a class="headerlink" href="#prompt-caching" title="Permanent link">&para;</a></h3>
+<p>pi sends the whole conversation on every turn. When the gateway reads the repeated part
+from Claude's prompt cache, that part costs 0.1 times the input price on Claude Sonnet 5
+and 0.05 times on Claude Opus 5.5, according to Anthropic's
+<a href="https://platform.claude.com/docs/en/about-claude/pricing">pricing page</a>. The tested
+gateway never read Claude prompts from the cache on <code>/v1/responses</code>, so every turn there
+paid the full input price for the whole conversation.</p>
+<p>To check your gateway, start the server with <code>--routing-log-file PATH</code> and send the same
+prompt twice. Claude does not cache short prompts, so use a prompt of at least 5,000
+tokens. Then read the records:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, prompt_tokens, cached_tokens, cache_creation_tokens}&#39;</span><span class="w"> </span>PATH
+</span></code></pre></div>
+<p>When caching works, the first record shows the prompt in <code>cache_creation_tokens</code>, and the
+second shows <code>cached_tokens</code> close to <code>prompt_tokens</code>. If the second record shows
+<code>"cached_tokens": 0</code>, the gateway read nothing from the cache.</p>
+<h4 id="estimate-the-cost">Estimate the cost<a class="headerlink" href="#estimate-the-cost" title="Permanent link">&para;</a></h4>
+<p>The routing log records token counts, not prices. To estimate what a request cost,
+multiply each count in its record by the matching price and add the results:</p>
+<table>
+<thead>
+<tr>
+<th>Tokens in the record</th>
+<th>Price</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt_tokens - cached_tokens - cache_creation_tokens</code></td>
+<td>Input</td>
+</tr>
+<tr>
+<td><code>cached_tokens</code></td>
+<td>Cache read</td>
+</tr>
+<tr>
+<td><code>cache_creation_tokens</code></td>
+<td>Cache write</td>
+</tr>
+<tr>
+<td><code>completion_tokens</code></td>
+<td>Output</td>
+</tr>
+</tbody>
+</table>
+<p>Write the prices to <code>prices.json</code> in USD per million tokens, and key each entry by the
+record's <code>model</code> value. This example uses Anthropic's list prices for Claude Sonnet 5 on
+2026-10-02:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;claude-sonnet-5&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.20</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.50</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.00</span><span class="p">}</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The example's <code>cache_write</code> price is for a 5-minute cache. A 1-hour cache costs 2 times
+the input price instead of 1.25 times. The routing log does not say which cache the
+gateway used. A gateway may also charge its own prices, so the result is an estimate, not
+the gateway's bill. This command prints one estimated cost per record, or a warning for a
+model that has no entry in <code>prices.json</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>jq<span class="w"> </span>-r<span class="w"> </span>--slurpfile<span class="w"> </span>prices<span class="w"> </span>prices.json<span class="w"> </span><span class="s1">&#39;</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="s1">  . as $r</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="s1">  | ($prices[0][$r.model // &quot;&quot;]) as $p</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="s1">  | if $p == null then</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="s1">      &quot;warning: no price for model \($r.model); add it to prices.json&quot;</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="s1">    else</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="s1">      ((($r.prompt_tokens // 0) - ($r.cached_tokens // 0) - ($r.cache_creation_tokens // 0)) * $p.input</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="s1">       + ($r.cached_tokens // 0) * $p.cache_read</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="s1">       + ($r.cache_creation_tokens // 0) * $p.cache_write</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="s1">       + ($r.completion_tokens // 0) * $p.output) / 1000000</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="s1">      | &quot;\($r.route_id) \($r.model) estimated $\(. * 1000000 | round / 1000000)&quot;</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="s1">    end&#39;</span><span class="w"> </span>PATH
+</span></code></pre></div>
+<h3 id="thinking">Thinking<a class="headerlink" href="#thinking" title="Permanent link">&para;</a></h3>
+<p>With <code>reasoning: true</code> on the model entry, pi sends a thinking level on every request,
+even when you do not pass <code>--thinking</code>. Switchyard passes that level to an OpenAI-format
+target in OpenAI form: <code>reasoning_effort</code> on <code>openai_chat</code> and <code>reasoning.effort</code> on
+<code>openai_responses</code>. The tested gateway turned either field into Anthropic's older
+<code>thinking: {type: "enabled"}</code>. Claude Opus 5.5 and Sonnet 5 refuse that form, so the
+gateway returned HTTP 400:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>&quot;thinking.type.enabled&quot; is not supported for this model. Use &quot;thinking.type.adaptive&quot; and &quot;output_config.effort&quot; to control thinking behavior.
+</span></code></pre></div>
+<p>For an <code>anthropic_messages</code> target, Switchyard sends the level in the form that Claude
+accepts: <code>thinking: {type: "adaptive"}</code> with <code>output_config.effort</code>. pi's thinking level
+then takes effect.</p>
+<p>If a Claude target must stay on an OpenAI format, remove the effort field from its
+requests with <a href="../../reference/toml_schema/#targetsname"><code>omit_body_fields</code></a>. Claude then
+thinks at its default effort, and pi's thinking level has no effect on that target:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">[targets.claude]</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_chat&quot;</span><span class="w">  </span><span class="c1"># format = &quot;openai_chat&quot;</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning_effort&quot;</span><span class="p">]</span><span class="w">  </span><span class="c1"># use &quot;reasoning&quot; on openai_responses</span>
+</span></code></pre></div>
+<p>Switchyard applies the target's <code>extra_body</code> and <code>reasoning_effort</code> after the removal, so
+either can set the field again.</p>
+<h3 id="forwarded-keys">Forwarded keys<a class="headerlink" href="#forwarded-keys" title="Permanent link">&para;</a></h3>
+<p>With <code>api_key_env</code>, every caller's requests use one gateway key that the server holds.
+To use each developer's own gateway key instead, set <code>forward_auth = true</code> on the LLM
+client. Then set pi's <code>apiKey</code> to <code>$</code> plus the name of the environment variable that
+holds your key: <code>"apiKey": "$GATEWAY_API_KEY"</code>. Without the <code>$</code>, pi sends the name itself
+as the key, and the gateway returns HTTP 401. Only standalone <code>switchyard-server</code> forwards
+keys. The native Nemo Relay plugin rejects routes that use <code>forward_auth = true</code> (see
+<a href="../nemo_relay/#request-handling">Request Handling</a>).</p>
+<p>Which request APIs a route accepts depends on its LLM clients that forward the key.
+Clients with <code>api_key_env</code> do not count:</p>
+<table>
+<thead>
+<tr>
+<th>Forwarding LLM clients in the route</th>
+<th>Request APIs the route accepts</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>None</td>
+<td>All three</td>
+</tr>
+<tr>
+<td>Only OpenAI formats</td>
+<td><code>/v1/chat/completions</code> and <code>/v1/responses</code></td>
+</tr>
+<tr>
+<td>OpenAI formats and <code>anthropic_messages</code>, all on the same scheme, host, and port</td>
+<td><code>/v1/chat/completions</code> and <code>/v1/responses</code></td>
+</tr>
+<tr>
+<td>Only <code>anthropic_messages</code></td>
+<td><code>/v1/messages</code>, which pi should not use (see <a href="#which-request-api">Which request API</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>For example, a classifier route can forward pi's key to its GPT judge on
+<code>openai_responses</code> and to its Claude targets on <code>anthropic_messages</code> when both LLM clients
+point at the same gateway. If they use different hosts, ports, or schemes, the server does
+not start. If a route forwards the key only to Claude targets on <code>anthropic_messages</code>, pi
+cannot use it. Put those targets on <code>openai_chat</code> with <code>omit_body_fields</code> (see
+<a href="#thinking">Thinking</a>), or let the server hold the key with <code>api_key_env</code>.</p>
 
 
 
