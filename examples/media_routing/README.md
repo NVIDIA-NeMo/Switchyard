@@ -19,9 +19,9 @@ unchanged. The same request can therefore give the judge a small preview while
 preserving the answer's original media.
 
 `libsy` does not decode media. Preparation runs in `libsy-llm-client`, using
-`switchyard-media` and settings under each target's `[media]` table. With the HTTP
+`libsy-llm-client` and settings under each target's `[media]` table. With the HTTP
 server, that client runs on the server host; with embedded Rust, it runs in the
-calling application. See the [crate configuration reference](../../crates/switchyard-media/README.md)
+calling application. See the [media configuration reference](../../crates/libsy-llm-client/docs/media.md)
 for supported settings and limits.
 
 ## Run

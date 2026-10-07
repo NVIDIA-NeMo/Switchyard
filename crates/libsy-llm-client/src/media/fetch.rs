@@ -12,9 +12,9 @@ use ipnet::IpNet;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::{Client, Url};
 
-use crate::{MediaError, Result};
+use super::{MediaError, Result};
 
-// Adapted from Dynamo's media/loader.rs; see README.md for source and revision.
+// Adapted from Dynamo's media/loader.rs; see docs/media.md for source and revision.
 static BLOCKED_NETWORKS: LazyLock<Vec<IpNet>> = LazyLock::new(|| {
     [
         "0.0.0.0/8",

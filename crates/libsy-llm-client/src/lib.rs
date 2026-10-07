@@ -19,6 +19,7 @@
 pub mod backend;
 pub mod client;
 pub mod error;
+mod media;
 pub mod metrics;
 mod observability;
 mod observation;
@@ -28,10 +29,10 @@ pub mod run;
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
+pub use media::{MediaConfig, VideoMode};
 pub use observation::{LlmCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use run::{ClientRouter, decide, run};
-pub use switchyard_media::{MediaConfig, VideoMode};
 pub use switchyard_translation::RawEventStream;
 
 /// Registers process-wide compatibility gauges with the global meter provider.

@@ -16,8 +16,13 @@ It also pairs the client with a libsy algorithm: [`run`] drives
 When routing has not already produced the answer, `run` makes the terminal call and owns backend
 retries plus ordered candidate fallback.
 
-It depends on `switchyard-libsy`, `switchyard-protocol`, and
-`switchyard-translation`; no server, no provider SDK.
+It depends on `switchyard-libsy`, `switchyard-protocol`,
+`switchyard-translation`, and `dynamo-multimodal`; no server, no provider SDK.
+
+Optional per-target [media settings](docs/media.md) resize images, sample video
+frames, or select a native video representation before sending the request.
+Building from source requires CMake and a C/C++ toolchain for Dynamo's
+libjpeg-turbo dependency. Video frame extraction also needs FFmpeg/FFprobe at runtime.
 
 ## Concepts
 

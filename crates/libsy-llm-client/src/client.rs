@@ -14,7 +14,6 @@ use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value, json};
-use switchyard_media::{MediaConfig, MediaError, MediaProcessor};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
     ModelId, Request, Response, RoutedLlmClient,
@@ -27,6 +26,7 @@ use tracing::Instrument;
 
 use crate::backend::{Backend, openai_url};
 use crate::error::{LlmClientError, Result};
+use crate::media::{MediaConfig, MediaError, MediaProcessor};
 use crate::metrics;
 use crate::raw::RawResponse;
 
@@ -1331,12 +1331,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread::JoinHandle;
 
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::VideoMode;
     use crate::backend::HttpBackendConfig;
 
     fn config(base_url: &str) -> HttpBackendConfig {
@@ -1355,7 +1357,6 @@ mod tests {
     #[tokio::test]
     async fn target_media_prepares_preserved_body_without_mutating_answer_or_controls()
     -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
-        use switchyard_media::VideoMode;
         let server = MockServer::start().await;
         Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id":"r", "object":"chat.completion", "model":"answer",
@@ -1415,6 +1416,67 @@ mod tests {
             assert_eq!(prepared["custom_control"], body["custom_control"]);
             assert_eq!(prepared["temperature"], body["temperature"]);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn judge_resize_preserves_the_answer_image()
+    -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"r", "object":"chat.completion", "model":"answer",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let backend = Backend::OpenAiChat(config(&format!("{}/v1", server.uri())));
+        let client = TranslatingLlmClient::new(&[
+            ModelConfig::new("judge", backend.clone(), None).with_media(MediaConfig {
+                image_max_edge: Some(40),
+                ..Default::default()
+            }),
+            ModelConfig::new("answer", backend, None),
+        ])?;
+        let source = format!(
+            "data:image/jpeg;base64,{}",
+            STANDARD.encode(include_bytes!("media/fixtures/oriented.jpg"))
+        );
+        let body = json!({"model":"route", "messages":[{"role":"user","content":[
+            {"type":"text","text":"describe"},
+            {"type":"image_url","image_url":{"url":source,"detail":"high"}}
+        ]}]});
+        let request = Request {
+            llm_request: decode_request(WireFormat::OpenAiChat, &body)?,
+            ..Default::default()
+        };
+        for model in ["judge", "answer"] {
+            client
+                .call_rewrite_model(request.clone(), Some(&ModelId::from(model)))
+                .await?;
+        }
+        let received = server.received_requests().await.unwrap();
+        let judge: Value = serde_json::from_slice(&received[0].body)?;
+        let answer: Value = serde_json::from_slice(&received[1].body)?;
+        let image = &judge["messages"][0]["content"][1]["image_url"];
+        let encoded = image["url"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("data:image/jpeg;base64,")
+            .unwrap();
+        let resized = image::load_from_memory(&STANDARD.decode(encoded)?)?;
+        assert_eq!((resized.width(), resized.height()), (20, 40));
+        assert_eq!(image["detail"], "high");
+        assert_eq!(
+            judge["messages"][0]["content"][0],
+            body["messages"][0]["content"][0]
+        );
+        assert_eq!(answer["messages"], body["messages"]);
+        assert_eq!(
+            encode_request(&request.llm_request, WireFormat::OpenAiChat)?,
+            body
+        );
         Ok(())
     }
 
