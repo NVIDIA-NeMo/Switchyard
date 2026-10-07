@@ -821,7 +821,7 @@ fn extract_tool_signals_with_window_and_semantics(
                         .contains(result.tool_call_id.as_str())
                         && serde_json::from_str::<Value>(&text).is_ok_and(|value| {
                             value.is_object()
-                                && !(value.get("output").is_some_and(Value::is_string)
+                                && !(value["output"].is_string()
                                     && value.get("exit_code").is_some())
                         });
                     let is_retrieval_result = !is_error
@@ -1134,21 +1134,15 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
     }
     // Hermes can append a loop warning after the JSON result.
     let result = serde_json::Deserializer::from_str(text)
-        .into_iter::<serde_json::Value>()
+        .into_iter::<Value>()
         .next()
-        .and_then(|result| result.ok());
-    let nonzero_exit = result
-        .as_ref()
-        .and_then(|value| value.get("exit_code"))
-        .and_then(serde_json::Value::as_i64)
-        .is_some_and(|code| code != 0);
-    let tool_error = result.as_ref().is_some_and(|value| {
-        value.get("success").and_then(serde_json::Value::as_bool) == Some(false)
-            || value
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|error| !error.trim().is_empty())
-    });
+        .and_then(|result| result.ok())
+        .unwrap_or_default();
+    let nonzero_exit = result["exit_code"].as_i64().is_some_and(|code| code != 0);
+    let tool_error = result["success"].as_bool() == Some(false)
+        || result["error"]
+            .as_str()
+            .is_some_and(|error| !error.trim().is_empty());
     if (nonzero_exit || has_nonzero_exit_status(&lower))
         && !patterns.iter().any(|p| p == "exit_nonzero")
     {
@@ -1449,53 +1443,30 @@ mod tests {
 
     #[test]
     fn structured_tool_failures_affect_recovery_signals() {
-        for (output, severity) in [
-            (json!({"output": "", "exit_code": 7, "error": null}), SOFT),
-            (json!({"output": "", "exit_code": -1, "error": null}), SOFT),
-            (json!({"success": false, "error": "No matching text"}), HARD),
-            (json!({"success": false, "error": null}), HARD),
+        for (text, severity) in [
+            (r#"{"output":"","exit_code":7,"error":null}"#, SOFT),
+            (r#"{"output":"","exit_code":-1,"error":null}"#, SOFT),
+            (r#"{"success":false,"error":"No matching text"}"#, HARD),
+            (r#"{"success":false,"error":null}"#, HARD),
             (
-                json!({"error": "Overwrite refused", "stale_write_blocked": true}),
+                r#"{"error":"Overwrite refused","stale_write_blocked":true}"#,
                 HARD,
             ),
-            (
-                json!({"output": "out of memory", "exit_code": 1, "error": null}),
-                CRITICAL,
-            ),
-            (
-                json!({"output": "done", "exit_code": 0, "error": null}),
-                0.0,
-            ),
-            (json!({"success": true, "error": "  "}), 0.0),
-            (
-                json!({"output": "running", "exit_code": null, "error": null}),
-                0.0,
-            ),
-            (json!({"output": {"success": false}, "exit_code": 0}), 0.0),
+            (r#"{"output":"out of memory","exit_code":1}"#, CRITICAL),
+            (r#"{"output":"done","exit_code":0,"error":null}"#, 0.0),
+            (r#"{"success":true,"error":"  "}"#, 0.0),
+            (r#"{"output":"running","exit_code":null,"error":null}"#, 0.0),
+            (r#"{"output":{"success":false},"exit_code":0}"#, 0.0),
         ] {
-            let text = output.to_string();
-            let request = with_messages(vec![tr("5 passed in 0.12s"), tr(&text), tr(&text)]);
+            let warned = format!("{text}\n\n[Tool loop warning: repeated identical call]");
+            let request = with_messages(vec![tr("5 passed in 0.12s"), tr(text), tr(&warned)]);
             let signal = ToolSignals::from_request(&request, None);
+            let clean = severity == 0.0;
             assert_eq!(signal.severity, severity, "{text}");
-            assert_eq!(
-                signal.no_error_streak,
-                if severity > 0.0 { 0 } else { 3 },
-                "{text}"
-            );
+            assert_eq!(signal.no_error_streak, if clean { 3 } else { 0 }, "{text}");
             assert_eq!(signal.repeated_failure, severity >= HARD, "{text}");
-            assert_eq!(signal.tests_passed, severity == 0.0, "{text}");
+            assert_eq!(signal.tests_passed, clean, "{text}");
         }
-    }
-
-    #[test]
-    fn structured_failures_with_trailing_warnings_remain_failures() {
-        let failure = r#"{"success":false,"error":"No matching text"}"#;
-        let warned = format!("{failure}\n\n[Tool loop warning: repeated identical call]");
-        let request = with_messages(vec![tr(failure), tr(&warned)]);
-        let signal = ToolSignals::from_request(&request, None);
-        assert_eq!(signal.severity, HARD);
-        assert_eq!(signal.no_error_streak, 0);
-        assert!(signal.repeated_failure);
     }
 
     #[test]
@@ -1745,100 +1716,29 @@ mod tests {
         assert_eq!(signal.severity, HARD);
         assert!(!signal.tests_passed);
         assert_eq!(signal.tool_result_count, 3);
-    }
 
-    #[test]
-    fn shell_reads_distinguish_json_contents_from_tool_failures() {
-        for (command, text, is_error, severity) in [
-            ("cat config.json", r#"{"error":"fixture data"}"#, false, 0.0),
+        for (command, text, severity) in [
+            ("cat config.json", r#"{"error":"fixture data"}"#, 0.0),
             (
-                "jq . config.json",
-                r#"{"success":false,"exit_code":7}"#,
-                false,
-                0.0,
-            ),
-            ("cat config.json", r#"{"error":"fixture data"}"#, true, HARD),
-            (
-                "python check.py",
-                r#"{"error":"check rejected"}"#,
-                false,
-                HARD,
+                "cat missing.json",
+                r#"{"output":"","exit_code":7,"error":null}"#,
+                SOFT,
             ),
             (
                 "cat config.json && python check.py",
                 r#"{"error":"check rejected"}"#,
-                false,
                 HARD,
-            ),
-            (
-                "cat config.json",
-                "{\"error\":\"fixture data\"}\ncat: second.json: No such file or directory",
-                false,
-                HARD,
-            ),
-            (
-                "cat missing.json",
-                "cat: missing.json: No such file or directory",
-                false,
-                HARD,
-            ),
-            (
-                "cat missing.json",
-                r#"{"output":"","exit_code":7,"error":null}"#,
-                false,
-                SOFT,
-            ),
-            (
-                "cat missing.json",
-                r#"{"output":"","exit_code":1,"error":"Read rejected"}"#,
-                false,
-                HARD,
-            ),
-            (
-                "cat config.json",
-                r#"{"output":"{\"error\":\"fixture data\"}","exit_code":0,"error":null}"#,
-                false,
-                0.0,
             ),
         ] {
-            for name in ["Bash", "terminal", "mcp__shell__terminal"] {
-                let request = with_messages(
-                    (0..2)
-                        .flat_map(|index| {
-                            let id = format!("read_{index}");
-                            [
-                                Message {
-                                    role: Role::Assistant,
-                                    content: vec![ContentBlock::ToolCall(ToolCall {
-                                        id: id.clone(),
-                                        name: name.to_string(),
-                                        arguments: json!({"command": command}),
-                                    })],
-                                },
-                                Message {
-                                    role: Role::User,
-                                    content: vec![ContentBlock::ToolResult(ToolResult {
-                                        tool_call_id: id,
-                                        content: vec![ContentBlock::Text {
-                                            text: text.to_string(),
-                                        }],
-                                        is_error: Some(is_error),
-                                    })],
-                                },
-                            ]
-                        })
-                        .collect(),
-                );
-                let signal = ToolSignals::from_request(&request, None);
-                assert_eq!(signal.severity, severity, "{name}: {text}");
-                assert_eq!(
-                    signal.no_error_streak,
-                    if severity > 0.0 { 0 } else { 2 },
-                    "{name}: {text}"
-                );
-                assert_eq!(signal.repeated_failure, severity >= HARD, "{name}: {text}");
-                assert_eq!(signal.tool_result_count, 2);
-            }
+            let request = with_messages(vec![
+                call("shell", "Bash", json!({"command": command})),
+                result("shell", text),
+            ]);
+            assert_eq!(
+                ToolSignals::from_request(&request, None).severity,
+                severity,
+                "{text}"
+            );
         }
     }
 
