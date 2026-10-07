@@ -12,6 +12,7 @@ use crate::codecs::common::{
 use crate::codecs::openai_media::{
     ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
 };
+use crate::codecs::structured_output::{decode_openai_schema_enforcement, encode_openai_format};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -59,6 +60,7 @@ impl FormatCodec for OpenAiChatCodec {
                     .or_else(|| body.get("max_tokens"))
                     .and_then(Value::as_u64),
                 response_format: body.get("response_format").cloned(),
+                is_schema_enforced: decode_openai_schema_enforcement(body.get("response_format")),
             },
             reasoning: ReasoningParams {
                 effort: body
@@ -138,7 +140,7 @@ impl FormatCodec for OpenAiChatCodec {
                         content: vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id,
                             content: vec![ContentBlock::Text { text }],
-                            is_error: None,
+                            is_error: message.get("is_error").and_then(Value::as_bool),
                         })],
                     });
                     continue;
@@ -254,8 +256,8 @@ impl FormatCodec for OpenAiChatCodec {
                 Value::String(effort.clone()),
             );
         }
-        if let Some(format) = &request.output.response_format {
-            body.insert("response_format".to_string(), format.clone());
+        if let Some(format) = encode_openai_format(&request.output, &mut diagnostics, policy)? {
+            body.insert("response_format".to_string(), format);
         }
         copy_openai_chat_request_extensions(&mut body, &request.extensions.fields);
 

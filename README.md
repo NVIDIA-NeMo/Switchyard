@@ -20,8 +20,9 @@ Evaluate the complete agent, model pool, and routing configuration against your 
 
 ### Through an existing gateway
 
-| Gateway | Start here | Current limits |
+| Gateway | Start here | Deployment and limits |
 | --- | --- | --- |
+| **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
 | **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
 | **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.8.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
 
@@ -30,7 +31,7 @@ is enabled, even for models outside its routes. Review the
 [upstream error compatibility note](docs/integrations/nemo_relay.md#upstream-error-compatibility)
 before enabling the plugin.
 
-These are integration paths you configure in your own deployment. They are not a hosted Switchyard endpoint. Follow each gateway's deployment guidance for credentials and service operation.
+LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidance for credentials and service operation.
 
 ### Try routing locally
 
@@ -83,7 +84,7 @@ releases. Pin the version you integrate.
 | `switchyard-libsy` | **Beta** | Routing embedded in your own gateway or harness. You own model calls, credentials, and retries. | Trial integrations. API will change before v1.0. |
 | `switchyard-llm-client` | **Alpha** | HTTP model calls and protocol translation alongside libsy. | Experiments and pilots. |
 | `switchyard-runner` | **Alpha** | Running configured routes inside another runtime, such as NeMo Relay. | Integration work and supervised pilots. |
-| `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy. | Demos and evaluation only. Not for production. |
+| `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy, including a local Codex service. | Demos, evaluation, and personal use on single-user machines. Not for production. |
 
 ## Community and license
 

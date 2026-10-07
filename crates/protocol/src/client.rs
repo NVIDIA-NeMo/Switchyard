@@ -1,17 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The routed-call server trait and its shared error types.
+//! Routed-call client contracts and shared error types.
 //!
-//! [`RoutedLlmClient`] is the one piece of I/O the protocol does not own: a host
-//! implements it to actually perform a model call. It lives here — rather than in
-//! libsy's orchestration crate — so a client crate that depends only on the protocol
-//! can serve routed calls without pulling in the orchestrator.
+//! Hosts implement these traits to perform model calls. Keeping the contracts here
+//! lets clients depend on the protocol without pulling in libsy's orchestration.
 
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::{ModelId, Request, Response};
+use crate::{DecisionRequest, DecisionResponse, ModelId, Request, Response};
 
 /// A boxed client-specific error preserved as the source of a routed call failure.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -62,6 +60,10 @@ pub enum LlmClientError {
     /// Two configured models reported the same saved response or conversation ID.
     #[error("Responses state ID is already recorded for another model; its owner was not changed")]
     ResponseStateConflict,
+
+    /// The selected backend is temporarily unavailable. Another candidate may serve the request.
+    #[error("backend temporarily unavailable")]
+    TemporarilyUnavailable,
 
     /// The upstream could not be reached or the request could not be sent.
     #[error("upstream transport error: {source}")]
@@ -152,4 +154,12 @@ impl RoutingFallbackReason {
 pub trait RoutedLlmClient: Send + Sync {
     /// Make a request
     async fn call(&self, request: Request) -> Result<Response, LlmClientError>;
+}
+
+/// Serves typed decision calls over a host-owned transport.
+/// Implementations may be shared across targets and called concurrently.
+#[async_trait]
+pub trait RoutedDecisionClient: Send + Sync {
+    /// Evaluate the request using its selected model.
+    async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse, LlmClientError>;
 }

@@ -10,6 +10,7 @@ use crate::codecs::common::{
     text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
+use crate::codecs::structured_output::decode_openai_schema_enforcement;
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -43,6 +44,16 @@ impl FormatCodec for AnthropicMessagesCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
+        if body
+            .get("fallback_credit_token")
+            .is_some_and(|value| !value.is_null())
+            && body.get("fallbacks").is_some_and(|value| !value.is_null())
+        {
+            return Err(TranslationError::InvalidValue {
+                path: "$.fallback_credit_token".to_string(),
+                message: "fallback_credit_token cannot be combined with fallbacks".to_string(),
+            });
+        }
         let mut diagnostics = Vec::new();
         let max_output_tokens = body
             .get("max_tokens")
@@ -64,6 +75,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .map(ToOwned::to_owned),
             output: OutputParams {
                 max_output_tokens,
+                is_schema_enforced: response_format.as_ref().map(|_| true),
                 response_format,
             },
             sampling: SamplingParams {
@@ -263,6 +275,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "container",
                 "speed",
                 "diagnostics",
+                "fallback_credit_token",
             ] {
                 if let Some(value) = request.extensions.fields.get(field) {
                     body.insert(field.to_string(), value.clone());
@@ -291,13 +304,25 @@ impl FormatCodec for AnthropicMessagesCodec {
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
+        // Native thinking controls the mode independently of output effort.
+        // Other codecs store their own provider's reasoning object in `raw`.
+        if is_anthropic_request(request)
+            && let Some(thinking) = &request.reasoning.raw
+        {
+            body.insert("thinking".to_string(), thinking.clone());
+        }
         if let Some(effort) = &request.reasoning.effort {
-            body.insert("thinking".to_string(), json!({"type": "adaptive"}));
+            body.entry("thinking".to_string())
+                .or_insert_with(|| json!({"type": "adaptive"}));
             body.insert("output_config".to_string(), json!({"effort": effort}));
         }
         if let Some(response_format) = &request.output.response_format
-            && let Some(format) =
-                encode_anthropic_output_format(response_format, &mut diagnostics, policy)?
+            && let Some(format) = encode_anthropic_output_format(
+                response_format,
+                request.output.is_schema_enforced,
+                &mut diagnostics,
+                policy,
+            )?
         {
             let output_config = body
                 .entry("output_config".to_string())
@@ -309,6 +334,14 @@ impl FormatCodec for AnthropicMessagesCodec {
                 });
             };
             output_config.insert("format".to_string(), format);
+        } else if request.output.response_format.is_none()
+            && request.output.is_schema_enforced == Some(true)
+        {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                "Structured-output schema enforcement requires a response format with a schema",
+            )?;
         }
 
         let body = embed_preservation(Value::Object(body), &request.preservation, policy);
@@ -483,6 +516,7 @@ fn decode_anthropic_output_format(
 /// Maps the neutral OpenAI-shaped JSON schema to Anthropic's output format.
 fn encode_anthropic_output_format(
     response_format: &Value,
+    enforcement: Option<bool>,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Option<Value>> {
@@ -508,6 +542,15 @@ fn encode_anthropic_output_format(
         return Ok(None);
     };
 
+    if enforcement.or_else(|| decode_openai_schema_enforcement(Some(response_format)))
+        == Some(false)
+    {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Anthropic structured output enforces the schema; advisory schema enforcement was strengthened",
+        )?;
+    }
     let mut schema = schema.clone();
     if strip_anthropic_unsupported_constraints(&mut schema) {
         push_lossy(

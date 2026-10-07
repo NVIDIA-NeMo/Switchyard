@@ -259,6 +259,7 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
 
 #[cfg(test)]
 mod tests {
+    use crate::{CapabilityJudgeConfig, LlmCapabilityConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -376,7 +377,10 @@ mod tests {
         let mut config = config();
         config.llm_fallback = Some(LlmFallback {
             config: TaskClassifierConfig {
-                base_threshold: -0.1,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: -0.1,
+                    ..LlmCapabilityConfig::default()
+                }),
                 ..Default::default()
             },
         });
@@ -411,7 +415,10 @@ mod tests {
         let mut c = config();
         c.llm_fallback = Some(LlmFallback {
             config: TaskClassifierConfig {
-                base_threshold: 0.5,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..LlmCapabilityConfig::default()
+                }),
                 recent_turn_window: Some(3),
                 ..Default::default()
             },

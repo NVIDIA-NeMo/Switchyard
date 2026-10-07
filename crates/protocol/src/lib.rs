@@ -7,6 +7,7 @@
 pub mod category;
 pub mod client;
 pub mod codex_namespaces;
+pub mod decision;
 pub mod envelope;
 pub mod format;
 pub mod llm;
@@ -16,6 +17,7 @@ pub mod stream;
 
 pub use category::*;
 pub use client::*;
+pub use decision::*;
 pub use envelope::*;
 pub use format::*;
 pub use llm::*;

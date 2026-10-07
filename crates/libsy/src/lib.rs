@@ -6,7 +6,8 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, CallModel, Driver, RoutingOutcome, RuntimeModels, Step, StepStream, drive,
+    Algorithm, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels, Step,
+    StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::outcome_metadata::OutcomeMetadata;
@@ -20,8 +21,8 @@ mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{
-    CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
-    TaskClassifierConfig,
+    CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
@@ -33,7 +34,7 @@ pub use algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};
 pub use algorithms::util::classifier_contract::{
     ClassifierContractConfig, ClassifierResponseFormat,
 };
-pub use algorithms::util::escalation::EscalationJudgeConfig;
+pub use algorithms::util::escalation::{DeescalationConfig, EscalationJudgeConfig};
 pub use algorithms::util::prompts::append_note;
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};

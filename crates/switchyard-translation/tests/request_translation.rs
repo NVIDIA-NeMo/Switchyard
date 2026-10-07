@@ -8,8 +8,8 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationPolicy,
-    WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationError,
+    TranslationPolicy, WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -197,6 +197,12 @@ fn request_media_survives_reencoding_or_is_rejected() -> TestResult {
             Some(
                 json!({"type": "document", "source": {"type": "url", "url": "https://example.com/report.pdf"}}),
             ),
+        ),
+        (
+            Responses,
+            Anthropic,
+            json!({"type": "input_file", "file_url": "https://example.com/report.pdf", "filename": "report.pdf"}),
+            Some(document.clone()),
         ),
         (Anthropic, Chat, document.clone(), None),
         (Anthropic, Responses, document, Some(file)),
@@ -474,6 +480,97 @@ fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
             &policy,
         )?;
         assert_eq!(output.body.get("reasoning"), expected.as_ref());
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_reconstruction_preserves_fallback_credit_token() -> TestResult {
+    let engine = TranslationEngine::default();
+    for token in [
+        json!("example-token-from-refusal"),
+        json!({"token": "example-token-from-refusal"}),
+        json!({"token": "example-token-from-refusal", "mode": "strict"}),
+        json!({"token": "example-token-from-refusal", "mode": "best_effort"}),
+    ] {
+        let body = json!({
+            "model": "claude-opus-4-8",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Review this code for security flaws."}],
+            "fallback_credit_token": token
+        });
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            let output = engine.translate_request(
+                WireFormat::AnthropicMessages,
+                WireFormat::AnthropicMessages,
+                &body,
+                &policy,
+            )?;
+            assert_eq!(
+                output.body.get("fallback_credit_token"),
+                Some(&token),
+                "fallback credit token must survive {:?} preservation",
+                policy.preservation,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_reconstruction_rejects_fallbacks_with_credit_token() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude-opus-4-8",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "Review this code for security flaws."}],
+        "fallback_credit_token": "example-token-from-refusal",
+        "fallbacks": [{"model": "claude-opus-5"}]
+    });
+    let error = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("fallback_credit_token cannot be combined with fallbacks");
+    assert!(matches!(
+        error,
+        TranslationError::InvalidValue { path, message }
+            if path == "$.fallback_credit_token"
+                && message == "fallback_credit_token cannot be combined with fallbacks"
+    ));
+}
+
+#[test]
+fn anthropic_reconstruction_preserves_thinking() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for (thinking, effort) in [
+        (json!({"type": "disabled"}), Some("high")),
+        (json!({"type": "enabled", "budget_tokens": 2048}), None),
+        (json!({"type": "adaptive"}), Some("high")),
+    ] {
+        let mut body = json!({
+            "model": "caller", "max_tokens": 4096,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": thinking
+        });
+        if let Some(effort) = effort {
+            body["output_config"] = json!({"effort": effort});
+        }
+        let mut request = engine
+            .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+            .request;
+        prepare_request_for_target(&mut request, &"target/model".into(), Some("target prompt"));
+        let output = engine
+            .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+            .body;
+
+        body["model"] = json!("target/model");
+        body["system"] = json!("target prompt");
+        assert_eq!(output, body);
     }
     Ok(())
 }
@@ -2738,6 +2835,170 @@ fn anthropic_structured_output_request(output: Value) -> Value {
     body
 }
 
+#[test]
+fn structured_output_enforcement_survives_translation_or_is_diagnosed() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut optional = city_schema();
+    optional["required"] = json!([]);
+    let mut choices = city_schema();
+    choices["properties"]["city"] = json!({"anyOf": [
+        {"type": "string", "enum": ["Paris", "London"]},
+        {"type": "null", "const": null},
+        {"type": "array", "items": {"type": ["string", "null"]}}
+    ]});
+    let mut sibling_constraints = city_schema();
+    sibling_constraints["properties"]["city"] = json!({
+        "anyOf": [city_schema()],
+        "properties": {"optional": {"type": "string"}}
+    });
+    let mut nested = city_schema();
+    for _ in 1..10 {
+        nested = json!({"type": "object", "properties": {"child": nested},
+            "required": ["child"], "additionalProperties": false});
+    }
+    let too_deep = json!({"type": "object", "properties": {"child": nested},
+        "required": ["child"], "additionalProperties": false});
+    let mut all_of = city_schema();
+    all_of["allOf"] = json!([city_schema()]);
+    for (schema, is_compatible) in [
+        (city_schema(), true),
+        (choices, true),
+        (sibling_constraints, false),
+        (nested, true),
+        (optional, false),
+        (all_of, false),
+        (too_deep, false),
+    ] {
+        let body = anthropic_structured_output_request(json!({
+            "output_config": {"format": {"type": "json_schema", "schema": schema}}
+        }));
+        let mut decoded =
+            engine.decode_request(WireFormat::AnthropicMessages, &body, &normalized_policy())?;
+        assert_eq!(decoded.request.output.is_schema_enforced, Some(true));
+        for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+            let translated =
+                engine.encode_request(target, &decoded.request, &normalized_policy())?;
+            let format = if target == WireFormat::OpenAiChat {
+                &translated.body["response_format"]["json_schema"]
+            } else {
+                &translated.body["text"]["format"]
+            };
+            assert_eq!(format["schema"], schema);
+            assert_eq!(format["strict"].as_bool(), is_compatible.then_some(true));
+            assert_eq!(translated.diagnostics.is_empty(), is_compatible);
+            let policy = TranslationPolicy {
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..normalized_policy()
+            };
+            assert_eq!(
+                engine
+                    .translate_request(WireFormat::AnthropicMessages, target, &body, &policy)
+                    .err()
+                    .map(|error| error.kind()),
+                (!is_compatible).then_some("LossyConversion")
+            );
+        }
+        decoded.request.output.is_schema_enforced = Some(false);
+        let encoded = engine.encode_request(
+            WireFormat::OpenAiChat,
+            &decoded.request,
+            &normalized_policy(),
+        )?;
+        assert_eq!(
+            encoded.body["response_format"]["json_schema"]["strict"],
+            false
+        );
+    }
+    let mut request = switchyard_translation::LlmRequest::default();
+    request.output.is_schema_enforced = Some(true);
+    for format in [
+        None,
+        Some(json!({"type": "json_schema"})),
+        Some(json!({"type": "json_object"})),
+    ] {
+        request.output.response_format = format;
+        for target in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            let encoded = engine.encode_request(target, &request, &normalized_policy())?;
+            assert_eq!(encoded.diagnostics.len(), 1);
+            let policy = TranslationPolicy {
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..normalized_policy()
+            };
+            assert_eq!(
+                engine
+                    .encode_request(target, &request, &policy)
+                    .err()
+                    .map(|error| error.kind()),
+                Some("LossyConversion")
+            );
+        }
+    }
+    for strict in [None, Some(false), Some(true)] {
+        let mut body = json!({
+            "model": "model", "messages": [{"role": "user", "content": "ping"}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "response", "schema": city_schema()
+            }}
+        });
+        if let Some(strict) = strict {
+            body["response_format"]["json_schema"]["strict"] = json!(strict);
+        }
+        let responses = engine.translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &normalized_policy(),
+        )?;
+        for (source, body) in [
+            (WireFormat::OpenAiChat, &body),
+            (WireFormat::OpenAiResponses, &responses.body),
+        ] {
+            let mut decoded = engine.decode_request(source, body, &normalized_policy())?;
+            assert_eq!(
+                decoded.request.output.is_schema_enforced,
+                Some(strict == Some(true))
+            );
+            let translated = engine.encode_request(
+                WireFormat::AnthropicMessages,
+                &decoded.request,
+                &normalized_policy(),
+            )?;
+            assert_eq!(
+                translated.body["output_config"]["format"]["schema"],
+                city_schema()
+            );
+            assert_eq!(translated.diagnostics.is_empty(), strict == Some(true));
+            let policy = TranslationPolicy {
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..normalized_policy()
+            };
+            assert_eq!(
+                engine
+                    .encode_request(WireFormat::AnthropicMessages, &decoded.request, &policy)
+                    .err()
+                    .map(|error| error.kind()),
+                (strict != Some(true)).then_some("LossyConversion")
+            );
+            // The explicit IR setting overrides an existing provider flag.
+            decoded.request.output.is_schema_enforced = Some(strict != Some(true));
+            let encoded = engine.encode_request(
+                WireFormat::OpenAiChat,
+                &decoded.request,
+                &normalized_policy(),
+            )?;
+            assert_eq!(
+                encoded.body["response_format"]["json_schema"]["strict"],
+                strict != Some(true)
+            );
+        }
+    }
+    Ok(())
+}
+
 fn city_schema() -> Value {
     json!({
         "type": "object",
@@ -3047,6 +3308,30 @@ fn openai_stop_string_maps_to_anthropic_stop_sequences() -> TestResult {
         .body;
 
     assert_eq!(output["stop_sequences"], json!(["END"]));
+    Ok(())
+}
+
+#[test]
+fn openai_tool_result_error_flag_survives_decoding() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (flag, expected) in [
+        (Some(json!(true)), Some(true)),
+        (Some(json!(false)), Some(false)),
+        (None, None),
+        (Some(Value::Null), None),
+        (Some(json!("true")), None),
+    ] {
+        let mut message = json!({"role": "tool", "tool_call_id": "call_1", "content": "result"});
+        if let Some(flag) = flag {
+            message["is_error"] = flag;
+        }
+        let body = json!({"model": "route", "messages": [message]});
+        let decoded = engine.decode_request(WireFormat::OpenAiChat, &body, &normalized_policy())?;
+        let ContentBlock::ToolResult(result) = &decoded.request.messages[0].content[0] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(result.is_error, expected);
+    }
     Ok(())
 }
 
@@ -3499,6 +3784,150 @@ fn responses_flat_file_data_survives_into_chat() -> TestResult {
     assert_eq!(file["file"]["file_data"], "JVBERi0xLjQK");
     assert_eq!(file["file"]["filename"], "report.pdf");
     Ok(())
+}
+
+#[test]
+fn openai_invalid_text_file_data_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    for (file_data, expected_message) in [
+        ("%%%", "invalid base64 text document"),
+        ("/w==", "text document must be UTF-8"),
+    ] {
+        let cases = [
+            (
+                WireFormat::OpenAiChat,
+                json!({
+                    "model": "route",
+                    "messages": [{
+                        "role": "user",
+                        "content": [{
+                            "type": "file",
+                            "file": {"file_data": file_data, "filename": "notes.txt"}
+                        }]
+                    }]
+                }),
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                json!({
+                    "model": "route",
+                    "input": [{
+                        "type": "message",
+                        "role": "user",
+                        "content": [{
+                            "type": "input_file",
+                            "file_data": file_data,
+                            "filename": "notes.txt"
+                        }]
+                    }]
+                }),
+            ),
+        ];
+
+        for (source, body) in cases {
+            let error = engine
+                .translate_request(
+                    source,
+                    WireFormat::AnthropicMessages,
+                    &body,
+                    &TranslationPolicy::default(),
+                )
+                .expect_err("invalid text file data must be rejected");
+            match error {
+                TranslationError::InvalidValue { path, message } => {
+                    assert_eq!(path, "file_data", "{source:?}");
+                    assert_eq!(message, expected_message, "{source:?}");
+                }
+                other => {
+                    panic!("expected InvalidValue for {source:?} {file_data:?}, got {other:?}")
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn openai_unsupported_file_media_type_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    let file_data = "data:image/png;base64,aGVsbG8=";
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({
+                "model": "route",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "file",
+                        "file": {"file_data": file_data, "filename": "image.png"}
+                    }]
+                }]
+            }),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({
+                "model": "route",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_file",
+                        "file_data": file_data,
+                        "filename": "image.png"
+                    }]
+                }]
+            }),
+        ),
+    ];
+
+    for (source, body) in cases {
+        let error = engine
+            .translate_request(
+                source,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )
+            .expect_err("unsupported document media type must be rejected");
+        match error {
+            TranslationError::LossyConversion(message) => {
+                assert_eq!(
+                    message, "Anthropic requires PDF or plain-text documents",
+                    "{source:?}"
+                );
+            }
+            other => panic!("expected LossyConversion for {source:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn responses_file_without_source_is_rejected_by_anthropic() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_file", "filename": "notes.txt"}]
+        }]
+    });
+
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("file without data, ID, or URL must be rejected");
+    match error {
+        TranslationError::LossyConversion(message) => {
+            assert_eq!(message, "unsupported Anthropic document source");
+        }
+        other => panic!("expected LossyConversion, got {other:?}"),
+    }
 }
 
 // Verifies parallel tool calls serialize as adjacent call/output pairs so

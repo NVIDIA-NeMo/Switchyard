@@ -355,7 +355,7 @@ fn encode_responses_stream(
                         .push_str(signature);
                 }
             }
-            match encrypted_reasoning_item_id(&details) {
+            match reasoning_details_item_id(&details) {
                 Some(id) if item.started && item.item_id.as_deref() != Some(id.as_str()) => {
                     // The item already opened under another id; the payload would fail
                     // verification under it, so drop the payload rather than poison the replay.
@@ -372,6 +372,13 @@ fn encode_responses_stream(
                         item.encrypted = data;
                     }
                 }
+            }
+            // A summary that arrives before its item id would open the item under a synthesized
+            // id, and the encrypted payload that follows binds only to the provider's id. Hold
+            // the text until that id arrives, or until later output shows none is coming.
+            if !item.started && item.item_id.is_none() && summary_lacks_item_id(&details) {
+                item.pending_text.push_str(&text);
+                return ensure_responses_created(state);
             }
             let mut out = ensure_responses_reasoning_started(state, index);
             if !text.is_empty() {
@@ -418,7 +425,8 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         ("response.completed", "completed")
     };
     let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
-    let mut out = ensure_responses_created(state);
+    let mut out = open_held_reasoning(state, None);
+    out.extend(ensure_responses_created(state));
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index
     {
@@ -860,7 +868,8 @@ fn add_sequence_numbers(state: &mut StreamTranslationState, mut events: Vec<Valu
 
 // Accumulates assistant text and emits Responses text delta events.
 fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String) -> Vec<Value> {
-    let mut out = ensure_responses_created(state);
+    let mut out = open_held_reasoning(state, None);
+    out.extend(ensure_responses_created(state));
     if !state.response_text_started {
         state.response_text_started = true;
         let output_index = state.next_response_output_index;
@@ -897,8 +906,65 @@ fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String)
     out
 }
 
-// The id of the reasoning item encoded for a source index: the provider's own id when
-// encrypted reasoning binds to it, else synthesized from the emitted output index.
+// The provider item id named by a delta's reasoning details. The encrypted payload's id wins
+// because a replay verifies against it; a summary or text detail names the same item when it
+// arrives first.
+fn reasoning_details_item_id(details: &[Value]) -> Option<String> {
+    encrypted_reasoning_item_id(details).or_else(|| {
+        details
+            .iter()
+            .filter_map(Value::as_object)
+            .filter(|detail| {
+                matches!(
+                    detail.get("type").and_then(Value::as_str),
+                    Some("reasoning.summary" | "reasoning.text")
+                )
+            })
+            .find_map(|detail| {
+                detail
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+            })
+            .map(ToOwned::to_owned)
+    })
+}
+
+// True when a `reasoning.summary` detail arrived without the id of the item it belongs to.
+fn summary_lacks_item_id(details: &[Value]) -> bool {
+    details.iter().filter_map(Value::as_object).any(|detail| {
+        detail.get("type").and_then(Value::as_str) == Some("reasoning.summary")
+            && detail
+                .get("id")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+    })
+}
+
+// Opens every reasoning item still holding summary text, under a synthesized id. Output that
+// is about to open another item proves no provider id is coming for them, and they must keep
+// their place ahead of it. When that output is itself a reasoning item, `before` limits the
+// flush to held items at earlier indices; the item's own later details can still name its id.
+fn open_held_reasoning(state: &mut StreamTranslationState, before: Option<usize>) -> Vec<Value> {
+    let held: Vec<usize> = state
+        .response_reasoning
+        .iter()
+        .filter(|(index, item)| {
+            before.is_none_or(|bound| **index < bound)
+                && !item.started
+                && !item.pending_text.is_empty()
+        })
+        .map(|(index, _)| *index)
+        .collect();
+    let mut out = Vec::new();
+    for index in held {
+        out.extend(ensure_responses_reasoning_started(state, index));
+    }
+    out
+}
+
+// The id of the reasoning item encoded for a source index: the provider's own id when a
+// reasoning detail named one, else synthesized from the emitted output index.
 fn responses_reasoning_item_id(state: &StreamTranslationState, index: usize) -> String {
     let item = state.response_reasoning.get(&index);
     item.and_then(|item| item.item_id.clone())
@@ -921,11 +987,14 @@ fn ensure_responses_reasoning_started(
     {
         return out;
     }
+    // Held summaries of earlier items open first, so they keep their place in the output.
+    out.extend(open_held_reasoning(state, Some(index)));
     let output_index = state.next_response_output_index;
     state.next_response_output_index += 1;
     let item = state.response_reasoning.entry(index).or_default();
     item.started = true;
     item.output_index = Some(output_index);
+    let pending = std::mem::take(&mut item.pending_text);
     let item_id = responses_reasoning_item_id(state, index);
     // Standard Responses shape: reasoning text lives in `summary` as `summary_text`
     // parts. Clients such as Codex record reasoning items only in this shape.
@@ -939,6 +1008,10 @@ fn ensure_responses_reasoning_started(
             "summary": [],
         },
     }));
+    // Summary text held for the item's id streams now, under the id it opened with.
+    if !pending.is_empty() {
+        out.extend(encode_responses_reasoning_delta(state, index, pending));
+    }
     out
 }
 
@@ -972,6 +1045,14 @@ fn encode_responses_reasoning_delta(
     index: usize,
     text: String,
 ) -> Vec<Value> {
+    // Text for an item still waiting on its id joins the held summary.
+    if let Some(item) = state.response_reasoning.get_mut(&index)
+        && !item.started
+        && !item.pending_text.is_empty()
+    {
+        item.pending_text.push_str(&text);
+        return Vec::new();
+    }
     // An empty delta carries nothing to show and must not open a part that would never close.
     if text.is_empty() {
         return ensure_responses_reasoning_started(state, index);
@@ -1016,8 +1097,11 @@ fn encode_responses_tool_delta(
         let Some(name) = tool.name.clone() else {
             return out;
         };
+        // The call opens its item next; held reasoning opens first to keep its place.
+        out.extend(open_held_reasoning(state, None));
         let output_index = state.next_response_output_index;
         state.next_response_output_index += 1;
+        let tool = state.tool_states.entry(index).or_default();
         tool.response_output_index = Some(output_index);
         tool.response_item_id = Some(responses_item_id_from(&resp_id, "fc", output_index));
         tool.started = true;
@@ -1148,14 +1232,9 @@ fn fnv1a_64(text: &str) -> u64 {
     })
 }
 
-// Converts any upstream message ID into a Responses-looking response ID.
+// Keep the response ID aligned with buffered responses and stored conversation history.
 fn responses_id(state: &StreamTranslationState) -> String {
-    let Some(id) = target_message_id_or_source_message_id(state) else {
-        return "resp_switchyard".to_string();
-    };
-    if id.starts_with("resp_") {
-        id.to_string()
-    } else {
-        format!("resp_{id}")
-    }
+    target_message_id_or_source_message_id(state)
+        .unwrap_or("resp_switchyard")
+        .to_string()
 }

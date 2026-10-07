@@ -79,8 +79,6 @@ The Rust server reads an explicit TOML file.
 
 Create `routes.toml` with an auto route:
 
-> Requires unreleased features. [Build from source](#build-from-source) to run this example.
-
 ```toml
 schema_version = 1
 
@@ -111,10 +109,17 @@ A client can set `forward_auth = true` instead of `api_key_env` to send each
 caller's credential to that upstream. OpenAI clients forward `authorization`,
 `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients forward
 `authorization` or `x-api-key`. Enable this only for an upstream that should
-receive the caller's login. All backends reachable through the route, including
-efficient and capable targets, must use the same provider. Other application
-headers are preserved, so they may contain provider-specific credentials. The
-server rejects a forwarding route called through the other provider's API.
+receive the caller's login. Other application headers are preserved, so they
+may contain provider-specific credentials. The forwarding clients in a route,
+including efficient and capable targets, must use one credential family: all
+OpenAI formats or all `anthropic_messages`. The exception is one host that
+serves both formats, such as an LLM gateway that accepts each caller's gateway
+key on every endpoint: a route may mix the two families when all of its
+forwarding clients use the same scheme, host, and port. Such a route serves
+Chat Completions and Responses callers and forwards the caller's bearer token
+to every forwarding client. The server returns 400 to a caller whose API the
+route does not serve. Clients that use `api_key_env` send the server's own key,
+so these limits do not apply to them.
 
 ### Run the server
 
@@ -193,6 +198,10 @@ native server does not currently send this header upstream (see
 Use this path when you want routing inside your own Rust application rather than
 behind a proxy. `switchyard-libsy` never calls a model itself: an algorithm
 picks a target and hands the model call back to you.
+
+For plan/execute, supply conversation history, including tool calls and results,
+before routing. Responses API continuation IDs alone are not enough. See the
+[Responses API history requirement](routing_algorithms/plan_execute_routing.md#responses-api-history-requirement).
 
 ### Add the dependencies
 

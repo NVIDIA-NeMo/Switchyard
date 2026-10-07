@@ -15,6 +15,8 @@ _EXPORTS = frozenset(
         "Algorithm",
         "ContextWindowExceededError",
         "CustomClassifierConfig",
+        "DecisionCall",
+        "DeescalationConfig",
         "EscalationClassifierConfig",
         "LibsyError",
         "LlmClassifierConfig",
@@ -79,6 +81,25 @@ if TYPE_CHECKING:
         ) -> None: ...
 
     @final
+    class DeescalationConfig:
+        """Configure when an escalated session may return to the efficient tier.
+
+        ``strong_min_calls`` and ``confirmations`` must be positive.
+        ``strong_max_calls``, when set, must not be lower than
+        ``strong_min_calls``. Values are validated when the classifier is built,
+        and invalid values raise ``ValueError``.
+        """
+
+        def __init__(
+            self,
+            *,
+            strong_min_calls: int,
+            confirmations: int,
+            strong_max_calls: int | None = None,
+            weak_cooldown_calls: int = 0,
+        ) -> None: ...
+
+    @final
     class EscalationClassifierConfig:
         """Configure response-based escalation between two targets.
 
@@ -92,6 +113,7 @@ if TYPE_CHECKING:
             confirmations: int = 2,
             recent_turn_window: int = 28,
             window_message_chars: int = 500,
+            deescalation: DeescalationConfig | None = None,
             max_output_tokens: int = 4096,
             prompt: str | None = None,
             response_format_type: Literal["json_schema", "json_object"] = "json_schema",
@@ -109,6 +131,21 @@ if TYPE_CHECKING:
         def models(self) -> list[str]: ...
 
         def respond(self, response: LlmResponse.Agg | LlmResponse.Stream) -> None: ...
+
+        def fail(self, error: BaseException) -> None: ...
+
+    @final
+    class DecisionCall:
+        @property
+        def algorithm(self) -> str: ...
+
+        @property
+        def request(self) -> dict[str, object]: ...
+
+        @property
+        def model(self) -> str: ...
+
+        def respond(self, response: Mapping[str, object]) -> None: ...
 
         def fail(self, error: BaseException) -> None: ...
 
@@ -146,6 +183,11 @@ if TYPE_CHECKING:
             call: ModelCall
 
         @final
+        class CallDecision:
+            __match_args__: ClassVar[tuple[Literal["call"]]] = ("call",)
+            call: DecisionCall
+
+        @final
         class Done:
             __match_args__: ClassVar[tuple[Literal["outcome"]]] = ("outcome",)
             outcome: RoutingOutcome
@@ -157,6 +199,17 @@ if TYPE_CHECKING:
         Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
         positive, and ``message_hash_fallback`` requires ``session_affinity``.
         """
+
+        @staticmethod
+        def decision(
+            *,
+            cutoff: float,
+            candidates: Mapping[str, str],
+            evidence: object,
+            instructions: object | None = None,
+        ) -> TaskClassifierConfig:
+            """Use relative advantage with the default routing and fallback settings."""
+            ...
 
         def __init__(
             self,
@@ -225,7 +278,7 @@ if TYPE_CHECKING:
             models: Mapping[str, Sequence[str]],
             subagent_models: Mapping[str, Sequence[str]] | None = None,
             headers: Mapping[str, str] | None = None,
-        ) -> AsyncIterator[Step.CallModel | Step.Done]: ...
+        ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]: ...
 
     def noop() -> Algorithm: ...
 
