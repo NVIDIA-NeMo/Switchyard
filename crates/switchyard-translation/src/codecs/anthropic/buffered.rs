@@ -42,6 +42,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         WireFormat::AnthropicMessages.into()
     }
 
+    /// Decodes an Anthropic Messages request body into the neutral IR.
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
         if body
@@ -789,11 +790,12 @@ fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
     FileSource::Raw(Value::Object(block.clone()))
 }
 
-// Decodes Anthropic tool definitions into normalized tool definitions.
-// Server tools (a `type` other than `custom`, such as `advisor_20260301` or
-// `web_search_20250305`) are run by the provider, not the model's client. They
-// are not functions, so they are left out here: a translated request must not
-// offer the model a tool nobody runs. Same-format replay keeps them in the body.
+/// Decodes Anthropic tool definitions into normalized tool definitions.
+///
+/// Server tools (a `type` other than `custom`, such as `advisor_20260301` or
+/// `web_search_20250305`) are run by the provider, not the model's client. They
+/// are not functions, so they are left out here: a translated request must not
+/// offer the model a tool nobody runs. Same-format replay keeps them in the body.
 fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
     value
         .and_then(Value::as_array)

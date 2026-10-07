@@ -3556,10 +3556,12 @@ fn openai_chat_request_accepts_legacy_function_role() {
     }
 }
 
-// Anthropic server tools (here the advisor) are run by the provider, so a
-// translated request must not offer them to the model as functions, nor force
-// a call to one. Same-format replay forwards both unchanged for an upstream
-// that knows them.
+/// Anthropic server tools never reach a translated request as functions.
+///
+/// Server tools (here the advisor) are run by the provider, so a translated
+/// request must not offer them to the model as functions, nor force a call to
+/// one. Same-format replay forwards both unchanged for an upstream that knows
+/// them.
 #[test]
 fn anthropic_server_tools_are_not_translated_into_functions() -> TestResult {
     let engine = TranslationEngine::default();
