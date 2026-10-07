@@ -11,6 +11,10 @@
 //! back to a [`switchyard_protocol::Response`] — supporting both buffered and
 //! streamed responses.
 //!
+//! [`SystemOneClient`] serves typed decision requests. Register decision targets
+//! with [`ClientRouter::new_with_decision_clients`] or
+//! [`ClientRouter::single_with_decision_clients`] to serve them alongside LLM calls.
+//!
 //! [`run()`] pairs the client with a libsy algorithm: it drives
 //! [`switchyard_libsy::Algorithm::run_stream`], serves routing-time calls, and makes the terminal
 //! answer call from the routing outcome when needed. A host that just wants the answer does not
@@ -25,15 +29,17 @@ mod observation;
 pub mod raw;
 mod responses_reasoning;
 pub mod run;
+mod system_one;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
-pub use observation::{LlmCallObservation, RunObservation, RunObserver};
+pub use observation::{ModelCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
 pub use responses_reasoning::ResponsesReasoningPolicy;
 pub use run::{ClientRouter, decide, run};
 pub use switchyard_translation::RawEventStream;
+pub use system_one::SystemOneClient;
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 pub fn initialize_metrics() {

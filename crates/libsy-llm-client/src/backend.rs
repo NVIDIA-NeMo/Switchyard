@@ -52,7 +52,9 @@ pub struct HttpBackendConfig {
     pub api_key: Option<String>,
     /// Whether this backend forwards the caller's provider credential and application headers.
     ///
-    /// All backends reachable through a forwarding route must use the same provider.
+    /// The forwarding backends in one route must use one credential family (OpenAI or
+    /// Anthropic) unless they all use the same scheme, host, and port, such as one LLM
+    /// gateway. Backends that send a configured key are not restricted.
     pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///

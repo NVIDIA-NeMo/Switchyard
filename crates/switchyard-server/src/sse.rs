@@ -231,7 +231,7 @@ mod tests {
             .enable_all()
             .build()?;
 
-        let body = tracing::subscriber::with_default(subscriber, || {
+        let body = crate::testing::with_subscriber(subscriber, || {
             runtime.block_on(chat_body(vec![Err(LlmStreamError::Client(
                 LlmClientError::UpstreamHttp {
                     status: axum::http::StatusCode::BAD_GATEWAY,

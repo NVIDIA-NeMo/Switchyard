@@ -15,6 +15,7 @@ _EXPORTS = frozenset(
         "Algorithm",
         "ContextWindowExceededError",
         "CustomClassifierConfig",
+        "DecisionCall",
         "DeescalationConfig",
         "EscalationClassifierConfig",
         "LibsyError",
@@ -134,6 +135,21 @@ if TYPE_CHECKING:
         def fail(self, error: BaseException) -> None: ...
 
     @final
+    class DecisionCall:
+        @property
+        def algorithm(self) -> str: ...
+
+        @property
+        def request(self) -> dict[str, object]: ...
+
+        @property
+        def model(self) -> str: ...
+
+        def respond(self, response: Mapping[str, object]) -> None: ...
+
+        def fail(self, error: BaseException) -> None: ...
+
+    @final
     class OutcomeMetadata:
         """Read-only outcome identity and optional algorithm evidence."""
 
@@ -167,6 +183,11 @@ if TYPE_CHECKING:
             call: ModelCall
 
         @final
+        class CallDecision:
+            __match_args__: ClassVar[tuple[Literal["call"]]] = ("call",)
+            call: DecisionCall
+
+        @final
         class Done:
             __match_args__: ClassVar[tuple[Literal["outcome"]]] = ("outcome",)
             outcome: RoutingOutcome
@@ -178,6 +199,17 @@ if TYPE_CHECKING:
         Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
         positive, and ``message_hash_fallback`` requires ``session_affinity``.
         """
+
+        @staticmethod
+        def decision(
+            *,
+            cutoff: float,
+            candidates: Mapping[str, str],
+            evidence: object,
+            instructions: object | None = None,
+        ) -> TaskClassifierConfig:
+            """Use relative advantage with the default routing and fallback settings."""
+            ...
 
         def __init__(
             self,
@@ -246,7 +278,7 @@ if TYPE_CHECKING:
             models: Mapping[str, Sequence[str]],
             subagent_models: Mapping[str, Sequence[str]] | None = None,
             headers: Mapping[str, str] | None = None,
-        ) -> AsyncIterator[Step.CallModel | Step.Done]: ...
+        ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]: ...
 
     def noop() -> Algorithm: ...
 

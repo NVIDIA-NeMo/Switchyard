@@ -32,3 +32,4 @@ The Server Path builds and runs the standalone `switchyard-server` binary.
 - [`switchyard-protocol`](reference/rust_api.md#switchyard-protocol): provider-neutral API types
 - [`switchyard-translation`](../crates/switchyard-translation/README.md): protocol translation
 - [`switchyard-nemo-relay-plugin`](../crates/switchyard-nemo-relay-plugin/README.md): native plugin build and configuration
+- [Dynamo / agentgateway](../examples/dynamo-preproc/README.md): Switchyard PreProc integration example

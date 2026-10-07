@@ -74,3 +74,16 @@ max_reviews = 3
 gate_stall_turns = 30
 gate_min_tool_results = 3
 
+# Codex "Approve for me" reviews
+
+# With "Approve for me" on, Codex sends each review request to the model
+# codex-auto-review, unless Codex is logged in with an OpenAI API key. Reviews
+# go to the efficient model because Codex waits for each one before it acts.
+# Codex asks for low reasoning effort in every review, and extra_body only adds
+# an effort when the request has none, so reviews run at low effort.
+
+[routes.codex_auto_review]
+id = "codex-auto-review"
+type = "passthrough"
+target = "efficient"
+

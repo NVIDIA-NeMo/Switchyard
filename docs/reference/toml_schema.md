@@ -51,7 +51,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `format` | Yes | — | `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | `base_url` | Yes | — | Upstream base URL. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
-| `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. All backends reachable through the route must use the same provider. |
+| `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `responses_reasoning` | No | `"preserve_encrypted"` | Responses reasoning replay: `"preserve_encrypted"` or `"drop"`. Only valid for `openai_responses`. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
@@ -115,13 +115,40 @@ values.
 
 This setting gives `base_url` the caller's login. Enable it only when that
 upstream should receive the credential, and use HTTPS unless the upstream runs
-on loopback. All backends reachable through the route must use the same
-provider because other application headers are preserved and may contain
+on loopback. Other application headers are preserved and may contain
 provider-specific credentials. Forwarding clients do not follow HTTP redirects.
-Check every forwarding client used by a route, including classifier and judge
-targets. The server rejects an Anthropic forwarding route called through an
-OpenAI endpoint, or an OpenAI forwarding route called through an Anthropic
-endpoint, before it calls an upstream.
+
+A forwarded credential belongs to the service that issued it. A ChatGPT login,
+for example, must never reach Anthropic. So all forwarding clients in a route,
+including classifier and judge targets, must use one credential family: OpenAI
+(`openai_chat` and `openai_responses` clients, which serve Chat Completions and
+Responses callers) or Anthropic (`anthropic_messages` clients, which serve
+Messages callers).
+
+The exception is one host that serves both formats, such as an LLM gateway that
+accepts each caller's gateway key on its OpenAI and Anthropic endpoints. A route
+may mix the two families when all of its forwarding clients use the same scheme,
+host, and port in `base_url`; the path may differ:
+
+```toml
+[llm_clients.gateway_responses]
+format = "openai_responses"
+base_url = "https://gateway.example.com/v1"
+forward_auth = true
+
+[llm_clients.gateway_messages]
+format = "anthropic_messages"
+base_url = "https://gateway.example.com"
+forward_auth = true
+```
+
+Such a route serves Chat Completions and Responses callers and forwards the
+caller's bearer token to every forwarding client. The server returns `400` without
+calling an upstream when a caller uses an API that the route does not serve.
+
+These limits apply only to forwarded credentials. A client with `api_key_env`
+sends the server's own key, so a route can mix formats and providers through
+such clients.
 
 ## `[targets.<name>]`
 
@@ -131,6 +158,7 @@ endpoint, before it calls an upstream.
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
+| `omit_body_fields` | No | `[]` | Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's `format`, so use that format's field names, for example `reasoning_effort` on `openai_chat` or `reasoning` on `openai_responses`. Switchyard applies `extra_body` and `reasoning_effort` after the removal, so either can set a removed field again. |
 | `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate `llm_clients` entries (same endpoint, different name). |
 
 Within one route, callable targets with the same model ID must use the same `llm_client`.
@@ -204,12 +232,13 @@ Splits traffic across targets. See
 ### `plan_execute`
 
 Plans on a capable target, then switches to an efficient target after the first
-file mutation. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
+recognized edit or write tool call. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `capable_target` | Yes | - | Target used for read-only inspection and planning. |
 | `efficient_target` | Yes | - | Target used after the first edit or write. |
+| `tool_semantics.mutate` | No | `[]` | Additional tool names that trigger handoff. See the [example](../routing_algorithms/plan_execute_routing.md#optional-settings). |
 | `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
 | `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
 | `planner_reasoning_as_text` | No | `false` | Converts visible planner reasoning summaries to assistant text at handoff. |

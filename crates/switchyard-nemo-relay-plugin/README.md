@@ -216,7 +216,9 @@ and configure `api_key_env` on each authenticated client. The two options cannot
 be enabled together. If each caller must use its own provider credential, use
 standalone `switchyard-server`. Standalone forwarding requires the caller and
 target to use the same credential family: OpenAI-compatible (Chat Completions
-and Responses) or Anthropic (Messages).
+and Responses) or Anthropic (Messages). A route may mix both families when all
+of its forwarding clients use the same scheme, host, and port, such as one LLM
+gateway; such a route serves Chat Completions and Responses callers.
 
 Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated

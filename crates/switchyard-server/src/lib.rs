@@ -13,6 +13,8 @@ mod routing_log;
 mod shutdown;
 mod sse;
 mod stats;
+#[cfg(test)]
+mod testing;
 mod usage_metrics;
 
 use std::collections::BTreeMap;
@@ -445,7 +447,7 @@ fn stats_observer(
                 stats.record_error(&call.selected_model);
             }
         }
-        RunObservation::LlmCall(call) => {
+        RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_success {
                 if let (Some((log, context)), Some(usage)) =
@@ -1685,7 +1687,7 @@ fn endpoint_listing(has_routing_log: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use switchyard_llm_client::LlmCallObservation;
+    use switchyard_llm_client::ModelCallObservation;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{Notify, oneshot};
 
@@ -1706,7 +1708,7 @@ mod tests {
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
         let call = |model: &str, answer: bool| {
-            let observation = LlmCallObservation {
+            let observation = ModelCallObservation {
                 selected_model: ModelId::from(model),
                 is_success: true,
                 duration: Duration::from_millis(3),
@@ -1943,7 +1945,7 @@ mod tests {
 
         let captured = CapturedEvents::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
-        tracing::subscriber::with_default(subscriber, run);
+        crate::testing::with_subscriber(subscriber, run);
         captured.0.lock().clone()
     }
 

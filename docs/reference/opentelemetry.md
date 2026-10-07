@@ -16,9 +16,15 @@ and [OTLP configuration](https://opentelemetry.io/docs/specs/otel/protocol/expor
 |---|---|---|
 | `libsy.run` | Libsy | One algorithm run, including routing-time work. OpenInference kind `CHAIN`. |
 | `libsy.llm_call` | Libsy driver | Waiting for the host to fulfill an offloaded call. Includes host queueing. OpenInference kind `CHAIN`. |
+| `libsy.decision_call` | Libsy driver | An offloaded Decision Model call, including host queueing. OpenInference kind `CHAIN`. |
 | `libsy.client_call`, exported as `chat <model_id>` | LLM client driver | One candidate model call, including that candidate's retries. OTel kind `CLIENT`; OpenInference kind `LLM`. |
 
 Hosts driving `run_stream` without the LLM client driver instrument their own model I/O.
+
+`libsy.decision_call` records `algorithm`, `selected_model`, and terminal `outcome`.
+Successful replies add available `input_tokens`, `output_tokens`, `total_tokens`,
+`reasoning_tokens`, `gen_ai.response.id`, and `gen_ai.response.model` fields.
+Unknown values are omitted; request content, answers, and error details are not recorded.
 
 ### Routing outcome fields
 
@@ -83,8 +89,10 @@ Metrics use the `switchyard` meter scope. The tables use OTel instrument names.
 | `switchyard.run_duration_ms` | Histogram | `algorithm`, `outcome` | Algorithm-task duration in milliseconds. |
 | `switchyard.algorithms_in_flight` | UpDownCounter | `algorithm` | Active algorithm tasks; exported as a Prometheus gauge. |
 | `switchyard.decisions` | Counter | `algorithm`, `selected_model` | Published routing decisions. |
-| `switchyard.llm_calls` | Counter | `algorithm`, `selected_model`, `outcome` | Routing-time offloaded calls and each terminal answer candidate, including failures. |
-| `switchyard.llm_call_duration_ms` | Histogram | `algorithm`, `selected_model`, `outcome` | One duration sample in milliseconds per offloaded call or terminal answer candidate, including failures; see streaming limits below. |
+| `switchyard.llm_calls` | Counter | `algorithm`, `selected_model`, `outcome` | Routing-time LLM calls and each terminal answer candidate, including failures. |
+| `switchyard.llm_call_duration_ms` | Histogram | `algorithm`, `selected_model`, `outcome` | One duration sample in milliseconds per offloaded LLM call or terminal answer candidate, including failures; see streaming limits below. |
+| `switchyard.decision_calls` | Counter | `algorithm`, `selected_model`, `outcome` | Offloaded Decision Model calls, recorded once on reply, failure, or unfulfilled drop. |
+| `switchyard.decision_call_duration_ms` | Histogram | `algorithm`, `selected_model`, `outcome` | One duration sample in milliseconds per Decision Model call, including host queueing. |
 | `switchyard.total_requests` | ObservableGauge | none | Process-wide total of successful and failed answer candidates after routing, including reused routing responses. |
 | `switchyard.total_errors` | ObservableGauge | none | Process-wide total of failures after routing, including failed answer candidates and reused routing responses. |
 | `switchyard.requests` | Counter | `model` | Successful answer candidates or reused routing responses, by model ID. |
@@ -165,6 +173,7 @@ Advisor Gate instruments use the prefix `switchyard.advisor_gate.`:
 ### Timing and streaming
 
 - `libsy.run` may finish before the answer call. Nested algorithms have separate run spans.
+- Decision calls record `error` when failed or dropped without a reply, including cancellation. A returned response records its outcome even if the waiting algorithm has already gone away. These metrics work with any host and do not require a client observer.
 - `libsy.llm_call` and routing-time call metrics end when the host fulfills the offloaded call. They include host queueing. The LLM client driver buffers routing streams before fulfilling the call. The span's `input_tokens`, `output_tokens`, `total_tokens`, and `reasoning_tokens` fields are buffered-response only.
 - For terminal answer candidates, `switchyard.llm_calls` and `switchyard.llm_call_duration_ms` record when the response stream ends or is dropped. Duration includes that candidate's retries and stream consumption. Stream errors and unfinished drops record `outcome=error`; a terminal message permits a successful drop.
 - `libsy.client_call` remains open while its stream is consumed. IDs, usage, and finish reasons update from normalized events. An unfinished stream dropped by its consumer records `cancelled`; a stream error records `error`.

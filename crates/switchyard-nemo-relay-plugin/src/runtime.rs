@@ -11,7 +11,7 @@ use nemo_relay_plugin::{
     MetricValueType, PluginRuntime,
 };
 use serde_json::{Map, json};
-use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
+use switchyard_llm_client::{ModelCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{
     LlmClientError, LlmResponse, LlmResponseChunk, LlmStreamError, Metadata, ProviderExtensions,
     Request, Response, Usage, WireFormat,
@@ -336,7 +336,23 @@ impl SwitchyardRuntime {
                 }
                 RunObservation::LlmCall(call) => {
                     call_index += 1;
-                    self.routing_call_events(events, call, call_index, metadata);
+                    self.routing_call_events(
+                        events,
+                        call,
+                        call_index,
+                        metadata,
+                        "switchyard.routing.llm_call",
+                    );
+                }
+                RunObservation::DecisionCall(call) => {
+                    call_index += 1;
+                    self.routing_call_events(
+                        events,
+                        call,
+                        call_index,
+                        metadata,
+                        "switchyard.routing.decision_call",
+                    );
                 }
                 RunObservation::RoutingOverhead(duration) => {
                     let latency_ms = duration.as_secs_f64() * 1_000.0;
@@ -374,15 +390,16 @@ impl SwitchyardRuntime {
     fn routing_call_events(
         &self,
         events: &mut Vec<RoutingEvent>,
-        call: LlmCallObservation,
+        call: ModelCallObservation,
         call_index: usize,
         metadata: &Json,
+        mark_name: &str,
     ) {
         let outcome = if call.is_success { "ok" } else { "error" };
         let latency_ms = call.duration.as_secs_f64() * 1_000.0;
         let token_metrics = token_usage_metrics("routing", &call, metadata);
         events.push(RoutingEvent::Mark(RoutingMark {
-            name: "switchyard.routing.llm_call".into(),
+            name: mark_name.into(),
             data: json!({
                 "call_index": call_index,
                 "selected_model": call.selected_model.as_str(),
@@ -717,7 +734,7 @@ fn routing_overhead_metric(latency_ms: f64, metadata: Json) -> RoutingEvent {
 
 fn token_usage_metrics(
     call_role: &str,
-    call: &LlmCallObservation,
+    call: &ModelCallObservation,
     metadata: &Json,
 ) -> Vec<RoutingEvent> {
     let Some(usage) = call.usage.as_ref() else {
@@ -1299,7 +1316,7 @@ mod tests {
         runtime.emit_observations(
             &mut events,
             vec![
-                RunObservation::LlmCall(LlmCallObservation {
+                RunObservation::LlmCall(ModelCallObservation {
                     selected_model: ModelId::from("routing-model"),
                     is_success: false,
                     duration: std::time::Duration::from_millis(12),
@@ -1390,7 +1407,7 @@ mod tests {
 
     #[test]
     fn token_usage_metrics_distinguish_routing_and_answer_targets() {
-        let call = LlmCallObservation {
+        let call = ModelCallObservation {
             selected_model: ModelId::from("judge-model"),
             is_success: true,
             duration: std::time::Duration::from_millis(1),
@@ -1452,13 +1469,13 @@ mod tests {
         runtime.emit_observations(
             &mut events,
             vec![
-                RunObservation::AnswerCall(LlmCallObservation {
+                RunObservation::AnswerCall(ModelCallObservation {
                     selected_model: ModelId::from("weak-target"),
                     is_success: false,
                     duration: std::time::Duration::from_millis(2),
                     usage: None,
                 }),
-                RunObservation::AnswerCall(LlmCallObservation {
+                RunObservation::AnswerCall(ModelCallObservation {
                     selected_model: ModelId::from("strong-target"),
                     is_success: true,
                     duration: std::time::Duration::from_millis(3),
