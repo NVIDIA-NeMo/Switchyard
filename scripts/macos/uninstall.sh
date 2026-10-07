@@ -68,6 +68,7 @@ done
 
 step "Done"
 say "Left in place, delete them if you want:"
-say "  $SY_HOME (binaries, config, routing log, logs)"
+say "  $SY_HOME (binaries, config, routing log, model lists, logs)"
 say "  $CODEX_CONFIG.switchyard-current.* (configs preserved during restore)"
 say "  $CODEX_PROFILE_CONFIG.switchyard-backup.* (profile backups)"
+say "  Keychain items named \"Switchyard model list\" (keys saved from Change routing…; delete them in Keychain Access)"
