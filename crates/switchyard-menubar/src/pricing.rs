@@ -79,6 +79,21 @@ pub fn estimate(totals: &Totals, prices: &PriceTable, baseline_model: &str) -> O
     Some(Savings { actual, baseline })
 }
 
+/// Returns the models in `models` that have no entry in `prices`, sorted and
+/// each once. Such a model makes [`estimate`] return `None`.
+pub fn unpriced<'a>(
+    models: impl IntoIterator<Item = &'a str>,
+    prices: &PriceTable,
+) -> Vec<&'a str> {
+    let mut missing: Vec<&str> = models
+        .into_iter()
+        .filter(|model| !prices.contains_key(*model))
+        .collect();
+    missing.sort_unstable();
+    missing.dedup();
+    missing
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +197,12 @@ mod tests {
 
         assert_eq!(savings.saved(), 0.0);
         assert!(savings.percent().is_none());
+    }
+
+    #[test]
+    fn names_each_model_that_has_no_price_once() {
+        let models = ["sol", "mystery", "luna", "other", "mystery"];
+
+        assert_eq!(unpriced(models, &table()), ["mystery", "other"]);
     }
 }

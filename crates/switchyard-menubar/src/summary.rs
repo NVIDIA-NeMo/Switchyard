@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::health::ServerStatus;
-use crate::pricing::{Savings, estimate};
+use crate::pricing::{Savings, estimate, unpriced};
 use crate::rollup::{Totals, Usage};
 
 /// Most model rows shown, so the menu stays short.
@@ -49,11 +49,37 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<Row> {
         rows.extend(models);
     }
 
-    if estimate(&usage.week, &config.prices, &config.baseline_model).is_none() {
+    if config.prices.is_empty() {
         rows.push(Row::Separator);
         rows.push(label("Add prices to menubar.toml to see savings"));
+    } else {
+        let seen = usage
+            .week
+            .routed
+            .keys()
+            .chain(usage.week.classifier.keys())
+            .map(String::as_str);
+        let baseline = std::iter::once(config.baseline_model.as_str());
+        let missing = unpriced(seen.chain(baseline), &config.prices);
+        if !missing.is_empty() {
+            rows.push(Row::Separator);
+            rows.push(label(format!(
+                "Savings hidden for this week: menubar.toml has no price for {}",
+                listed(&missing)
+            )));
+        }
     }
     rows
+}
+
+/// Names at most three models, so that the menu row stays short.
+fn listed(models: &[&str]) -> String {
+    match models {
+        [first, second, third, rest @ ..] if !rest.is_empty() => {
+            format!("{first}, {second}, {third}, and {} more", rest.len())
+        }
+        _ => models.join(", "),
+    }
 }
 
 fn period(name: &str, totals: &Totals, config: &Config) -> Vec<Row> {
@@ -281,5 +307,67 @@ mod tests {
 
         assert_eq!(money(2.181), "$2.18");
         assert_eq!(money(-0.125), "-$0.12");
+    }
+
+    #[test]
+    fn names_the_models_that_keep_the_weeks_savings_hidden() {
+        let mut today = Totals::default();
+        today
+            .routed
+            .insert("luna".to_string(), counted(1_000, 100, 1));
+        let mut week = today.clone();
+        week.routed
+            .insert("mystery".to_string(), counted(1_000, 100, 1));
+
+        let rows = build(
+            ServerStatus::Running,
+            &usage_of(today, week),
+            &config(priced()),
+        );
+        let labels = labels(&rows);
+
+        // Every model of today has a price, so today still shows its saving.
+        let saved = labels
+            .iter()
+            .filter(|label| label.contains("Saved"))
+            .count();
+        assert_eq!(saved, 1, "{labels:?}");
+        assert!(
+            labels.iter().any(|label| label
+                == "Savings hidden for this week: menubar.toml has no price for mystery"),
+            "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn names_the_baseline_model_when_it_has_no_price() {
+        let mut week = Totals::default();
+        week.routed
+            .insert("luna".to_string(), counted(1_000, 100, 1));
+        let mut prices = priced();
+        prices.remove("sol");
+
+        let rows = build(
+            ServerStatus::Running,
+            &usage_of(week.clone(), week),
+            &config(prices),
+        );
+
+        let labels = labels(&rows);
+        assert!(
+            labels.contains(
+                &"Savings hidden for this week: menubar.toml has no price for sol".to_string()
+            ),
+            "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn shortens_a_long_list_of_unpriced_models() {
+        let names = ["a", "b", "c", "d", "e"];
+
+        assert_eq!(listed(&names), "a, b, c, and 2 more");
+        assert_eq!(listed(&names[..3]), "a, b, c");
+        assert_eq!(listed(&names[..1]), "a");
     }
 }

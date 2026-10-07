@@ -6,12 +6,12 @@
 use chrono::Local;
 
 use crate::config::Config;
-use crate::health::probe;
+use crate::health::{ServerStatus, probe};
 use crate::rollup;
 use crate::summary::{Row, build};
 
-/// Reads new log entries, probes the server, and builds the menu body.
-pub fn refresh(config: &Config, log: &mut rollup::Reader) -> Vec<Row> {
+/// Reads new log entries and returns the server status and menu rows.
+pub fn refresh(config: &Config, log: &mut rollup::Reader) -> (ServerStatus, Vec<Row>) {
     let usage = log
         .read(&config.routing_log, Local::now().date_naive())
         .unwrap_or_else(|error| {
@@ -21,7 +21,8 @@ pub fn refresh(config: &Config, log: &mut rollup::Reader) -> Vec<Row> {
             );
             rollup::Usage::default()
         });
-    build(probe(&config.server_url), &usage, config)
+    let status = probe(&config.server_url);
+    (status, build(status, &usage, config))
 }
 
 #[cfg(test)]
@@ -41,7 +42,7 @@ mod tests {
         )
         .expect("write log");
 
-        let rows = refresh(
+        let (_, rows) = refresh(
             &Config {
                 routing_log: path,
                 ..Config::default()

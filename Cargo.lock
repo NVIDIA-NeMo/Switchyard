@@ -3248,10 +3248,13 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "security-framework",
  "serde",
  "serde_json",
+ "switchyard-runner",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.25.13+spec-1.1.0",
  "tray-icon",
 ]
 
@@ -3741,6 +3744,19 @@ dependencies = [
  "serde_spanned 0.6.9",
  "toml_datetime 0.6.3",
  "winnow 0.5.40",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.25.13+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
+dependencies = [
+ "indexmap",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -4372,6 +4388,9 @@ name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "wiremock"
