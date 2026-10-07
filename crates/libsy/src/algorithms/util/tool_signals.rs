@@ -355,18 +355,18 @@ pub struct ToolSignals {
     pub repeated_failure: bool,
     /// Consecutive clean tool results back from the most recent. `0` if the last failed.
     pub no_error_streak: u32,
-    /// Total edit-style tool calls in the request.
+    /// Total edit-style calls without an explicit failure.
     pub edit_count: u32,
-    /// Total write-style tool calls in the request.
+    /// Total write-style calls without an explicit failure.
     pub write_count: u32,
     /// Read-type calls (Read tool + read-like Bash). Used by the build-pit gate.
     pub read_count: u32,
     /// TodoWrite / planning tool calls. Investigative (non-producing) activity —
     /// recent todowrites distinguish `exploring` from `spinning` in the scorer.
     pub todowrite_count: u32,
-    /// Edit-type calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
+    /// Edit-style calls without an explicit failure in the recent window.
     pub recent_edit_count: u32,
-    /// Write-type calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
+    /// Write-style calls without an explicit failure in the recent window.
     pub recent_write_count: u32,
     /// Read-type calls within the configured recent window (default: [`DEFAULT_RECENT_WINDOW`]).
     pub recent_read_count: u32,
@@ -426,9 +426,11 @@ impl ToolSignals {
 // `bare_name` is the tool's own name when `name` joins it to a namespace or MCP server.
 #[derive(Debug, Clone)]
 struct ObservedToolCall<'a> {
+    id: &'a str,
     name: String,
     bare_name: Option<&'a str>,
     command: Option<String>,
+    failed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -800,9 +802,11 @@ fn extract_tool_signals_with_window_and_semantics(
                         }
                     }
                     tool_calls.push(ObservedToolCall {
+                        id: &call.id,
                         name: call.name.clone(),
                         bare_name,
                         command,
+                        failed: false,
                     });
                 }
                 ContentBlock::ToolResult(result) => {
@@ -836,6 +840,16 @@ fn extract_tool_signals_with_window_and_semantics(
                         } else {
                             text
                         };
+                        let (nonzero_exit, tool_error) = structured_failure_flags(&text);
+                        if (is_error || nonzero_exit || tool_error)
+                            && !result.tool_call_id.is_empty()
+                            && let Some(call) = tool_calls
+                                .iter_mut()
+                                .rev()
+                                .find(|call| call.id == result.tool_call_id)
+                        {
+                            call.failed = true;
+                        }
                         tool_texts.push((text, is_error));
                     }
                 }
@@ -1031,6 +1045,7 @@ fn build_signal(
             }
         }
         match cat {
+            ToolSemantic::Mutate(_) if tc.failed => {}
             ToolSemantic::Mutate(MutationKind::Write) => {
                 write_count += 1;
                 if i >= recent_start {
@@ -1119,6 +1134,22 @@ fn content_to_text(content: Option<&Value>) -> Option<String> {
     }
 }
 
+/// Returns (nonzero exit, explicit tool error) from a structured result.
+fn structured_failure_flags(text: &str) -> (bool, bool) {
+    // Hermes can append a loop warning after the JSON result.
+    let result = serde_json::Deserializer::from_str(text)
+        .into_iter::<Value>()
+        .next()
+        .and_then(|result| result.ok())
+        .unwrap_or_default();
+    let nonzero_exit = result["exit_code"].as_i64().is_some_and(|code| code != 0);
+    let tool_error = result["success"].as_bool() == Some(false)
+        || result["error"]
+            .as_str()
+            .is_some_and(|error| !error.trim().is_empty());
+    (nonzero_exit, tool_error)
+}
+
 /// Match tool text and structured result fields against error patterns.
 ///
 /// Returns `(max_severity, matched_pattern_names)`.
@@ -1132,17 +1163,7 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
             severity = severity.max(*sev);
         }
     }
-    // Hermes can append a loop warning after the JSON result.
-    let result = serde_json::Deserializer::from_str(text)
-        .into_iter::<Value>()
-        .next()
-        .and_then(|result| result.ok())
-        .unwrap_or_default();
-    let nonzero_exit = result["exit_code"].as_i64().is_some_and(|code| code != 0);
-    let tool_error = result["success"].as_bool() == Some(false)
-        || result["error"]
-            .as_str()
-            .is_some_and(|error| !error.trim().is_empty());
+    let (nonzero_exit, tool_error) = structured_failure_flags(text);
     if (nonzero_exit || has_nonzero_exit_status(&lower))
         && !patterns.iter().any(|p| p == "exit_nonzero")
     {
@@ -1936,6 +1957,52 @@ mod tests {
         assert_eq!(sig.tool_result_count, 2);
         assert_eq!(sig.assistant_turn_count, 2);
         assert_eq!(sig.turn_depth, 4);
+    }
+
+    #[test]
+    fn failed_mutations_do_not_count_as_production() {
+        let call = |id: &str, name: &str| {
+            serde_json::from_value(json!({
+                "role": "assistant", "content": [{"type": "tool_call", "id": id,
+                    "name": name, "arguments": {}}]
+            }))
+            .unwrap()
+        };
+        let result = |id: &str, text: &str, is_error: bool| {
+            serde_json::from_value(json!({
+                "role": "user", "content": [{"type": "tool_result", "tool_call_id": id,
+                    "content": [{"type": "text", "text": text}], "is_error": is_error}]
+            }))
+            .unwrap()
+        };
+        for name in ["write_file", "patch"] {
+            for (text, is_error, failed) in [
+                (r#"{"success":false}"#, false, true),
+                (r#"{"error":"Overwrite refused"}"#, false, true),
+                (r#"{"exit_code":7}"#, false, true),
+                ("", true, true),
+                (r#"{"success":true,"output":"out of memory"}"#, false, false),
+            ] {
+                let request = with_messages(vec![
+                    call("old", "write_file"),
+                    call("mutation", name),
+                    call("pending", "patch"),
+                    tc("write_file"),
+                    result("mutation", text, is_error),
+                    result("old", "done", false),
+                    result("unmatched", "", true),
+                    result("", "", true),
+                ]);
+                let signal = ToolSignals::from_request(&request, Some(3));
+                let credited = u32::from(!failed);
+                assert_eq!(signal.write_count + signal.edit_count, 3 + credited);
+                assert_eq!(
+                    signal.recent_write_count + signal.recent_edit_count,
+                    2 + credited
+                );
+                assert_eq!(signal.severity, HARD);
+            }
+        }
     }
 
     #[test]
