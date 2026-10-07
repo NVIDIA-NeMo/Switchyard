@@ -1035,6 +1035,35 @@ target = "strong"
         );
     }
 
+    #[tokio::test]
+    async fn plan_execute_applies_custom_tool_semantics() -> RunnerResult<()> {
+        use switchyard_protocol::{ContentBlock, Message, Request, Role, ToolCall};
+
+        let configured = format!(
+            "{VALID_CONFIG}\n[routes.plan_execute.tool_semantics]\nmutate = [\"persist_source_file\"]"
+        );
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "write-1".to_string(),
+                name: "mcp__files__Persist_Source_File".to_string(),
+                arguments: json!({"path": "task.py", "content": "print('hello')"}),
+            })],
+        });
+
+        for (config, expected) in [
+            (VALID_CONFIG, "strong/model"),
+            (configured.as_str(), "weak/model"),
+        ] {
+            let runner = Runner::from_toml(config)?;
+            let route = runner.route("switchyard/plan-execute").unwrap();
+            let outcome = route.decide(request.clone()).await?;
+            assert_eq!(outcome.selected_model_ids[0], expected);
+        }
+        Ok(())
+    }
+
     fn error_message(toml: &str) -> String {
         match runner_from_toml(toml) {
             Ok(_) => "configuration unexpectedly succeeded".to_string(),

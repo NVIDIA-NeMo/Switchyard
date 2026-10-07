@@ -223,12 +223,13 @@ Splits traffic across targets. See
 ### `plan_execute`
 
 Plans on a capable target, then switches to an efficient target after the first
-file mutation. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
+recognized edit or write tool call. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `capable_target` | Yes | - | Target used for read-only inspection and planning. |
 | `efficient_target` | Yes | - | Target used after the first edit or write. |
+| `tool_semantics.mutate` | No | `[]` | Additional tool names that trigger handoff. See the [example](../routing_algorithms/plan_execute_routing.md#optional-settings). |
 | `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
 | `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
 | `planner_reasoning_as_text` | No | `false` | Converts visible planner reasoning summaries to assistant text at handoff. |
