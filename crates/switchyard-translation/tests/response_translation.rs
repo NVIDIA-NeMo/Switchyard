@@ -6,7 +6,7 @@
 pub mod common;
 
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Value, json};
 use switchyard_translation::{
     PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
 };
@@ -328,7 +328,7 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
         json!({"reasoning_tokens": 3})
     );
     assert_eq!(
-        output["usage"]["prompt_tokens_details"]["cache_creation_tokens"],
+        output["usage"]["prompt_tokens_details"]["cache_write_tokens"],
         2
     );
     let decoded = engine
@@ -1259,5 +1259,65 @@ fn responses_custom_tool_call_output_round_trips_with_request_extensions() -> Te
     let call = &chat["choices"][0]["message"]["tool_calls"][0];
     assert_eq!(call["function"]["name"], "exec");
     assert_eq!(call["function"]["arguments"], "{\"input\":\"ls -la\"}");
+    Ok(())
+}
+
+#[test]
+fn translated_usage_keeps_charges_and_cache_duration() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({"id":"msg_cost", "type":"message", "role":"assistant", "model":"claude",
+        "content":[{"type":"text","text":"ok"}], "stop_reason":"end_turn",
+        "usage":{"input_tokens":50,"output_tokens":10,"cache_read_input_tokens":20,
+            "cache_creation_input_tokens":30,"cache_creation":{"ephemeral_1h_input_tokens":10},"cost":0.25}});
+    for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let translated = engine
+            .translate_response(
+                WireFormat::AnthropicMessages,
+                target,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(translated["usage"]["cost"], 0.25);
+        assert_eq!(
+            translated["usage"]["cache_creation"]["ephemeral_1h_input_tokens"],
+            10
+        );
+        let detail = if target == WireFormat::OpenAiChat {
+            "prompt_tokens_details"
+        } else {
+            "input_tokens_details"
+        };
+        assert_eq!(translated["usage"][detail]["cache_write_tokens"], 30);
+        let restored = engine
+            .translate_response(
+                target,
+                WireFormat::AnthropicMessages,
+                &translated,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(restored["usage"]["cost"], 0.25);
+    }
+    for cost in [json!(0), json!(-1), json!("0.25"), Value::Null] {
+        let mut altered = body.clone();
+        altered["usage"]["cost"] = cost.clone();
+        let translated = engine
+            .translate_response(
+                WireFormat::AnthropicMessages,
+                WireFormat::OpenAiChat,
+                &altered,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(
+            translated["usage"]["cost"],
+            if cost == json!(0) {
+                json!(0.0)
+            } else {
+                Value::Null
+            }
+        );
+    }
     Ok(())
 }

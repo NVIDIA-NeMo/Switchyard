@@ -52,6 +52,10 @@ pub(crate) struct ServerArgs {
     #[arg(long, value_name = "PATH")]
     routing_log_file: Option<PathBuf>,
 
+    /// This JSON file maps served model IDs to rates in USD per million tokens.
+    #[arg(long, value_name = "PATH", requires = "routing_log_file")]
+    pricing_file: Option<PathBuf>,
+
     /// TLS certificate path in PEM format.
     #[arg(long, requires = "tls_key")]
     tls_cert: Option<PathBuf>,
@@ -71,6 +75,9 @@ impl ServerArgs {
         let mut state = load_server_state(&self.config)?;
         if let Some(path) = self.routing_log_file {
             state = state.with_routing_log(path)?;
+        }
+        if let Some(path) = self.pricing_file {
+            state = state.with_pricing_file(path)?;
         }
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert), Some(key)) => {
