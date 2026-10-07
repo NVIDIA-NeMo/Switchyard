@@ -101,23 +101,27 @@ pub(crate) async fn serve_decision(call: CallDecision) -> Result<()> {
         answers: Default::default(),
         usage: Default::default(),
     };
-    call.respond(Ok(response))
+    call.respond(std::future::ready(Ok(response))).await
 }
 
 /// Serve one call and fulfill its promise, mapping failures the way a host does so
 /// error-shape assertions match production.
 async fn fulfill(serve: Arc<impl Serve>, call: Call) -> Result<()> {
-    let call = match call {
+    let mut call = match call {
         Call::Model(call) => *call,
         Call::Decision(call) => return serve_decision(*call).await,
     };
     let request = call.request.clone();
     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
-    let result = serve
-        .serve(target.clone(), request)
-        .await
-        .map_err(|source| LibsyError::client_call(target, source));
-    call.respond(result)
+    // Test clients return failures to routing policies, including policies under test.
+    call.recover_errors = true;
+    call.respond(async {
+        serve
+            .serve(target.clone(), request)
+            .await
+            .map_err(|source| LibsyError::client_call(target, source))
+    })
+    .await
 }
 
 /// Answers with the selected model name as the completion — what most routing tests need,

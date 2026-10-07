@@ -7,7 +7,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Mapping
 
-from switchyard.libsy import LlmResponse, Step, algorithms
+from switchyard.libsy import LlmResponse, RoutingOutcome, Step, algorithms
 
 
 class EchoClient:
@@ -62,22 +62,33 @@ async def main() -> None:
         seed=42,
     )
 
-    async for step in algorithm.run_stream(request, {"any": ["fast", "quality"]}):
-        match step:
-            case Step.CallModel(call):
-                call.respond(await client.call(call.request, call.models[0]))
-            case Step.Done(outcome):
-                print("Decision:", outcome.selected_model_ids[0])
-                response = outcome.response or await client.call(
-                    outcome.request,
-                    outcome.selected_model_ids[0],
-                )
-                match response:
-                    case LlmResponse.Agg(aggregate_response):
-                        print("Response:", aggregate_response)
-                    case LlmResponse.Stream(response_stream):
-                        async for event in response_stream:
-                            print("Response event:", event)
+    handlers: list[asyncio.Task[None]] = []
+    outcome: RoutingOutcome | None = None
+    try:
+        async for step in algorithm.run_stream(request, {"any": ["fast", "quality"]}):
+            match step:
+                case Step.CallModel(call):
+                    handlers.append(
+                        asyncio.create_task(call.respond(client.call(call.request, call.models[0])))
+                    )
+                case Step.Done(done):
+                    outcome = done
+                    break
+    finally:
+        for handler in handlers:
+            handler.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+
+    if outcome is None:
+        raise RuntimeError("Algorithm ended without a routing outcome")
+    print("Decision:", outcome.selected_model_ids[0])
+    response = outcome.response or await client.call(outcome.request, outcome.selected_model_ids[0])
+    match response:
+        case LlmResponse.Agg(aggregate_response):
+            print("Response:", aggregate_response)
+        case LlmResponse.Stream(response_stream):
+            async for event in response_stream:
+                print("Response event:", event)
 
 
 if __name__ == "__main__":

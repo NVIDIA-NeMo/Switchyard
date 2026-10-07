@@ -72,7 +72,7 @@ async fn serve_decision(call: libsy::CallDecision) -> libsy::Result<()> {
         answers: Default::default(),
         usage: Default::default(),
     };
-    call.respond(Ok(response))
+    call.respond(std::future::ready(Ok(response))).await
 }
 
 async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<String> {
@@ -85,13 +85,14 @@ async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<
                 Call::Model(call) => *call,
                 Call::Decision(call) => return serve_decision(*call).await,
             };
-            call.respond(Ok(switchyard_protocol::Response {
+            call.respond(std::future::ready(Ok(switchyard_protocol::Response {
                 llm_response: switchyard_protocol::LlmResponse::Agg(
                     switchyard_protocol::text_response(None, "unused"),
                 ),
                 metadata: None,
                 upstream_headers: Default::default(),
-            }))
+            })))
+            .await
         },
     )
     .await?;

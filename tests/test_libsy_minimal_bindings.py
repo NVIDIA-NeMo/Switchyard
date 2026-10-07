@@ -17,6 +17,7 @@ from switchyard.libsy import (
     EscalationClassifierConfig,
     LlmClassifierConfig,
     LlmResponse,
+    ModelCall,
     OutcomeMetadata,
     RoutingOutcome,
     Step,
@@ -56,6 +57,16 @@ class EchoClient:
         }
 
 
+async def ready(
+    response: LlmResponse.Agg | LlmResponse.Stream,
+) -> LlmResponse.Agg | LlmResponse.Stream:
+    return response
+
+
+async def aggregate(client: Any, request: dict[str, Any]) -> LlmResponse.Agg:
+    return LlmResponse.Agg(await client.call(request))
+
+
 async def run_algorithm(
     algorithm: Algorithm,
     clients: dict[str, Any] | None = None,
@@ -64,26 +75,23 @@ async def run_algorithm(
     request: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    async def serve(call: ModelCall) -> LlmResponse.Agg:
+        for index, target in enumerate(call.models):
+            candidate_request = {**call.request, "model": target}
+            try:
+                return await aggregate((clients or {})[target], candidate_request)
+            except ContextWindowExceededError:
+                if index + 1 == len(call.models):
+                    raise
+        raise AssertionError("model call has no candidates")
+
     runtime_models = models if models is not None else {"any": list((clients or {}).keys())}
     async for step in algorithm.run_stream(
         request or request_body(), runtime_models, headers=headers
     ):
         match step:
             case Step.CallModel(call):
-                for index, target in enumerate(call.models):
-                    candidate_request = {**call.request, "model": target}
-                    client = (clients or {})[target]
-                    try:
-                        response = await client.call(candidate_request)
-                    except ContextWindowExceededError as error:
-                        if index + 1 == len(call.models):
-                            call.fail(error)
-                    except Exception as error:
-                        call.fail(error)
-                        break
-                    else:
-                        call.respond(LlmResponse.Agg(response))
-                        break
+                await call.respond(serve(call))
             case Step.Done(outcome):
                 assert isinstance(outcome.metadata, OutcomeMetadata)
                 assert UUID(outcome.metadata.outcome_id).version == 7
@@ -167,7 +175,7 @@ async def test_routing_call_accepts_a_streamed_response() -> None:
     async for step in algorithm.run_stream(request_body(), models):
         match step:
             case Step.CallModel(call):
-                call.respond(LlmResponse.Stream(events()))
+                await call.respond(ready(LlmResponse.Stream(events())))
             case Step.Done(done):
                 outcome = done
 
@@ -222,7 +230,7 @@ async def test_classifier_config_accepts_a_prompt_override() -> None:
     async for step in algorithm.run_stream(request_body(), models):
         match step:
             case Step.CallModel(call):
-                call.respond(LlmResponse.Agg(await judge.call(call.request)))
+                await call.respond(aggregate(judge, call.request))
             case Step.Done(done):
                 outcome = done
 
@@ -505,7 +513,7 @@ async def test_escalation_falls_back_on_first_stream_context_overflow() -> None:
         match step:
             case Step.CallModel(call):
                 calls.append(call.models)
-                call.respond(LlmResponse.Stream(overflow()))
+                await call.respond(ready(LlmResponse.Stream(overflow())))
             case Step.Done(done):
                 outcome = done
 
