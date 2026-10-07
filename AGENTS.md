@@ -17,7 +17,13 @@ Integrations:
 - `crates/switchyard-nemo-relay-plugin/`: Integrate with NeMo Relay.
 - `examples/litellm/`: Integrate with LiteLLM.
 
-Write for a high-school level in short, simple sentences. Avoid jargon, analogies and metaphors. Be direct.
+## Writing guidance
+
+- Write for a high-school level in short, simple sentences.
+- Avoid jargon, analogies and metaphors. Be direct.
+- Never say what something is not.
+- Be humble. Do not inflate claims.
+- Do not say what you would do.
 
 ## Engineering guidance
 
