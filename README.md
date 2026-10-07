@@ -86,6 +86,8 @@ releases. Pin the version you integrate.
 | `switchyard-runner` | **Alpha** | Running configured routes inside another runtime, such as NeMo Relay. | Integration work and supervised pilots. |
 | `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy, including a local Codex service. | Demos, evaluation, and personal use on single-user machines. Not for production. |
 
+![Switchyard Components](docs/assets/switchyard-components.png)
+
 ## Community and license
 
 [Report an issue](https://github.com/NVIDIA-NeMo/Switchyard/issues) · [Contribute](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md)
