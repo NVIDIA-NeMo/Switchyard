@@ -125,6 +125,32 @@ jobs:
       - name: cargo test (prefill-router)
         run: cargo test -p switchyard-runner --features prefill-router --locked
 
+  node:
+    name: TypeScript bindings and Pi example
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+          cache: npm
+          cache-dependency-path: |
+            bindings/typescript/package-lock.json
+            examples/pi/package-lock.json
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: npm --prefix bindings/typescript ci
+      - run: npm --prefix bindings/typescript run build
+      - run: npm --prefix bindings/typescript run typecheck
+      - run: npm --prefix bindings/typescript test
+      - run: npm --prefix examples/pi ci
+      - run: npm --prefix examples/pi run typecheck
+      - run: npm --prefix examples/pi test
+
   typecheck:
     name: Typecheck (mypy)
     needs: changes
@@ -252,7 +278,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [changes, lint, spdx-headers, rust, typecheck, test, litellm, slim-install-smoke]
+    needs: [changes, lint, spdx-headers, rust, node, typecheck, test, litellm, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded

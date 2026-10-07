@@ -9,6 +9,7 @@ members = [
     "crates/libsy-llm-client",
     "crates/prefill-router",
     "crates/switchyard-py",
+    "crates/switchyard-node",
     "crates/protocol",
     "crates/switchyard-nemo-relay-plugin",
     "crates/switchyard-runner",

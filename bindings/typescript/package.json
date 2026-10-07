@@ -1,0 +1,20 @@
+{
+  "name": "@switchyard/runner",
+  "version": "0.3.0",
+  "private": true,
+  "description": "Model-selection bindings for Switchyard",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "LICENSE", "NOTICE", "README.md"],
+  "scripts": {
+    "build": "node scripts/build.mjs && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}
