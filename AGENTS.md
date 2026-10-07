@@ -21,9 +21,9 @@ Integrations:
 
 - Write for a high-school level in short, simple sentences.
 - Avoid jargon, analogies and metaphors. Be direct.
-- Never say what something is not.
+- Only say what something is not if it is essential to understanding. Never use negatives or opposites as a rhetorical flourish.
 - Be humble. Do not inflate claims.
-- Do not say what you would do.
+- Do not say what you would do unless asked.
 
 ## Engineering guidance
 
