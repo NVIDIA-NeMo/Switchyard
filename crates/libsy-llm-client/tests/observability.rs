@@ -1109,6 +1109,20 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         );
     }
     assert!(!run_span.fields.contains_key("evidence.confidence"));
+    let outcome: serde_json::Value =
+        serde_json::from_str(&run_span.fields["switchyard.outcome"]).unwrap();
+    assert_eq!(outcome["metadata"]["outcome_id"], metadata.outcome_id());
+    assert_eq!(
+        outcome["metadata"]["evidence"],
+        json!({
+            "source": "llm-classifier", "score": 0.9, "threshold": 0.5,
+            "verdict": "continue", "trigger": "turn", "reason_code": "test",
+        })
+    );
+    assert_eq!(
+        outcome["selected_model_ids"],
+        json!([MODEL, "obs-fallback-model"])
+    );
     assert!(!format!("{run_span:?}").contains(LEAKED_CONTENT));
     let exported = span_exporter.get_finished_spans().expect("exported spans");
     let exported_run = exported
@@ -1119,6 +1133,12 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
                     .is_some_and(|id| id.as_str() == metadata.outcome_id())
         })
         .expect("outcome span exported");
+    assert_eq!(
+        otel_attribute(exported_run, "switchyard.outcome"),
+        Some(&OtelValue::String(
+            run_span.fields["switchyard.outcome"].clone().into()
+        ))
+    );
     assert_eq!(
         otel_attribute(exported_run, "evidence.score"),
         Some(&OtelValue::F64(0.9))

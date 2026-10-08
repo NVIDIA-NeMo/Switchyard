@@ -71,6 +71,7 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         "libsy.run",
         algorithm,
         outcome_id = tracing::field::Empty,
+        switchyard.outcome = tracing::field::Empty,
         evidence.source = tracing::field::Empty,
         evidence.score = tracing::field::Empty,
         evidence.confidence = tracing::field::Empty,
@@ -116,8 +117,12 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
 /// Projects a successful outcome onto the existing run span. Model IDs are an
 /// ordered OpenTelemetry string array, preserving fallback order. Evidence uses typed fields;
 /// unknown keys and values of the wrong type are omitted.
+/// `switchyard.outcome` serializes explicit product telemetry fields with the same evidence filter.
 pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
     let span = Span::current();
+    if span.is_disabled() {
+        return;
+    }
     span.record("outcome_id", metadata.outcome_id());
     span.set_attribute(
         "selected_model_ids",
@@ -128,6 +133,7 @@ pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
                 .collect(),
         )),
     );
+    let mut filtered_evidence = serde_json::Map::new();
     if let Some(evidence) = &metadata.evidence {
         for (key, field) in [
             ("source", "evidence.source"),
@@ -137,6 +143,7 @@ pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
         ] {
             if let Some(value) = evidence.get(key).and_then(serde_json::Value::as_str) {
                 span.record(field, value);
+                filtered_evidence.insert(key.to_string(), value.into());
             }
         }
         for (key, field) in [
@@ -146,9 +153,28 @@ pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
         ] {
             if let Some(value) = evidence.get(key).and_then(serde_json::Value::as_f64) {
                 span.record(field, value);
+                filtered_evidence.insert(key.to_string(), value.into());
             }
         }
     }
+    let evidence = metadata.evidence.as_ref().map(|_| filtered_evidence);
+    let outcome = serde_json::json!({
+        "metadata": {
+            "outcome_id": metadata.outcome_id(),
+            "algorithm": metadata.algorithm,
+            "algorithm_version": metadata.algorithm_version,
+            "feature_flags": metadata.feature_flags,
+            "considered_model_ids": metadata.considered_model_ids,
+            "routing_status": metadata.routing_status,
+            "no_eligible_target": metadata.no_eligible_target,
+            "routing_error_code": metadata.routing_error_code,
+            "exclusion_reason_codes": metadata.exclusion_reason_codes,
+            "routing_duration_ms": metadata.routing_duration_ms,
+            "evidence": evidence,
+        },
+        "selected_model_ids": models,
+    });
+    span.record("switchyard.outcome", outcome.to_string().as_str());
 }
 
 /// Holds `switchyard.algorithms_in_flight` up by one for as long as it lives.

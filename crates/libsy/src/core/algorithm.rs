@@ -289,6 +289,11 @@ pub struct Driver {
     /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
     evidence: Arc<Mutex<Option<Value>>>,
 
+    /// Candidate groups read by this run, shared by driver clones and scopes.
+    considered_model_ids: Arc<Mutex<Option<Vec<ModelId>>>>,
+
+    started: Instant,
+
     /// Every group this run may route over, shared by all driver clones.
     models: Arc<RuntimeModels>,
 
@@ -313,6 +318,8 @@ impl Driver {
                 step_tx,
                 algorithm: algorithm.to_string(),
                 evidence: Arc::new(Mutex::new(None)),
+                considered_model_ids: Arc::new(Mutex::new(None)),
+                started: Instant::now(),
                 models,
                 scope: Scope::Parent,
             },
@@ -438,10 +445,20 @@ impl Driver {
 
     /// The available models for this category, typically ordered best-first.
     pub fn models_for(&self, category: &Category) -> &[ModelId] {
-        match self.scope {
+        let models = match self.scope {
             Scope::Parent => self.models.models_for(category),
             Scope::Subagent => self.models.subagent_models_for(category),
+        };
+        if *category != Category::Judge {
+            let mut considered = self.considered_model_ids.lock();
+            let considered = considered.get_or_insert_with(Vec::new);
+            for model in models {
+                if !considered.contains(model) {
+                    considered.push(model.clone());
+                }
+            }
         }
+        models
     }
 
     /// The first available model for `category`.
@@ -475,6 +492,10 @@ impl Driver {
             let metadata = outcome.metadata.get_or_insert_with(|| {
                 crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
             });
+            if metadata.considered_model_ids.is_none() {
+                metadata.considered_model_ids = self.considered_model_ids.lock().take();
+            }
+            metadata.routing_duration_ms = Some(self.started.elapsed().as_millis() as u64);
             observability::record_outcome(metadata, &outcome.selected_model_ids);
             outcome
         });
@@ -655,6 +676,8 @@ impl RoutingIdentity {
 /// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
 /// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
 /// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// `switchyard.outcome` carries explicit product telemetry fields and the selected-model
+/// list as JSON, with the same evidence filter, for host tracing layers.
 /// These fields are span attributes, never metric labels.
 ///
 /// The run/call observability helpers retain `outcome` status and operational metrics,
@@ -820,6 +843,63 @@ mod tests {
 
     fn target_set(names: &[&str]) -> Vec<ModelId> {
         names.iter().map(|name| ModelId::from(*name)).collect()
+    }
+
+    #[tokio::test]
+    async fn metadata_tracks_candidate_reads_across_scopes_without_judge_models() {
+        let models = Arc::new(
+            RuntimeModels::new(HashMap::from([
+                (Category::Any, target_set(&["second", "first"])),
+                (Category::Capable, target_set(&["first", "third"])),
+                (Category::Judge, target_set(&["judge"])),
+            ]))
+            .with_subagent(HashMap::from([(
+                Category::Any,
+                target_set(&["child", "first"]),
+            )])),
+        );
+        let (mut driver, mut steps) = Driver::new("test", models.clone());
+        driver.started = Instant::now() - std::time::Duration::from_millis(25);
+        driver.models_for(&Category::Any);
+        driver.clone().models_for(&Category::Capable);
+        driver.models_for(&Category::Judge);
+        driver.for_subagent().unwrap().models_for(&Category::Any);
+
+        let original = crate::OutcomeMetadata::new(
+            "custom".to_string(),
+            Some(serde_json::json!({"source": "retained", "confidence": 0.9})),
+        );
+        let mut outcome =
+            RoutingOutcome::route_to("first".into(), target_set(&["second", "third"]), request());
+        outcome.metadata = Some(original.clone());
+        driver.finish(Ok(outcome)).await.unwrap();
+        let Step::Done(outcome) = steps.recv().await.unwrap().unwrap() else {
+            panic!("expected routing outcome");
+        };
+        let metadata = outcome.metadata.unwrap();
+        assert_eq!(metadata.outcome_id(), original.outcome_id());
+        assert_eq!(metadata.algorithm, original.algorithm);
+        assert_eq!(metadata.evidence, original.evidence);
+        assert_eq!(
+            metadata.considered_model_ids,
+            Some(target_set(&["second", "first", "third", "child"]))
+        );
+        assert!(metadata.routing_duration_ms.unwrap() >= 25);
+
+        // Another run over the same configuration has no candidate observations yet.
+        let (other, mut steps) = Driver::new("test", models);
+        other
+            .finish(Ok(RoutingOutcome::route_to(
+                "first".into(),
+                Vec::new(),
+                request(),
+            )))
+            .await
+            .unwrap();
+        let Step::Done(outcome) = steps.recv().await.unwrap().unwrap() else {
+            panic!("expected routing outcome");
+        };
+        assert_eq!(outcome.metadata.unwrap().considered_model_ids, None);
     }
 
     #[tokio::test]
@@ -1168,6 +1248,7 @@ mod tests {
                         .as_ref()
                         .expect("run_stream should attach outcome metadata");
                     assert_eq!(metadata.algorithm, "test");
+                    assert!(metadata.routing_duration_ms.is_some());
                     assert_eq!(
                         uuid::Uuid::parse_str(metadata.outcome_id())
                             .expect("outcome id should be a UUID")
