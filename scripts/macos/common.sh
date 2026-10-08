@@ -10,6 +10,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../common.sh"
 SERVER_LABEL="com.nvidia.switchyard.server"
 MENUBAR_LABEL="com.nvidia.switchyard.menubar"
 LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
+APP_PATH="$HOME/Applications/Switchyard.app"
 CODEX_CONFIG="$CODEX_DIR/config.toml"
 # Codex reads `--profile sy` from its own file next to config.toml. A
 # [profiles.sy] table in config.toml is rejected outright as legacy config.

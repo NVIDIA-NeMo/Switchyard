@@ -58,6 +58,7 @@ impl RoutingLog {
             task: context.task.map(Cow::Owned),
             trial_id: context.trial_id.map(Cow::Owned),
             session_id: context.session_id.map(Cow::Owned),
+            turn_id: context.turn_id.map(Cow::Owned),
             model: model.into(),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
@@ -108,6 +109,7 @@ pub(crate) struct RoutingLogContext {
     task: Option<String>,
     trial_id: Option<String>,
     session_id: Option<String>,
+    turn_id: Option<String>,
 }
 
 impl RoutingLogContext {
@@ -126,6 +128,7 @@ impl RoutingLogContext {
             trial_id: headers
                 .and_then(|headers| nonempty_header(headers, TRIAL_ID_HEADER))
                 .map(str::to_string),
+            turn_id: metadata.turn_id.clone(),
             session_id: metadata.session_id.clone().or_else(|| {
                 headers
                     .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
@@ -159,6 +162,8 @@ struct RoutingRecord<'a> {
     trial_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     session_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    turn_id: Option<Cow<'a, str>>,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,

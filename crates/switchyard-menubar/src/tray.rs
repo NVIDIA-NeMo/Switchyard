@@ -1,10 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The macOS status item: event loop, menu, and the menu's actions.
-//!
-//! Everything platform-specific lives here and in the routes window, so the
-//! rest of the crate builds and is tested on any target.
+//! This module runs the macOS status item, its menu, and the app event loop.
 
 use objc2::rc::autoreleasepool;
 use std::path::Path;
@@ -18,6 +15,7 @@ use tray_icon::{Icon, TrayIconBuilder};
 
 use crate::app::refresh;
 use crate::config::Config;
+use crate::dashboard::Dashboard;
 use crate::health::ServerStatus;
 use crate::icon;
 use crate::models::CACHE_FILE;
@@ -25,13 +23,15 @@ use crate::picker::Picker;
 use crate::server::{command, restart};
 use crate::summary::Row;
 
+const OPEN_APP: &str = "open-app";
+const INSTALL: &str = "install";
 const EDIT_ROUTES: &str = "edit-routes";
 const RESTART: &str = "restart-server";
 const OPEN_CONFIG: &str = "open-config";
 const OPEN_SETTINGS: &str = "open-settings";
 const QUIT: &str = "quit";
 
-/// How long the loop blocks waiting for a UI event before checking the clock.
+/// EVENT_POLL sets how long the loop waits for a UI event before checking the clock.
 const EVENT_POLL: f64 = 0.1;
 
 /// Runs the status item until the user quits. `settings` is the settings
@@ -40,11 +40,10 @@ const EVENT_POLL: f64 = 0.1;
 pub fn run(mut config: Config, settings: &Path) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("the menu bar must run on the main thread")?;
     let ns_app = NSApplication::sharedApplication(mtm);
-    // Accessory keeps the process out of the Dock and the app switcher.
-    ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    // An accessory app shows no menu bar, but AppKit still finds keyboard
-    // shortcuts, such as Cmd-C in a text field and Cmd-W in the routes
-    // window, through the app's main menu.
+    // The Regular policy shows the app in the Dock and the app switcher.
+    ns_app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    // AppKit uses the main menu for shortcuts such as Cmd-C in a text field,
+    // Cmd-W in a window, and Cmd-Q to request quitting.
     let main_menu = main_menu()?;
     main_menu.init_for_nsapp();
 
@@ -62,12 +61,15 @@ pub fn run(mut config: Config, settings: &Path) -> Result<(), String> {
 
     ns_app.finishLaunching();
 
+    let mut dashboard = Dashboard::new(mtm, &config);
+    dashboard.show(false);
     let mut picker: Option<Picker> = None;
     let mut next = Instant::now() + interval(&config);
     let mut actions: Vec<(&str, thread::JoinHandle<Result<(), String>>)> = Vec::new();
     loop {
         let quit = autoreleasepool(|_| -> Result<bool, String> {
             pump_events(&ns_app);
+            dashboard.poll();
             if let Some(picker) = picker.as_mut() {
                 picker.poll();
             }
@@ -78,18 +80,20 @@ pub fn run(mut config: Config, settings: &Path) -> Result<(), String> {
                     QUIT => {
                         // Quitting between the save and the restart would leave a
                         // saved config that the server has not loaded.
-                        if picker.as_ref().is_some_and(Picker::is_busy) {
+                        if picker.as_ref().is_some_and(Picker::is_busy) || dashboard.is_busy() {
                             alert(
                                 mtm,
-                                "Apply is still running",
-                                "Quitting now could leave the new config saved while the server \
-                             still runs the old one. Wait for the result in the routes window, \
-                             then quit.",
+                                "Switchyard is still working",
+                                "Wait for the current operation to finish in the Switchyard or \
+                             routes window, then quit. Quitting during a settings change could \
+                             interrupt the save or server restart.",
                             );
                         } else {
                             return Ok(true);
                         }
                     }
+                    OPEN_APP => dashboard.show(false),
+                    INSTALL => dashboard.show(true),
                     EDIT_ROUTES => picker
                         .get_or_insert_with(|| {
                             Picker::new(mtm, &config, settings.with_file_name(CACHE_FILE))
@@ -140,6 +144,7 @@ pub fn run(mut config: Config, settings: &Path) -> Result<(), String> {
                         Ok(loaded) => {
                             eprintln!("switchyard-menubar: reloaded {}", settings.display());
                             config = loaded;
+                            dashboard.set_settings(&config);
                             if let Some(picker) = picker.as_mut() {
                                 picker.set_settings(&config);
                             }
@@ -248,6 +253,8 @@ fn menu(rows: &[Row]) -> Result<Menu, String> {
     }
     append(&PredefinedMenuItem::separator())?;
     for (id, text) in [
+        (OPEN_APP, "Open Switchyard…"),
+        (INSTALL, "Install…"),
         (EDIT_ROUTES, "Edit routes…"),
         (RESTART, "Restart server"),
         (OPEN_CONFIG, "Open server config…"),
@@ -259,9 +266,22 @@ fn menu(rows: &[Row]) -> Result<Menu, String> {
     Ok(menu)
 }
 
-/// Builds the app's hidden main menu, which gives text fields their Edit
-/// shortcuts and windows their Cmd-W shortcut.
+/// The main menu provides Edit shortcuts, Cmd-W for windows, and Cmd-Q to quit.
 fn main_menu() -> Result<Menu, String> {
+    let application =
+        Submenu::with_items(
+            "Switchyard",
+            true,
+            &[&MenuItem::with_id(
+                QUIT,
+                "Quit",
+                true,
+                Some("Cmd+Q".parse().map_err(
+                    |e: tray_icon::menu::accelerator::AcceleratorParseError| e.to_string(),
+                )?),
+            )],
+        )
+        .map_err(|error| error.to_string())?;
     let edit = Submenu::with_items(
         "Edit",
         true,
@@ -278,7 +298,8 @@ fn main_menu() -> Result<Menu, String> {
     .map_err(|error| format!("build the Edit menu: {error}"))?;
     let window = Submenu::with_items("Window", true, &[&PredefinedMenuItem::close_window(None)])
         .map_err(|error| format!("build the Window menu: {error}"))?;
-    Menu::with_items(&[&edit, &window]).map_err(|error| format!("build the main menu: {error}"))
+    Menu::with_items(&[&application, &edit, &window])
+        .map_err(|error| format!("build the main menu: {error}"))
 }
 
 /// Drains pending AppKit events, blocking briefly when there are none.
