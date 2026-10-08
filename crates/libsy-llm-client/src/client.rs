@@ -276,6 +276,7 @@ impl TranslatingLlmClient {
         set_json_model(&mut body, model);
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_provider_body(&mut body);
+            omit_configured_input_items(&mut body, backend.omit_input_items());
         }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
@@ -1196,6 +1197,23 @@ fn omit_configured_body_fields(body: &mut Value, omit_body_fields: &BTreeSet<Str
     }
 }
 
+// A conversation that switches from a hosted Responses provider to a compatible local server
+// replays the hosted provider's server-side items (a `web_search_call`, for one), which such a
+// server cannot type. The findings of that call are in the assistant message that follows it.
+fn omit_configured_input_items(body: &mut Value, omit_input_items: &BTreeSet<String>) {
+    if omit_input_items.is_empty() {
+        return;
+    }
+    let Some(Value::Array(items)) = body.get_mut("input") else {
+        return;
+    };
+    items.retain(|item| {
+        item.get("type")
+            .and_then(Value::as_str)
+            .is_none_or(|kind| !omit_input_items.contains(kind))
+    });
+}
+
 // Anthropic and Bedrock both cap a request at four blocks carrying
 // `cache_control`, counting tools, system blocks and message blocks together.
 const MAX_CACHE_CONTROL_BLOCKS: usize = 4;
@@ -1346,6 +1364,7 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
+            omit_input_items: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
@@ -1462,6 +1481,19 @@ mod tests {
         let mut backend = config(base_url);
         backend.omit_body_fields = omit_body_fields;
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn responses_map_with_omit_input_items(
+        base_url: &str,
+        omit_input_items: BTreeSet<String>,
+    ) -> Vec<ModelConfig> {
+        let mut backend = config(base_url);
+        backend.omit_input_items = omit_input_items;
+        vec![ModelConfig::new(
+            "gpt",
+            Backend::OpenAiResponses(backend),
+            None,
+        )]
     }
 
     fn chat_map_with_effort(base_url: &str, effort: &str) -> Vec<ModelConfig> {
@@ -2155,6 +2187,71 @@ mod tests {
                 None,
                 Some(&ModelId::from("gpt")),
                 WireFormat::OpenAiChat,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn omit_input_items_drops_a_replayed_hosted_web_search()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .and(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+                let kinds: Vec<String> = body["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|item| item["type"].as_str().map(str::to_string))
+                    .collect();
+                kinds == ["message", "message", "message"]
+            })
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "object": "response",
+                "model": "gpt",
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map_with_omit_input_items(
+            &format!("{}/v1", server.uri()),
+            BTreeSet::from(["web_search_call".to_string()]),
+        ))?;
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "client-facing",
+                    "input": [
+                        {"type": "message", "role": "user", "content": "look it up"},
+                        {
+                            "type": "web_search_call",
+                            "id": "ws_1",
+                            "status": "completed",
+                            "action": {"type": "search", "query": "switchyard"}
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "found it"}]
+                        },
+                        {"type": "message", "role": "user", "content": "thanks"}
+                    ]
+                }),
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiResponses,
             )
             .await?;
         Ok(())

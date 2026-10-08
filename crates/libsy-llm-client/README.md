@@ -259,6 +259,9 @@ fn build_multi_format_client(
   To replace either top-level field for a target, list it in `omit_body_fields` and
   supply its replacement in `extra_body`. Omission runs before defaults are merged.
   Target `reasoning_effort` overrides apply to OpenAI backends.
+- `HttpBackendConfig::omit_input_items` removes Responses `input` items by `type` before a
+  request reaches an `openai_responses` backend, for a compatible server that cannot type an
+  item only a hosted provider produces (for example a replayed `web_search_call`).
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after

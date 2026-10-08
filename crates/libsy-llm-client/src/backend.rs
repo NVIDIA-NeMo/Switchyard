@@ -68,6 +68,10 @@ pub struct HttpBackendConfig {
     /// so a target can reinstate one deliberately. For providers that reject an otherwise
     /// standard field (e.g. an internal API that 400s on `max_output_tokens`).
     pub omit_body_fields: BTreeSet<String>,
+    /// Responses `input` item types dropped from the outbound body. For a Responses-compatible
+    /// server that rejects item types only a hosted provider produces (e.g. llama.cpp answers a
+    /// replayed `web_search_call` with 400 "Cannot determine type of 'item'").
+    pub omit_input_items: BTreeSet<String>,
     /// Reasoning effort forced on every request to this backend, replacing whatever the caller
     /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
     /// Anthropic has no equivalent and rejects the setting at configuration time.
@@ -90,6 +94,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
             .field("omit_body_fields", &self.omit_body_fields)
+            .field("omit_input_items", &self.omit_input_items)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("max_retries", &self.max_retries)
             .field("failure_cooldown", &self.failure_cooldown)
@@ -314,6 +319,11 @@ impl Backend {
         &self.config().omit_body_fields
     }
 
+    /// Responses `input` item types dropped from outbound request bodies.
+    pub fn omit_input_items(&self) -> &BTreeSet<String> {
+        &self.config().omit_input_items
+    }
+
     /// Reasoning effort forced on outbound requests, if the target configures one.
     pub fn reasoning_effort(&self) -> Option<&str> {
         self.config().reasoning_effort.as_deref()
@@ -439,6 +449,7 @@ mod tests {
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
+            omit_input_items: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
             failure_cooldown: Duration::ZERO,

@@ -756,6 +756,7 @@ fn random_state_with_retries(
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
         omit_body_fields: BTreeSet::new(),
+        omit_input_items: BTreeSet::new(),
         reasoning_effort: None,
         max_retries,
         failure_cooldown: std::time::Duration::ZERO,
