@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Mock refusal and credit redemption with process-level checks for credential leaks.
+//! Anthropic fallback credit and MCP tests with process-level checks for credential leaks.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
+use futures_util::StreamExt;
 use serde_json::{Value, json};
 use switchyard_llm_client::{
     Backend, HttpBackendConfig, ModelConfig, RawResponse, TranslatingLlmClient,
@@ -17,58 +18,15 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-const TOKEN: &str = "fallback-credit-secret-canary-8f651ed7";
+const FALLBACK_CREDIT_TOKEN: &str = "fallback-credit-secret-canary-8f651ed7";
 const CREDIT_BETA: &str = "fallback-credit-2026-07-01";
 const INITIAL_BETAS: &str = "fallback-credit-2026-07-01,server-side-fallback-2026-07-01";
-const TRACE_MARKER: &str = "fallback credit trace capture active";
-const CHILD_MODE_ENV: &str = "SWITCHYARD_FALLBACK_CREDIT_TEST_CHILD";
+const TRACE_MARKER: &str = "Anthropic credential trace capture active";
+const CHILD_MODE_ENV: &str = "SWITCHYARD_ANTHROPIC_CREDENTIALS_TEST_CHILD";
 
-#[tokio::test]
-async fn fallback_credit_retry_does_not_leak_token() -> TestResult {
-    if std::env::var_os(CHILD_MODE_ENV).is_some() {
-        return fallback_credit_retry_child().await;
-    }
-    // A child process captures direct prints as well as logs from every async task.
-    let output = Command::new(std::env::current_exe()?)
-        .env(CHILD_MODE_ENV, "1")
-        .args([
-            "--exact",
-            "fallback_credit_retry_does_not_leak_token",
-            "--nocapture",
-        ])
-        .output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // Do not print captured output on failure: it could contain the credential.
-    assert!(
-        !stdout.contains(TOKEN),
-        "fallback credit token leaked to stdout"
-    );
-    assert!(
-        !stderr.contains(TOKEN),
-        "fallback credit token leaked to stderr/logs"
-    );
-    assert!(output.status.success(), "mock refusal and retry failed");
-    assert!(
-        stderr.contains(TRACE_MARKER),
-        "TRACE logging was not captured"
-    );
-    assert!(
-        stderr.contains("libsy.upstream_attempt"),
-        "client span fields were not captured"
-    );
-    Ok(())
-}
+const MCP_TOKEN: &str = "synthetic-mcp-secret-\"\\-canary";
 
-async fn fallback_credit_retry_child() -> TestResult {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_span_events(FmtSpan::FULL)
-        .with_ansi(false)
-        .with_writer(std::io::stderr)
-        .try_init()?;
-    tracing::trace!("{TRACE_MARKER}");
-
+async fn child_method() -> TestResult {
     let server = MockServer::start().await;
     let initial_body = json!({
         "model": "claude-fable-5",
@@ -78,7 +36,10 @@ async fn fallback_credit_retry_child() -> TestResult {
             "text": "Review this code for security flaws.",
             "cache_control": {"type": "ephemeral"}
         }]}],
-        "fallbacks": "default"
+        "fallbacks": "default",
+        "mcp_servers": [{"type": "url", "name": "inventory",
+            "url": "https://example.invalid/mcp", "authorization_token": MCP_TOKEN}],
+        "tools": [{"type": "mcp_toolset", "mcp_server_name": "inventory"}]
     });
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -100,7 +61,7 @@ async fn fallback_credit_retry_child() -> TestResult {
                 "category": "cyber",
                 "explanation": "The request was declined.",
                 "recommended_model": "claude-opus-4-8",
-                "fallback_credit_token": TOKEN,
+                "fallback_credit_token": FALLBACK_CREDIT_TOKEN,
                 "fallback_has_prefill_claim": false
             },
             "usage": {"input_tokens": 10, "output_tokens": 0}
@@ -114,8 +75,10 @@ async fn fallback_credit_retry_child() -> TestResult {
         .and(header("anthropic-beta", CREDIT_BETA))
         .and(body_partial_json(json!({
             "model": "claude-opus-4-8",
-            "fallback_credit_token": TOKEN,
-            "messages": initial_body["messages"]
+            "fallback_credit_token": FALLBACK_CREDIT_TOKEN,
+            "messages": initial_body["messages"],
+            "mcp_servers": initial_body["mcp_servers"],
+            "tools": initial_body["tools"]
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "msg_retried",
@@ -169,7 +132,10 @@ async fn fallback_credit_retry_child() -> TestResult {
     let token = refusal["stop_details"]["fallback_credit_token"]
         .as_str()
         .ok_or("refusal did not preserve the credit token")?;
-    assert!(token == TOKEN, "refusal changed the credit token");
+    assert!(
+        token == FALLBACK_CREDIT_TOKEN,
+        "refusal changed the credit token"
+    );
 
     let mut retry_body = initial_body;
     retry_body
@@ -179,7 +145,12 @@ async fn fallback_credit_retry_child() -> TestResult {
     retry_body["model"] = json!("claude-opus-4-8");
     retry_body["fallback_credit_token"] = json!(token);
     let RawResponse::Buffered(answer) = client
-        .call_rewrite_model_raw(retry_body, None, None, WireFormat::AnthropicMessages)
+        .call_rewrite_model_raw(
+            retry_body.clone(),
+            None,
+            None,
+            WireFormat::AnthropicMessages,
+        )
         .await?
     else {
         return Err("expected a buffered retry response".into());
@@ -193,5 +164,108 @@ async fn fallback_credit_retry_child() -> TestResult {
         .ok_or("missing request recording")?;
     let first: Value = serde_json::from_slice(&requests[0].body)?;
     assert!(first.get("fallback_credit_token").is_none());
+    server.verify().await;
+
+    let error = json!({"type": "error", "error": {
+        "type": "invalid_request_error", "message": format!("prompt is too long: {MCP_TOKEN}")
+    }});
+    for (status, streaming, prefix) in [
+        (401, false, ""),
+        (400, false, ""),
+        (200, false, ""),
+        (200, true, ""),
+        (
+            200,
+            true,
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{}}}\n\n",
+        ),
+    ] {
+        server.reset().await;
+        retry_body["stream"] = json!(streaming);
+        let template = if streaming {
+            ResponseTemplate::new(status)
+                .set_body_raw(format!("{prefix}data: {error}\n\n"), "text/event-stream")
+        } else {
+            ResponseTemplate::new(status).set_body_json(&error)
+        };
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .and(header("anthropic-beta", CREDIT_BETA))
+            .and(body_partial_json(&retry_body))
+            .respond_with(template)
+            .expect(1)
+            .mount(&server)
+            .await;
+        match client
+            .call_rewrite_model_raw(
+                retry_body.clone(),
+                None,
+                None,
+                WireFormat::AnthropicMessages,
+            )
+            .await
+        {
+            Err(error) => tracing::warn!(%error, "upstream rejected request"),
+            Ok(RawResponse::Stream(mut events)) => {
+                while let Some(event) = events.next().await {
+                    match event {
+                        Err(error) => tracing::warn!(%error, "upstream stream failed"),
+                        Ok(value) => tracing::debug!(%value, "upstream event"),
+                    }
+                }
+            }
+            Ok(RawResponse::Buffered(value)) => tracing::debug!(%value, "upstream response"),
+        }
+        server.verify().await;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn ensure_credentials_are_not_leaked() -> TestResult {
+    if std::env::var_os(CHILD_MODE_ENV).is_some() {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_span_events(FmtSpan::FULL)
+            .with_ansi(false)
+            .with_writer(std::io::stderr)
+            .try_init()?;
+        tracing::trace!("{TRACE_MARKER}");
+        return child_method().await;
+    }
+    // A child process captures direct prints as well as logs from every async task.
+    let output = Command::new(std::env::current_exe()?)
+        .env(CHILD_MODE_ENV, "1")
+        .args([
+            "--exact",
+            "ensure_credentials_are_not_leaked",
+            "--nocapture",
+        ])
+        .output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Do not print captured output on failure: it could contain a credential.
+    // Check the MCP token prefix too, since JSON escapes quotes and backslashes.
+    for token in [FALLBACK_CREDIT_TOKEN, "synthetic-mcp-secret"] {
+        assert!(!stdout.contains(token), "credential leaked to stdout");
+        assert!(!stderr.contains(token), "credential leaked to stderr/logs");
+    }
+    assert!(
+        output.status.success(),
+        "Anthropic credential scenarios failed"
+    );
+    assert!(
+        stderr.contains(TRACE_MARKER),
+        "TRACE logging was not captured"
+    );
+    assert!(
+        stderr.contains("libsy.upstream_attempt"),
+        "client span fields were not captured"
+    );
+    assert!(
+        stderr.contains("[REDACTED]"),
+        "redacted errors were not logged"
+    );
     Ok(())
 }
