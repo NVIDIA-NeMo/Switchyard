@@ -41,6 +41,28 @@ drives the stream and performs the terminal answer call, retries, and fallback o
 The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
 contracts come from `switchyard-protocol`.
 
+## Concurrent calls and cancellation
+
+An algorithm can poll several `Driver::call_model` or `Driver::call_decision` futures
+with `tokio::join!`, `tokio::select!`, or `FuturesUnordered`. Each call has its own
+reply channel. Dropping a waiting future cancels only that call; the algorithm can
+continue making other calls.
+
+Hosts pass the work itself to `call.respond(work).await`. Awaiting the provider
+before calling `respond` prevents libsy from cancelling that work. For a response
+that is already available, use `call.respond(std::future::ready(result)).await`.
+Model-call errors stop the host run unless `call.recover_errors` is enabled.
+Decision-call errors are returned to the algorithm.
+
+`drive` polls host handlers concurrently and drops outstanding handlers when the
+algorithm finishes or the run is dropped. Custom `run_stream` consumers must also
+poll handlers concurrently and drop them when the run ends. Separately spawned
+tasks need explicit abort and cleanup; dropping a task handle does not stop its work.
+
+Cancellation drops the supplied work future. Once a response stream is delivered,
+its consumer controls its lifetime. Whether the provider stops generation depends
+on the transport and provider.
+
 [`Request`]: switchyard_protocol::Request
 [`Response`]: switchyard_protocol::Response
 [`Usage`]: switchyard_protocol::Usage

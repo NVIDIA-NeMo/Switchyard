@@ -588,7 +588,7 @@ mod tests {
 
         let serve = async {
             if let Some(Ok(Step::CallModel(call))) = steps.next().await {
-                let _ = call.respond(reply);
+                let _ = call.respond(std::future::ready(reply)).await;
             }
         };
         let (classification, ()) =

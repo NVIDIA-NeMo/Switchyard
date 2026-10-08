@@ -1408,10 +1408,12 @@ mod tests {
                         }
                     }
                     if name == "provider error" {
-                        return call.respond(Err(LibsyError::client_call(
-                            "judge",
-                            LlmClientError::General("private provider body".into()),
-                        )));
+                        return call
+                            .respond(std::future::ready(Err(LibsyError::client_call(
+                                "judge",
+                                LlmClientError::General("private provider body".into()),
+                            ))))
+                            .await;
                     }
                     if name == "dropped reply" {
                         drop(call);
@@ -1441,12 +1443,13 @@ mod tests {
                             },
                         )])
                     };
-                    call.respond(Ok(DecisionResponse {
+                    call.respond(std::future::ready(Ok(DecisionResponse {
                         id: None,
                         model: Some("provider-judge".into()),
                         answers,
                         usage: Default::default(),
-                    }))
+                    })))
+                    .await
                 }
             };
             let models = Arc::new(RuntimeModels::new(runtime_models()));

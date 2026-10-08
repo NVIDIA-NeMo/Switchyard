@@ -1660,17 +1660,23 @@ async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Re
             drop(call);
         } else {
             match mode {
-                "reply" => call.respond(Ok(DecisionResponse {
-                    id: Some("decision-response".into()),
-                    model: Some("provider-model".into()),
-                    answers: Default::default(),
-                    usage: Usage {
-                        input_tokens: Some(42),
-                        output_tokens: Some(5),
-                        ..Usage::default()
-                    },
-                }))?,
-                "error" => call.respond(Err(test_error(LEAKED_CONTENT)))?,
+                "reply" => {
+                    call.respond(std::future::ready(Ok(DecisionResponse {
+                        id: Some("decision-response".into()),
+                        model: Some("provider-model".into()),
+                        answers: Default::default(),
+                        usage: Usage {
+                            input_tokens: Some(42),
+                            output_tokens: Some(5),
+                            ..Usage::default()
+                        },
+                    })))
+                    .await?
+                }
+                "error" => {
+                    call.respond(std::future::ready(Err(test_error(LEAKED_CONTENT))))
+                        .await?
+                }
                 "fail" => assert!(call.fail(test_error(LEAKED_CONTENT)).is_err()),
                 "drop" => drop(call),
                 _ => unreachable!(),
@@ -1757,8 +1763,12 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
     let mut saw_error_step = false;
     while let Some(step) = stream.next().await {
         match step {
-            Ok(Step::CallModel(call)) => {
-                call.respond(Err(test_error("synthetic upstream failure")))?;
+            Ok(Step::CallModel(mut call)) => {
+                call.recover_errors = true;
+                call.respond(std::future::ready(Err(test_error(
+                    "synthetic upstream failure",
+                ))))
+                .await?;
             }
             Ok(Step::CallDecision(_)) => return Err(test_error("unexpected decision call")),
             Ok(Step::Done(_)) => {
@@ -2131,11 +2141,12 @@ async fn in_flight_gauge_reads_a_run_parked_on_an_unanswered_routing_call()
         "the run counter must not report a run that has not resolved"
     );
 
-    call.respond(Ok(Response {
+    call.respond(std::future::ready(Ok(Response {
         llm_response: LlmResponse::Agg(text_response(Some(MODEL.to_string()), "answer")),
         metadata: None,
         upstream_headers: http::HeaderMap::new(),
-    }))?;
+    })))
+    .await?;
     while stream.next().await.is_some() {}
 
     let snapshots = flushed_metrics(exporter, provider);

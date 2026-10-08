@@ -542,8 +542,22 @@ impl PyModelCall {
         self.models.clone()
     }
 
-    /// Fulfill this call with a normalized aggregate or streamed response.
-    fn respond(&mut self, py: Python<'_>, response: PyRef<'_, PyLlmResponse>) -> PyResult<()> {
+    /// Await a normalized response, cancelling Python work if the algorithm stops waiting.
+    fn respond<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+        work: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        py.import("switchyard_rust._libsy_async")?
+            .getattr("respond")?
+            .call1((slf, work))
+    }
+
+    fn _respond<'py>(
+        &mut self,
+        py: Python<'py>,
+        work: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let model = self
             .inner
             .as_ref()
@@ -554,36 +568,53 @@ impl PyModelCall {
             .as_ref()
             .map(ModelId::new)
             .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
-        let llm_response = response.to_core(py, model)?;
+        let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+        let work = pyo3_async_runtimes::into_future_with_locals(&locals, work)?;
         let call = self.take()?;
         let metadata = call.request.metadata.clone();
-        call.respond(Ok(Response {
-            llm_response,
-            metadata,
-            upstream_headers: HeaderMap::new(),
-        }))
-        .map_err(py_libsy_error)
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            call.respond(async move {
+                let result = work.await;
+                Python::attach(|py| {
+                    let response = result.map_err(|error| {
+                        RustLibsyError::client_call(
+                            model.clone(),
+                            python_client_error(py, error, &model),
+                        )
+                    })?;
+                    let response = response
+                        .bind(py)
+                        .extract::<PyRef<'_, PyLlmResponse>>()
+                        .map_err(|error| ffi_error(error.into()))
+                        .map_err(|source| RustLibsyError::client_call(model.clone(), source))?;
+                    let llm_response = response
+                        .to_core(py, model.clone())
+                        .map_err(ffi_error)
+                        .map_err(|source| RustLibsyError::client_call(model, source))?;
+                    Ok(Response {
+                        llm_response,
+                        metadata,
+                        upstream_headers: HeaderMap::new(),
+                    })
+                })
+            })
+            .await
+            .map_err(py_libsy_error)
+        })
     }
 
-    /// Fulfill this call with a Python client failure.
-    fn fail(&mut self, error: &Bound<'_, PyAny>) -> PyResult<()> {
+    /// Return a Python client failure through the same async reply path.
+    fn fail<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+        error: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         if !error.is_instance_of::<PyBaseException>() {
             return Err(PyTypeError::new_err("error must derive from BaseException"));
         }
-        let target = self
-            .inner
-            .as_ref()
-            .ok_or_else(|| py_libsy_error("model call has already been completed"))?
-            .request
-            .llm_request
-            .model
-            .as_ref()
-            .map(ModelId::new)
-            .ok_or_else(|| py_libsy_error("model call request is missing its selected model"))?;
-        let call = self.take()?;
-        let source = python_client_error(error.py(), PyErr::from_value(error.clone()), &target);
-        call.respond(Err(RustLibsyError::client_call(target, source)))
-            .map_err(py_libsy_error)
+        py.import("switchyard_rust._libsy_async")?
+            .getattr("fail")?
+            .call1((slf, error))
     }
 }
 
@@ -632,22 +663,58 @@ impl PyDecisionCall {
         &self.model
     }
 
-    /// Return a provider-neutral decision response to the waiting algorithm.
-    fn respond(&mut self, response: &Bound<'_, PyAny>) -> PyResult<()> {
-        let response: DecisionResponse = from_python(response)?;
-        self.take()?.respond(Ok(response)).map_err(py_libsy_error)
+    /// Await a decision response, cancelling Python work if the algorithm stops waiting.
+    fn respond<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+        work: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        py.import("switchyard_rust._libsy_async")?
+            .getattr("respond")?
+            .call1((slf, work))
+    }
+
+    fn _respond<'py>(
+        &mut self,
+        py: Python<'py>,
+        work: Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+        let work = pyo3_async_runtimes::into_future_with_locals(&locals, work)?;
+        let call = self.take()?;
+        let model = call.model.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            call.respond(async move {
+                let result = work.await;
+                Python::attach(|py| {
+                    let response = result.map_err(|error| {
+                        RustLibsyError::client_call(
+                            model.clone(),
+                            python_client_error(py, error, &model),
+                        )
+                    })?;
+                    from_python::<DecisionResponse>(response.bind(py))
+                        .map_err(ffi_error)
+                        .map_err(|source| RustLibsyError::client_call(model, source))
+                })
+            })
+            .await
+            .map_err(py_libsy_error)
+        })
     }
 
     /// Return a Python client failure so the algorithm can apply its fallback policy.
-    fn fail(&mut self, error: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn fail<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+        error: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         if !error.is_instance_of::<PyBaseException>() {
             return Err(PyTypeError::new_err("error must derive from BaseException"));
         }
-        let source = python_client_error(error.py(), PyErr::from_value(error.clone()), &self.model);
-        let model = self.model.clone();
-        self.take()?
-            .respond(Err(RustLibsyError::client_call(model, source)))
-            .map_err(py_libsy_error)
+        py.import("switchyard_rust._libsy_async")?
+            .getattr("fail")?
+            .call1((slf, error))
     }
 }
 
