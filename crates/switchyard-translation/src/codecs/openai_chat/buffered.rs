@@ -188,6 +188,8 @@ impl FormatCodec for OpenAiChatCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        // MCP connections are not supported by Chat Completions.
+        super::super::anthropic::validate_request_tools(request, WireFormat::OpenAiChat)?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiChat, policy)
         {

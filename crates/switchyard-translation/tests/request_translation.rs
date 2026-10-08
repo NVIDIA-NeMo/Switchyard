@@ -8,74 +8,14 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationError,
-    TranslationPolicy, WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, LossyConversionPolicy, PreservationPolicy, TranslationEngine,
+    TranslationError, TranslationPolicy, WireFormat, prepare_request_for_target,
+    sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-#[test]
-fn anthropic_reconstruction_preserves_mcp_connections_native_tools_and_results() -> TestResult {
-    let body = json!({
-        "model": "claude-test",
-        "max_tokens": 128,
-        "mcp_servers": [{
-            "type": "url",
-            "name": "inventory",
-            "url": "https://example.invalid/mcp",
-            "authorization_token": "synthetic-inventory-token"
-        }],
-        "tools": [
-            {"type": "mcp_toolset", "mcp_server_name": "inventory",
-             "default_config": {"enabled": false},
-             "configs": {"lookup": {"enabled": true}}},
-            {"type": "web_search_20250305", "name": "web_search",
-             "max_uses": 3, "allowed_domains": ["example.com"]}
-        ],
-        "messages": [
-            {"role": "user", "content": "Look up widget stock and its product page."},
-            {"role": "assistant", "content": [
-                {"type": "mcp_tool_use", "id": "mcptoolu_inventory_1",
-                 "name": "lookup", "server_name": "inventory",
-                 "input": {"sku": "widget"}},
-                {"type": "mcp_tool_result", "tool_use_id": "mcptoolu_inventory_1",
-                 "is_error": false,
-                 "content": [{"type": "text", "text": "12 widgets in stock."}]},
-                {"type": "server_tool_use", "id": "srvtoolu_search_1",
-                 "name": "web_search", "input": {"query": "site:example.com widget"}},
-                {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_search_1",
-                 "content": [{"type": "web_search_result",
-                              "url": "https://example.com/widget", "title": "Widget",
-                              "encrypted_content": "synthetic-search-content"}]},
-                {"type": "text", "text": "There are 12 widgets in stock."}
-            ]},
-            {"role": "user", "content": "Can we fulfill an order for 10 widgets?"}
-        ]
-    });
-    let format = WireFormat::AnthropicMessages;
-    let result = TranslationEngine::default().translate_request(
-        format,
-        format,
-        &body,
-        &normalized_policy(),
-    )?;
-
-    assert_eq!(
-        json!({
-            "mcp_servers": result.body["mcp_servers"],
-            "tools": result.body["tools"],
-            "assistant_history": result.body["messages"][1]["content"]
-        }),
-        json!({
-            "mcp_servers": body["mcp_servers"],
-            "tools": body["tools"],
-            "assistant_history": body["messages"][1]["content"]
-        })
-    );
-    Ok(())
-}
 
 #[test]
 fn responses_allowed_tools_is_translated_or_rejected() -> TestResult {
@@ -4639,5 +4579,189 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
         )?
         .body;
     assert_eq!(output["input"], outputs);
+    Ok(())
+}
+
+#[test]
+fn anthropic_reconstruction_preserves_mcp_connections_provider_tools_and_results() -> TestResult {
+    let body = json!({
+        "model": "claude-test",
+        "max_tokens": 128,
+        "mcp_servers": [{
+            "type": "url",
+            "name": "inventory",
+            "url": "https://example.invalid/mcp",
+            "authorization_token": "synthetic-inventory-token"
+        }, {
+            "type": "url", "name": "orders", "url": "https://example.invalid/orders",
+            "authorization_token": "synthetic-orders-token"
+        }],
+        "tools": [
+            {"type": "mcp_toolset", "mcp_server_name": "inventory",
+             "default_config": {"enabled": false},
+             "configs": {"lookup": {"enabled": true}}},
+            {"name": "local_lookup", "description": "Read local stock", "input_schema": {"type": "object"}},
+            {"type": "mcp_toolset", "mcp_server_name": "orders",
+             "default_config": {"enabled": true},
+             "configs": {"delete_order": {"enabled": false}}},
+            {"type": "web_search_20250305", "name": "web_search",
+             "max_uses": 3, "allowed_domains": ["example.com"]},
+            {"name": "retained", "description": "Read cached stock", "input_schema": {"type": "object"}}
+        ],
+        "messages": [
+            {"role": "user", "content": "Look up widget stock and its product page."},
+            {"role": "assistant", "content": [
+                {"type": "mcp_tool_use", "id": "mcptoolu_inventory_1",
+                 "name": "lookup", "server_name": "inventory",
+                 "input": {"sku": "widget"}},
+                {"type": "mcp_tool_result", "tool_use_id": "mcptoolu_inventory_1",
+                 "is_error": false,
+                 "content": [{"type": "text", "text": "12 widgets in stock."}]},
+                {"type": "server_tool_use", "id": "srvtoolu_search_1",
+                 "name": "web_search", "input": {"query": "site:example.com widget"}},
+                {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_search_1",
+                 "content": [{"type": "web_search_result",
+                              "url": "https://example.com/widget", "title": "Widget",
+                              "encrypted_content": "synthetic-search-content"}]},
+                {"type": "text", "text": "There are 12 widgets in stock."}
+            ]},
+            {"role": "user", "content": "Can we fulfill an order for 10 widgets?"}
+        ]
+    });
+    let format = WireFormat::AnthropicMessages;
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    let engine = TranslationEngine::default();
+    let result = engine.translate_request(format, format, &body, &policy)?;
+
+    assert_eq!(
+        json!({
+            "mcp_servers": result.body["mcp_servers"],
+            "tools": result.body["tools"],
+            "assistant_history": result.body["messages"][1]["content"]
+        }),
+        json!({
+            "mcp_servers": body["mcp_servers"],
+            "tools": body["tools"],
+            "assistant_history": body["messages"][1]["content"]
+        })
+    );
+    assert!(result.diagnostics.is_empty());
+
+    let mut request = engine.decode_request(format, &body, &policy)?.request;
+    assert_eq!(request.tools.len(), 2);
+    request.tools.remove(0);
+    request.tools[0].parameters =
+        json!({"type": "object", "properties": {"sku": {"type": "string"}}});
+    let output = engine.encode_request(format, &request, &policy)?.body;
+    let mut expected_tools = body["tools"].as_array().ok_or("expected tools")?.clone();
+    expected_tools.remove(1);
+    expected_tools.last_mut().ok_or("expected retained tool")?["input_schema"] =
+        request.tools[0].parameters.clone();
+    assert_eq!(output["tools"], json!(expected_tools));
+
+    // Empty connections and ordinary custom functions remain translatable.
+    let body = json!({"model": "route", "max_tokens": 32, "mcp_servers": [],
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [{"type": "custom", "name": "retained", "input_schema": {"type": "object"}}]});
+    for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let output = engine
+            .translate_request(format, target, &body, &policy)?
+            .body;
+        assert_eq!(output["tools"].as_array().ok_or("expected tools")?.len(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_provider_tools_are_rejected_by_other_request_encoders() -> TestResult {
+    let engine = TranslationEngine::default();
+    for fields in [
+        json!({"mcp_servers": [{"type": "url", "name": "inventory",
+            "url": "https://example.invalid/mcp", "authorization_token": "synthetic-token"}]}),
+        json!({"tools": [{"type": "mcp_toolset", "mcp_server_name": "inventory"}]}),
+        json!({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}),
+        json!({"messages": [{"role": "assistant", "content": [
+            {"type": "mcp_tool_result", "tool_use_id": "mcptoolu_1", "content": []}
+        ]}]}),
+        json!({"messages": [{"role": "assistant", "content": [
+            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []}
+        ]}]}),
+    ] {
+        let mut body = json!({"model": "route", "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}]});
+        body.as_object_mut()
+            .ok_or("expected object")?
+            .extend(fields.as_object().ok_or("expected fields")?.clone());
+        for preservation in [
+            PreservationPolicy::InMemory,
+            PreservationPolicy::Disabled,
+            PreservationPolicy::Embed,
+        ] {
+            for lossy_conversion_policy in [
+                LossyConversionPolicy::AllowWithDiagnostics,
+                LossyConversionPolicy::Reject,
+            ] {
+                let policy = TranslationPolicy {
+                    preservation,
+                    lossy_conversion_policy,
+                    ..TranslationPolicy::default()
+                };
+                let mut request = engine
+                    .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+                    .request;
+                for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+                    // A previously preserved target body must not bypass rejection.
+                    request
+                        .preservation
+                        .requests
+                        .insert(target.into(), json!({"model": "cached"}));
+                    let error = engine
+                        .encode_request(target, &request, &policy)
+                        .expect_err("provider tools must be rejected");
+                    assert!(matches!(
+                        error,
+                        TranslationError::UnsupportedTranslation { .. }
+                    ));
+                    assert!(!error.to_string().contains("synthetic-token"));
+                    assert!(matches!(
+                        engine.translate_request(
+                            WireFormat::AnthropicMessages,
+                            target,
+                            &body,
+                            &policy
+                        ),
+                        Err(TranslationError::UnsupportedTranslation { .. })
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_mcp_credentials_in_preservation_cannot_be_embedded_in_other_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        preservation: PreservationPolicy::Embed,
+        ..TranslationPolicy::default()
+    };
+    let body = json!({"model": "route", "max_tokens": 32,
+        "messages": [{"role": "user", "content": "hello"}],
+        "mcp_servers": [{"type": "url", "name": "inventory",
+            "url": "https://example.invalid/mcp", "authorization_token": "synthetic-token"}]});
+    let mut request = engine
+        .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+        .request;
+    request.extensions.fields.remove("mcp_servers");
+    for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        assert!(matches!(
+            engine.encode_request(target, &request, &policy),
+            Err(TranslationError::UnsupportedTranslation { .. })
+        ));
+    }
     Ok(())
 }

@@ -175,6 +175,8 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        // Responses supports MCP, but conversion from Anthropic is not yet implemented in Switchyard.
+        super::super::anthropic::validate_request_tools(request, WireFormat::OpenAiResponses)?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, policy)
         {

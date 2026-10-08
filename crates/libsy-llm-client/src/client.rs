@@ -436,6 +436,15 @@ impl TranslatingLlmClient {
         model: &ModelId,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
+        let mcp_tokens = body
+            .get("mcp_servers")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|server| server.get("authorization_token").and_then(Value::as_str))
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         let client = if backend.is_forwarding_auth() {
             &self.forward_auth_client
         } else {
@@ -462,17 +471,18 @@ impl TranslatingLlmClient {
         if status.is_success() {
             if streaming {
                 let upstream_headers = response.headers().clone();
-                let chunks = match prepare_response_stream(response, backend, model).await {
-                    Ok(chunks) => chunks,
-                    Err(error) => {
-                        metrics::record_upstream_attempt(None);
-                        return Err(AttemptFailure {
-                            error,
-                            status: Some(status),
-                            retry_after: None,
-                        });
-                    }
-                };
+                let chunks =
+                    match prepare_response_stream(response, backend, model, mcp_tokens).await {
+                        Ok(chunks) => chunks,
+                        Err(error) => {
+                            metrics::record_upstream_attempt(None);
+                            return Err(AttemptFailure {
+                                error,
+                                status: Some(status),
+                                retry_after: None,
+                            });
+                        }
+                    };
                 metrics::record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming {
                     status: status.as_u16(),
@@ -493,9 +503,16 @@ impl TranslatingLlmClient {
                 }
             };
             metrics::record_upstream_attempt(Some(status.as_u16()));
+            let mut body = body.to_vec();
+            if !mcp_tokens.is_empty()
+                && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
+            {
+                redact_mcp_json(&mut value, &mcp_tokens);
+                body = value.to_string().into_bytes();
+            }
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
-                body: body.to_vec(),
+                body,
                 upstream_headers,
             });
         }
@@ -513,6 +530,7 @@ impl TranslatingLlmClient {
             }
         };
         let body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
+        let body = redact_mcp_tokens(&body, &mcp_tokens);
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
@@ -808,13 +826,15 @@ async fn prepare_response_stream(
     response: reqwest::Response,
     backend: &Backend,
     model: &ModelId,
+    mcp_tokens: Vec<String>,
 ) -> Result<LlmResponseStream> {
     let bytes = response.bytes_stream().map(|chunk| {
         chunk
             .map(|bytes| bytes.to_vec())
             .map_err(convert_reqwest_error)
     });
-    let mut chunks = decode_stream(bytes, backend.wire_format())?;
+    let mut chunks = decode_stream(bytes, backend.wire_format())?
+        .map(move |item| item.map(|event| redact_mcp_event(event, &mcp_tokens)));
     match chunks.next().await {
         None => Ok(stream::empty().boxed()),
         // Nothing has reached the caller, so transport failures can still be retried.
@@ -831,6 +851,68 @@ async fn prepare_response_stream(
             }
             Ok(stream::once(ready(first)).chain(chunks).boxed())
         }
+    }
+}
+
+// Redact both literal tokens and the escaped form used by JSON error bodies.
+fn redact_mcp_tokens(text: &str, tokens: &[String]) -> String {
+    let mut text = text.to_string();
+    for token in tokens {
+        if let Ok(escaped) = serde_json::to_string(token) {
+            text = text.replace(&escaped[1..escaped.len() - 1], "[REDACTED]");
+        }
+        text = text.replace(token, "[REDACTED]");
+    }
+    text
+}
+
+fn redact_mcp_json(value: &mut Value, tokens: &[String]) {
+    match value {
+        Value::String(text) => *text = redact_mcp_tokens(text, tokens),
+        Value::Array(values) => {
+            for value in values {
+                redact_mcp_json(value, tokens);
+            }
+        }
+        Value::Object(object) => {
+            *object = std::mem::take(object)
+                .into_iter()
+                .map(|(key, mut value)| {
+                    redact_mcp_json(&mut value, tokens);
+                    (redact_mcp_tokens(&key, tokens), value)
+                })
+                .collect();
+        }
+        _ => {}
+    }
+}
+
+fn redact_mcp_event(event: LlmResponseStreamEvent, tokens: &[String]) -> LlmResponseStreamEvent {
+    if tokens.is_empty()
+        || !event.normalized().iter().any(|chunk| {
+            matches!(
+                chunk,
+                LlmResponseChunk::StreamError { .. } | LlmResponseChunk::DecodeError { .. }
+            )
+        })
+    {
+        return event;
+    }
+    let (preserved, mut normalized) = event.into_parts();
+    for chunk in &mut normalized {
+        if let LlmResponseChunk::StreamError { message }
+        | LlmResponseChunk::DecodeError { message } = chunk
+        {
+            *message = redact_mcp_tokens(message, tokens);
+        }
+    }
+    match preserved {
+        Some(preserved) => {
+            let (source, mut raw) = preserved.into_parts();
+            redact_mcp_json(&mut raw, tokens);
+            LlmResponseStreamEvent::preserved(source, raw, normalized)
+        }
+        None => LlmResponseStreamEvent::new(normalized),
     }
 }
 
