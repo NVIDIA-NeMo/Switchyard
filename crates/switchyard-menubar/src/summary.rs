@@ -49,7 +49,7 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<Row> {
         rows.extend(models);
     }
 
-    if config.prices.is_empty() {
+    if estimate(&usage.week, &config.prices, &config.baseline_model).is_none() {
         rows.push(Row::Separator);
         rows.push(label("Add prices to menubar.toml to see savings"));
     }
@@ -207,15 +207,22 @@ mod tests {
         week.routed
             .insert("luna".to_string(), counted(1_000, 100, 1));
 
-        let rows = build(
-            ServerStatus::Running,
-            &usage_of(week.clone(), week),
-            &config(PriceTable::new()),
-        );
-        let labels = labels(&rows);
-
-        assert!(labels.iter().all(|label| !label.contains("Saved")));
-        assert!(labels.iter().any(|label| label.contains("menubar.toml")));
+        week.classifier
+            .insert("sol".to_string(), counted(100, 0, 1));
+        for prices in [
+            PriceTable::new(),
+            PriceTable::from([("sol".to_string(), priced()["sol"])]),
+            PriceTable::from([("luna".to_string(), priced()["luna"])]),
+        ] {
+            let rows = build(
+                ServerStatus::Running,
+                &usage_of(week.clone(), week.clone()),
+                &config(prices),
+            );
+            let labels = labels(&rows);
+            assert!(labels.iter().all(|label| !label.contains("Saved")));
+            assert!(labels.iter().any(|label| label.contains("menubar.toml")));
+        }
     }
 
     #[test]

@@ -30,13 +30,7 @@ pub fn probe(server_url: &str) -> ServerStatus {
 }
 
 fn request(server_url: &str) -> std::io::Result<bool> {
-    // Strip the scheme and any path, then default the port.
-    let rest = server_url.rsplit("://").next().unwrap_or(server_url);
-    let mut authority = rest.split('/').next().unwrap_or(rest).to_string();
-    if !authority.contains(':') {
-        authority.push_str(":4123");
-    }
-
+    let authority = authority(server_url);
     let address = authority
         .to_socket_addrs()?
         .next()
@@ -44,12 +38,21 @@ fn request(server_url: &str) -> std::io::Result<bool> {
     let mut stream = TcpStream::connect_timeout(&address, TIMEOUT)?;
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
-    // HTTP/1.0 needs no Host header and closes the connection for us.
     stream.write_all(b"GET /health HTTP/1.0\r\n\r\n")?;
-
     let mut status_line = String::new();
     BufReader::new(stream).read_line(&mut status_line)?;
     Ok(status_line.contains(" 200"))
+}
+
+fn authority(server_url: &str) -> String {
+    let rest = server_url.rsplit("://").next().unwrap_or(server_url);
+    let mut authority = rest.split('/').next().unwrap_or(rest).to_string();
+    let host_end = authority.rfind(']').map_or(0, |index| index + 1);
+    if !authority[host_end..].contains(':') {
+        authority.push_str(":4123");
+    }
+
+    authority
 }
 
 #[cfg(test)]
@@ -89,6 +92,13 @@ mod tests {
             probe(&format!("http://127.0.0.1:{port}")),
             ServerStatus::Stopped
         );
+    }
+
+    #[test]
+    fn defaults_the_port_after_an_ipv6_literal() {
+        assert_eq!(authority("http://[::1]/v1"), "[::1]:4123");
+        assert_eq!(authority("http://[::1]:9000/v1"), "[::1]:9000");
+        assert_eq!(authority("http://localhost"), "localhost:4123");
     }
 
     #[test]

@@ -57,6 +57,18 @@ Savings are the difference, so routing overhead counts against the figure and
 a bad day shows a negative number. Dollar figures stay hidden until every
 model seen has a price, so a partial table cannot mislead.
 
+Codex's "Approve for me" reviews need a price too. Use the reviewer target's
+`id`, which is the model ID recorded in the routing log. The default reviewer
+route uses `codex-auto-review`. With a ChatGPT login, these reviews also happen
+without Switchyard. Add that ID to the price table at the `baseline_model`
+rates, including the cached input rate. Each review then adds the same cost to
+actual and baseline. Dollars saved stay the same; the percentage drops as the
+baseline grows. Update this price when you change `baseline_model`.
+
+If a reviewer uses another model ID, add a price for that ID. Any period with
+an unpriced review hides its savings and shows the missing-price hint. Existing
+`menubar.toml` files need these prices added by hand.
+
 These are list-price estimates. On a ChatGPT login there is no per-token bill,
 so read them as "what this traffic would have cost at API rates".
 

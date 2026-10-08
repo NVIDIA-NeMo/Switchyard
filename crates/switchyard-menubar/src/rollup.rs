@@ -4,8 +4,8 @@
 //! Token totals for today and the past week, read from the server's routing log.
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::fs::{File, Metadata};
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 use chrono::{DateTime, Local, NaiveDate};
@@ -66,6 +66,18 @@ impl Totals {
             .add(&record.tokens());
     }
 
+    fn merge(&mut self, other: &Self) {
+        for (model, tokens) in &other.routed {
+            self.routed.entry(model.clone()).or_default().add(tokens);
+        }
+        for (model, tokens) in &other.classifier {
+            self.classifier
+                .entry(model.clone())
+                .or_default()
+                .add(tokens);
+        }
+    }
+
     /// Calls made on the caller's behalf.
     pub fn requests(&self) -> u64 {
         self.routed.values().map(|tokens| tokens.requests).sum()
@@ -106,8 +118,6 @@ struct Record {
     cached_tokens: u64,
     #[serde(default)]
     completion_tokens: u64,
-    #[serde(default)]
-    reasoning_tokens: u64,
 }
 
 impl Record {
@@ -117,47 +127,101 @@ impl Record {
             // `prompt_tokens` is the whole input, cache reads included.
             input: self.prompt_tokens.saturating_sub(self.cached_tokens),
             cached_input: self.cached_tokens,
-            output: self.completion_tokens + self.reasoning_tokens,
+            // Completion tokens already include reasoning tokens.
+            output: self.completion_tokens,
         }
     }
 }
 
-/// Sums the log into today's and the trailing week's totals.
-///
-/// A missing log is not an error: the server creates it on its first request.
-/// Unparsable lines are skipped, which also covers the last line while the
-/// server is still writing it.
-pub fn read(path: &Path, today: NaiveDate) -> std::io::Result<Usage> {
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Usage::default()),
-        Err(error) => return Err(error),
-    };
+/// Keeps daily totals and reads only newly completed log lines.
+#[derive(Default)]
+pub struct Reader {
+    metadata: Option<Metadata>,
+    offset: u64,
+    days: BTreeMap<NaiveDate, Totals>,
+}
 
-    let week_start = today - chrono::Duration::days(6);
-    let mut usage = Usage::default();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        let Ok(record) = serde_json::from_str::<Record>(&line) else {
-            continue;
+impl Reader {
+    /// A missing log has no usage. Replacement or truncation starts fresh.
+    pub fn read(&mut self, path: &Path, today: NaiveDate) -> std::io::Result<Usage> {
+        let mut file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                *self = Self::default();
+                return Ok(Usage::default());
+            }
+            Err(error) => return Err(error),
         };
-        let Ok(ts) = DateTime::parse_from_rfc3339(&record.ts) else {
-            continue;
-        };
-        let day = ts.with_timezone(&Local).date_naive();
-        if day == today {
-            usage.today.add(&record);
+        let metadata = file.metadata()?;
+        if metadata.len() < self.offset
+            || !self
+                .metadata
+                .as_ref()
+                .is_some_and(|previous| is_same_file(previous, &metadata))
+        {
+            self.offset = 0;
+            self.days.clear();
         }
-        if day >= week_start && day <= today {
-            usage.week.add(&record);
+        self.metadata = Some(metadata);
+        file.seek(SeekFrom::Start(self.offset))?;
+
+        let week_start = today - chrono::Duration::days(6);
+        self.days.retain(|day, _| *day >= week_start);
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let bytes = reader.read_until(b'\n', &mut line)?;
+            // Leave an unfinished line at the offset so the next refresh retries it.
+            if line.last() != Some(&b'\n') {
+                break;
+            }
+            self.offset += bytes as u64;
+            let Ok(record) = serde_json::from_slice::<Record>(&line) else {
+                continue;
+            };
+            let Ok(ts) = DateTime::parse_from_rfc3339(&record.ts) else {
+                continue;
+            };
+            let day = ts.with_timezone(&Local).date_naive();
+            if day >= week_start {
+                self.days.entry(day).or_default().add(&record);
+            }
         }
+        let mut usage = Usage::default();
+        for (day, totals) in &self.days {
+            if *day == today {
+                usage.today = totals.clone();
+            }
+            if *day <= today {
+                usage.week.merge(totals);
+            }
+        }
+        Ok(usage)
     }
-    Ok(usage)
+}
+
+fn is_same_file(left: &Metadata, right: &Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.dev() == right.dev() && left.ino() == right.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        left.created()
+            .ok()
+            .is_some_and(|created| right.created().ok() == Some(created))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read(path: &Path, today: NaiveDate) -> std::io::Result<Usage> {
+        Reader::default().read(path, today)
+    }
 
     fn date(text: &str) -> NaiveDate {
         text.parse().expect("valid date")
@@ -205,13 +269,37 @@ mod tests {
             r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":1000,"cached_tokens":600,"completion_tokens":50,"reasoning_tokens":25}"#,
         )
         .expect("parse record");
+        let tokens = record.tokens();
+        assert_eq!(tokens.input, 400);
+        assert_eq!(tokens.cached_input, 600);
+        assert_eq!(tokens.output, 50);
+        assert_eq!(tokens.total(), 1_050);
+    }
+
+    #[test]
+    fn counts_completion_tokens_once_and_prices_them() {
+        let record: Record = serde_json::from_str(
+            r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":12,"cached_tokens":0,"completion_tokens":5,"reasoning_tokens":3}"#,
+        )
+        .expect("parse record");
 
         let tokens = record.tokens();
 
-        assert_eq!(tokens.input, 400);
-        assert_eq!(tokens.cached_input, 600);
-        assert_eq!(tokens.output, 75, "reasoning tokens are billed as output");
-        assert_eq!(tokens.total(), 1_075);
+        assert_eq!(tokens.input, 12);
+        assert_eq!(tokens.output, 5);
+        assert_eq!(tokens.total(), 17);
+        let mut totals = Totals::default();
+        totals.add(&record);
+        let prices = crate::pricing::PriceTable::from([(
+            "m".to_string(),
+            crate::pricing::ModelPrice {
+                input_per_mtok: 1.0,
+                cached_input_per_mtok: None,
+                output_per_mtok: 2.0,
+            },
+        )]);
+        let savings = crate::pricing::estimate(&totals, &prices, "m").expect("priced");
+        assert!((savings.actual - 0.000022).abs() < 1e-12);
     }
 
     #[test]
@@ -246,6 +334,87 @@ mod tests {
         let usage = read(&path, date("2026-09-28")).expect("read");
 
         assert_eq!(usage.today.requests(), 1);
+    }
+
+    #[test]
+    fn reads_appends_once_and_retries_an_unfinished_line() {
+        use std::io::Write;
+
+        let first = line("2026-09-28T10:00:00.000", "luna", "", 100, 10);
+        let second = line("2026-09-28T10:00:01.000", "terra", "classifier", 30, 1);
+        let (_dir, path) = log(&format!("{first}\n"));
+        let today = date("2026-09-28");
+        let mut reader = Reader::default();
+        assert_eq!(reader.read(&path, today).expect("read").today.tokens(), 110);
+        assert_eq!(
+            reader.read(&path, today).expect("reread").today.tokens(),
+            110
+        );
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open");
+        let split = second.len() / 2;
+        file.write_all(&second.as_bytes()[..split])
+            .expect("partial append");
+        assert_eq!(
+            reader
+                .read(&path, today)
+                .expect("partial read")
+                .today
+                .tokens(),
+            110
+        );
+        writeln!(file, "{}", &second[split..]).expect("finish append");
+        let usage = reader.read(&path, today).expect("read append");
+        assert_eq!(usage.today.tokens(), 141);
+        assert_eq!(usage.today.requests(), 1);
+        assert_eq!(usage.today.classifier["terra"].requests, 1);
+    }
+
+    #[test]
+    fn drops_old_days_without_rereading_the_log() {
+        let (_dir, path) = log(&format!(
+            "{}\n{}\n",
+            line("2026-09-22T10:00:00.000", "luna", "", 100, 10),
+            line("2026-09-28T10:00:00.000", "luna", "", 100, 10),
+        ));
+        let mut reader = Reader::default();
+        assert_eq!(
+            reader
+                .read(&path, date("2026-09-28"))
+                .expect("read")
+                .week
+                .requests(),
+            2
+        );
+        let usage = reader.read(&path, date("2026-09-29")).expect("next day");
+        assert_eq!(usage.today.requests(), 0);
+        assert_eq!(usage.week.requests(), 1);
+    }
+
+    #[test]
+    fn resets_totals_when_the_log_is_replaced_or_truncated() {
+        let (_dir, path) = log(&format!(
+            "{}\n{}\n",
+            line("2026-09-28T10:00:00.000", "luna", "", 100, 10),
+            line("2026-09-28T10:00:01.000", "luna", "", 100, 10),
+        ));
+        let mut reader = Reader::default();
+        let today = date("2026-09-28");
+        assert_eq!(reader.read(&path, today).expect("read").today.requests(), 2);
+        let replacement = format!("{}\n", line("2026-09-28T11:00:00.000", "sol", "", 200, 20));
+        std::fs::write(&path, &replacement).expect("truncate");
+        let usage = reader.read(&path, today).expect("read truncated");
+        assert_eq!(usage.today.requests(), 1);
+        assert_eq!(usage.today.tokens(), 220);
+
+        std::fs::rename(&path, path.with_extension("old")).expect("rotate");
+        std::fs::write(&path, replacement.repeat(3)).expect("replace");
+        let usage = reader.read(&path, today).expect("read replacement");
+        assert_eq!(usage.today.requests(), 3);
+        assert_eq!(usage.today.tokens(), 660);
     }
 
     #[test]

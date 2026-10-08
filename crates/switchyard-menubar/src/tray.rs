@@ -6,9 +6,12 @@
 //! Everything platform-specific lives here, so the rest of the crate builds
 //! and is tested on any target.
 
+use std::path::PathBuf;
 use std::process::Command;
+use std::thread;
 use std::time::{Duration, Instant};
 
+use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
 use objc2_foundation::{MainThreadMarker, NSDate, NSDefaultRunLoopMode};
 use tray_icon::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -28,19 +31,20 @@ const QUIT: &str = "quit";
 const EVENT_POLL: f64 = 0.1;
 
 /// Runs the status item until the user quits.
-pub fn run(config: Config) -> Result<(), String> {
+pub fn run(config: Config, settings_path: PathBuf) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("the menu bar must run on the main thread")?;
     let ns_app = NSApplication::sharedApplication(mtm);
     // Accessory keeps the process out of the Dock and the app switcher.
     ns_app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
+    let mut log = crate::rollup::Reader::default();
     let glyph = Icon::from_rgba(icon::glyph(), icon::SIZE, icon::SIZE)
         .map_err(|error| format!("build icon: {error}"))?;
     let tray = TrayIconBuilder::new()
         .with_icon(glyph)
         .with_icon_as_template(true)
         .with_tooltip("Switchyard")
-        .with_menu(Box::new(menu(&refresh(&config))?))
+        .with_menu(Box::new(menu(&refresh(&config, &mut log))?))
         .build()
         .map_err(|error| format!("create status item: {error}"))?;
 
@@ -48,33 +52,59 @@ pub fn run(config: Config) -> Result<(), String> {
 
     let interval = Duration::from_secs(config.refresh_seconds.max(5));
     let mut next = Instant::now() + interval;
+    let mut actions = Vec::new();
     loop {
-        pump_events(&ns_app);
+        let should_quit = autoreleasepool(|_| -> Result<bool, String> {
+            pump_events(&ns_app);
 
-        let mut redraw = false;
-        while let Ok(event) = MenuEvent::receiver().try_recv() {
-            match event.id.as_ref() {
-                QUIT => return Ok(()),
-                RESTART => report(restart_server(&config)),
-                OPEN_CONFIG => report(open(&config.config_file)),
-                OPEN_SETTINGS => report(open(&Config::default_path())),
-                // Informational rows are disabled, so nothing else fires.
-                _ => continue,
+            let mut redraw = false;
+            while let Ok(event) = MenuEvent::receiver().try_recv() {
+                let action = match event.id.as_ref() {
+                    QUIT => return Ok(true),
+                    RESTART => {
+                        let label = config.launchd_label.clone();
+                        thread::spawn(move || restart_server(&label))
+                    }
+                    OPEN_CONFIG | OPEN_SETTINGS => {
+                        let path = if event.id.as_ref() == OPEN_CONFIG {
+                            config.config_file.clone()
+                        } else {
+                            settings_path.clone()
+                        };
+                        thread::spawn(move || open(&path))
+                    }
+                    _ => continue,
+                };
+                actions.push(action);
             }
-            redraw = true;
-        }
+            for index in (0..actions.len()).rev() {
+                if actions[index].is_finished() {
+                    report(
+                        actions
+                            .swap_remove(index)
+                            .join()
+                            .unwrap_or_else(|_| Err("menu action thread panicked".to_string())),
+                    );
+                    redraw = true;
+                }
+            }
 
-        if redraw || Instant::now() >= next {
-            tray.set_menu(Some(Box::new(menu(&refresh(&config))?)));
-            next = Instant::now() + interval;
+            if redraw || Instant::now() >= next {
+                tray.set_menu(Some(Box::new(menu(&refresh(&config, &mut log))?)));
+                next = Instant::now() + interval;
+            }
+            Ok(false)
+        })?;
+        if should_quit {
+            return Ok(());
         }
     }
 }
 
 /// Restarts the server's LaunchAgent.
-fn restart_server(config: &Config) -> Result<(), String> {
+fn restart_server(label: &str) -> Result<(), String> {
     let uid = command("id", &["-u"])?;
-    let target = format!("gui/{}/{}", uid.trim(), config.launchd_label);
+    let target = format!("gui/{}/{}", uid.trim(), label);
     command("launchctl", &["kickstart", "-k", &target]).map(|_| ())
 }
 

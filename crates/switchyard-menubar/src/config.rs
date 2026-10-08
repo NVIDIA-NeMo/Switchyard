@@ -47,15 +47,12 @@ impl Default for Config {
 impl Config {
     /// Parses settings, falling back to defaults when the file is absent.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
-            }
+        let mut config: Self = match std::fs::read_to_string(path) {
+            Ok(text) => toml::from_str(&text)
+                .map_err(|error| format!("parse {}: {error}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(error) => return Err(format!("read {}: {error}", path.display())),
         };
-        let mut config: Self =
-            toml::from_str(&text).map_err(|error| format!("parse {}: {error}", path.display()))?;
         config.routing_log = expand_home(&config.routing_log);
         config.config_file = expand_home(&config.config_file);
         Ok(config)
@@ -127,6 +124,11 @@ output_per_mtok = 2.0
 
         assert_eq!(config.server_url, "http://127.0.0.1:4123");
         assert!(config.prices.is_empty());
+        let empty = dir.path().join("empty.toml");
+        std::fs::write(&empty, "").expect("write settings");
+        let loaded = Config::load(&empty).expect("load empty settings");
+        assert_eq!(config.routing_log, loaded.routing_log);
+        assert_eq!(config.config_file, loaded.config_file);
     }
 
     #[test]

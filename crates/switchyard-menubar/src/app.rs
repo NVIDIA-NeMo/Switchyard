@@ -10,10 +10,11 @@ use crate::health::probe;
 use crate::rollup;
 use crate::summary::{Row, build};
 
-/// Rereads the log, probes the server, and builds the menu body.
-pub fn refresh(config: &Config) -> Vec<Row> {
-    let usage =
-        rollup::read(&config.routing_log, Local::now().date_naive()).unwrap_or_else(|error| {
+/// Reads new log entries, probes the server, and builds the menu body.
+pub fn refresh(config: &Config, log: &mut rollup::Reader) -> Vec<Row> {
+    let usage = log
+        .read(&config.routing_log, Local::now().date_naive())
+        .unwrap_or_else(|error| {
             eprintln!(
                 "switchyard-menubar: read {}: {error}",
                 config.routing_log.display()
@@ -40,10 +41,13 @@ mod tests {
         )
         .expect("write log");
 
-        let rows = refresh(&Config {
-            routing_log: path,
-            ..Config::default()
-        });
+        let rows = refresh(
+            &Config {
+                routing_log: path,
+                ..Config::default()
+            },
+            &mut rollup::Reader::default(),
+        );
 
         assert!(
             rows.contains(&Row::Label("Today — 1 request · 1100 tokens".to_string())),

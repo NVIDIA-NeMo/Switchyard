@@ -65,7 +65,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let config = match Config::load(&settings.unwrap_or_else(Config::default_path)) {
+    let settings_path = settings.unwrap_or_else(Config::default_path);
+    let config = match Config::load(&settings_path) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("switchyard-menubar: {error}");
@@ -75,7 +76,7 @@ fn main() -> ExitCode {
     // Off macOS there is no menu bar to attach to, so printing is the whole
     // program. That keeps the rollup and pricing logic buildable everywhere.
     if print_only || !cfg!(target_os = "macos") {
-        for row in app::refresh(&config) {
+        for row in app::refresh(&config, &mut rollup::Reader::default()) {
             match row {
                 summary::Row::Separator => println!(),
                 summary::Row::Label(text) => println!("{text}"),
@@ -85,7 +86,7 @@ fn main() -> ExitCode {
     }
 
     #[cfg(target_os = "macos")]
-    if let Err(error) = tray::run(config) {
+    if let Err(error) = tray::run(config, settings_path) {
         eprintln!("switchyard-menubar: {error}");
         return ExitCode::FAILURE;
     }
