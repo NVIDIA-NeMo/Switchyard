@@ -84,6 +84,16 @@ output_per_mtok = 2.0
 input_per_mtok = 0.05
 cached_input_per_mtok = 0.005
 output_per_mtok = 0.4
+
+# With a ChatGPT login, Codex sends "Approve for me" reviews to
+# codex-auto-review even without Switchyard, so this price copies the
+# baseline_model rates. Reviews then add the same amount to the actual cost and
+# the baseline. The dollars saved stay the same, but the percentage drops a
+# little. Update this price if you change baseline_model.
+[prices."codex-auto-review"]
+input_per_mtok = 1.25
+cached_input_per_mtok = 0.125
+output_per_mtok = 10.0
 EOF
 
 step "Validating the server config"
