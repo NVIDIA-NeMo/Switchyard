@@ -1,42 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-schema_version = 1
-
-[decision_clients.classifier]
-format = "system_one"
-endpoint = "https://api.typesafe.ai/v1/systemone"
-api_key_env = "TYPESAFE_API_KEY"
-timeout_ms = 10000
-
-[decision_targets.judge]
-id = "jev-latest"
-decision_client = "classifier"
-
-# Pi dispatches completions using its own model registry and credentials.
-[llm_clients.pi]
-format = "openai_chat"
-base_url = "http://127.0.0.1:1/v1"
-
-[targets.complex]
-id = "gpt-5.6-sol"
-llm_client = "pi"
-
-[targets.standard]
-id = "gpt-5.6-terra"
-llm_client = "pi"
-
-[routes.planner]
-id = "switchyard/planner"
-type = "llm_classifier"
-mode = "capability"
-classifier_target = "judge"
-strong_target = "complex"
-weak_target = "standard"
-classify_trigger = "every_request"
-fail_open = false
-
-[routes.planner.decision]
-cutoff = 0.5
-candidates = { a = "complex", b = "standard" }
-evidence = { candidates = { a = "More capable software engineering model for difficult design and debugging", b = "Lower-cost planning model for ordinary software engineering tasks" } }
+type = "auto"
+efficient_target = "openai-codex/gpt-6-luna"
+capable_target = "openai-codex/gpt-6.1-sol"

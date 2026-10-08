@@ -1,13 +1,37 @@
-# Pi virtual model using Switchyard
+# Pi virtual model using Switchyard auto
 
-This example registers `switchyard/auto`. Switchyard chooses between two planning
-models using a System One classifier. Pi sends the completion requests and keeps
-the router's state on the current session branch.
+This example registers `switchyard/auto` and asks Switchyard to select a model on
+every request:
 
-The planning model stays selected until the first successful `edit` or `write`.
-The next request switches to the cheap implementation model. Direct requests,
-including compaction summaries, use the cheap model. Thinking levels pass through
-to Pi, which clamps them to the selected model's supported levels.
+- **Efficient:** Luna (`openai-codex/gpt-5.6-luna`).
+- **Capable:** Sol (`openai-codex/gpt-5.6-sol`).
+- **Thinking:** always `medium`.
+
+`auto` currently uses Switchyard's stage router with an efficient-first default
+and a confidence threshold of 0.5. It reads tool activity and results to choose a
+model. It can escalate to Sol during recovery and return to Luna as work proceeds.
+The same routing applies to user requests, continuations, retries, and direct
+requests such as compaction summaries.
+
+## Configuration
+
+`switchyard.toml` contains just the algorithm settings:
+
+```toml
+type = "auto"
+efficient_target = "openai-codex/gpt-5.6-luna"
+capable_target = "openai-codex/gpt-5.6-sol"
+```
+
+Set either target to a `provider/model` reference available in Pi's catalog, such
+as `openai-codex/gpt-6-astra`. The first slash separates the provider from the model
+ID; `openrouter/vendor/model` keeps `vendor/model` as the ID. Both providers and
+models come from this file. Thinking remains `medium`.
+
+The extension generates the runner's target entries, route ID, and credential-free
+placeholder client. Pi uses the selected model's catalog limits. Set
+`SWITCHYARD_CONFIG` to use another algorithm-settings file, and reload the
+extension after changing its configuration.
 
 ## Local setup
 
@@ -24,54 +48,33 @@ npm --prefix examples/pi run typecheck
 npm --prefix examples/pi test
 ```
 
-Policy tests use local mocks. The loading smoke test uses Pi's public resource
-loader to check that the extension and its native dependency load successfully.
-The binding tests cover native routing with a loopback classifier.
+The tests exercise the actual auto algorithm locally, check message conversion,
+and load the extension through Pi's public resource loader.
 
-Before a live run:
-
-1. Set `TYPESAFE_API_KEY` for the classifier in `switchyard.toml`.
-2. Sign in to the completion provider through Pi's `/login`.
-3. Confirm the three model IDs in `switchyard-router.ts` exist in your Pi catalog.
-   Update `TARGETS`, the planning target IDs in TOML, and the virtual model limits
-   together when changing models.
-
-Then run:
+Sign in to the configured providers through Pi's `/login` and confirm the models
+are in your catalog. Then:
 
 ```bash
 pi -e ./examples/pi/switchyard-router.ts --model switchyard/auto
 ```
 
-This command can make paid classifier and completion calls. The example uses
-`switchyard.toml` beside the extension by default. Set `SWITCHYARD_CONFIG` to an
-alternate file path when testing another configuration.
+Completion calls can incur provider charges. The auto routing decision runs
+locally; Pi owns completion credentials and connections.
 
-## Configuration and ownership
+## Conversation handling
 
-The route ID is `switchyard/planner`. Its completion target names must be
-`complex` and `standard`. The extension maps each target to a Pi `(provider, id)`
-pair and checks that the returned model ID matches. The implementation model is
-selected directly by the extension.
+The extension passes visible text, tool-call arguments, paired tool results, and
+failure flags to Switchyard. Pi keeps the original images and reasoning for the
+chosen completion model. Each decision uses the current branch's transcript,
+including the history available after compaction or resume.
 
-The TOML's completion client uses a loopback placeholder. Pi owns the actual
-completion connection and credentials. Switchyard uses only its configured
-classifier connection during routing. Its classifier calls and costs are outside
-Pi's provider-call accounting.
+The binding uses fresh routing state for each request. Auto's cross-request
+capable hold requires session identity; this extension relies on the recent tool
+history for recovery signals instead. It keeps its routing decisions independent
+across branches.
 
-The sample decision judge compares the capable model's advantage over the
-standard model. This uses Switchyard's existing relative-advantage policy. Review
-the sample evidence and cutoff for your models and tasks.
-
-Pi persists `{ phase, target }` through branch changes, resume, and compaction.
-The extension returns new state only when the phase or selected target changes.
-An eligible previous planning model is reused before invoking the classifier.
-A failed `edit` or `write` keeps the planning model.
-
-Classifier execution failures select the default `standard` planning model.
-Cancellation, configuration errors, missing Pi models, and invalid target mappings
-are surfaced to the caller. The sample sets `fail_open = false` so execution
-failures reach the extension; any completed classifier decision follows the
-configured Switchyard policy.
+Routing errors and cancellation propagate to Pi. The extension checks target
+identities and resolves the selected model through Pi's catalog.
 
 For the binding's API and configuration restrictions, see
 [`bindings/typescript`](../../bindings/typescript/README.md).

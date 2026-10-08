@@ -4,7 +4,7 @@
 //! Node.js bindings for caller-owned completion dispatch and routing state.
 
 use napi_derive::napi;
-use switchyard_protocol::{ModelId, Request, text_request};
+use switchyard_protocol::{LlmRequest, ModelId, Request};
 use switchyard_runner::{Runner, RunnerError};
 use tokio_util::sync::CancellationToken;
 
@@ -58,24 +58,33 @@ impl NativeRunner {
     pub async fn decide(
         &self,
         route_id: String,
-        prompt: String,
+        messages: String,
         cancellation: &Cancellation,
     ) -> napi::Result<Decision> {
         // napi-rs retains both JS objects while this async method borrows them.
         tokio::select! {
             biased;
             _ = cancellation.token.cancelled() => Err(error("ABORT_ERR", "Routing cancelled")),
-            result = select_model(&self.runner, route_id, prompt) => result,
+            result = select_model(&self.runner, route_id, messages) => result,
         }
     }
 }
 
-async fn select_model(runner: &Runner, route_id: String, prompt: String) -> napi::Result<Decision> {
+async fn select_model(
+    runner: &Runner,
+    route_id: String,
+    messages: String,
+) -> napi::Result<Decision> {
     let route = runner
         .route(&route_id)
         .ok_or_else(|| error("ERR_UNKNOWN_ROUTE", "Unknown route ID"))?;
     let request = Request {
-        llm_request: text_request(Some(route_id.clone()), prompt),
+        llm_request: LlmRequest {
+            model: Some(route_id.clone()),
+            messages: serde_json::from_str(&messages)
+                .map_err(|_| error("ERR_INVALID_REQUEST", "Invalid routing messages"))?,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let mut expected = request.llm_request.clone();

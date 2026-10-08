@@ -19,7 +19,8 @@ npm --prefix bindings/typescript test
 
 The build uses Cargo's development profile. It copies the addon and license files
 into the package. Rebuild after changing Rust code. Three loopback tests cover
-model selection, safe errors, and cancellation using the Pi example configuration.
+model selection, safe errors, and cancellation. The Pi tests also exercise auto
+routing with tool history.
 
 Install the built package in a local Node project:
 
@@ -33,18 +34,39 @@ npm install /absolute/path/to/Switchyard/bindings/typescript
 import { readFileSync } from "node:fs";
 import { Runner } from "@switchyard/runner";
 
-const runner = Runner.fromToml(readFileSync("switchyard.toml", "utf8"));
+const runner = Runner.fromToml(readFileSync("deployment.toml", "utf8"));
 const controller = new AbortController();
-const decision = await runner.decide("switchyard/planner", "Explain this bug", {
+const decision = await runner.decide("switchyard/auto", "Explain this bug", {
   signal: controller.signal,
 });
-// decision: { target: "complex", model: "gpt-5.6-sol" }
+// decision: { target: "luna", model: "gpt-5.6-luna" }
 ```
 
 `fromToml` synchronously loads and validates a version-1 runner deployment. Reuse
-that runner for later decisions. `decide` takes a configured route **ID** and one
-user text prompt. It returns the selected target name and configured model ID.
-Concurrent decisions can share a runner.
+that runner for later decisions. `decide` takes a configured route **ID** and either
+one user text prompt or an array of `RoutingMessage` values. It returns the selected
+target name and configured model ID. Concurrent decisions can share a runner.
+
+Use conversation messages for algorithms such as `auto` that inspect tool history.
+The exported `RoutingMessage` and `RoutingContent` types cover text, tool calls,
+and tool results in Switchyard's format:
+
+```ts
+const decision = await runner.decide("switchyard/auto", [
+  { role: "user", content: [{ type: "text", text: "Fix the tests" }] },
+  { role: "assistant", content: [{
+    type: "tool_call", id: "call-1", name: "bash", arguments: { command: "pytest" },
+  }] },
+  { role: "tool", content: [{
+    type: "tool_result", tool_call_id: "call-1", is_error: true,
+    content: [{ type: "text", text: "out of memory" }],
+  }] },
+]);
+```
+
+Routing state is fresh for each call. Supply the current branch's conversation on
+each decision. The API leaves session identity unset, so recovery signals come
+from the transcript rather than cross-request capable holds.
 
 `AbortSignal` cancels the Rust routing future, including pending classifier HTTP
 work and retry waits. Cancellation rejects with `name: "AbortError"` and
@@ -54,6 +76,7 @@ work and retry waits. Cancellation rejects with `name: "AbortError"` and
 | --- | --- |
 | `ERR_CONFIG` | Invalid or unsupported configuration, including missing classifier credentials |
 | `ERR_UNKNOWN_ROUTE` | The requested route ID is absent |
+| `ERR_INVALID_REQUEST` | Routing messages have an invalid shape |
 | `ERR_ROUTING` | The algorithm or classifier call failed |
 | `ERR_UNSUPPORTED_OUTCOME` | The outcome cannot be represented by a model choice |
 
@@ -63,8 +86,9 @@ Provider failures use safe summaries.
 
 ## Supported routes
 
-Use `passthrough` with its subagent policy unset, or `llm_classifier` in capability
-mode. Capability mode supports both LLM judges and System One decision judges.
+Use `auto`, `passthrough` with its subagent policy unset, or `llm_classifier` in
+capability mode. Auto uses local tool signals with an efficient-first default.
+Capability mode supports both LLM judges and System One decision judges.
 Use `classify_trigger = "every_request"` and `message_hash_fallback = false`
 (their defaults). The host persists any chosen model or phase.
 

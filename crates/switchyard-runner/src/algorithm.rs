@@ -570,7 +570,8 @@ impl AlgorithmSpec {
         match self {
             Self::Passthrough {
                 subagents: None, ..
-            } => true,
+            }
+            | Self::Auto { .. } => true,
             Self::LlmClassifier { config } => {
                 matches!(config.classifier_mode(), ClassifierMode::Capability)
                     && config.classify_trigger == ClassifyTrigger::EveryRequest

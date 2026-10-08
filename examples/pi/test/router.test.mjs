@@ -12,46 +12,50 @@ const request = (fields = {}) => ({
   thinkingLevel: "high", signal: new AbortController().signal, ...fields,
 });
 
-function setup(t, decide = async () => ({ target: "complex", model: "gpt-5.6-sol" })) {
-  const mock = t.mock.fn(decide);
-  t.mock.method(Runner, "fromToml", () => ({ decide: mock }));
+function setup() {
   let definition;
   extension({ registerVirtualModel: (value) => { definition = value; } });
-  return { route: (req) => definition.route(req, context), mock };
+  return { definition, route: (req) => definition.route(req, context) };
 }
 
-test("keeps the planner until a successful edit, then keeps the implementation model", async (t) => {
-  const { route, mock } = setup(t);
-  const req = request();
-  const planning = await route(req);
-  assert.equal(planning.model.id, "gpt-5.6-sol");
-  assert.equal(planning.thinkingLevel, "high");
-  assert.deepEqual(planning.state, { phase: "planning", target: "complex" });
-  assert.deepEqual(mock.mock.calls[0].arguments, ["switchyard/planner", "task", { signal: req.signal }]);
+function tool(id, name, args, text, isError = false) {
+  return [
+    { role: "assistant", content: [{ type: "toolCall", id, name, arguments: args }] },
+    { role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text }], isError },
+  ];
+}
 
-  const messages = [...req.messages, { role: "toolResult", toolName: "edit", isError: true }];
-  assert.equal((await route(request({ state: planning.state, messages }))).model.id, "gpt-5.6-sol");
-  messages[1].isError = false;
-  const implementation = await route(request({ state: planning.state, messages }));
-  assert.deepEqual(implementation.state, { phase: "implementation", target: "implementation" });
-  const next = await route(request({ reason: "retry", state: implementation.state }));
-  assert.equal(next.model.id, "gpt-5.6-luna");
-  assert.equal(next.state, undefined);
-  assert.equal(mock.mock.callCount(), 1);
+test("auto uses Luna, escalates to Sol on tool failure, and returns to Luna on recovery", async () => {
+  const { route, definition } = setup();
+  assert.deepEqual(definition.thinkingLevels, ["medium"]);
+  const messages = request().messages;
+  const initial = await route(request({ messages }));
+  assert.equal(initial.model.id, "gpt-5.6-luna");
+  assert.equal(initial.thinkingLevel, "medium");
+  messages.push(...tool("failed", "bash", { command: "pytest" }, "out of memory", true));
+  const escalated = await route(request({ reason: "continuation", messages }));
+  assert.equal(escalated.model.id, "gpt-5.6-sol");
+  for (let i = 0; i < 3; i++) messages.push(...tool(`write-${i}`, "write", { path: `file-${i}` }, "wrote file"));
+  const recovered = await route(request({ reason: "retry", messages }));
+  assert.equal(recovered.model.id, "gpt-5.6-luna");
 });
 
-test("uses the cheap model for direct requests and reuses an eligible previous planner", async (t) => {
-  const { route, mock } = setup(t);
-  assert.equal((await route(request({ reason: "direct" }))).model.id, "gpt-5.6-luna");
-  const previous = { model: { provider: "openai-codex", id: "gpt-5.6-terra" } };
-  assert.deepEqual((await route(request({ previous }))).state, { phase: "planning", target: "standard" });
-  assert.equal(mock.mock.callCount(), 0);
-});
-
-test("routing failures use the default planner while cancellation propagates", async (t) => {
-  let code = "ERR_ROUTING";
-  const { route } = setup(t, async () => { throw Object.assign(new Error("test"), { code }); });
-  assert.equal((await route(request())).model.id, "gpt-5.6-terra");
-  code = "ABORT_ERR";
-  await assert.rejects(route(request()), { code });
+test("passes text, tool arguments, results, and failure flags to Switchyard", async (t) => {
+  const decide = t.mock.fn(async () => ({ target: "openrouter/vendor/model", model: "openrouter/vendor/model" }));
+  t.mock.method(Runner, "fromToml", () => ({ decide }));
+  const { route } = setup();
+  const req = request({ messages: [
+    { role: "system", content: "rules", sections: { extra: "more rules" } },
+    { role: "user", content: [{ type: "text", text: "task" }, { type: "image", data: "image" }] },
+    ...tool("call", "bash", { command: "pytest" }, "out of memory", true),
+    { role: "assistant", content: [{ type: "thinking", thinking: "private" }] },
+  ] });
+  assert.deepEqual((await route(req)).model, { provider: "openrouter", id: "vendor/model" });
+  assert.deepEqual(decide.mock.calls[0].arguments, ["switchyard/auto", [
+    { role: "system", content: [{ type: "text", text: "rules" }, { type: "text", text: "more rules" }] },
+    { role: "user", content: [{ type: "text", text: "task" }] },
+    { role: "assistant", content: [{ type: "tool_call", id: "call", name: "bash", arguments: { command: "pytest" } }] },
+    { role: "tool", content: [{ type: "tool_result", tool_call_id: "call", content: [{ type: "text", text: "out of memory" }], is_error: true }] },
+    { role: "assistant", content: [] },
+  ], { signal: req.signal }]);
 });

@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { test } from "node:test";
 import { Runner } from "../dist/index.js";
 
-const config = readFileSync(new URL("../../../examples/pi/switchyard.toml", import.meta.url), "utf8");
+const config = readFileSync(new URL("./classifier.toml", import.meta.url), "utf8");
 
 async function setup(t, handler) {
   const calls = [];
@@ -30,13 +30,11 @@ async function setup(t, handler) {
     if (previous === undefined) delete process.env.SWITCHYARD_TEST_KEY;
     else process.env.SWITCHYARD_TEST_KEY = previous;
   });
-  const source = config
-    .replace("https://api.typesafe.ai/v1/systemone", `http://127.0.0.1:${http.address().port}/classify`)
-    .replace("TYPESAFE_API_KEY", "SWITCHYARD_TEST_KEY");
+  const source = config.replace("http://127.0.0.1:1/classify", `http://127.0.0.1:${http.address().port}/classify`);
   return { runner: Runner.fromToml(source), calls };
 }
 
-test("selects the Pi target through the classifier", async (t) => {
+test("selects the configured target through the classifier", async (t) => {
   const { runner, calls } = await setup(t, (res) => {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ answers: { route: {
@@ -65,6 +63,7 @@ test("reports safe configuration, route, and classifier errors", async (t) => {
   );
   const { runner } = await setup(t, (res) => { res.writeHead(401); res.end("secret-sentinel"); });
   await assert.rejects(runner.decide("unknown", "hello"), { code: "ERR_UNKNOWN_ROUTE" });
+  await assert.rejects(runner.decide("switchyard/planner", [{ role: "invalid", content: [] }]), { code: "ERR_INVALID_REQUEST" });
   await assert.rejects(runner.decide("switchyard/planner", "hello"), (error) => {
     assert.equal(error.code, "ERR_ROUTING");
     assert.doesNotMatch(error.message, /secret-sentinel/);

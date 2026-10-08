@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test test/*.test.mjs"
   },
-  "dependencies": { "@switchyard/runner": "file:../../bindings/typescript" },
+  "dependencies": {
+    "@switchyard/runner": "file:../../bindings/typescript",
+    "smol-toml": "1.9.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"

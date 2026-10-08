@@ -3371,6 +3371,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "serde_json",
  "switchyard-protocol",
  "switchyard-runner",
  "tokio",
