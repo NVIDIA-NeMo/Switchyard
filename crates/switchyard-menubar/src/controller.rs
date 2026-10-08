@@ -35,6 +35,12 @@ pub enum Action {
         refresh: bool,
         key: Option<String>,
     },
+    PreviewInstall {
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+    },
     Install {
         tool: Harness,
         account: Option<String>,
@@ -247,6 +253,26 @@ impl Controller {
                 Ok(Reply {
                     message,
                     data: json!({"client":client.name,"models":models}),
+                })
+            }
+            Action::PreviewInstall {
+                tool,
+                account,
+                route,
+                id,
+            } => {
+                let account = account_path(tool, account.as_deref())?;
+                let config = self.routes()?;
+                let route = current_route(&config, &route, Some(&id))?;
+                let files = accounts::config_paths(tool, account.as_deref());
+                let current = harness::inspect(tool, &files)?;
+                let preview = login_mode(tool, &self.config, &route).and_then(|login| {
+                    harness::preview(tool, &files, &self.config.server_url, &route.id, login)
+                });
+                Ok(Reply {
+                    message: String::new(),
+                    data: preview
+                        .unwrap_or_else(|error| json!({"current": current, "error": error})),
                 })
             }
             Action::Install {

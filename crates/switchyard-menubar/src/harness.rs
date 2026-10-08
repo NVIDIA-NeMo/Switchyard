@@ -44,7 +44,15 @@ pub fn paths(tool: Harness) -> Vec<PathBuf> {
 }
 
 pub fn inspect(tool: Harness, files: &[PathBuf]) -> Result<String, String> {
-    let text = read(&files[0])?;
+    let texts = files
+        .iter()
+        .map(|path| read(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    inspect_settings(tool, files, &texts)
+}
+
+fn inspect_settings(tool: Harness, files: &[PathBuf], texts: &[String]) -> Result<String, String> {
+    let text = &texts[0];
     let model;
     let endpoint;
     match tool {
@@ -70,7 +78,7 @@ pub fn inspect(tool: Harness, files: &[PathBuf]) -> Result<String, String> {
                 .to_string();
         }
         Harness::Claude => {
-            let doc = object(&text)?;
+            let doc = object(text)?;
             model = doc
                 .pointer("/env/ANTHROPIC_MODEL")
                 .and_then(Value::as_str)
@@ -84,7 +92,7 @@ pub fn inspect(tool: Harness, files: &[PathBuf]) -> Result<String, String> {
                 .to_string();
         }
         Harness::Pi => {
-            let doc = object(&read(&files[1])?)?;
+            let doc = object(&texts[1])?;
             model = doc
                 .get("defaultModel")
                 .and_then(Value::as_str)
@@ -94,7 +102,7 @@ pub fn inspect(tool: Harness, files: &[PathBuf]) -> Result<String, String> {
                 .get("defaultProvider")
                 .and_then(Value::as_str)
                 .unwrap_or("Default");
-            let models = object(&text)?;
+            let models = object(text)?;
             endpoint = models
                 .get("providers")
                 .and_then(|v| v.get(provider))
@@ -118,7 +126,11 @@ pub fn inspect(tool: Harness, files: &[PathBuf]) -> Result<String, String> {
         .unwrap_or_else(|| "Provider default".into());
     Ok(format!(
         "Model: {model}\nEndpoint: {endpoint}\nSettings: {}",
-        files[0].display()
+        files
+            .iter()
+            .map(|file| file.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n          ")
     ))
 }
 
@@ -253,29 +265,51 @@ fn claude_settings(text: &str, root: &str, model: &str, login: bool) -> Result<S
     Ok(serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n")
 }
 
-pub fn install(
+// The preview uses the installation transformations without creating files or backups.
+pub fn preview(
     tool: Harness,
     files: &[PathBuf],
     root: &str,
     model: &str,
     login: bool,
-) -> Result<String, String> {
+) -> Result<Value, String> {
     let root = validate(tool, root, model, login)?;
     let originals = files
         .iter()
-        .map(|p| read_file(p))
+        .map(|path| read_file(path))
         .collect::<Result<Vec<_>, _>>()?;
+    let incoming = configured(tool, &originals, &root, model, login)?;
+    let current = originals
+        .iter()
+        .map(|text| text.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "current": inspect_settings(tool, files, &current)?,
+        "proposed": inspect_settings(tool, files, &incoming)?,
+        "authentication": if login { "This route uses the coding tool’s subscription login." } else { "This route uses the API credentials configured on the Switchyard server." },
+        "files": files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>()
+    }))
+}
+
+// Both preview and installation use these transformations so the proposed settings match the saved settings.
+fn configured(
+    tool: Harness,
+    originals: &[Option<String>],
+    root: &str,
+    model: &str,
+    login: bool,
+) -> Result<Vec<String>, String> {
     let mut incoming = Vec::new();
     match tool {
         Harness::CodexCli | Harness::CodexApp => incoming.push(codex_settings(
             originals[0].as_deref().unwrap_or_default(),
-            &root,
+            root,
             model,
             login,
         )?),
         Harness::Claude => incoming.push(claude_settings(
             originals[0].as_deref().unwrap_or_default(),
-            &root,
+            root,
             model,
             login,
         )?),
@@ -291,6 +325,22 @@ pub fn install(
                 .push(serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())? + "\n");
         }
     }
+    Ok(incoming)
+}
+
+pub fn install(
+    tool: Harness,
+    files: &[PathBuf],
+    root: &str,
+    model: &str,
+    login: bool,
+) -> Result<String, String> {
+    let root = validate(tool, root, model, login)?;
+    let originals = files
+        .iter()
+        .map(|p| read_file(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    let incoming = configured(tool, &originals, &root, model, login)?;
     let incoming: Vec<_> = incoming.into_iter().map(Some).collect();
     for (path, before) in files.iter().zip(&originals) {
         let backup = backup_path(path);
@@ -445,6 +495,73 @@ pub fn binary(tool: Harness) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    // Preview must match the installed settings without creating files or backups.
+    fn preview_matches_installation_without_writes() {
+        for (tool, _) in HARNESSES {
+            let dir = tempfile::tempdir().expect("directory");
+            let files = if *tool == Harness::Pi {
+                vec![
+                    dir.path().join("models.json"),
+                    dir.path().join("settings.json"),
+                ]
+            } else {
+                vec![dir.path().join("config")]
+            };
+            let original = if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
+                "model='before'\n"
+            } else {
+                "{}"
+            };
+            std::fs::write(&files[0], original).expect("settings");
+            let result = preview(*tool, &files, "http://localhost:4123", "new-route", false)
+                .expect("preview");
+            assert_eq!(read(&files[0]).expect("unchanged"), original);
+            assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
+            install(*tool, &files, "http://localhost:4123", "new-route", false).expect("install");
+            assert_eq!(
+                result["proposed"],
+                inspect(*tool, &files).expect("installed")
+            );
+            assert!(
+                result["authentication"]
+                    .as_str()
+                    .expect("authentication")
+                    .contains("API credentials")
+            );
+        }
+        let dir = tempfile::tempdir().expect("directory");
+        let files = vec![dir.path().join("settings.json")];
+        let original = r#"{"env":{"ANTHROPIC_API_KEY":"SECRET"}}"#;
+        std::fs::write(&files[0], original).expect("settings");
+        assert!(
+            preview(
+                Harness::Claude,
+                &files,
+                "http://localhost:4123",
+                "route",
+                true
+            )
+            .is_err()
+        );
+        assert_eq!(read(&files[0]).expect("unchanged"), original);
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
+        std::fs::write(&files[0], "{}").expect("settings");
+        let result = preview(
+            Harness::Claude,
+            &files,
+            "http://localhost:4123",
+            "route",
+            true,
+        )
+        .expect("login preview");
+        assert!(
+            result["authentication"]
+                .as_str()
+                .expect("authentication")
+                .contains("subscription login")
+        );
+    }
     #[test]
     fn preserves_user_fields_refreshes_and_restores() {
         let dir = tempfile::tempdir().expect("directory");

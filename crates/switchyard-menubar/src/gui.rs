@@ -10,7 +10,7 @@ use std::sync::{
 };
 use tauri::{
     Manager, State,
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
 
@@ -18,6 +18,26 @@ struct Shared {
     controller: Arc<Mutex<Controller>>,
     // The state is idle (0), busy (1), or closing (2); closing prevents new operations.
     operation: Arc<AtomicU8>,
+}
+struct TrayPreview {
+    today: MenuItem<tauri::Wry>,
+    week: MenuItem<tauri::Wry>,
+}
+impl TrayPreview {
+    fn update(&self, snapshot: &serde_json::Value) -> tauri::Result<()> {
+        for (prefix, item) in [("Today —", &self.today), ("This week —", &self.week)] {
+            let label = snapshot["summary"]
+                .as_array()
+                .and_then(|rows| {
+                    rows.iter()
+                        .filter_map(|row| row.as_str())
+                        .find(|row| row.starts_with(prefix) || *row == "No requests recorded yet")
+                })
+                .unwrap_or("Usage unavailable");
+            item.set_text(label)?;
+        }
+        Ok(())
+    }
 }
 // Operation keeps the app busy from queueing through worker completion.
 // Dropping it returns the state to idle, so the user can retry Quit.
@@ -43,10 +63,13 @@ impl Shared {
 }
 
 #[tauri::command]
-async fn snapshot(state: State<'_, Shared>) -> Result<serde_json::Value, String> {
+async fn snapshot(
+    app: tauri::AppHandle,
+    state: State<'_, Shared>,
+) -> Result<serde_json::Value, String> {
     let operation = state.begin()?;
     let shared = state.controller.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let snapshot = tauri::async_runtime::spawn_blocking(move || {
         let _operation = operation;
         shared
             .try_lock()
@@ -54,7 +77,11 @@ async fn snapshot(state: State<'_, Shared>) -> Result<serde_json::Value, String>
             .snapshot()
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    app.state::<TrayPreview>()
+        .update(&snapshot)
+        .map_err(|e| e.to_string())?;
+    Ok(snapshot)
 }
 #[tauri::command]
 async fn action(state: State<'_, Shared>, action: Action) -> Result<Reply, String> {
@@ -69,6 +96,18 @@ async fn action(state: State<'_, Shared>, action: Action) -> Result<Reply, Strin
     })
     .await
     .map_err(|e| e.to_string())?
+}
+fn open_page(app: &tauri::AppHandle, page: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        // Only the fixed page names from the tray menu reach this script.
+        let script = format!(
+            "window.dispatchEvent(new CustomEvent('switchyard-page', {{detail:{page:?}}}))"
+        );
+        if let Err(error) = window.eval(&script) {
+            eprintln!("switchyard-menubar: could not select the page: {error}");
+        }
+    }
+    show(app);
 }
 fn show(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main")
@@ -86,25 +125,59 @@ pub fn run(controller: Controller) -> Result<(), String> {
         .invoke_handler(tauri::generate_handler![snapshot, action])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Switchyard", true, None::<&str>)?;
+            let install = MenuItem::with_id(app, "install", "Install…", true, None::<&str>)?;
+            let today =
+                MenuItem::with_id(app, "today", "Today — loading usage…", true, None::<&str>)?;
+            let week = MenuItem::with_id(
+                app,
+                "week",
+                "This week — loading usage…",
+                true,
+                None::<&str>,
+            )?;
+            let usage = MenuItem::with_id(app, "usage", "View usage…", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Switchyard", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
-            // The tray keeps a simple high-contrast routing glyph at native resolution.
-            let mut pixels = vec![0u8; 22 * 22 * 4];
-            for y in 3..19 {
-                for x in 3..19 {
-                    if x == 10 || x == 11 || (y < 9 && (x == y + 4 || x + y == 17)) {
-                        let i = (y * 22 + x) * 4;
-                        pixels[i + 3] = 255;
-                    }
-                }
+            let separator = PredefinedMenuItem::separator(app)?;
+            let bottom_separator = PredefinedMenuItem::separator(app)?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &open,
+                    &install,
+                    &separator,
+                    &today,
+                    &week,
+                    &usage,
+                    &bottom_separator,
+                    &settings,
+                    &quit,
+                ],
+            )?;
+            app.manage(TrayPreview { today, week });
+            if let Ok(snapshot) = app
+                .state::<Shared>()
+                .controller
+                .lock()
+                .map_err(|e| e.to_string())?
+                .snapshot()
+            {
+                app.state::<TrayPreview>().update(&snapshot)?;
             }
             TrayIconBuilder::new()
-                .icon(tauri::image::Image::new_owned(pixels, 22, 22))
+                .icon(tauri::image::Image::new_owned(
+                    include_bytes!("../icons/tray.rgba").to_vec(),
+                    22,
+                    22,
+                ))
                 .icon_as_template(true)
                 .tooltip("Switchyard — routes and usage")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show(app),
+                    "open" => open_page(app, "overview"),
+                    "install" => open_page(app, "install"),
+                    "today" | "week" | "usage" => open_page(app, "usage"),
+                    "settings" => open_page(app, "settings"),
                     "quit" if app.state::<Shared>().quit() => app.exit(0),
                     _ => {}
                 })

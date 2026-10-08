@@ -11,6 +11,7 @@
       {
         "label": "main",
         "title": "Switchyard",
+        "theme": "Dark",
         "width": 1080,
         "height": 760,
         "minWidth": 760,
