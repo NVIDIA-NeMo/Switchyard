@@ -169,24 +169,35 @@ async fn child_method() -> TestResult {
     let error = json!({"type": "error", "error": {
         "type": "invalid_request_error", "message": format!("prompt is too long: {MCP_TOKEN}")
     }});
-    for (status, streaming, prefix) in [
-        (401, false, ""),
-        (400, false, ""),
-        (200, false, ""),
-        (200, true, ""),
+    let request_echo = json!({"mcp_servers": retry_body["mcp_servers"]}).to_string();
+    let echoed_request_error = json!({"type": "error", "error": {
+        "type": "invalid_request_error", "message": format!("prompt is too long: {request_echo}")
+    }});
+    let plain_error = json!(format!("rejected MCP token: {MCP_TOKEN}"));
+    for (status, streaming, prefix, error) in [
+        (401, false, "", &error),
+        (400, false, "", &error),
+        (200, false, "", &error),
+        (200, true, "", &error),
         (
             200,
             true,
             "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{}}}\n\n",
+            &error,
         ),
+        (401, false, "", &echoed_request_error),
+        (400, false, "", &echoed_request_error),
+        (401, false, "", &plain_error),
     ] {
         server.reset().await;
         retry_body["stream"] = json!(streaming);
         let template = if streaming {
             ResponseTemplate::new(status)
                 .set_body_raw(format!("{prefix}data: {error}\n\n"), "text/event-stream")
+        } else if let Some(text) = error.as_str() {
+            ResponseTemplate::new(status).set_body_string(text)
         } else {
-            ResponseTemplate::new(status).set_body_json(&error)
+            ResponseTemplate::new(status).set_body_json(error)
         };
         Mock::given(method("POST"))
             .and(path("/v1/messages"))

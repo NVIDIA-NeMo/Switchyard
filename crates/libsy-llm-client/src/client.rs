@@ -529,8 +529,16 @@ impl TranslatingLlmClient {
                 });
             }
         };
-        let body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
-        let body = redact_mcp_tokens(&body, &mcp_tokens);
+        let mut body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
+        if !mcp_tokens.is_empty() {
+            body = match serde_json::from_str::<Value>(&body) {
+                Ok(mut value) => {
+                    redact_mcp_json(&mut value, &mcp_tokens);
+                    value.to_string()
+                }
+                Err(_) => redact_mcp_tokens(&body, &mcp_tokens),
+            };
+        }
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
