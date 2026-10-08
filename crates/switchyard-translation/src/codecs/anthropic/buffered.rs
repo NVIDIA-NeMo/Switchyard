@@ -1569,7 +1569,7 @@ fn validate_anthropic_cache_control(body: &Map<String, Value>) -> Result<()> {
             }
         }
     }
-    if let Some(cache_control) = body.get("cache_control") {
+    if let Some(cache_control) = body.get("cache_control").filter(|value| !value.is_null()) {
         let ttl = cache_ttl(cache_control, "$.cache_control")?;
         // Automatic caching targets the last eligible block, not the first JSON key.
         if order.has_cacheable_block {
@@ -1597,7 +1597,9 @@ struct CacheOrder {
 
 impl CacheOrder {
     fn visit(&mut self, block: &Value, path: impl FnOnce() -> String) -> Result<()> {
-        let ttl = if let Some(cache_control) = block.get("cache_control") {
+        let ttl = if let Some(cache_control) =
+            block.get("cache_control").filter(|value| !value.is_null())
+        {
             let path = path();
             let ttl = cache_ttl(cache_control, &path)?;
             self.check_ttl(ttl, &path)?;
