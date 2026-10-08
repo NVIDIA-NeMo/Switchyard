@@ -138,7 +138,7 @@ impl Controller {
                         "tiers": config.algorithm(&route.key).map(|a| config.roles(&route.key, a).iter().map(|r| r.tier.map(|t| format!("{t:?}"))).collect::<Vec<_>>()),
                         "editable": true, "generated": config.generated_by("routes", &route.key)}));
                 }
-                clients = config.clients().iter().map(|c| json!({"name":c.name,"host":c.host(),"models":config.models_on(&c.name),"unlisted":models::unlisted(c),"accepts_key":!models::unlisted(c) && (c.forward_auth || c.api_key_env.is_some()),"note":models::missing_env(c).map(models::missing_env_note)})).collect();
+                clients = config.clients().iter().map(|c| json!({"name":c.name,"host":c.host(),"models":config.models_on(&c.name),"unlisted":models::unlisted(c),"accepts_key":cfg!(target_os = "macos") && !models::unlisted(c) && (c.forward_auth || c.api_key_env.is_some()),"note":models::missing_env(c).map(models::missing_env_note)})).collect();
             }
             Err(e) => errors.push(e),
         }
@@ -210,6 +210,8 @@ impl Controller {
                     {
                         return Err("This endpoint does not accept a model-list key. Choose an endpoint configured for model-list authentication.".into());
                     }
+                    #[cfg(not(target_os = "macos"))]
+                    models::save_key(&client.base_url, key)?;
                 }
                 let cache = self.settings.with_file_name(models::CACHE_FILE);
                 let result = models::load(
@@ -416,6 +418,7 @@ mod tests {
             assert!(serde_json::from_str::<Action>(input).is_err());
         }
     }
+    #[cfg(target_os = "macos")]
     #[test]
     // A cached list must not let an untested key reach Keychain.
     fn submitting_a_key_checks_upstream_even_when_refresh_is_false() {
@@ -485,6 +488,45 @@ mod tests {
                 .expect("unused key")
                 .contains("does not accept a model-list key")
         );
+    }
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    // Rejecting a typed key must leave the upstream endpoint, model cache, and route config unchanged.
+    fn key_persistence_rejects_without_network_or_file_writes() {
+        let dir = tempfile::tempdir().expect("directory");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let url = format!("http://{}/v1", listener.local_addr().expect("address"));
+        let settings = dir.path().join("settings.toml");
+        let routes = dir.path().join("routes.toml");
+        let text = format!(
+            "[llm_clients.c]\nbase_url={url:?}\nformat='openai_responses'\nforward_auth=true\n[targets.m]\nid='actual'\nllm_client='c'\n[routes.r]\nid='public'\ntype='passthrough'\ntarget='m'\n"
+        );
+        std::fs::write(&routes, &text).expect("routes");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={routes:?}\nrouting_log={:?}",
+                dir.path().join("log")
+            ),
+        )
+        .expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        let result = controller.dispatch(Action::Models {
+            client: "c".into(),
+            refresh: true,
+            key: Some("fixture-key".into()),
+        });
+        assert_eq!(
+            result.err(),
+            Some("Saving model-list keys requires macOS Keychain. On this platform, set the environment variable named by api_key_env and make it available to the app.".into())
+        );
+        assert_eq!(
+            listener.accept().expect_err("no upstream request").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(std::fs::read_to_string(routes).expect("routes"), text);
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
     }
     #[test]
     fn usage_snapshot_survives_missing_and_malformed_route_configs() {

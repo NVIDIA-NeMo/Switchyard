@@ -75,11 +75,14 @@ requests. Shared targets are copied when an edit would change another route.
 
 API keys entered for model lists stay in macOS Keychain. The app sends keys to
 curl through stdin and omits them from frontend snapshots. An endpoint must be
-configured to use authentication before it accepts a model-list key. Submitting
+configured to use authentication before it accepts a model-list key. On macOS, submitting
 a key always requests a fresh model list; a rejected key is not saved and leaves
 the cached list unchanged. Model-list keys do not replace the server's
 `api_key_env` credentials. The app and server LaunchAgents do not load shell
 startup files.
+
+On other platforms, the app rejects entered model-list keys; set the environment
+variable named by the endpoint's `api_key_env` and make it available to the app instead.
 
 ## Install coding-tool settings
 

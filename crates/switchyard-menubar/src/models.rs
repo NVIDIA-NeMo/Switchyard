@@ -430,6 +430,12 @@ pub fn save_key(base_url: &str, key: &str) -> Result<(), String> {
     .map_err(|error| keychain_error(&error))
 }
 
+#[cfg(not(target_os = "macos"))]
+/// This function rejects key persistence because saved model-list keys require macOS Keychain.
+pub fn save_key(_base_url: &str, _key: &str) -> Result<(), String> {
+    Err("Saving model-list keys requires macOS Keychain. On this platform, set the environment variable named by api_key_env and make it available to the app.".into())
+}
+
 /// This function returns the Keychain's message without its final period, so the window
 /// can end its own sentence after it.
 #[cfg(target_os = "macos")]
