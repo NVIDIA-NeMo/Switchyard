@@ -42,6 +42,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         WireFormat::AnthropicMessages.into()
     }
 
+    /// Decodes an Anthropic Messages request body into the neutral IR.
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
         if body
@@ -156,6 +157,13 @@ impl FormatCodec for AnthropicMessagesCodec {
         }
         request.tools = decode_anthropic_tools(body.get("tools"));
         request.tool_choice = body.get("tool_choice").map(decode_anthropic_tool_choice);
+        // A choice that forces a server tool names nothing once that tool is
+        // left out, and an encoder must not demand an undeclared function.
+        if let Some(ToolChoice::Tool { name }) = &request.tool_choice
+            && !request.tools.iter().any(|tool| tool.name == *name)
+        {
+            request.tool_choice = None;
+        }
         request.extensions.fields = provider_extensions(
             body,
             &[
@@ -782,13 +790,23 @@ fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
     FileSource::Raw(Value::Object(block.clone()))
 }
 
-// Decodes Anthropic tool definitions into normalized tool definitions.
+/// Decodes Anthropic tool definitions into normalized tool definitions.
+///
+/// Server tools (a `type` other than `custom`, such as `advisor_20260301` or
+/// `web_search_20250305`) are run by the provider, not the model's client. They
+/// are not functions, so they are left out here: a translated request must not
+/// offer the model a tool nobody runs. Same-format replay keeps them in the body.
 fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
     value
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_object)
+        .filter(|tool| {
+            tool.get("type")
+                .and_then(Value::as_str)
+                .is_none_or(|kind| kind == "custom")
+        })
         .filter_map(|tool| {
             let name = tool.get("name").and_then(Value::as_str)?.to_string();
             (!name.is_empty()).then(|| ToolDefinition {
