@@ -340,3 +340,43 @@ def test_installer_builds_in_source_checkout_with_an_explicit_target_directory(s
     assert lines[0] == str(scripts.parents[1])
     target = lines.index("--target-dir")
     assert lines[target + 1] == str(scripts.parents[1] / "target")
+
+
+def test_named_profile_keeps_route_and_update_settings(setup):
+    _, home, _, env = setup
+    env["SY_PROFILE"] = "stage-gpt-sonnet"
+    env["SY_MODEL"] = 'stage/provider-"model"'
+    result = run(setup, "install.sh")
+    assert result.returncode == 0, result.stderr
+    profile = home / ".codex" / "stage-gpt-sonnet.config.toml"
+    assert tomllib.loads(profile.read_text())["model"] == env["SY_MODEL"]
+    bundle = home / "Applications" / "Switchyard.app" / "Contents"
+    assert (bundle / "MacOS" / "switchyard-server").is_file()
+    update = (bundle / "Resources" / "Update.command").read_text()
+    for key in ["SY_PROFILE", "SY_MODEL"]:
+        line = next(line for line in update.splitlines() if line.startswith(f"export {key}="))
+        assert shlex.split(line.split("=", 1)[1])[0] == env[key]
+    assert run(setup, "uninstall.sh").returncode == 0
+    assert not profile.exists()
+
+
+@pytest.mark.parametrize("name", ["../escape", "", "a/b", "a\nname", "x" * 129])
+def test_invalid_profile_name_rejects_before_install(setup, name):
+    _, home, switchyard_home, env = setup
+    env["SY_PROFILE"] = name
+    result = run(setup, "install.sh")
+    assert result.returncode == 2
+    assert "SY_PROFILE" in result.stderr
+    assert not switchyard_home.exists()
+    assert not (home / "Applications").exists()
+
+
+@pytest.mark.parametrize("model", ["", "model\nname", "model\rname", "model\x01name", "model\x7fname"])
+def test_invalid_model_rejects_before_install(setup, model):
+    _, home, switchyard_home, env = setup
+    env["SY_MODEL"] = model
+    result = run(setup, "install.sh")
+    assert result.returncode == 2
+    assert "SY_MODEL" in result.stderr
+    assert not switchyard_home.exists()
+    assert not (home / "Applications").exists()

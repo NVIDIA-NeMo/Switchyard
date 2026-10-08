@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Ties the pieces together: read the log, probe the server, build the rows.
+//! This module reads the routing log, checks the server, and builds usage summary rows.
 
 use chrono::Local;
 
@@ -10,7 +10,7 @@ use crate::health::{ServerStatus, probe};
 use crate::rollup;
 use crate::summary::{Row, build};
 
-/// Reads new log entries and returns the server status and menu rows.
+/// This function reads new log entries and returns the server status and menu rows.
 pub fn refresh(config: &Config, log: &mut rollup::Reader) -> (ServerStatus, Vec<Row>) {
     let usage = log
         .read(&config.routing_log, Local::now().date_naive())

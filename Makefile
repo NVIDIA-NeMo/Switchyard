@@ -8,7 +8,7 @@ help:
 	@echo "install-linux          Install the systemd user service and Codex profile"
 	@echo "install-linux-dry-run  Preview installation without changes"
 	@echo "uninstall-linux        Remove the service and Codex profile"
-	@echo "install-macos          Install the background server and menu bar app"
+	@echo "install-macos          Install the background server and desktop app"
 	@echo "install-macos-dry-run  Preview installation without changes"
 	@echo "uninstall-macos        Remove the LaunchAgents and Codex profile"
 
@@ -24,14 +24,14 @@ install-linux-dry-run:
 uninstall-linux:
 	@scripts/linux/uninstall.sh
 
-## Install the Switchyard background server and menu bar app for this user.
+## This target installs the Switchyard background server and desktop app for this user.
 install-macos:
 	@scripts/macos/install.sh
 
-## Print what install-macos would do, without changing anything.
+## This target prints the commands that install-macos would run.
 install-macos-dry-run:
 	@scripts/macos/install.sh --dry-run
 
-## Remove the LaunchAgents, the sy Codex profile, and the codex alias.
+## This target removes the app, LaunchAgents, selected Codex profile, and legacy codex alias.
 uninstall-macos:
 	@scripts/macos/uninstall.sh

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Token totals for today and the past week, read from the server's routing log.
+//! This module totals tokens for today and the past week from the server's routing log.
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
@@ -11,24 +11,23 @@ use std::path::Path;
 use chrono::{DateTime, Local, NaiveDate};
 use serde::Deserialize;
 
-/// Tier value the server writes for classifier and judge calls.
+/// CLASSIFIER_TIER matches the tier recorded for classifier and judge calls.
 const CLASSIFIER_TIER: &str = "classifier";
 
-/// Billable token counts for one model.
+/// ModelTokens stores recorded token counts for one model.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ModelTokens {
     pub requests: u64,
-    /// Input tokens billed at the full rate. Cache writes bill at that rate
-    /// too, so they are counted here rather than tracked separately.
+    /// This field counts input tokens priced at the full rate, including cache writes.
     pub input: u64,
-    /// Input tokens served from the provider cache.
+    /// This field counts input tokens served from the provider cache.
     pub cached_input: u64,
-    /// Generated tokens, including reasoning.
+    /// This field counts generated tokens, including reasoning.
     pub output: u64,
 }
 
 impl ModelTokens {
-    /// Every token the provider counted, cached reads included.
+    /// This function returns the recorded token total, including cached reads.
     pub fn total(&self) -> u64 {
         self.input + self.cached_input + self.output
     }
@@ -41,15 +40,15 @@ impl ModelTokens {
     }
 }
 
-/// Tokens for a period, split by who asked for them.
+/// Totals separates caller-facing calls from classifier calls for a period.
 ///
 /// The split matters for savings: without Switchyard the `routed` calls would
 /// still have happened, but the `classifier` calls would not exist at all.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
-    /// Calls that served the caller, keyed by the model that answered.
+    /// This field groups caller-facing calls by the model that answered.
     pub routed: BTreeMap<String, ModelTokens>,
-    /// Switchyard's own classifier and judge calls, keyed by model.
+    /// This field groups classifier and judge calls by model.
     pub classifier: BTreeMap<String, ModelTokens>,
 }
 
@@ -78,12 +77,12 @@ impl Totals {
         }
     }
 
-    /// Calls made on the caller's behalf.
+    /// This function returns the number of caller-facing calls.
     pub fn requests(&self) -> u64 {
         self.routed.values().map(|tokens| tokens.requests).sum()
     }
 
-    /// Every token spent, Switchyard's own routing overhead included.
+    /// This function totals recorded tokens, including routing overhead.
     pub fn tokens(&self) -> u64 {
         self.routed
             .values()
@@ -92,20 +91,20 @@ impl Totals {
             .sum()
     }
 
-    /// True when nothing was recorded.
+    /// This function returns true when neither group contains recorded calls.
     pub fn is_empty(&self) -> bool {
         self.routed.is_empty() && self.classifier.is_empty()
     }
 }
 
-/// What the menu shows.
+/// Usage stores totals for the daily and weekly summaries.
 #[derive(Clone, Debug, Default)]
 pub struct Usage {
     pub today: Totals,
     pub week: Totals,
 }
 
-/// Fields the rollup needs from one routing log line.
+/// Record contains the fields used to total one routing log entry.
 #[derive(Deserialize)]
 struct Record {
     ts: String,
@@ -133,7 +132,7 @@ impl Record {
     }
 }
 
-/// Keeps daily totals and reads only newly completed log lines.
+/// Reader keeps daily totals and reads only newly completed log lines.
 #[derive(Default)]
 pub struct Reader {
     metadata: Option<Metadata>,
@@ -227,7 +226,7 @@ mod tests {
         text.parse().expect("valid date")
     }
 
-    /// Builds a log line stamped at a local time, mirroring how the server
+    /// This function builds a log line stamped at a local time, mirroring how the server
     /// writes timestamps for events that happened in the local day.
     fn line(local_ts: &str, model: &str, tier: &str, prompt: u64, completion: u64) -> String {
         let offset = Local::now().offset().to_string();

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Reads the server config and rewrites one route's algorithm and models.
+//! This module reads the server config and rewrites one route's algorithm and models.
 //!
 //! Edits go through `toml_edit`, so comments, formatting, and every table the
 //! edit does not touch stay as the user wrote them. The server's own
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
-/// The part a model plays in a route. A choice made for one algorithm carries
+/// Tier identifies the part a model plays in a route. A choice made for one algorithm carries
 /// over to the role with the same tier when the user switches algorithms.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Tier {
@@ -20,31 +20,31 @@ pub enum Tier {
     Efficient,
 }
 
-/// A route `type` the picker can write.
+/// Algorithm describes a route `type` the apps can write.
 #[derive(Debug)]
 pub struct Algorithm {
     pub kind: &'static str,
-    /// The name the window shows, in plain words.
+    /// This field sets the name shown in both apps.
     pub title: &'static str,
     pub summary: &'static str,
-    /// The roles, in the order the window lists them. The list is empty for
+    /// This field lists roles in display order. The list is empty for
     /// `random`, whose roles are the entries of its `targets` list.
     roles: &'static [RoleSpec],
-    /// Required settings written when a route switches to this type. They
+    /// This field lists settings written when a route switches to this type. They
     /// match the values the routing docs use in their examples.
     settings: &'static [(&'static [&'static str], Setting)],
-    /// Whether the type accepts a nested `subagents` policy.
+    /// This field records whether the type accepts a nested `subagents` policy.
     subagents: bool,
 }
 
-/// One role of an algorithm.
+/// RoleSpec describes one role of an algorithm.
 #[derive(Debug)]
 struct RoleSpec {
     label: &'static str,
-    /// A sentence that says what the role does.
+    /// This field explains what the role does.
     hint: &'static str,
     tier: Tier,
-    /// The key path under the route that names the role's target.
+    /// This field names the key path to the role's target under the route.
     path: &'static [&'static str],
 }
 
@@ -65,14 +65,14 @@ impl Setting {
 
 const RANDOM: &str = "random";
 
-/// The route types from the routing docs, in the order the picker lists them.
+/// ALGORITHMS lists supported route types in display order.
 /// `noop` and the experimental `prefill_router` are left out: one calls no
 /// model, and the other needs a checkpoint file rather than models.
 pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         kind: "passthrough",
         title: "Single model",
-        summary: "Sends every request to one model.",
+        summary: "This algorithm sends every request to one model.",
         roles: &[RoleSpec {
             label: "Model",
             hint: "This model answers every request.",
@@ -85,7 +85,7 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         kind: RANDOM,
         title: "Random split",
-        summary: "Splits requests at random between the models, for A/B tests and baselines.",
+        summary: "This algorithm splits requests at random between models for A/B tests and baselines.",
         roles: &[],
         settings: &[],
         subagents: false,
@@ -227,7 +227,7 @@ pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         kind: "auto",
         title: "Recommended preset",
-        summary: "A stage router that starts each request on the efficient model.",
+        summary: "This stage router starts each request on the efficient model.",
         roles: &[
             RoleSpec {
                 label: "Capable",
@@ -247,7 +247,7 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
 ];
 
-/// Route keys every type accepts. Switching types keeps these and removes
+/// COMMON_ROUTE_KEYS lists keys that every route type accepts. Switching types keeps these and removes
 /// the rest, so settings of the old type cannot fail the new type's checks.
 const COMMON_ROUTE_KEYS: [&str; 6] = [
     "id",
@@ -258,12 +258,12 @@ const COMMON_ROUTE_KEYS: [&str; 6] = [
     "vision",
 ];
 
-/// Target settings that change the request body. The server keeps one
+/// REQUEST_SETTINGS lists target settings that change the request body. The server keeps one
 /// target per model on a client, so it rejects two targets that name the
 /// same model on the same client with different values for these.
 const REQUEST_SETTINGS: [&str; 3] = ["omit_body_fields", "reasoning_effort", "extra_body"];
 
-/// Target settings that a route takes on when it uses the target.
+/// TARGET_SETTINGS lists settings that a route takes on when it uses the target.
 const TARGET_SETTINGS: [&str; 4] = [
     "system_prompt",
     "reasoning_effort",
@@ -271,17 +271,17 @@ const TARGET_SETTINGS: [&str; 4] = [
     "omit_body_fields",
 ];
 
-/// One entry under `[routes]`.
+/// Route describes one entry under `[routes]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Route {
-    /// The route's table name in this file. Callers never send it.
+    /// This field names the route's table in this file. Callers never send it.
     pub key: String,
-    /// The public model ID that callers send.
+    /// This field sets the public model ID that callers send.
     pub id: String,
     pub kind: String,
 }
 
-/// One entry under `[llm_clients]`.
+/// Client describes one entry under `[llm_clients]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Client {
     pub name: String,
@@ -292,7 +292,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Returns the host in `base_url`, such as `chatgpt.com`. A port stays.
+    /// This function returns the host in `base_url`, such as `chatgpt.com`. A port stays.
     pub fn host(&self) -> &str {
         let rest = self
             .base_url
@@ -303,34 +303,35 @@ impl Client {
     }
 }
 
-/// A model on an LLM client, as a target names it.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Choice identifies a model and the client that serves it.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Choice {
     pub client: String,
     pub model: String,
 }
 
-/// A model the algorithm needs, such as the judge.
+/// Role describes a model the algorithm needs, such as the judge.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Role {
     pub label: String,
-    /// A sentence that says what the role does.
+    /// This field explains what the role does.
     pub hint: &'static str,
     pub tier: Option<Tier>,
     slot: Slot,
 }
 
-/// Where a route names a role's target.
+/// Slot identifies where a route names a role's target.
 #[derive(Clone, Debug, PartialEq)]
 enum Slot {
-    /// A key path, such as `stage.capable_target`.
+    /// Key identifies a key path, such as `stage.capable_target`.
     Key(&'static [&'static str]),
-    /// An entry of a random route's `targets` list.
+    /// Listed identifies an entry of a random route's `targets` list.
     Listed(usize),
 }
 
 impl Slot {
-    /// Returns the slot's key path under the route, such as
+    /// This function returns the slot's key path under the route, such as
     /// `stage.capable_target`.
     fn path(&self) -> String {
         match self {
@@ -340,21 +341,20 @@ impl Slot {
     }
 }
 
-/// The result of [`ServerConfig::edit`].
+/// Edited stores the result of [`ServerConfig::edit`].
 #[derive(Debug)]
 pub struct Edited {
-    /// The new config text.
+    /// This field stores the new config text.
     pub text: String,
-    /// What the user should know about the edit, one sentence each.
+    /// This field stores user-facing notes about the edit.
     pub notes: Vec<String>,
 }
 
-/// A parsed server config that keeps the original text's layout.
+/// ServerConfig keeps the parsed config and the original text's layout.
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
     doc: DocumentMut,
-    /// The `routes.name` and `targets.name` tables that sit inside blocks
-    /// another tool writes, each with the text of its block's first marker.
+    /// This field maps tables inside generated blocks to each block's first marker.
     generated: HashMap<String, String>,
 }
 
@@ -398,7 +398,7 @@ impl ServerConfig {
             .collect()
     }
 
-    /// Returns the text of the marker that opens the block another tool
+    /// This function returns the text of the marker that opens the block another tool
     /// writes around `[table.key]`, when the table sits inside one. That tool
     /// overwrites the table the next time it runs.
     pub fn generated_by(&self, table: &str, key: &str) -> Option<&str> {
@@ -407,7 +407,7 @@ impl ServerConfig {
             .map(String::as_str)
     }
 
-    /// Returns the model IDs that targets name on `client`, sorted, each once.
+    /// This function returns the model IDs that targets name on `client`, sorted, each once.
     pub fn models_on(&self, client: &str) -> Vec<String> {
         let mut models: Vec<String> = entries(self.table("targets"))
             .filter(|(_, target)| text(*target, "llm_client") == Some(client))
@@ -418,7 +418,7 @@ impl ServerConfig {
         models
     }
 
-    /// Returns the algorithm a route uses now, or `None` when the picker
+    /// This function returns the algorithm a route uses now, or `None` when the picker
     /// cannot show it, such as a custom-mode classifier whose groups are
     /// free-form.
     pub fn algorithm(&self, route: &str) -> Option<&'static Algorithm> {
@@ -430,7 +430,7 @@ impl ServerConfig {
         ALGORITHMS.iter().find(|algorithm| algorithm.kind == kind)
     }
 
-    /// Returns the roles that `algorithm` needs on `route`. A random route
+    /// This function returns the roles that `algorithm` needs on `route`. A random route
     /// keeps its number of targets, and has at least two.
     pub fn roles(&self, route: &str, algorithm: &Algorithm) -> Vec<Role> {
         if algorithm.kind != RANDOM {
@@ -465,7 +465,7 @@ impl ServerConfig {
             .collect()
     }
 
-    /// Returns the model that each role of the route's current algorithm
+    /// This function returns the model that each role of the route's current algorithm
     /// uses. A role whose target is missing gets an empty choice.
     pub fn choices(&self, route: &str) -> Vec<Choice> {
         let Some(algorithm) = self.algorithm(route) else {
@@ -481,16 +481,14 @@ impl ServerConfig {
             .collect()
     }
 
-    /// Returns the config text with `route` switched to `algorithm`, using
+    /// This function returns the config text with `route` switched to `algorithm`, using
     /// one choice per role, and notes about the edit.
     ///
-    /// For each role, in order of preference: keep the route's target when it
-    /// already names the model; use another target that names exactly this
-    /// model on this client when the route would get the same target
-    /// settings from it, or when the server would reject a second target for
-    /// that model; change the route's target in place when no other route or
-    /// role uses it, including a role earlier in this edit; otherwise add a
-    /// new target that copies it. A changed or copied target keeps settings
+    /// Each role keeps its target if it already names the selected model.
+    /// Otherwise, this function reuses a matching target with equivalent settings,
+    /// or with request settings that prevent the server from accepting a duplicate.
+    /// If neither exists, this function edits an unshared target or copies a shared one.
+    /// Roles earlier in this edit also count as users of a target. A changed or copied target keeps settings
     /// such as `extra_body` and `omit_body_fields`, including settings meant
     /// for the old model. Targets no route uses any more are left in the file.
     pub fn edit(
@@ -671,7 +669,7 @@ impl ServerConfig {
         users
     }
 
-    /// Returns the file position for a new `[targets.*]` table. The table
+    /// This function returns the file position for a new `[targets.*]` table. The table
     /// goes after the last target outside every generated block, so that the
     /// next rewrite of a block cannot delete it. When every target sits
     /// inside a block, any other place is next to a generated target, so the
@@ -690,7 +688,7 @@ impl ServerConfig {
             })
     }
 
-    /// Says so when the edit sends the callers' logins to another host. A
+    /// This function says so when the edit sends the callers' logins to another host. A
     /// client with `forward_auth` sends each caller's own login, and a caller
     /// that has none for the new host gets HTTP 401.
     fn login_note(&self, route: &str, choices: &[Choice]) -> Option<String> {
@@ -712,7 +710,7 @@ impl ServerConfig {
         ))
     }
 
-    /// Returns a warning when the route sits inside a block that another tool
+    /// This function returns a warning when the route sits inside a block that another tool
     /// writes, which overwrites the route, or when the route uses targets
     /// inside such a block, which that tool can change or remove.
     fn generated_note(&self, route: &str, targets: &[String]) -> Option<String> {
@@ -742,7 +740,7 @@ impl ServerConfig {
     }
 }
 
-/// Picks or writes the target that serves `choice` for one role. Returns its
+/// This function picks or writes the target that serves `choice` for one role. Returns its
 /// name, and the model that the target named before when the edit changed
 /// the target in place or copied it. Reusing a target adds the route to the
 /// target's users, so a later role in the same edit copies that target
@@ -823,7 +821,7 @@ fn choose_target<'a>(
     Ok((name, old))
 }
 
-/// Returns a note about the request settings that a target kept when the
+/// This function returns a note about the request settings that a target kept when the
 /// edit moved it from `old` to `new`, a model of another family or on a
 /// client with another request format. A setting meant for the old model can
 /// make the provider reject the new model's requests, and `--dry-run` does
@@ -871,7 +869,7 @@ fn kept_settings_note(
     })
 }
 
-/// Returns a model's family: the first word of the last part of its ID,
+/// This function returns a model's family: the first word of the last part of its ID,
 /// such as `gpt` for `openai/gpt-5.6-sol`.
 fn family(model: &str) -> String {
     let name = model.rsplit('/').next().unwrap_or(model);
@@ -881,7 +879,7 @@ fn family(model: &str) -> String {
         .to_lowercase()
 }
 
-/// Returns another target that names `choice` and that a role whose target
+/// This function returns another target that names `choice` and that a role whose target
 /// is `current` may use. The role takes on that target's settings. So it
 /// uses a target with the same settings as `current`, or else a target whose
 /// request settings differ from `current`, because the server would reject a
@@ -911,7 +909,7 @@ fn reusable<'t>(
         .map(|(name, _)| *name)
 }
 
-/// Returns a target's setting as plain data, so the same value written in
+/// This function returns a target's setting as plain data, so the same value written in
 /// another layout compares equal.
 fn setting(target: &dyn TableLike, key: &str) -> Option<toml::Value> {
     let mut table = Table::new();
@@ -923,7 +921,7 @@ fn setting(target: &dyn TableLike, key: &str) -> Option<toml::Value> {
         .remove(key)
 }
 
-/// Clears the file position of every table in `item`. A copied sub-table
+/// This function clears the file position of every table in `item`. A copied sub-table
 /// then follows the header of the table it is copied into, not the header
 /// of the table it came from.
 fn unplace(item: &mut Item) {
@@ -935,13 +933,13 @@ fn unplace(item: &mut Item) {
     }
 }
 
-/// Returns whether a target names exactly this model on this client.
+/// This function returns whether a target names exactly this model on this client.
 fn names_choice(target: &dyn TableLike, choice: &Choice) -> bool {
     text(target, "llm_client") == Some(choice.client.as_str())
         && text(target, "id") == Some(choice.model.as_str())
 }
 
-/// Removes the old type's settings and sets the new `type`. Returns the
+/// This function removes the old type's settings, sets the new `type`, and returns the
 /// removed settings as key paths, such as `classifier.base_threshold`. The
 /// list leaves out `old_slots`, the old roles' targets, which the new roles
 /// replace.
@@ -969,7 +967,7 @@ fn reset_route(
     removed
 }
 
-/// Adds the key path of every value in `item` to `paths`.
+/// This function adds the key path of every value in `item` to `paths`.
 fn key_paths(path: &str, item: &Item, paths: &mut Vec<String>) {
     match item.as_table_like() {
         Some(table) => {
@@ -999,7 +997,7 @@ fn set_slot(route: &mut dyn TableLike, slot: &Slot, name: &str) {
     }
 }
 
-/// Sets a value at a key path, creating missing tables on the way.
+/// This function sets a value at a key path, creating missing tables on the way.
 fn set_at(table: &mut dyn TableLike, path: &[&str], value: Value) {
     match path {
         [] => {}
@@ -1015,7 +1013,7 @@ fn set_at(table: &mut dyn TableLike, path: &[&str], value: Value) {
     }
 }
 
-/// Replaces a value, keeping the spacing and trailing comment around it.
+/// This function replaces a value, keeping the spacing and trailing comment around it.
 fn set_value(table: &mut dyn TableLike, key: &str, mut value: Value) {
     if let Some(old) = table.get_mut(key).and_then(Item::as_value_mut) {
         *value.decor_mut() = old.decor().clone();
@@ -1061,7 +1059,7 @@ fn visit_value(value: &Value, visit: &mut dyn FnMut(&str)) {
     }
 }
 
-/// Returns the hosts that get the callers' own logins: the hosts of the
+/// This function returns the hosts that get the callers' own logins: the hosts of the
 /// `forward_auth` clients that `choices` name, sorted, each once.
 fn login_hosts<'c>(clients: &'c [Client], choices: &[Choice]) -> Vec<&'c str> {
     let mut hosts: Vec<&str> = choices
@@ -1075,7 +1073,7 @@ fn login_hosts<'c>(clients: &'c [Client], choices: &[Choice]) -> Vec<&'c str> {
     hosts
 }
 
-/// Finds the route and target tables that sit inside blocks another tool
+/// This function finds the route and target tables that sit inside blocks another tool
 /// writes. A block starts at a line that begins with `# >>>` and ends at the
 /// next line that begins with `# <<<`, the markers that the installer scripts
 /// use. Each table maps to the text of its block's first marker, with the `#`
@@ -1105,7 +1103,7 @@ fn generated_tables(text: &str) -> HashMap<String, String> {
     tables
 }
 
-/// Returns the first key of a table header's dotted path, bare or in double
+/// This function returns the first key of a table header's dotted path, bare or in double
 /// quotes: `name` for `name.child]`, and `a.b` for `"a.b"]`.
 fn table_key(path: &str) -> Option<&str> {
     if let Some(quoted) = path.strip_prefix('"') {
@@ -1118,8 +1116,7 @@ fn table_key(path: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    /// A composite route with a GPT judge on a Responses client and Claude on
-    /// a Chat Completions client, both on one gateway.
+    /// This fixture uses a GPT judge and Claude on one gateway with different API formats.
     const GATEWAY: &str = r#"schema_version = 1
 
 [llm_clients.gateway]
@@ -1179,7 +1176,7 @@ confidence_threshold = 0.5
             .expect("known algorithm")
     }
 
-    /// Edits the config and checks the result with the server's parser.
+    /// This function edits the config and checks the result with the server's parser.
     fn edit(text: &str, route: &str, kind: &str, choices: &[Choice]) -> Edited {
         let edited = ServerConfig::parse(text)
             .expect("parse")
@@ -1222,7 +1219,7 @@ confidence_threshold = 0.5
 
     #[test]
     fn a_target_one_role_reuses_is_not_changed_for_another_role() {
-        // Capable moves to the efficient model, and Efficient to a new one.
+        // Capable moves to the efficient model, and Efficient moves to a new model.
         let chosen = [
             choice("gateway", "gpt-5.6-terra"),
             choice("gateway_chat", "claude-sonnet-5"),
@@ -1495,8 +1492,8 @@ confidence_threshold = 0.5
         }
     }
 
-    /// A config whose last target and route sit inside a block that a script
-    /// writes. A hand-written route shares the capable target.
+    /// This fixture places the last target and route inside a generated block.
+    /// A hand-written route shares the capable target.
     fn with_generated_block() -> String {
         format!(
             "{GATEWAY}\n[routes.direct]\nid = \"direct\"\ntype = \"passthrough\"\n\
@@ -1595,7 +1592,7 @@ confidence_threshold = 0.5
     fn warns_when_a_change_is_inside_a_generated_block() {
         let text = with_generated_block();
 
-        // A route inside the block: the tool overwrites the change.
+        // The tool overwrites changes to a route inside its generated block.
         let inside = edit(
             &text,
             "generated",
@@ -1611,7 +1608,7 @@ confidence_threshold = 0.5
             inside.notes
         );
 
-        // A hand-written route that ends up on a target inside the block.
+        // The hand-written route now uses a target inside the generated block.
         let outside = edit(
             &text,
             "direct",

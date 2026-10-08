@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Controls the installed server: check a config with its `--dry-run`, save
-//! it, and restart the LaunchAgent that runs it.
+//! This module validates and saves server configs and restarts the server LaunchAgent.
 
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
@@ -17,16 +16,16 @@ use crate::health::{ServerStatus, probe};
 use crate::models;
 use crate::server_config::{Algorithm, Choice, ServerConfig};
 
-/// How long to wait for the restarted server to answer `/health`.
+/// RESTART_WAIT limits how long the app waits for the restarted server to answer `/health`.
 const RESTART_WAIT: Duration = Duration::from_secs(10);
 
-/// How many backups one file can get within one second.
+/// BACKUPS_PER_SECOND limits the number of backups for one file within one second.
 const BACKUPS_PER_SECOND: u32 = 100;
 
-/// Switches a route to new models, checks the result with the server's
+/// This function switches a route to new models, checks the result with the server's
 /// `--dry-run`, saves it, and restarts the server.
 ///
-/// Returns what happened on success, one line each: the saved file and its
+/// This function reports what happened on success, one line each: the saved file and its
 /// backup, the restart, notes about the edit, and the check. An error means
 /// the config file was not changed.
 pub fn apply(
@@ -39,7 +38,7 @@ pub fn apply(
     // Read the file again so an edit made while the window was open is kept.
     let text = std::fs::read_to_string(path).map_err(|error| {
         format!(
-            "Could not read {}: {error}. Check config_file in the menu bar settings.",
+            "Could not read {}: {error}. Check config_file in the app settings.",
             path.display()
         )
     })?;
@@ -86,7 +85,7 @@ pub fn apply(
     Ok(lines.join("\n"))
 }
 
-/// Adds advice to a check error that comes from a missing `api_key_env`
+/// This function adds advice to a check error that comes from a missing `api_key_env`
 /// variable. The check runs with this app's environment, which is not the
 /// user's shell environment.
 fn explain(error: String) -> String {
@@ -101,8 +100,8 @@ fn explain(error: String) -> String {
     }
 }
 
-/// Returns the `switchyard-server` installed next to this app, which is the
-/// binary that the server's LaunchAgent runs.
+/// This function returns the validator installed beside the app executable.
+/// The app bundle and server LaunchAgent use separate copies built by the same install.
 fn server_binary() -> Result<PathBuf, String> {
     std::env::current_exe()
         .map(|exe| exe.with_file_name("switchyard-server"))
@@ -114,7 +113,7 @@ fn server_binary() -> Result<PathBuf, String> {
         })
 }
 
-/// Checks `text` with `switchyard-server --dry-run`, then replaces `path`
+/// This function checks `text` with `switchyard-server --dry-run`, then replaces `path`
 /// with it, keeping `original`, the text that `path` held, as a timestamped
 /// backup. Returns the backup's path.
 ///
@@ -178,7 +177,7 @@ fn save_checked(binary: &Path, path: &Path, original: &str, text: &str) -> Resul
     Ok(backup)
 }
 
-/// Writes `text` to a new backup of `file` and returns its path. The backup
+/// This function writes `text` to a new backup of `file` and returns its path. The backup
 /// is `<file>.switchyard-backup.<timestamp>`, the name the installer uses,
 /// with `-2`, `-3`, and so on added when that name is taken, so a backup
 /// never replaces another one. The backup gets the file's permissions before
@@ -221,7 +220,7 @@ fn back_up(file: &Path, text: &str) -> Result<PathBuf, std::io::Error> {
     ))
 }
 
-/// Runs `switchyard-server --config <config> --dry-run`, and returns its
+/// This function runs `switchyard-server --config <config> --dry-run`, and returns its
 /// error output when the config is invalid.
 fn check(binary: &Path, config: &Path) -> Result<(), String> {
     let output = Command::new(binary)
@@ -244,7 +243,7 @@ fn check(binary: &Path, config: &Path) -> Result<(), String> {
     Err(if stderr.is_empty() { stdout } else { stderr })
 }
 
-/// Restarts the server's LaunchAgent.
+/// This function restarts the server's LaunchAgent.
 pub fn restart(launchd_label: &str) -> Result<(), String> {
     let uid = command("id", &["-u"])?;
     let target = format!("gui/{}/{launchd_label}", uid.trim());
@@ -264,7 +263,7 @@ fn wait_for_health(server_url: &str) -> bool {
     }
 }
 
-/// Runs a command, returning its stdout or a message naming what failed.
+/// This function runs a command, returning its stdout or a message naming what failed.
 pub fn command(program: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(program)
         .args(args)
@@ -285,7 +284,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// Writes a stand-in for `switchyard-server` that runs `body`.
+    /// This function writes a stand-in for `switchyard-server` that runs `body`.
     fn fake_server(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("switchyard-server");
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Removes what install.sh added: the two LaunchAgents, the `sy` Codex profile,
+# This script removes the app, two LaunchAgents, selected Codex profile,
 # and the codex alias. Your config, routing log, and binaries stay put; the
 # paths are printed so you can delete them yourself.
 #
@@ -35,7 +35,7 @@ done
 
 run rm -rf "$APP_PATH"
 
-step "Removing the sy Codex profile"
+step "Removing the $SY_PROFILE Codex profile"
 remove_file "$CODEX_PROFILE_CONFIG"
 remove_file "$CODEX_SWITCHYARD_CONFIG"
 # Older installs of this script put the profile in config.toml instead.
@@ -73,4 +73,4 @@ say "Left in place, delete them if you want:"
 say "  $SY_HOME (binaries, config, routing log, model lists, logs)"
 say "  $CODEX_CONFIG.switchyard-current.* (configs preserved during restore)"
 say "  $CODEX_PROFILE_CONFIG.switchyard-backup.* (profile backups)"
-say "  Keychain items named \"Switchyard model list\" (keys saved from Change routing…; delete them in Keychain Access)"
+say "  Keychain items named \"Switchyard model list\" (keys saved from Routes; delete them in Keychain Access)"

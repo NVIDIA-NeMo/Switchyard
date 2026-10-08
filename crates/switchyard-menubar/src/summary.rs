@@ -1,17 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Turns totals and prices into the rows the menu shows.
+//! This module turns totals and prices into usage summary rows.
 
 use crate::config::Config;
 use crate::health::ServerStatus;
 use crate::pricing::{Savings, estimate, unpriced};
 use crate::rollup::{Totals, Usage};
 
-/// Most model rows shown, so the menu stays short.
+/// MAX_MODEL_ROWS limits the number of models shown in the usage summary.
 const MAX_MODEL_ROWS: usize = 5;
 
-/// One line of the menu. Rows are informational; the actions are fixed.
+/// Row represents one informational line or separator in the usage summary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
     Separator,
@@ -22,7 +22,7 @@ fn label(text: impl Into<String>) -> Row {
     Row::Label(text.into())
 }
 
-/// Builds the menu body for the current day and trailing week.
+/// This function builds the menu body for the current day and trailing week.
 pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<Row> {
     let state = match status {
         ServerStatus::Running => "running",
@@ -72,7 +72,7 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<Row> {
     rows
 }
 
-/// Names at most three models, so that the menu row stays short.
+/// This function names at most three models, so that the menu row stays short.
 fn listed(models: &[&str]) -> String {
     match models {
         [first, second, third, rest @ ..] if !rest.is_empty() => {
@@ -113,7 +113,7 @@ fn model_shares(week: &Totals) -> Vec<Row> {
         .iter()
         .map(|(model, tokens)| (model, tokens.total()))
         .collect();
-    // Largest share first; model id breaks ties so the order is stable.
+    // Models appear by decreasing share; the model ID breaks ties for a stable order.
     models.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
     models
         .into_iter()
@@ -127,7 +127,7 @@ fn model_shares(week: &Totals) -> Vec<Row> {
         .collect()
 }
 
-/// Formats a token count compactly, since exact totals are not useful here.
+/// This function formats a token count compactly, since exact totals are not useful here.
 fn tokens(value: u64) -> String {
     match value {
         0..=9_999 => value.to_string(),
@@ -137,7 +137,7 @@ fn tokens(value: u64) -> String {
     }
 }
 
-/// Formats dollars, keeping the sign readable when routing cost more than it saved.
+/// This function formats dollars, keeping the sign readable when routing cost more than it saved.
 fn money(value: f64) -> String {
     if value < 0.0 {
         format!("-${:.2}", -value)

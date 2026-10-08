@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Menu bar settings, read from `~/.switchyard/menubar.toml`.
+//! This module reads app settings from `~/.switchyard/menubar.toml`.
 
 use std::path::{Path, PathBuf};
 
@@ -9,24 +9,24 @@ use serde::Deserialize;
 
 use crate::pricing::PriceTable;
 
-/// Everything the menu bar needs to find the server and price its traffic.
+/// Config stores the settings the apps use to find the server and estimate costs.
 /// Missing keys fall back to [`Config::default`].
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Base URL the server listens on, used for the health check.
+    /// This field sets the server base URL used for health checks.
     pub server_url: String,
-    /// JSONL file the server appends routing records to.
+    /// This field names the JSONL file where the server appends routing records.
     pub routing_log: PathBuf,
-    /// Server TOML, opened by the "Open server config" menu item.
+    /// This field names the server TOML file opened by "Open server config".
     pub config_file: PathBuf,
-    /// LaunchAgent label used to restart the server.
+    /// This field names the LaunchAgent used to restart the server.
     pub launchd_label: String,
-    /// How often the menu contents are recomputed.
+    /// This field sets the usage refresh interval in seconds.
     pub refresh_seconds: u64,
-    /// Model the traffic is assumed to have used without Switchyard.
+    /// This field names the model used to estimate costs without routing.
     pub baseline_model: String,
-    /// Per-model rates. Dollar figures are hidden while a seen model is absent.
+    /// This field stores per-model rates; missing rates hide dollar figures.
     pub prices: PriceTable,
 }
 
@@ -45,7 +45,7 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Parses settings, falling back to defaults when the file is absent.
+    /// This function parses settings and uses defaults when the file is absent.
     pub fn load(path: &Path) -> Result<Self, String> {
         let mut config: Self = match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text)
@@ -58,7 +58,7 @@ impl Config {
         Ok(config)
     }
 
-    /// Default settings path, `~/.switchyard/menubar.toml`.
+    /// This function returns the default settings path, `~/.switchyard/menubar.toml`.
     pub fn default_path() -> PathBuf {
         expand_home(Path::new("~/.switchyard/menubar.toml"))
     }
@@ -72,7 +72,7 @@ pub fn validate_toml_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Rewrites a leading `~`. Paths are written by hand in the settings file,
+/// This function rewrites a leading `~`. Paths are written by hand in the settings file,
 /// where `~` is the natural way to spell a home path.
 pub fn expand_home(path: &Path) -> PathBuf {
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);

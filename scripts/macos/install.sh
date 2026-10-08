@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # This script installs Switchyard.app, loads the server and app as per-user
-# LaunchAgents, and sets up a `sy` Codex profile.
+# LaunchAgents, and sets up the selected Codex profile.
 #
-# It keeps existing server and menu bar settings and backs up sy.config.toml
+# It keeps existing server and app settings and backs up the selected profile
 # before replacing it. The --dry-run option prints the installation commands.
 
 set -euo pipefail
@@ -54,7 +54,9 @@ done
 
 step "Installing $APP_PATH"
 run mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
-run install -m 755 "$REPO_ROOT/target/release/switchyard-menubar" "$APP_PATH/Contents/MacOS/switchyard-menubar"
+for binary in switchyard-menubar switchyard-server; do
+  run install -m 755 "$REPO_ROOT/target/release/$binary" "$APP_PATH/Contents/MacOS/$binary"
+done
 write_always "$APP_PATH/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -81,6 +83,8 @@ set -euo pipefail
 export PATH="\$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
 export SY_HOME=$(shell_quote "$SY_HOME")
 export SY_PORT=$(shell_quote "$SY_PORT")
+export SY_PROFILE=$(shell_quote "$SY_PROFILE")
+export SY_MODEL=$(shell_quote "$SY_MODEL")
 export CODEX_HOME=$(shell_quote "$CODEX_DIR")
 bash $(shell_quote "$SCRIPT_DIR/install.sh")
 EOF
@@ -88,7 +92,7 @@ run chmod 755 "$APP_PATH/Contents/MacOS/Switchyard" "$APP_PATH/Contents/Resource
 run codesign --force --deep --sign - "$APP_PATH"
 
 step "Writing server config"
-# Keep macOS and Linux on the same routing defaults.
+# Both installers use the same routing defaults.
 write_once "$SY_HOME/composite.toml" < "$REPO_ROOT/scripts/config/composite.toml"
 
 step "Writing menu bar settings"
@@ -102,9 +106,8 @@ config_file = "$TOML_SY_HOME/composite.toml"
 launchd_label = "$SERVER_LABEL"
 refresh_seconds = 30
 
-# The model the traffic is assumed to have used without Switchyard. Savings
-# are the difference between that bill and what actually ran, with
-# Switchyard's own classifier calls counted against it.
+# The baseline model prices caller-facing calls as if routing had not changed models.
+# Savings subtract actual calls, including classifier calls, from that estimate.
 baseline_model = "gpt-5.6-sol"
 
 [prices."gpt-5.6-sol"]
@@ -181,8 +184,8 @@ write_always "$LAUNCH_AGENTS/$SERVER_LABEL.plist" <<EOF
 </plist>
 EOF
 
-# SuccessfulExit false means the Quit menu item stays quit, while a crash is
-# still restarted. Aqua-only, since there is no menu bar without a login session.
+# SuccessfulExit false makes launchd restart crashes but leave a normal Quit alone.
+# The app runs only in an Aqua login session, where the tray is available.
 write_always "$LAUNCH_AGENTS/$MENUBAR_LABEL.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -229,16 +232,18 @@ for label in "$SERVER_LABEL" "$MENUBAR_LABEL"; do
   say "  loaded $label"
 done
 
-step "Adding the sy Codex profile"
+step "Adding the $SY_PROFILE Codex profile"
 # This profile only changes which router answers. Approval and sandbox
 # settings are deliberately left out, so the profile cannot loosen how Codex
 # asks before it acts. Set those yourself if you want them.
-sed "s/@SY_PORT@/$SY_PORT/g" "$REPO_ROOT/scripts/config/codex.sy.toml" |
-  write_with_backup "$CODEX_PROFILE_CONFIG"
+{
+  printf 'model = "%s"\n' "$(toml_escape_basic_string "$SY_MODEL")"
+  tail -n +2 "$REPO_ROOT/scripts/config/codex.sy.toml" | sed "s/@SY_PORT@/$SY_PORT/g"
+} | write_with_backup "$CODEX_PROFILE_CONFIG"
 
 step "Done"
 say "Server:   http://127.0.0.1:$SY_PORT  (logs in $SY_HOME/logs)"
-say "Use it with: codex -p sy (requires Codex CLI 0.134.0 or newer)"
+say "Use it with: codex -p $SY_PROFILE (requires Codex CLI 0.134.0 or newer)"
 say "Settings: $SY_HOME/menubar.toml"
 say "App: $APP_PATH (open it from Finder or Spotlight)"
 say "Use Update from source… in the app to rebuild from this checkout."

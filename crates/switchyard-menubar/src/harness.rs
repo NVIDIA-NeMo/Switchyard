@@ -8,7 +8,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, value};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Harness {
     CodexCli,
     CodexApp,

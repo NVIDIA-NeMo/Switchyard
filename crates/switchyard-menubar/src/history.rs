@@ -4,14 +4,14 @@
 //! This module reads recent completed model calls and filters them by recorded IDs.
 
 use serde::Deserialize;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_RECORDS: usize = 5000;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 pub struct Entry {
     pub ts: String,
     pub model: String,
@@ -108,36 +108,6 @@ impl History {
             .into_iter()
             .collect()
     }
-
-    pub fn display(&self, session: Option<&str>) -> String {
-        let mut lines = vec![format!("{} completed requests{} · {} unreadable records skipped", self.entries.len(), if self.limited { " in the recent log window" } else { "" }, self.skipped), "Input includes cached reads. Classifier calls are routing overhead. Each line is one model call; a user turn can contain several calls.".into()];
-        let entries: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|e| session.is_none_or(|s| e.session_id.as_deref() == Some(s)))
-            .collect();
-        let mut models: BTreeMap<&str, (u64, u64, u64)> = BTreeMap::new();
-        for entry in &entries {
-            let totals = models.entry(&entry.model).or_default();
-            totals.0 = totals.0.saturating_add(entry.prompt_tokens);
-            totals.1 = totals.1.saturating_add(entry.cached_tokens);
-            totals.2 = totals.2.saturating_add(entry.completion_tokens);
-        }
-        lines.push("\nModels in this view".into());
-        for (model, (input, cached, output)) in models {
-            lines.push(format!(
-                "{model}    Input {input}    Cached {cached}    Output {output}"
-            ));
-        }
-        lines.push("\nRecent calls (newest first)".into());
-        for entry in entries.into_iter().rev() {
-            lines.push(format!("\n{}    {}{}\nSession: {}    Turn: {}\nRoute: {}    Input: {}    Cached: {}    Output: {}", entry.ts, entry.model, if entry.tier == "classifier" { " (routing overhead)" } else { "" }, entry.session_id.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("Not recorded"), entry.turn_id.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("Not recorded"), entry.route_id, entry.prompt_tokens, entry.cached_tokens, entry.completion_tokens));
-        }
-        if self.entries.is_empty() {
-            lines.push("No completed calls recorded. Run a coding session through Switchyard, then click Refresh.".into());
-        }
-        lines.join("\n")
-    }
 }
 
 #[cfg(test)]
@@ -150,12 +120,14 @@ mod tests {
         assert_eq!(history.sessions(), vec!["s"]);
         assert_eq!(history.entries.len(), 2);
         assert_eq!(history.skipped, 1);
-        let text = history.display(Some("s"));
-        assert!(text.contains("Turn: t"));
-        assert!(text.contains("Input: 12"));
-        assert!(!text.contains("judge"));
-        assert!(!text.contains("SECRET"));
-        assert!(history.display(None).contains("Not recorded"));
+        assert_eq!(history.entries[0].turn_id.as_deref(), Some("t"));
+        assert_eq!(history.entries[0].prompt_tokens, 12);
+        assert!(
+            !serde_json::to_string(&history.entries)
+                .expect("snapshot")
+                .contains("SECRET")
+        );
+        assert!(history.entries[1].session_id.is_none());
     }
     #[test]
     fn reads_a_bounded_tail_and_keeps_only_recent_records() {

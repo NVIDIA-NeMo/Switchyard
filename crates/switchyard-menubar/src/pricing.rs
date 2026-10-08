@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Counterfactual cost: what routed traffic cost against what it would have
-//! cost had every call gone to one capable model.
+//! This module compares recorded calls at configured rates with the baseline model estimate.
 
 use std::collections::BTreeMap;
 
@@ -12,14 +11,14 @@ use crate::rollup::{ModelTokens, Totals};
 
 const PER_MILLION: f64 = 1_000_000.0;
 
-/// Per-million-token rates for one model.
+/// ModelPrice stores rates per million tokens for one model.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 pub struct ModelPrice {
     pub input_per_mtok: f64,
-    /// Rate for cache reads. Falls back to the full input rate.
+    /// This field sets the cache-read rate and defaults to the full input rate.
     #[serde(default)]
     pub cached_input_per_mtok: Option<f64>,
-    /// Rate for generated tokens, reasoning included.
+    /// This field sets the rate for generated tokens, including reasoning.
     pub output_per_mtok: f64,
 }
 
@@ -33,33 +32,33 @@ impl ModelPrice {
     }
 }
 
-/// Rates keyed by the model id the server records in the routing log.
+/// PriceTable stores rates by the model ID recorded in the routing log.
 pub type PriceTable = BTreeMap<String, ModelPrice>;
 
-/// What the traffic cost, and what it would have cost without routing.
+/// Savings stores estimated costs with and without routing.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Savings {
-    /// Cost of the calls that actually ran, classifier overhead included.
+    /// This field stores the estimated cost of recorded calls, including classifier calls.
     pub actual: f64,
-    /// Cost of the same caller-facing calls had they all used the baseline model.
+    /// This field estimates caller-facing calls at the baseline model rates.
     pub baseline: f64,
 }
 
 impl Savings {
-    /// Dollars kept. Negative when routing overhead outweighed the cheaper tier.
+    /// This function returns estimated dollars saved; routing overhead can make the value negative.
     pub fn saved(&self) -> f64 {
         self.baseline - self.actual
     }
 
-    /// Fraction of the baseline bill avoided, or `None` with nothing to compare.
+    /// This function returns the percentage saved, or `None` when the baseline cost is zero.
     pub fn percent(&self) -> Option<f64> {
         (self.baseline > 0.0).then(|| self.saved() / self.baseline * 100.0)
     }
 }
 
-/// Prices a period against the baseline model.
+/// This function prices a period against the baseline model.
 ///
-/// Returns `None` when any model seen has no entry in the table, since a
+/// This function returns `None` when any model seen has no entry in the table, since a
 /// partial bill would understate cost and overstate savings.
 pub fn estimate(totals: &Totals, prices: &PriceTable, baseline_model: &str) -> Option<Savings> {
     let baseline_price = prices.get(baseline_model)?;
@@ -79,7 +78,7 @@ pub fn estimate(totals: &Totals, prices: &PriceTable, baseline_model: &str) -> O
     Some(Savings { actual, baseline })
 }
 
-/// Returns the models in `models` that have no entry in `prices`, sorted and
+/// This function returns the models in `models` that have no entry in `prices`, sorted and
 /// each once. Such a model makes [`estimate`] return `None`.
 pub fn unpriced<'a>(
     models: impl IntoIterator<Item = &'a str>,
