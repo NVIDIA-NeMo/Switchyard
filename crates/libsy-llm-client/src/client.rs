@@ -1295,6 +1295,13 @@ fn is_non_forwardable_header(name: &str, headers: &HeaderMap) -> bool {
         })
 }
 
+// Shortest value worth scrubbing out of an upstream error body. A provider
+// credential is far longer than this; a value below it matches unrelated text
+// and rewrites the upstream's own words. `x-stainless-retry-count: 0`, which the
+// OpenAI and Anthropic SDKs send on every request, would otherwise turn every
+// zero in a rate-limit message into `[REDACTED]`.
+const MIN_REDACTED_VALUE_LEN: usize = 16;
+
 // Unknown application headers can carry credentials when auth forwarding is enabled.
 fn redact_forwarded_headers(
     mut body: String,
@@ -1314,7 +1321,7 @@ fn redact_forwarded_headers(
         let Ok(value) = value.to_str() else {
             continue;
         };
-        if !value.is_empty() {
+        if value.len() >= MIN_REDACTED_VALUE_LEN {
             body = body.replace(value, "[REDACTED]");
         }
     }
@@ -2950,6 +2957,42 @@ mod tests {
         };
         assert_eq!(body, r#"{"error":{"message":"rejected [REDACTED]"}}"#);
         Ok(())
+    }
+
+    #[test]
+    fn redaction_leaves_the_upstream_error_intact() {
+        let body = concat!(
+            r#"{"error":{"type":"rate_limit_error","message":"rate limit of 40000 input "#,
+            r#"tokens per minute. Retry after 30 seconds. rejected client-google-key"}}"#,
+        );
+
+        let mut headers = http::HeaderMap::new();
+        // What every OpenAI- and Anthropic-SDK request carries.
+        headers.insert(
+            "x-stainless-retry-count",
+            http::HeaderValue::from_static("0"),
+        );
+        headers.insert("x-stainless-lang", http::HeaderValue::from_static("js"));
+        // Long enough to be a credential, and the existing forward_auth test
+        // relies on this one being scrubbed.
+        headers.insert(
+            "x-goog-api-key",
+            http::HeaderValue::from_static("client-google-key"),
+        );
+        let metadata = Metadata {
+            http_headers: Some(headers),
+            ..Metadata::default()
+        };
+
+        let redacted = redact_forwarded_headers(body.to_string(), Some(&metadata), true);
+
+        assert!(
+            redacted.contains("rate limit of 40000 input tokens per minute"),
+            "{redacted}"
+        );
+        assert!(redacted.contains("Retry after 30 seconds."), "{redacted}");
+        assert!(redacted.contains("rejected [REDACTED]"), "{redacted}");
+        assert!(!redacted.contains("client-google-key"), "{redacted}");
     }
 
     // Exercises the `RoutedLlmClient` impl: `call` uses the model already materialized in the
