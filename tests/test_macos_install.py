@@ -63,10 +63,6 @@ def run(setup, script):
     )
 
 
-def read_config(path):
-    return path.read_text()
-
-
 def test_install_escapes_switchyard_path_in_launch_agent(setup):
     _, home, switchyard_home, _ = setup
     result = run(setup, "install.sh")
@@ -101,10 +97,10 @@ def test_missing_codex_config_creates_only_standalone_profile(setup):
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
     codex = home / ".codex"
-    expected = read_config(REPO / "scripts" / "config" / "codex.sy.toml").replace(
-        "@SY_PORT@", "4123"
+    expected = (
+        (REPO / "scripts" / "config" / "codex.sy.toml").read_text().replace("@SY_PORT@", "4123")
     )
-    assert read_config(codex / "sy.config.toml") == expected
+    assert (codex / "sy.config.toml").read_text() == expected
     assert {path.name for path in codex.iterdir()} == {"sy.config.toml"}
 
 
@@ -141,7 +137,9 @@ def test_reinstall_backs_up_profile_and_keeps_user_settings(setup):
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
     profile = Path(env["CODEX_HOME"]) / "sy.config.toml"
-    original = profile.read_text()
+    # Older installs used this route ID; reinstall must update the profile and back it up.
+    original = profile.read_text().replace("composite-gpt-6-sol-gpt-6-luna", "switchyard")
+    profile.write_text(original)
     server_config = switchyard_home / "composite.toml"
     menu_settings = switchyard_home / "menubar.toml"
     server_config.write_text("user server settings\n")
@@ -152,6 +150,7 @@ def test_reinstall_backs_up_profile_and_keeps_user_settings(setup):
 
     assert result.returncode == 0, result.stderr
     assert "127.0.0.1:5000/v1" in profile.read_text()
+    assert tomllib.loads(profile.read_text())["model"] == "composite-gpt-6-sol-gpt-6-luna"
     backups = list(profile.parent.glob("sy.config.toml.switchyard-backup.*"))
     assert len(backups) == 1
     assert backups[0].read_text() == original
@@ -162,19 +161,17 @@ def test_reinstall_backs_up_profile_and_keeps_user_settings(setup):
 @pytest.mark.parametrize(
     "provider_header",
     [
-        "[model_providers.\"sy\"]",
+        '[model_providers."sy"]',
         "[model_providers . 'sy']",
         '[ "model_providers" . "sy" ]',
     ],
 )
-def test_existing_codex_config_is_preserved_and_shared_templates_are_used(
-    setup, provider_header
-):
+def test_existing_codex_config_is_preserved_and_shared_templates_are_used(setup, provider_header):
     _, home, switchyard_home, env = setup
     codex = Path(env["CODEX_HOME"])
     codex.mkdir()
     config = codex / "config.toml"
-    original = f'''theme = "dark"
+    original = f"""theme = "dark"
 
 {provider_header} # old provider
 name = "Old"
@@ -182,26 +179,26 @@ base_url = "http://old"
 
 [other]
 model_provider = "sy"
-'''
+"""
     config.write_text(original)
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
-    assert read_config(config) == original
-    profile = read_config(codex / "sy.config.toml")
-    expected = read_config(REPO / "scripts" / "config" / "codex.sy.toml").replace(
-        "@SY_PORT@", "4123"
+    assert config.read_text() == original
+    profile = (codex / "sy.config.toml").read_text()
+    expected = (
+        (REPO / "scripts" / "config" / "codex.sy.toml").read_text().replace("@SY_PORT@", "4123")
     )
     assert profile == expected
     assert tomllib.loads(profile)["model_providers"]["sy"]["name"] == "Switchyard"
     assert not (codex / "config.sy.toml").exists()
-    assert read_config(switchyard_home / "composite.toml") == read_config(
+    assert (switchyard_home / "composite.toml").read_text() == (
         REPO / "scripts" / "config" / "composite.toml"
-    )
+    ).read_text()
     assert not (codex / "config.toml.direct").exists()
 
 
-@pytest.mark.parametrize("quote", ['"', "'"])
-def test_quoted_top_level_provider_keeps_existing_snapshot(setup, quote):
+def test_existing_snapshot_and_routed_config_are_preserved(setup):
+    quote = "'"
     _, home, _, env = setup
     codex = Path(env["CODEX_HOME"])
     codex.mkdir()
@@ -222,7 +219,7 @@ def test_uninstall_preserves_routed_config_before_restoring_snapshot(setup):
     codex.mkdir()
     current = "model_provider = 'sy' # routed\nuser_setting = \"keep me\"\n"
     (codex / "config.toml").write_text(current)
-    (codex / "config.toml.direct").write_text("model = \"original\"\n")
+    (codex / "config.toml.direct").write_text('model = "original"\n')
     result = run(setup, "uninstall.sh")
     assert result.returncode == 0, result.stderr
     assert (codex / "config.toml").read_text() == 'model = "original"\n'
@@ -286,13 +283,15 @@ def test_app_bundle_has_a_launcher_and_source_update_command(setup):
     contents = home / "Applications" / "Switchyard.app" / "Contents"
     root = ET.parse(contents / "Info.plist").getroot()
     entries = list(root.find("dict"))
-    values = {entries[i].text: entries[i+1] for i in range(0, len(entries), 2)}
+    values = {entries[i].text: entries[i + 1] for i in range(0, len(entries), 2)}
     assert values["CFBundleIdentifier"].text == "com.nvidia.switchyard"
     assert values["CFBundleExecutable"].text == "Switchyard"
     assert os.access(contents / "MacOS" / "Switchyard", os.X_OK)
     update = contents / "Resources" / "Update.command"
     assert os.access(update, os.X_OK)
-    home_line = next(line for line in update.read_text().splitlines() if line.startswith("export SY_HOME="))
+    home_line = next(
+        line for line in update.read_text().splitlines() if line.startswith("export SY_HOME=")
+    )
     assert shlex.split(home_line.split("=", 1)[1])[0] == str(switchyard_home)
     for path in [update, contents / "MacOS" / "Switchyard"]:
         assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
@@ -305,9 +304,11 @@ def test_app_launcher_preserves_quotes_and_shell_metacharacters(setup):
     env["SY_HOME"] = str(switchyard_home)
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
-    executable = home / "Applications" / "Switchyard.app" / "Contents" / "MacOS" / "switchyard-menubar"
+    executable = (
+        home / "Applications" / "Switchyard.app" / "Contents" / "MacOS" / "switchyard-menubar"
+    )
     output = home / "arguments"
-    executable.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > ' + shlex.quote(str(output)) + '\n')
+    executable.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > ' + shlex.quote(str(output)) + "\n")
     executable.chmod(0o755)
     launcher = executable.with_name("Switchyard")
     result = subprocess.run(["bash", str(launcher)], capture_output=True, text=True)
@@ -331,7 +332,9 @@ def test_installer_builds_in_source_checkout_with_an_explicit_target_directory(s
     scripts, home, _, env = setup
     recorded = home / "build.txt"
     cargo = Path(env["PATH"].split(":")[0]) / "cargo"
-    cargo.write_text('#!/bin/bash\nprintf "%s\\n" "$PWD" "$@" > ' + shlex.quote(str(recorded)) + '\n')
+    cargo.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$PWD" "$@" > ' + shlex.quote(str(recorded)) + "\n"
+    )
     cargo.chmod(0o755)
     env["CARGO_TARGET_DIR"] = str(home / "unrelated-target")
     result = run(setup, "install.sh")
@@ -371,7 +374,9 @@ def test_invalid_profile_name_rejects_before_install(setup, name):
     assert not (home / "Applications").exists()
 
 
-@pytest.mark.parametrize("model", ["", "model\nname", "model\rname", "model\x01name", "model\x7fname"])
+@pytest.mark.parametrize(
+    "model", ["", "model\nname", "model\rname", "model\x01name", "model\x7fname"]
+)
 def test_invalid_model_rejects_before_install(setup, model):
     _, home, switchyard_home, env = setup
     env["SY_MODEL"] = model

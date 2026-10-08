@@ -160,13 +160,14 @@ type SavedKeys = Mutex<HashMap<String, Result<Option<String>, String>>>;
 /// [`ListError::NotCached`], and the file keeps its old list. When a fetch
 /// fails, the cached list comes back with the error.
 ///
-/// `typed_key` is a key the user just entered. When it is set, clients that
-/// send a key use it instead of their environment variable or the Keychain.
+/// `typed_key` contains the selected `base_url` and the key the user entered.
+/// Clients with that exact URL use the key instead of their environment variable
+/// or the Keychain when they require authentication. Other URLs keep their own credentials.
 pub fn load(
     cache: &Path,
     clients: &[Client],
     refresh: bool,
-    typed_key: Option<&str>,
+    typed_key: Option<(&str, &str)>,
     loaded: &(dyn Fn(&Loaded) + Sync),
 ) -> Vec<Loaded> {
     let cached = read_cache(cache);
@@ -178,6 +179,9 @@ pub fn load(
                 let old = cached.get(&url).cloned();
                 let saved_keys = &saved_keys;
                 scope.spawn(move || {
+                    let typed_key = typed_key
+                        .filter(|(base_url, _)| *base_url == client.base_url)
+                        .map(|(_, key)| key);
                     let entry = load_url(cache, url, client, old, refresh, typed_key, saved_keys);
                     loaded(&entry);
                     entry
@@ -532,9 +536,13 @@ fn fetch(url: &str, format: &str, key: Option<&str>) -> Result<Vec<String>, List
             (Some(key), _) => format!("Authorization: Bearer {key}\n"),
             (None, _) => String::new(),
         };
-        stdin
-            .write_all(headers.as_bytes())
-            .map_err(|error| failed(format!("send headers to curl: {error}")))?;
+        let sent = stdin.write_all(headers.as_bytes());
+        drop(stdin);
+        if let Err(error) = sent {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(failed(format!("send headers to curl: {error}")));
+        }
     }
     let output = child
         .wait_with_output()
@@ -579,27 +587,39 @@ fn parse_ids(body: &str) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
-    use std::net::TcpListener;
-    use std::sync::Arc;
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
-    /// Server returns the configured response and records each request header.
-    /// Its thread waits in `accept` until the test process exits.
+    /// Stub returns the configured response and records each request header.
+    /// Drop wakes its listener and joins the worker so a failed assertion cannot leave it running.
     struct Stub {
         /// This field sets the client base URL used to list models from this server.
         url: String,
         response: Arc<Mutex<String>>,
         requests: Arc<Mutex<Vec<Vec<String>>>>,
+        address: SocketAddr,
+        stopping: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Stub {
         fn start(response: String) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-            let url = format!("http://{}/v1", listener.local_addr().expect("addr"));
+            let address = listener.local_addr().expect("addr");
+            let url = format!("http://{address}/v1");
             let response = Arc::new(Mutex::new(response));
             let requests = Arc::new(Mutex::new(Vec::new()));
+            let stopping = Arc::new(AtomicBool::new(false));
+            let stop = Arc::clone(&stopping);
             let (answer, record) = (Arc::clone(&response), Arc::clone(&requests));
-            std::thread::spawn(move || {
+            let worker = std::thread::spawn(move || {
                 for mut stream in listener.incoming().map_while(Result::ok) {
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
                     let mut head = Vec::new();
                     let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
                     let mut line = String::new();
@@ -616,6 +636,9 @@ mod tests {
                 url,
                 response,
                 requests,
+                address,
+                stopping,
+                worker: Some(worker),
             }
         }
 
@@ -625,6 +648,16 @@ mod tests {
 
         fn requests(&self) -> Vec<Vec<String>> {
             self.requests.lock().expect("lock").clone()
+        }
+    }
+
+    impl Drop for Stub {
+        fn drop(&mut self) {
+            self.stopping.store(true, Ordering::Release);
+            let _ = TcpStream::connect(self.address);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
         }
     }
 
@@ -657,6 +690,57 @@ mod tests {
             .collect()
     }
 
+    // The subprocess isolates PATH; its curl fixture exits before reading the oversized header.
+    #[cfg(unix)]
+    #[test]
+    fn failed_header_write_reaps_the_curl_process() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(record) = std::env::var("SWITCHYARD_CURL_FIXTURE") {
+            let error = fetch(
+                "http://localhost/models",
+                "openai_chat",
+                Some(&"k".repeat(1024 * 1024)),
+            )
+            .expect_err("header write fails");
+            assert!(
+                matches!(error, ListError::Failed(message) if message.starts_with("send headers to curl:"))
+            );
+            let pid = std::fs::read_to_string(record).expect("curl PID");
+            assert!(
+                !Command::new("/bin/kill")
+                    .args(["-0", pid.trim()])
+                    .status()
+                    .expect("process status")
+                    .success()
+            );
+            return;
+        }
+        let dir = tempfile::tempdir().expect("fixture");
+        let record = dir.path().join("pid");
+        let curl = dir.path().join("curl");
+        std::fs::write(
+            &curl,
+            "#!/bin/sh\nprintf '%s' \"$$\" > \"$SWITCHYARD_CURL_FIXTURE\"\nexit 1\n",
+        )
+        .expect("curl fixture");
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700))
+            .expect("permissions");
+        let output = Command::new(std::env::current_exe().expect("runner"))
+            .args([
+                "--exact",
+                "models::tests::failed_header_write_reaps_the_curl_process",
+            ])
+            .env("SWITCHYARD_CURL_FIXTURE", &record)
+            .env("PATH", dir.path())
+            .output()
+            .expect("child");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
     #[test]
     fn fetches_a_missing_list_once_and_then_uses_the_cached_list() {
         let stub = Stub::start(listing(&["model-b", "model-a"]));
@@ -668,7 +752,13 @@ mod tests {
             client("gateway_chat", "openai_chat", &stub.url),
         ];
 
-        let first = load(&cache, &clients, false, Some("test-key"), &|_| {});
+        let first = load(
+            &cache,
+            &clients,
+            false,
+            Some((&stub.url, "test-key")),
+            &|_| {},
+        );
         // A cached list needs neither a request nor a key.
         let second = load(&cache, &clients, false, None, &|_| {});
 
@@ -689,15 +779,68 @@ mod tests {
     }
 
     #[test]
+    fn entered_key_is_sent_only_to_its_selected_base_url() {
+        let selected = Stub::start(listing(&["selected"]));
+        let unrelated = Stub::start(listing(&["unrelated"]));
+        let unauthenticated = Stub::start(listing(&["public"]));
+        let dir = tempfile::tempdir().expect("fixture");
+        let clients = [
+            client("selected", "openai_chat", &selected.url),
+            Client {
+                api_key_env: Some("SWITCHYARD_MENUBAR_TEST_UNSET_KEY".into()),
+                ..client("unrelated", "openai_chat", &unrelated.url)
+            },
+            Client {
+                forward_auth: false,
+                ..client("public", "openai_chat", &unauthenticated.url)
+            },
+        ];
+        let loaded = load(
+            &dir.path().join(CACHE_FILE),
+            &clients,
+            true,
+            Some((&selected.url, "selected-secret")),
+            &|_| {},
+        );
+        assert_eq!(loaded[0].error, None);
+        assert_eq!(selected.requests().len(), 1);
+        assert!(selected.requests()[0].contains(&"Authorization: Bearer selected-secret".into()));
+        assert_eq!(
+            loaded[1].error,
+            Some(ListError::NoEnv("SWITCHYARD_MENUBAR_TEST_UNSET_KEY".into()))
+        );
+        assert!(unrelated.requests().is_empty());
+        assert_eq!(loaded[2].error, None);
+        assert_eq!(unauthenticated.requests().len(), 1);
+        assert!(
+            unauthenticated.requests()[0]
+                .iter()
+                .all(|header| !header.starts_with("Authorization:"))
+        );
+    }
+
+    #[test]
     fn refresh_fetches_again_and_replaces_the_cached_list() {
         let stub = Stub::start(listing(&["old-model"]));
         let dir = tempfile::tempdir().expect("tempdir");
         let cache = dir.path().join(CACHE_FILE);
         let clients = [client("gateway", "openai_chat", &stub.url)];
-        load(&cache, &clients, false, Some("test-key"), &|_| {});
+        load(
+            &cache,
+            &clients,
+            false,
+            Some((&stub.url, "test-key")),
+            &|_| {},
+        );
         stub.answer(listing(&["new-model"]));
 
-        let refreshed = load(&cache, &clients, true, Some("test-key"), &|_| {});
+        let refreshed = load(
+            &cache,
+            &clients,
+            true,
+            Some((&stub.url, "test-key")),
+            &|_| {},
+        );
         let later = load(&cache, &clients, false, None, &|_| {});
 
         assert_eq!(stub.requests().len(), 2);
@@ -712,12 +855,24 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let cache = dir.path().join(CACHE_FILE);
         let clients = [client("gateway", "openai_chat", &stub.url)];
-        let first = load(&cache, &clients, false, Some("test-key"), &|_| {});
+        let first = load(
+            &cache,
+            &clients,
+            false,
+            Some((&stub.url, "test-key")),
+            &|_| {},
+        );
         stub.answer(
             "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n{}".to_string(),
         );
 
-        let refreshed = load(&cache, &clients, true, Some("test-key"), &|_| {});
+        let refreshed = load(
+            &cache,
+            &clients,
+            true,
+            Some((&stub.url, "test-key")),
+            &|_| {},
+        );
         let later = load(&cache, &clients, false, None, &|_| {});
 
         assert_eq!(stub.requests().len(), 2);
@@ -748,7 +903,7 @@ mod tests {
             &dir.path().join(CACHE_FILE),
             &clients,
             false,
-            Some("test-key"),
+            Some((&stub.url, "test-key")),
             &|_| {},
         );
 
@@ -770,7 +925,13 @@ mod tests {
         let cache = dir.path().join("missing").join(CACHE_FILE);
         let clients = [client("gateway", "openai_chat", &stub.url)];
 
-        let loaded = load(&cache, &clients, false, Some("test-key"), &|_| {});
+        let loaded = load(
+            &cache,
+            &clients,
+            false,
+            Some((&stub.url, "test-key")),
+            &|_| {},
+        );
 
         assert_eq!(models(&loaded), ["model-a"]);
         assert!(

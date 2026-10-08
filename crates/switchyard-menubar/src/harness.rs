@@ -236,23 +236,35 @@ fn codex_settings(text: &str, root: &str, model: &str, login: bool) -> Result<St
 fn claude_settings(text: &str, root: &str, model: &str, login: bool) -> Result<String, String> {
     let mut doc = object(text)?;
     let env = map(&mut doc, "env")?;
-    env["ANTHROPIC_BASE_URL"] = json!(root);
-    env["ANTHROPIC_MODEL"] = json!(model);
-    // All model roles use the selected public route, including subagents.
-    for key in [
+    let role_models = [
         "ANTHROPIC_DEFAULT_OPUS_MODEL",
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    ] {
+    ];
+    // The complete installation signature distinguishes our placeholder from a user credential.
+    let prior_switchyard = env["ANTHROPIC_BASE_URL"].as_str() == Some(root)
+        && env["ANTHROPIC_AUTH_TOKEN"].as_str() == Some("switchyard-local")
+        && env["ANTHROPIC_API_KEY"].as_str() == Some("")
+        && env["ANTHROPIC_MODEL"]
+            .as_str()
+            .is_some_and(|model| !model.is_empty())
+        && role_models
+            .iter()
+            .all(|key| env[*key] == env["ANTHROPIC_MODEL"]);
+    env["ANTHROPIC_BASE_URL"] = json!(root);
+    env["ANTHROPIC_MODEL"] = json!(model);
+    // All model roles use the selected public route, including subagents.
+    for key in role_models {
         env[key] = json!(model);
     }
     if login {
+        if prior_switchyard {
+            let values = env.as_object_mut().ok_or("env must be a JSON object.")?;
+            values.remove("ANTHROPIC_AUTH_TOKEN");
+            values.remove("ANTHROPIC_API_KEY");
+        }
         for key in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
-            if env
-                .get(key)
-                .and_then(Value::as_str)
-                .is_some_and(|s| !s.is_empty())
-            {
+            if env.get(key).is_some_and(|value| value.as_str() != Some("")) {
                 return Err(format!(
                     "{key} overrides subscription login. Remove it from Claude settings before installing this route."
                 ));
@@ -336,6 +348,11 @@ pub fn install(
     login: bool,
 ) -> Result<String, String> {
     let root = validate(tool, root, model, login)?;
+    for path in files {
+        if read_file(&restore_pending_path(path))?.is_some() {
+            return Err("A previous restore did not finish retiring its backups. Retry Restore before installing another route.".into());
+        }
+    }
     let originals = files
         .iter()
         .map(|p| read_file(p))
@@ -348,18 +365,13 @@ pub fn install(
         if read_file(&backup)?.is_some() || read_file(&absent)?.is_some() {
             continue;
         }
-        match before {
-            Some(text) => {
-                prepare(&backup, text)?
-                    .persist_noclobber(&backup)
-                    .map_err(|e| e.to_string())?;
-            }
-            None => {
-                prepare(&absent, "")?
-                    .persist_noclobber(&absent)
-                    .map_err(|e| e.to_string())?;
-            }
-        }
+        let (destination, text) = match before {
+            Some(text) => (&backup, text.as_str()),
+            None => (&absent, ""),
+        };
+        prepare(destination, text)?
+            .persist_noclobber(destination)
+            .map_err(|e| e.to_string())?;
     }
     replace(files, &originals, &incoming)?;
     Ok("Saved the Switchyard settings and kept the original backup. Restart the coding tool. For Codex CLI, use codex -p sy. Pi can reload models with /model. Project settings and shell variables can override these user defaults.".into())
@@ -378,20 +390,38 @@ fn absent_path(path: &Path) -> PathBuf {
     backup_path(path).with_extension("switchyard-original-missing")
 }
 
+fn restore_pending_path(path: &Path) -> PathBuf {
+    backup_path(path).with_extension("switchyard-restore-pending")
+}
+
+// Restore receipts keep the original contents or absence available until backup cleanup finishes.
 pub fn restore(files: &[PathBuf]) -> Result<String, String> {
+    let pending = files
+        .iter()
+        .map(|path| read_file(&restore_pending_path(path)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let resuming = pending.iter().any(Option::is_some);
     let mut restored = Vec::new();
-    for path in files {
+    for (path, pending) in files.iter().zip(pending) {
         let original = read_file(&backup_path(path))?;
         let absent = read_file(&absent_path(path))?.is_some();
-        if original.is_none() && !absent {
-            return Err("No original backup is available for this installation.".into());
-        }
+        let original = match pending {
+            Some(text) => serde_json::from_str::<Option<String>>(&text)
+                .map_err(|e| format!("Read pending restore: {e}"))?,
+            // A cleared receipt means this file finished restoring; retry preserves later user edits.
+            None if original.is_none() && !absent && resuming => read_file(path)?,
+            None if original.is_none() && !absent => {
+                return Err("No original backup is available for this installation.".into());
+            }
+            None => original,
+        };
         restored.push(original);
     }
     let current = files
         .iter()
         .map(|p| read_file(p))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut kept_paths = Vec::new();
     for (path, before) in files.iter().zip(&current) {
         let Some(before) = before else {
             continue;
@@ -404,10 +434,46 @@ pub fn restore(files: &[PathBuf]) -> Result<String, String> {
             .write_all(before.as_bytes())
             .map_err(|e| e.to_string())?;
         let (_, kept) = recovery.keep().map_err(|e| e.to_string())?;
-        eprintln!("Saved the previous settings at {}", kept.display());
+        kept_paths.push(kept.display().to_string());
     }
-    replace(files, &current, &restored)?;
-    Ok("Restored original settings. Restart the coding tool.".into())
+    // Each private receipt stores the original contents or absence and blocks installation during cleanup.
+    for (path, original) in files.iter().zip(&restored) {
+        let pending = restore_pending_path(path);
+        if read_file(&pending)?.is_none() {
+            let text = serde_json::to_string(original).map_err(|e| e.to_string())?;
+            prepare(&pending, &text)?
+                .persist_noclobber(&pending)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    let recovery = format!("Previous settings: {}", kept_paths.join(", "));
+    replace(files, &current, &restored).map_err(|error| format!("{error}. {recovery}"))?;
+    for path in files {
+        for retired in [backup_path(path), absent_path(path)] {
+            match std::fs::remove_file(&retired) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Restored settings, but could not retire {}: {error}. Retry Restore before installing another route. {recovery}",
+                        retired.display()
+                    ));
+                }
+            }
+        }
+    }
+    for path in files {
+        let pending = restore_pending_path(path);
+        std::fs::remove_file(&pending).map_err(|error| {
+            format!(
+                "Restored settings, but could not clear {}: {error}. {recovery}",
+                pending.display()
+            )
+        })?;
+    }
+    Ok(format!(
+        "Restored original settings. Restart the coding tool. {recovery}"
+    ))
 }
 
 fn prepare(path: &Path, text: &str) -> Result<tempfile::NamedTempFile, String> {
@@ -597,6 +663,170 @@ mod tests {
         }
     }
     #[test]
+    fn repeated_install_restore_cycles_capture_new_user_settings() {
+        for present in [false, true] {
+            let dir = tempfile::tempdir().expect("directory");
+            let path = dir.path().join("settings.json");
+            let files = std::slice::from_ref(&path);
+            if present {
+                std::fs::write(&path, "{\"original\":true}").expect("original");
+            }
+            install(
+                Harness::Claude,
+                files,
+                "http://localhost:4123",
+                "route",
+                false,
+            )
+            .expect("install");
+            let message = restore(files).expect("restore");
+            assert!(message.contains("switchyard-before-restore-"));
+            assert_eq!(path.exists(), present);
+            assert!(!backup_path(&path).exists());
+            assert!(!absent_path(&path).exists());
+            std::fs::write(&path, "{\"new_user_setting\":true}").expect("user edit");
+            install(
+                Harness::Claude,
+                files,
+                "http://localhost:4123",
+                "another",
+                false,
+            )
+            .expect("reinstall");
+            restore(files).expect("second restore");
+            assert_eq!(
+                read(&path).expect("settings"),
+                "{\"new_user_setting\":true}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pending_restore_blocks_install_and_retires_stale_backups_on_retry() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("settings.json");
+        let files = std::slice::from_ref(&path);
+        std::fs::write(&path, "{}").expect("settings");
+        install(
+            Harness::Claude,
+            files,
+            "http://localhost:4123",
+            "api",
+            false,
+        )
+        .expect("install");
+        let pending = restore_pending_path(&path);
+        std::fs::write(
+            &pending,
+            serde_json::to_string(&Some("{}".to_string())).expect("receipt"),
+        )
+        .expect("pending retirement");
+        let installed = read(&path).expect("installed");
+        assert!(
+            install(
+                Harness::Claude,
+                files,
+                "http://localhost:4123",
+                "another",
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(read(&path).expect("unchanged"), installed);
+        // The backup was already retired, so retry uses the saved restoration receipt.
+        std::fs::remove_file(backup_path(&path)).expect("retired backup");
+        restore(files).expect("retry restore");
+        assert_eq!(read(&path).expect("restored"), "{}");
+        assert!(!pending.exists());
+    }
+
+    // Pi cleanup can stop between files; retry must keep edits to a file that already finished.
+    #[test]
+    fn pi_restore_retry_preserves_a_file_whose_receipt_was_already_cleared() {
+        let dir = tempfile::tempdir().expect("directory");
+        let files = vec![
+            dir.path().join("models.json"),
+            dir.path().join("settings.json"),
+        ];
+        for path in &files {
+            std::fs::write(path, "{}").expect("original");
+        }
+        install(Harness::Pi, &files, "http://localhost:4123", "route", false).expect("install");
+        for path in &files {
+            std::fs::remove_file(backup_path(path)).expect("retired backup");
+            std::fs::write(path, "{}").expect("restored settings");
+        }
+        std::fs::write(&files[0], "{\"user_edit\":true}").expect("edit after restore");
+        std::fs::write(restore_pending_path(&files[1]), r#""{}""#).expect("remaining receipt");
+        restore(&files).expect("retry cleanup");
+        assert_eq!(read(&files[0]).expect("first file"), "{\"user_edit\":true}");
+        assert_eq!(read(&files[1]).expect("second file"), "{}");
+        assert!(
+            files
+                .iter()
+                .all(|path| !restore_pending_path(path).exists())
+        );
+    }
+
+    #[test]
+    fn subscription_install_removes_only_switchyard_credentials() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("settings.json");
+        let files = std::slice::from_ref(&path);
+        std::fs::write(&path, "{}").expect("settings");
+        install(
+            Harness::Claude,
+            files,
+            "http://localhost:4123",
+            "api-route",
+            false,
+        )
+        .expect("API install");
+        install(
+            Harness::Claude,
+            files,
+            "http://localhost:4123",
+            "subscription",
+            true,
+        )
+        .expect("subscription install");
+        let doc = object(&read(&path).expect("settings")).expect("JSON");
+        assert!(doc["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+        assert!(doc["env"].get("ANTHROPIC_API_KEY").is_none());
+        assert_eq!(doc["env"]["ANTHROPIC_MODEL"], "subscription");
+        for key in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+            for value in [
+                json!("user-secret"),
+                json!("switchyard-local"),
+                json!(null),
+                json!(false),
+                json!(123),
+                json!([]),
+                json!({}),
+            ] {
+                let original = json!({"env":{key:value}}).to_string();
+                std::fs::write(&path, &original).expect("settings");
+                let before = std::fs::read_dir(dir.path()).expect("files").count();
+                assert!(
+                    install(
+                        Harness::Claude,
+                        files,
+                        "http://localhost:4123",
+                        "subscription",
+                        true
+                    )
+                    .is_err()
+                );
+                assert_eq!(read(&path).expect("unchanged"), original);
+                assert_eq!(
+                    std::fs::read_dir(dir.path()).expect("files").count(),
+                    before
+                );
+            }
+        }
+    }
+
+    #[test]
     fn invalid_inputs_change_no_files() {
         let dir = tempfile::tempdir().expect("directory");
         let path = dir.path().join("settings.json");
@@ -709,7 +939,7 @@ mod tests {
         install(Harness::Pi, &files, "http://localhost:4123", "other", false).expect("refresh");
         restore(&files).expect("restore");
         assert!(files.iter().all(|path| !path.exists()));
-        assert!(files.iter().all(|path| absent_path(path).is_file()));
+        assert!(files.iter().all(|path| !absent_path(path).exists()));
     }
 
     #[test]
@@ -771,6 +1001,7 @@ mod tests {
         std::fs::write(&target, "private").expect("target");
         std::os::unix::fs::symlink(&target, &files[1]).expect("symlink");
         assert!(restore(&files).is_err());
+        assert!(files.iter().all(|path| backup_path(path).is_file()));
         assert_eq!(read(&files[0]).expect("read"), before);
         assert_eq!(std::fs::read_to_string(target).expect("target"), "private");
     }

@@ -279,6 +279,31 @@ pub fn command(program: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+// This function saves the script before opening Terminal so a save error cannot launch it.
+// If open fails, this function attempts cleanup; callers supply scripts that remove themselves on startup.
+pub fn open_terminal_script(prefix: &str, text: &str) -> Result<(), String> {
+    let mut script = tempfile::Builder::new()
+        .prefix(prefix)
+        .suffix(".command")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
+    writeln!(script, "{text}").map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        script
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    let (_, path) = script.keep().map_err(|e| e.to_string())?;
+    if let Err(error) = command("open", &[&path.display().to_string()]) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,6 +442,41 @@ mod tests {
             .file_type();
         assert!(link_type.is_symlink(), "the link is kept");
         assert_eq!(std::fs::read_to_string(&real).expect("read"), "new");
+    }
+
+    // The subprocess isolates PATH and makes Terminal reject the script without opening an app.
+    #[test]
+    fn a_rejected_terminal_launch_removes_the_kept_script() {
+        if let Ok(record) = std::env::var("SWITCHYARD_TERMINAL_FIXTURE") {
+            assert!(open_terminal_script("switchyard-terminal-fixture-", "#!/bin/bash").is_err());
+            let path = std::fs::read_to_string(record).expect("script path");
+            assert!(!Path::new(path.trim()).exists());
+            return;
+        }
+        let dir = tempfile::tempdir().expect("fixture");
+        let record = dir.path().join("script-path");
+        let open = dir.path().join("open");
+        std::fs::write(
+            &open,
+            "#!/bin/bash\nprintf '%s' \"$1\" > \"$SWITCHYARD_TERMINAL_FIXTURE\"\nexit 1\n",
+        )
+        .expect("Terminal stub");
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o700))
+            .expect("permissions");
+        let output = Command::new(std::env::current_exe().expect("runner"))
+            .args([
+                "--exact",
+                "server::tests::a_rejected_terminal_launch_removes_the_kept_script",
+            ])
+            .env("SWITCHYARD_TERMINAL_FIXTURE", &record)
+            .env("PATH", dir.path())
+            .output()
+            .expect("child");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     #[test]

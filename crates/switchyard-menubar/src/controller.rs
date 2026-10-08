@@ -193,7 +193,6 @@ impl Controller {
                 let config = self.routes()?;
                 current_route(&config, &route, None)?;
                 let algorithm = algorithm_by_id(&algorithm)?;
-                config.edit(&route, algorithm, &choices)?;
                 server::apply(&self.config, &route, algorithm, &choices).map(Reply::message)
             }
             Action::Models {
@@ -224,7 +223,7 @@ impl Controller {
                     &cache,
                     std::slice::from_ref(&client),
                     refresh || key.is_some(),
-                    key.as_deref(),
+                    key.as_deref().map(|key| (client.base_url.as_str(), key)),
                     &|_| {},
                 );
                 let loaded = result.into_iter().next().ok_or("No model list returned.")?;
@@ -233,13 +232,7 @@ impl Controller {
                         None | Some(models::ListError::NotCached(_)) => {
                             models::save_key(&client.base_url, key)?
                         }
-                        _ => {
-                            return Err(loaded
-                                .error
-                                .as_ref()
-                                .map(models::ListError::reason)
-                                .unwrap_or_default());
-                        }
+                        Some(error) => return Err(error.reason()),
                     }
                 }
                 let message = loaded
@@ -266,7 +259,7 @@ impl Controller {
                 let route = current_route(&config, &route, Some(&id))?;
                 let files = accounts::config_paths(tool, account.as_deref());
                 let current = harness::inspect(tool, &files)?;
-                let preview = login_mode(tool, &self.config, &route).and_then(|login| {
+                let preview = login_mode(tool, &config, &route).and_then(|login| {
                     harness::preview(tool, &files, &self.config.server_url, &route.id, login)
                 });
                 Ok(Reply {
@@ -284,7 +277,7 @@ impl Controller {
                 let account = account_path(tool, account.as_deref())?;
                 let config = self.routes()?;
                 let route = current_route(&config, &route, Some(&id))?;
-                let login = login_mode(tool, &self.config, &route)?;
+                let login = login_mode(tool, &config, &route)?;
                 harness::install(
                     tool,
                     &accounts::config_paths(tool, account.as_deref()),
@@ -312,7 +305,7 @@ impl Controller {
                 let account = account_path(tool, account.as_deref())?;
                 let config = self.routes()?;
                 let route = current_route(&config, &route, Some(&id))?;
-                let login = login_mode(tool, &self.config, &route)?;
+                let login = login_mode(tool, &config, &route)?;
                 sessions::launch(
                     tool,
                     &PathBuf::from(project),
@@ -362,19 +355,12 @@ fn account_path(tool: Harness, name: Option<&str>) -> Result<Option<PathBuf>, St
 }
 fn login_mode(
     tool: Harness,
-    settings: &Config,
+    config: &ServerConfig,
     route: &crate::server_config::Route,
 ) -> Result<bool, String> {
-    let text = std::fs::read_to_string(&settings.config_file).map_err(|e| e.to_string())?;
-    let config = ServerConfig::parse(&text)?;
     let clients = config.clients();
     let choices = config.choices(&route.key);
-    if choices.is_empty()
-        || !config
-            .routes()
-            .iter()
-            .any(|current| current.key == route.key && current.id == route.id)
-    {
+    if choices.is_empty() {
         return Err(
             "This route cannot be installed by the app. Choose a route with models.".into(),
         );
@@ -634,6 +620,47 @@ mod tests {
             generation + 1
         );
     }
+    #[test]
+    fn invalid_route_choices_reject_before_saving_or_restarting() {
+        let dir = tempfile::tempdir().expect("directory");
+        let settings = dir.path().join("settings.toml");
+        let config = dir.path().join("server.toml");
+        let original = "[llm_clients.c]\nbase_url='http://localhost:1234'\n[targets.m]\nid='actual'\nllm_client='c'\n[routes.r]\nid='public'\ntype='passthrough'\ntarget='m'\n";
+        std::fs::write(&config, original).expect("config");
+        std::fs::write(&settings, format!("config_file={config:?}")).expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        for (choices, expected) in [
+            (vec![], "passthrough needs 1 models, not 0."),
+            (
+                vec![Choice {
+                    client: "c".into(),
+                    model: " ".into(),
+                }],
+                "Pick a model for Model.",
+            ),
+            (
+                vec![Choice {
+                    client: "unknown".into(),
+                    model: "model".into(),
+                }],
+                "The config has no LLM client named \"unknown\".",
+            ),
+        ] {
+            let error = controller
+                .dispatch(Action::Apply {
+                    generation: 0,
+                    route: "r".into(),
+                    algorithm: "passthrough".into(),
+                    choices,
+                })
+                .err()
+                .expect("rejection");
+            assert_eq!(error, expected);
+            assert_eq!(std::fs::read_to_string(&config).expect("config"), original);
+            assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
+        }
+    }
+
     #[test]
     fn rejected_install_has_no_writes() {
         let dir = tempfile::tempdir().expect("directory");

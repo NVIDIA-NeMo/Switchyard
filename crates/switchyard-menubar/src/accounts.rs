@@ -4,7 +4,6 @@
 //! Named login directories use the coding tool's own authentication commands.
 
 use crate::harness::{self, Harness};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 // PendingAccount removes only an empty directory if login setup fails.
@@ -111,23 +110,13 @@ pub fn add(tool: Harness, name: &str) -> Result<String, String> {
         Harness::CodexCli => "login",
         _ => "auth login",
     };
-    let mut script = tempfile::Builder::new()
-        .prefix("switchyard-login-")
-        .suffix(".command")
-        .tempfile()
-        .map_err(|e| e.to_string())?;
-    writeln!(script,"#!/bin/bash\nrm -- \"$0\"\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nexport {variable}={}\n{} {login}",crate::sessions::quote(&path.display().to_string()),crate::sessions::quote(&binary.display().to_string())).map_err(|e|e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        script
-            .as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
-    }
-    crate::server::command("open", &[&script.path().display().to_string()])?;
+    let script = format!(
+        "#!/bin/bash\nrm -- \"$0\"\nexport PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\nexport {variable}={}\n{} {login}",
+        crate::sessions::quote(&path.display().to_string()),
+        crate::sessions::quote(&binary.display().to_string())
+    );
+    crate::server::open_terminal_script("switchyard-login-", &script)?;
     pending.0 = None;
-    let _ = script.keep().map_err(|e| e.to_string())?;
     Ok(format!(
         "Opened the coding tool's login in Terminal for account {name}. Complete login, click Refresh, and select this account. Switchyard does not read the login tokens. The selected account applies to new sessions only. Account directory: {}",
         path.display()

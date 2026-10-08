@@ -4,7 +4,6 @@
 //! This module starts CLI sessions with separate worktrees and model settings.
 
 use crate::harness::{self, Harness};
-use std::io::Write;
 use std::path::Path;
 
 // PendingSession attempts cleanup until open accepts the launch request.
@@ -153,23 +152,12 @@ pub fn launch(
     } else {
         ""
     };
-    let mut script = tempfile::Builder::new()
-        .prefix("switchyard-session-")
-        .suffix(".command")
-        .tempfile()
-        .map_err(|e| e.to_string())?;
-    writeln!(script,"#!/bin/bash\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nrm -- \"$0\"\ncd {} || exit 1\n{account_env}{subscription_env}{command}",quote(&worktree.display().to_string())).map_err(|e|e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        script
-            .as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
-    }
-    crate::server::command("open", &[&script.path().display().to_string()])?;
+    let script = format!(
+        "#!/bin/bash\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nrm -- \"$0\"\ncd {} || exit 1\n{account_env}{subscription_env}{command}",
+        quote(&worktree.display().to_string())
+    );
+    crate::server::open_terminal_script("switchyard-session-", &script)?;
     pending.opened = true;
-    let _ = script.keep().map_err(|e| e.to_string())?;
     Ok(format!(
         "Opened a new session in Terminal.\nWorktree: {}\nBranch: {id}\nModel route: {model}\nRemove the worktree with git worktree remove after saving or discarding its changes.\nPi supplies session/turn IDs only when its integration sends them; unidentified calls remain visible in All sessions.",
         worktree.display()

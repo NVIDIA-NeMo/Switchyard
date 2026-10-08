@@ -5,7 +5,7 @@ const invoke = window.__TAURI__.core.invoke;
 const content = document.querySelector('#content');
 const status = document.querySelector('#status');
 let snapshot, page = 'overview', busy = false;
-let previewQueue = Promise.resolve();
+let operationQueue = Promise.resolve();
 const drafts = new Map(), lists = new Map();
 const usageView = {session:'',search:''};
 function node(tag, text, cls) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; }
@@ -17,6 +17,13 @@ function input(value = '', type = 'text') { const i = node('input'); i.type = ty
 function text(parent, value) { parent.append(node('pre', value)); }
 function actions(parent) { const a = node('div', undefined, 'actions'); parent.append(a); return a; }
 function setBusy(value) { busy = value; document.querySelectorAll('button,input,select').forEach(n => n.disabled = value || n.dataset.blocked === 'true'); }
+// Route editors and install previews share a queue because the controller runs one operation at a time.
+function enqueue(operation) {
+  operationQueue = operationQueue.then(async () => {
+    while (busy) await new Promise(resolve => setTimeout(resolve, 30));
+    await operation();
+  }).catch(error => { status.textContent = String(error); });
+}
 // Successful editor loading keeps the saved-route and restart result visible.
 async function run(action, refresh = true) {
   if (busy) return;
@@ -73,7 +80,7 @@ function render() {
   } else if (page==='install') {
     const intro=card('Connect your coding tools');
     intro.append(node('p','Choose a Switchyard route for each coding tool, review the settings below, then install the route.'));
-    intro.append(node('p','Subscription routes reuse the coding tool’s login. API routes use credentials configured on the Switchyard server. You can edit endpoint keys in Routes.'));
+    intro.append(node('p','Subscription routes reuse the coding tool’s login. API routes use credentials configured on the Switchyard server. Configure API credentials on the server. Keys entered in Routes only load model lists.'));
     intro.append(node('p','Installation backs up the original user settings. Shell variables and project settings may override these defaults.','muted'));
     for(const tool of snapshot.tools) renderInstall(tool);
     renderAccounts();
@@ -143,8 +150,7 @@ function renderInstall(tool) {
     proposed.textContent='Loading preview…';authentication.textContent='';
     const chosen=snapshot.routes.find(r=>r.key===route.value);
     routing.textContent=chosen?`${snapshot.algorithms.find(a=>a.kind===chosen.kind)?.title || chosen.kind}: ${chosen.choices.map(c=>c.model).join(' → ')}`:'';
-    previewQueue=previewQueue.then(async()=>{
-      while(busy)await new Promise(resolve=>setTimeout(resolve,30));
+    enqueue(async()=>{
       if(!c.isConnected||requested!==revision)return;
       if(!route.value){proposed.textContent='Add a route in the server config first.';return;}
       current.textContent='Loading preview…';
@@ -209,7 +215,7 @@ function renderRoute(route) {
   button(a,'Save and restart',async()=>{saveChoices();const result=await run({kind:'apply',generation,route:route.key,algorithm:draft.algorithm,choices:draft.choices});if(result){drafts.delete(route.key);render();}},true);
   button(a,'Discard changes',()=>{drafts.delete(route.key);render();});
   // Each route waits for the shared operation to finish before loading its editor roles.
-  const setup=async()=>{while(busy)await new Promise(resolve=>setTimeout(resolve,30));if(page==='routes'&&c.isConnected)await draw();};setup();
+  enqueue(async()=>{if(page==='routes'&&c.isConnected)await draw();});
 }
 document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{page=b.dataset.page;render();});
 document.querySelector('#refresh').onclick=refresh;

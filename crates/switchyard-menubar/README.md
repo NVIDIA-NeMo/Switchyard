@@ -28,8 +28,9 @@ profile leaves `approval_policy` and `sandbox_mode` to your existing Codex
 settings. Reinstalling backs up the profile before replacing changed contents.
 
 Open the app from Finder or Spotlight. Closing the window keeps the tray menu.
-Choose **Open Switchyard** to return or **Quit Switchyard** to exit. The app
-rejects Quit while an operation is queued or running; try again after it finishes.
+The tray includes **Install…**, daily and weekly usage previews, **View usage…**,
+and **Settings…**. Clicking a usage preview opens Usage. Choose **Open Switchyard**
+to return or **Quit Switchyard** to exit. The app rejects Quit while an operation is queued or running; try again after it finishes.
 
 **Settings → Update from source…** opens Terminal to rebuild and reinstall from
 the checkout used for this installation. It builds that checkout's current commit
@@ -56,14 +57,14 @@ Each route label shows its public model ID, algorithm, endpoint name, and model
 choices. In **Routes**, choose an algorithm and enter the endpoint and model for
 each role. **Refresh models** loads the endpoint's list; you can also type an
 unlisted model ID. ChatGPT's private Codex endpoint uses the saved Codex model
-list and configured targets. The app keeps drafts until **Apply route and
-restart** or **Revert draft**. Refresh keeps drafts unless the settings select
-a different server config file.
+list and configured targets. The app keeps drafts until **Save and restart** or
+**Discard changes**. Refresh keeps drafts unless the settings select a different
+server config file.
 
-**Apply route and restart** checks the complete edited file with the bundled
+**Save and restart** checks the complete edited file with the bundled
 server's `--dry-run`. It preserves comments and unrelated tables, saves a backup
 beside the config, and restarts the server. A failed check leaves the file
-unchanged. A restart failure after saving is reported separately. Apply re-reads
+unchanged. A restart failure after saving is reported separately. The app re-reads
 the config and rejects concurrent changes detected before replacement. A draft
 from a different server config file is rejected before saving.
 
@@ -75,41 +76,53 @@ requests. Shared targets are copied when an edit would change another route.
 
 API keys entered for model lists stay in macOS Keychain. The app sends keys to
 curl through stdin and omits them from frontend snapshots. An endpoint must be
-configured to use authentication before it accepts a model-list key. On macOS, submitting
-a key always requests a fresh model list; a rejected key is not saved and leaves
+configured to use authentication before it accepts a model-list key. An entered
+key applies only to that endpoint's exact `base_url`. On macOS, submitting a key
+always requests a fresh model list; a rejected key is not saved and leaves
 the cached list unchanged. Model-list keys do not replace the server's
 `api_key_env` credentials. The app and server LaunchAgents do not load shell
 startup files.
 
 On other platforms, the app rejects entered model-list keys; set the environment
-variable named by the endpoint's `api_key_env` and make it available to the app instead.
+variable named by the endpoint's `api_key_env` and make it available to the app
+instead.
 
 ## Install coding-tool settings
 
-**Install…** shows the current model and endpoint for Codex CLI, Codex app,
-Claude Code, and Pi. Choose a route and click **Install / update**. Codex CLI
-gets `sy.config.toml` for `codex -p sy`. The Codex app option changes the defaults
+**Install** shows one card for Codex CLI, Codex app, Claude Code, and Pi.
+Choose a route to compare the current model, endpoint, and settings files with
+the proposed settings. The preview changes no files. Click **Install route**
+to save the settings. Codex CLI gets `sy.config.toml` for `codex -p sy`. The Codex app option changes the defaults
 in `config.toml` for both the app and CLI. Claude Code gets environment settings
 in `settings.json`. Pi gets a custom provider in `models.json` and defaults in
 `settings.json`. Unrelated settings remain.
 
 The app backs up each original file as `<filename>.switchyard-original`. If a
 file did not exist, `<filename>.switchyard-original-missing` records its absence.
-**Restore previous settings** keeps a copy of the current file, then restores
-the backup or removes a file that was originally absent.
+**Restore original settings** keeps a copy of the current file, then restores
+the backup or removes a file that was originally absent. The result lists the
+recovery copies. A successful restore retires the original backup, so the next
+installation backs up your current settings. If backup cleanup fails, retry
+Restore before installing another route.
 
 Install and Restore check every selected file before replacing any file.
 Malformed settings and symlink settings files are rejected before writes. Each
 replacement is atomic. If a later replacement fails, the app tries to restore
 earlier files. A crash can leave Pi's two files out of sync, and rollback can
 fail. Another process running as the same user can also change a file after the
-app checks it. The original backups remain available for manual recovery.
+app checks it. A failed replacement keeps original backups for manual recovery.
+If backup cleanup fails after restoration, the remaining receipts keep the
+restored contents available for a retry. Recovery copies remain until you remove
+them.
 
 Caller login routes require a matching coding tool and provider: Codex for
 ChatGPT or Claude Code for Anthropic. Pi requires a route whose API credentials
 the server owns. Configure those credentials on the server before installing
-the route. Claude settings with an explicit API key or bearer token must be
-cleared before installing a subscription route. Restart the coding tool after
+the route. Claude settings with a user API key or bearer token must be cleared
+before installing a subscription route. Switching from an API route installed
+by Switchyard removes its placeholder credentials only when the existing model
+settings and local endpoint match that installation. If the local endpoint has
+changed, restore the original settings first. Restart the coding tool after
 changing its defaults. Project settings, shell variables, and command-line
 options can override them; check Claude's `/status` for shell overrides.
 
@@ -118,9 +131,9 @@ For older installs that replaced `config.toml`, `make uninstall-macos` restores
 
 ## Start sessions with separate logins and worktrees
 
-Codex CLI and Claude Code support named accounts. Enter a name and click **Add
-account / open login** to open the tool's own login command in Terminal. Complete
-the login, refresh, and select the account. Switchyard keeps account directories
+Codex CLI and Claude Code support named accounts. Enter a name and click
+**Sign in to another account…** to open the tool's own login command in Terminal.
+Complete the login, refresh, and select the account. Switchyard keeps account directories
 under `~/.switchyard/accounts`; the coding tool owns their login files. The
 selected account determines where Install saves settings and which login a new
 session uses. Existing sessions keep their login. Switchyard does not read,
@@ -153,7 +166,9 @@ session resume, remote workspaces, or review comments. Provider limits still app
 output tokens, and recorded session and turn IDs for each completed model call.
 Filter by session or search for a turn, model, or route. A user turn may contain
 several calls. Classifier calls are marked as routing overhead. Missing IDs
-appear as **Not recorded**; Switchyard does not infer them from prompts.
+appear as **Session not recorded** or **Turn not recorded** in the desktop app
+and **Not recorded** in the terminal app. Switchyard does not infer them from
+prompts.
 
 Recent history reads the last 8 MiB of the log plus one byte to check whether the
 first record is complete. It keeps at most 5,000 complete records and excludes
