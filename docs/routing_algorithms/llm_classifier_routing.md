@@ -92,7 +92,7 @@ Switchyard does not parse provider-specific reasoning fields such as
 to `strong_target` even when the judge request returned HTTP 200. With session
 affinity, that fallback can be reused without another judge call.
 
-Capability and escalation routes use JSON Schema structured output by default.
+Every classifier mode uses JSON Schema structured output by default.
 For a provider that supports JSON Object mode but not JSON Schema, set
 `response_format_type = "json_object"` on the route. Switchyard then adds the
 verdict schema to the judge prompt and validates the returned object locally.
@@ -123,7 +123,7 @@ for the server merge behavior.
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
-| `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
+| `response_format_type` | `json_schema` | Structured-output mode for the judge in every mode. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
 
 ### Override the classifier prompt
@@ -200,9 +200,11 @@ type = "target_selector"
 selector = "/decision/target"
 ```
 
-The names in `models` reference existing target tables. Switchyard passes the
-schema to the provider in a strict structured-output wrapper and validates the
-returned JSON again. `jsonptr` resolves the selector against that verdict. A
+The names in `models` reference existing target tables. By default Switchyard
+passes the schema to the provider in a strict structured-output wrapper; with
+`response_format_type = "json_object"` it appends the schema to the prompt
+instead (see below). Either way it validates the returned JSON against the
+schema. `jsonptr` resolves the selector against that verdict. A
 missing, non-string, or unconfigured label falls back to `default_target`, and
 `judge` is never routable.
 
@@ -217,6 +219,13 @@ order and is not a completion destination.
 `capable` and `efficient` are reserved names. Use them when you want a group to
 carry the tier meaning the stage and composite routers give it; otherwise any
 name works.
+
+If the judge's provider supports JSON Object mode but not JSON Schema, add
+`response_format_type = "json_object"` to the route. `response_schema` is still
+required. Switchyard appends it to your prompt, asks for a JSON object, and
+validates the reply against it. The configured schema is the source of truth, so
+do not paste a copy into the prompt. A reply that fails the schema falls back to
+`default_target`.
 
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.

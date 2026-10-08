@@ -275,7 +275,7 @@ Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
-| `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
+| `response_format_type` | No | `json_schema` | Structured-output mode for the judge in every mode. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode appends `response_schema`; do not copy it into the prompt. |
 
 Capability mode classifies before serving. See
 [LLM Classifier Routing](../routing_algorithms/llm_classifier_routing.md).
