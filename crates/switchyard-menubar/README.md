@@ -20,8 +20,8 @@ make uninstall-macos
 
 That builds `switchyard-server` and `switchyard-menubar` into
 `~/.switchyard/bin`, writes a server config and menu bar settings, loads two
-LaunchAgents, writes a `sy` Codex profile, and routes Codex.app through
-Switchyard. Use the CLI profile with `codex -p sy`.
+LaunchAgents, and writes a `sy` Codex profile. Use the CLI profile with
+`codex -p sy`.
 
 Your server config and menu bar settings are never overwritten once they
 exist, so edits survive a reinstall. Logs are in `~/.switchyard/logs/`.
@@ -89,16 +89,13 @@ so read them as "what this traffic would have cost at API rates".
 
 ## Codex profiles
 
-`codex --profile sy` reads `~/.codex/sy.config.toml`. A `[profiles.sy]` table
-inside `config.toml` is legacy config the CLI now refuses to start with, so the
-installer removes one if an older version left it there.
+`codex --profile sy` reads `~/.codex/sy.config.toml`. The installer writes this
+standalone profile and keeps your existing `~/.codex/config.toml` unchanged.
+Reinstalling backs up the profile before replacing it if its contents change.
 
-The profile sets only `model` and `model_provider`. It deliberately leaves
-`approval_policy` and `sandbox_mode` alone, because routing should not quietly
-change how Codex asks before it acts.
+The profile sets `model`, `model_provider`, and the Switchyard provider details.
+It leaves `approval_policy` and `sandbox_mode` to your existing Codex settings.
 
-**Codex.app cannot use the profile.** The installer builds
-`~/.codex/config.sy.toml` from your original config, backs up that original to
-`~/.codex/config.toml.direct`, and installs the routed config as
-`~/.codex/config.toml`. `make uninstall-macos` restores the original and keeps
-a copy of the active config before replacing it.
+Codex.app cannot use the profile. The installer leaves its config unchanged.
+For older installs that replaced `config.toml`, `make uninstall-macos` restores
+`config.toml.direct` and keeps a copy of the active config before replacing it.
