@@ -33,6 +33,8 @@ for label in "$SERVER_LABEL" "$MENUBAR_LABEL"; do
   fi
 done
 
+run rm -rf "$APP_PATH"
+
 step "Removing the sy Codex profile"
 remove_file "$CODEX_PROFILE_CONFIG"
 remove_file "$CODEX_SWITCHYARD_CONFIG"

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import os
+import shlex
 import shutil
 import subprocess
 
@@ -22,6 +23,7 @@ def setup(tmp_path):
     scripts = tmp_path / "repo" / "scripts" / "macos"
     shutil.copytree(REPO / "scripts" / "macos", scripts)
     shutil.copy(REPO / "scripts" / "common.sh", scripts.parent / "common.sh")
+    shutil.copy(REPO / "Cargo.toml", scripts.parents[1] / "Cargo.toml")
     shutil.copytree(REPO / "scripts" / "config", scripts.parent / "config")
     home = tmp_path / "home"
     home.mkdir()
@@ -38,6 +40,7 @@ def setup(tmp_path):
     }
     stubs = {
         "cargo": "exit 0\n",
+        "codesign": "exit 0\n",
         "uname": "echo Darwin\n",
         "install": 'printf "#!/bin/sh\\nexit 0\\n" > "$4"\nchmod +x "$4"\n',
         "launchctl": '[[ "$1" != print ]]\n',
@@ -88,7 +91,7 @@ def test_install_escapes_switchyard_path_in_launch_agent(setup):
     }
     menubar_arguments = [element.text for element in menubar_values["ProgramArguments"]]
     assert menubar_arguments == [
-        str(switchyard_home / "bin" / "switchyard-menubar"),
+        str(home / "Applications" / "Switchyard.app" / "Contents" / "MacOS" / "Switchyard"),
         str(switchyard_home / "menubar.toml"),
     ]
 
@@ -274,3 +277,66 @@ def test_scripts_reject_unknown_arguments_before_any_work(setup, script, args):
         path.relative_to(home): path.read_bytes() for path in home.rglob("*") if path.is_file()
     }
     assert after == before
+
+
+def test_app_bundle_has_a_launcher_and_source_update_command(setup):
+    _, home, switchyard_home, _ = setup
+    result = run(setup, "install.sh")
+    assert result.returncode == 0, result.stderr
+    contents = home / "Applications" / "Switchyard.app" / "Contents"
+    root = ET.parse(contents / "Info.plist").getroot()
+    entries = list(root.find("dict"))
+    values = {entries[i].text: entries[i+1] for i in range(0, len(entries), 2)}
+    assert values["CFBundleIdentifier"].text == "com.nvidia.switchyard"
+    assert values["CFBundleExecutable"].text == "Switchyard"
+    assert os.access(contents / "MacOS" / "Switchyard", os.X_OK)
+    update = contents / "Resources" / "Update.command"
+    assert os.access(update, os.X_OK)
+    home_line = next(line for line in update.read_text().splitlines() if line.startswith("export SY_HOME="))
+    assert shlex.split(home_line.split("=", 1)[1])[0] == str(switchyard_home)
+    for path in [update, contents / "MacOS" / "Switchyard"]:
+        assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
+
+
+def test_app_launcher_preserves_quotes_and_shell_metacharacters(setup):
+    """The launcher must pass shell syntax in the settings path as literal text."""
+    _, home, _, env = setup
+    switchyard_home = home / "Switchyard ' $(touch unsafe)"
+    env["SY_HOME"] = str(switchyard_home)
+    result = run(setup, "install.sh")
+    assert result.returncode == 0, result.stderr
+    executable = home / "Applications" / "Switchyard.app" / "Contents" / "MacOS" / "switchyard-menubar"
+    output = home / "arguments"
+    executable.write_text('#!/bin/bash\nprintf "%s\\n" "$@" > ' + shlex.quote(str(output)) + '\n')
+    executable.chmod(0o755)
+    launcher = executable.with_name("Switchyard")
+    result = subprocess.run(["bash", str(launcher)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert output.read_text().strip() == str(switchyard_home / "menubar.toml")
+    assert not (home / "unsafe").exists()
+
+
+def test_uninstall_removes_the_installed_app_bundle(setup):
+    _, home, _, _ = setup
+    assert run(setup, "install.sh").returncode == 0
+    app = home / "Applications" / "Switchyard.app"
+    assert app.is_dir()
+    result = run(setup, "uninstall.sh")
+    assert result.returncode == 0, result.stderr
+    assert not app.exists()
+
+
+def test_installer_builds_in_source_checkout_with_an_explicit_target_directory(setup):
+    """The build must use the checkout target directory even if CARGO_TARGET_DIR differs."""
+    scripts, home, _, env = setup
+    recorded = home / "build.txt"
+    cargo = Path(env["PATH"].split(":")[0]) / "cargo"
+    cargo.write_text('#!/bin/bash\nprintf "%s\\n" "$PWD" "$@" > ' + shlex.quote(str(recorded)) + '\n')
+    cargo.chmod(0o755)
+    env["CARGO_TARGET_DIR"] = str(home / "unrelated-target")
+    result = run(setup, "install.sh")
+    assert result.returncode == 0, result.stderr
+    lines = recorded.read_text().splitlines()
+    assert lines[0] == str(scripts.parents[1])
+    target = lines.index("--target-dir")
+    assert lines[target + 1] == str(scripts.parents[1] / "target")

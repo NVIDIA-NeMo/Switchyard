@@ -2,12 +2,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Installs the Switchyard background server and its menu bar companion as
-# per-user LaunchAgents and sets up a `sy` Codex profile.
+# This script installs Switchyard.app, loads the server and app as per-user
+# LaunchAgents, and sets up a `sy` Codex profile.
 #
-# Keeps existing server and menu bar settings and backs up sy.config.toml
-# before replacing it.
-# Run with --dry-run to print what would happen.
+# It keeps existing server and menu bar settings and backs up sy.config.toml
+# before replacing it. The --dry-run option prints the installation commands.
 
 set -euo pipefail
 
@@ -41,14 +40,52 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 step "Building release binaries"
-run cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
-  -p switchyard-server -p switchyard-menubar
+(
+  cd "$REPO_ROOT"
+  run cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
+    --target-dir "$REPO_ROOT/target" -p switchyard-server -p switchyard-menubar
+)
 
 step "Installing binaries into $SY_HOME/bin"
 run mkdir -p "$SY_HOME/bin" "$SY_HOME/logs"
 for binary in switchyard-server switchyard-menubar; do
   run install -m 755 "$REPO_ROOT/target/release/$binary" "$SY_HOME/bin/$binary"
 done
+
+step "Installing $APP_PATH"
+run mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+run install -m 755 "$REPO_ROOT/target/release/switchyard-menubar" "$APP_PATH/Contents/MacOS/switchyard-menubar"
+write_always "$APP_PATH/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.nvidia.switchyard</string>
+<key>CFBundleName</key><string>Switchyard</string>
+<key>CFBundleDisplayName</key><string>Switchyard</string>
+<key>CFBundleExecutable</key><string>Switchyard</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)</string>
+<key>LSMinimumSystemVersion</key><string>12.0</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+EOF
+# Bash's printf %q keeps source and settings paths literal in generated scripts.
+shell_quote() { printf '%q' "$1"; }
+write_always "$APP_PATH/Contents/MacOS/Switchyard" <<EOF
+#!/bin/bash
+exec "\$(dirname "\$0")/switchyard-menubar" $(shell_quote "$SY_HOME/menubar.toml")
+EOF
+write_always "$APP_PATH/Contents/Resources/Update.command" <<EOF
+#!/bin/bash
+set -euo pipefail
+export PATH="\$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:\$PATH"
+export SY_HOME=$(shell_quote "$SY_HOME")
+export SY_PORT=$(shell_quote "$SY_PORT")
+export CODEX_HOME=$(shell_quote "$CODEX_DIR")
+bash $(shell_quote "$SCRIPT_DIR/install.sh")
+EOF
+run chmod 755 "$APP_PATH/Contents/MacOS/Switchyard" "$APP_PATH/Contents/Resources/Update.command"
+run codesign --force --deep --sign - "$APP_PATH"
 
 step "Writing server config"
 # Keep macOS and Linux on the same routing defaults.
@@ -105,6 +142,7 @@ fi
 
 step "Writing LaunchAgents"
 XML_SY_HOME="$(xml_escape_text "$SY_HOME")"
+XML_APP_PATH="$(xml_escape_text "$APP_PATH")"
 write_always "$LAUNCH_AGENTS/$SERVER_LABEL.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -154,7 +192,7 @@ write_always "$LAUNCH_AGENTS/$MENUBAR_LABEL.plist" <<EOF
   <string>$MENUBAR_LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$XML_SY_HOME/bin/switchyard-menubar</string>
+    <string>$XML_APP_PATH/Contents/MacOS/Switchyard</string>
     <string>$XML_SY_HOME/menubar.toml</string>
   </array>
   <key>RunAtLoad</key>
@@ -202,4 +240,5 @@ step "Done"
 say "Server:   http://127.0.0.1:$SY_PORT  (logs in $SY_HOME/logs)"
 say "Use it with: codex -p sy (requires Codex CLI 0.134.0 or newer)"
 say "Settings: $SY_HOME/menubar.toml"
-say "Look for the Switchyard glyph in the menu bar."
+say "App: $APP_PATH (open it from Finder or Spotlight)"
+say "Use Update from source… in the app to rebuild from this checkout."

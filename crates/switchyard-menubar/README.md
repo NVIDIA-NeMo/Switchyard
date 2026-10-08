@@ -1,6 +1,7 @@
 # switchyard-menubar
 
-A macOS menu bar companion for a Switchyard server running in the background.
+The macOS app shows usage, installs coding-tool settings, and opens local
+worktree sessions. Its menu bar shows server status and estimated savings.
 
 The server does the routing. This process reads what the server wrote and
 edits the server config only when you ask it to, so quitting it never affects
@@ -22,10 +23,11 @@ make install-macos          # or install-macos-dry-run to see the steps first
 make uninstall-macos
 ```
 
-That builds `switchyard-server` and `switchyard-menubar` into
-`~/.switchyard/bin`, writes a server config and menu bar settings, loads two
-LaunchAgents, and writes a `sy` Codex profile. Use the CLI profile with
-`codex -p sy`.
+`make install-macos` builds `switchyard-server` and `switchyard-menubar` into
+`~/.switchyard/bin` and installs `~/Applications/Switchyard.app`. It writes a
+server config and menu bar settings, loads two LaunchAgents, and writes a `sy`
+Codex profile. Use the CLI profile with `codex -p sy`. Open Switchyard from
+Finder or Spotlight to see Usage, or choose **Install…** to set up a coding tool.
 
 Your server config and menu bar settings are never overwritten once they
 exist, so edits survive a reinstall. Logs are in `~/.switchyard/logs/`.
@@ -318,6 +320,88 @@ Reinstalling backs up the profile before replacing it if its contents change.
 The profile sets `model`, `model_provider`, and the Switchyard provider details.
 It leaves `approval_policy` and `sandbox_mode` to your existing Codex settings.
 
-Codex.app cannot use the profile. The installer leaves its config unchanged.
+Codex.app cannot use the profile. `make install-macos` leaves its
+`config.toml` unchanged. To change the defaults used by Codex.app and Codex CLI,
+choose **Codex app and CLI defaults** in the app’s **Install…** view.
 For older installs that replaced `config.toml`, `make uninstall-macos` restores
 `config.toml.direct` and keeps a copy of the active config before replacing it.
+
+## Update the app from source
+
+**Update from source…** opens Terminal and runs `scripts/macos/install.sh` from
+the checkout used for the current install. Keep that checkout and a Rust
+toolchain available. Update the checkout first to choose the code you want to
+build. Routing settings and prices stay saved. The installer signs the app ad
+hoc for local use; the app has no Developer ID signature or notarization.
+
+## Install coding-tool settings
+
+**Install…** shows where Codex, Claude Code, and Pi are installed, their user
+settings, and their configured model. Pick a public route on the local HTTP
+server and click **Install / refresh**. Codex CLI gets `sy.config.toml` and uses
+`codex -p sy`. The Codex app option changes the defaults in `config.toml` for
+both the app and CLI. Claude Code gets `settings.json` environment settings. Pi gets a custom provider in `models.json` and defaults in
+`settings.json`. Unrelated settings remain. The original files are backed up
+beside each file as `<filename>.switchyard-original`. If a file did not exist,
+`<filename>.switchyard-original-missing` records its absence. **Restore original**
+keeps a copy of the current file, then restores the backup or removes the file
+that was originally absent.
+
+The app checks all selected settings files before replacing any of them. Each
+replacement is atomic. If a later replacement fails, the app tries to restore
+earlier files. A crash can leave Pi’s two files out of sync, and rollback can
+fail. Another process running as the same user can also change a file after the
+app checks it. The original backups remain available for manual recovery.
+
+Restart the coding tool after changing its defaults. Project settings, shell
+variables, and command-line options can override them.
+
+Subscription routes forward the caller's saved login to its own provider.
+Choose Codex for a ChatGPT route or Claude Code for an Anthropic route. Pi's
+custom provider uses routes whose API credentials the server owns. Configure
+those credentials on the server before installing its route. The app never
+reads or copies OAuth tokens, switches accounts in running sessions, or combines
+subscription quotas. Claude settings with an explicit API key or bearer token
+must be cleared before installing a subscription route. Shell overrides still
+need to be checked with Claude's `/status`.
+
+## View session usage
+
+Usage lists the actual upstream model, public route, timestamp, input, cached,
+and output tokens for each completed model call. Select a recorded session ID
+to filter the view. A recorded turn ID groups related calls; a turn may contain
+several model calls. Older records and tools that send no IDs say **Not recorded**.
+The viewer reads the last 8 MiB of the log plus one byte to check whether the
+first record is complete. It keeps at most 5,000 complete records and excludes
+partial records. It labels a limited view and counts unreadable records.
+Classifier calls appear as routing overhead. It displays neither prompts nor responses.
+Observed tokens do not report provider quota, reset windows, or authoritative
+billing. Refresh reads the log again.
+
+## Start sessions with separate logins and worktrees
+
+Codex CLI and Claude Code support named accounts. Enter a name and click
+**Add account…** to open the tool’s own login command in Terminal. Complete the
+login, click **Refresh**, and select the account. Switchyard keeps these account
+directories under `~/.switchyard/accounts`; the coding tool owns their login
+files. The selected account determines where **Install / refresh** saves settings
+and which login a new session uses. Existing sessions keep their login.
+
+To run several tasks with one coding tool, enter a Git project path under
+Install and click **New worktree session**. Each session starts from that
+checkout's HEAD on a new branch in `~/.switchyard/worktrees` and opens in Terminal.
+Uncommitted files stay in the original checkout. Each launched session has its
+own model settings; launching another session does not change user defaults.
+Codex and Claude launches send a session ID for usage correlation. Pi stores
+its session under the private agent directory beside the worktree; its requests
+need an integration that sends session and turn IDs to appear as a correlated
+session. Otherwise their usage is still listed under **All sessions**.
+Use `git worktree list` and `git worktree remove` to manage the checkouts after
+saving or discarding changes. Successful launches keep their Git branches and
+the private settings directories beside the worktrees until you remove them. Named
+account directories also remain until you remove them. If launch setup fails,
+the app tries to remove the worktree, branch, and private settings it created;
+cleanup can fail.
+
+The app does not manage task dependencies, resume history, remote workspaces,
+or review comments.

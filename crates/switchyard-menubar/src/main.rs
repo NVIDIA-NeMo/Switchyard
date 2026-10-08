@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Menu bar companion for a locally running Switchyard server.
+//! The macOS app shows usage and manages settings for a local Switchyard server.
 //!
 //! The server owns routing; this process reads what the server wrote. It
 //! shows today's and this week's traffic, and what that traffic would have
@@ -9,22 +9,31 @@
 //! routes…" window edits a route in the server config and restarts the
 //! server.
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod accounts;
 mod app;
 mod config;
+#[cfg(target_os = "macos")]
+mod dashboard;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod harness;
 mod health;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod history;
 mod pricing;
 mod rollup;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod sessions;
 mod summary;
-// Only the macOS picker window calls these. They build on every target so
-// that their tests also run in CI, which does not run on macOS.
+// The macOS windows use these modules. They build on every target so their
+// tests also run in CI, which does not run on macOS.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod models;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod server;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod server_config;
-// The status item, the glyph it draws, and the routes window with its sidebar
-// are the only platform-specific code.
+// The status item, its glyph, and the app windows use macOS APIs.
 #[cfg(target_os = "macos")]
 mod icon;
 #[cfg(target_os = "macos")]
