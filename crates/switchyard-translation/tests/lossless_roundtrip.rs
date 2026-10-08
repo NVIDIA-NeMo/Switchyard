@@ -279,16 +279,13 @@ fn assert_embeds_original(body: &Value, group: &str, source: WireFormat, origina
 
 // Returns the JSON metadata key for a built-in wire format.
 fn format_key(format: WireFormat) -> &'static str {
-    match format {
-        WireFormat::OpenAiChat => "openai_chat",
-        WireFormat::AnthropicMessages => "anthropic_messages",
-        WireFormat::OpenAiResponses => "openai_responses",
-    }
+    format.as_str()
 }
 
 // Builds an intentionally broad request fixture for a provider format.
 fn request_fixture(format: WireFormat) -> Value {
     match format {
+        WireFormat::BedrockConverse => unreachable!("Bedrock preservation has separate fixtures"),
         WireFormat::OpenAiChat => json!({
             "model": "gpt-5.2",
             "messages": [
@@ -544,6 +541,7 @@ fn request_fixture(format: WireFormat) -> Value {
 // Builds an intentionally broad response fixture for a provider format.
 fn response_fixture(format: WireFormat) -> Value {
     match format {
+        WireFormat::BedrockConverse => unreachable!("Bedrock preservation has separate fixtures"),
         WireFormat::OpenAiChat => json!({
             "id": "chatcmpl_adversarial",
             "object": "chat.completion",
