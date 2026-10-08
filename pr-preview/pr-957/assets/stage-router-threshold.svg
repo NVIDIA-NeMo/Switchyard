@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 330" role="img" aria-labelledby="title desc">
+  <title id="title">Stage score distribution at confidence threshold 0.5</title>
+  <desc id="desc">An illustrative histogram of signed Stage scores. Scores below negative 0.5 select efficient, scores from negative 0.5 through positive 0.5 form the ambiguous band and fall back to efficient in efficient-first mode, and scores above positive 0.5 select capable.</desc>
+  <rect width="880" height="330" rx="12" fill="#ffffff"/>
+  <text x="440" y="30" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#1f2937">Illustrative score distribution · efficient_first · threshold = 0.5</text>
+
+  <rect x="70" y="58" width="185" height="190" fill="#dbeafe"/>
+  <rect x="255" y="58" width="370" height="190" fill="#fef3c7"/>
+  <rect x="625" y="58" width="185" height="190" fill="#ede9fe"/>
+
+  <text x="162" y="82" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#1e40af">signal → efficient</text>
+  <text x="440" y="82" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#92400e">ambiguous band → default efficient</text>
+  <text x="717" y="82" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#5b21b6">signal → capable</text>
+
+  <g fill="#4b5563" opacity="0.82">
+    <rect x="85" y="220" width="24" height="20" rx="2"/>
+    <rect x="121" y="207" width="24" height="33" rx="2"/>
+    <rect x="157" y="188" width="24" height="52" rx="2"/>
+    <rect x="193" y="171" width="24" height="69" rx="2"/>
+    <rect x="229" y="151" width="24" height="89" rx="2"/>
+    <rect x="265" y="130" width="24" height="110" rx="2"/>
+    <rect x="301" y="116" width="24" height="124" rx="2"/>
+    <rect x="337" y="102" width="24" height="138" rx="2"/>
+    <rect x="373" y="94" width="24" height="146" rx="2"/>
+    <rect x="409" y="89" width="24" height="151" rx="2"/>
+    <rect x="445" y="96" width="24" height="144" rx="2"/>
+    <rect x="481" y="108" width="24" height="132" rx="2"/>
+    <rect x="517" y="123" width="24" height="117" rx="2"/>
+    <rect x="553" y="142" width="24" height="98" rx="2"/>
+    <rect x="589" y="163" width="24" height="77" rx="2"/>
+    <rect x="625" y="180" width="24" height="60" rx="2"/>
+    <rect x="661" y="197" width="24" height="43" rx="2"/>
+    <rect x="697" y="211" width="24" height="29" rx="2"/>
+    <rect x="733" y="220" width="24" height="20" rx="2"/>
+    <rect x="769" y="228" width="24" height="12" rx="2"/>
+  </g>
+
+  <line x1="70" y1="240" x2="810" y2="240" stroke="#111827" stroke-width="2"/>
+  <line x1="255" y1="58" x2="255" y2="248" stroke="#92400e" stroke-width="2" stroke-dasharray="6 5"/>
+  <line x1="625" y1="58" x2="625" y2="248" stroke="#92400e" stroke-width="2" stroke-dasharray="6 5"/>
+  <line x1="440" y1="235" x2="440" y2="248" stroke="#111827" stroke-width="2"/>
+
+  <g font-family="sans-serif" font-size="13" fill="#374151" text-anchor="middle">
+    <text x="70" y="265">-1.0</text>
+    <text x="255" y="265">-0.5</text>
+    <text x="440" y="265">0</text>
+    <text x="625" y="265">+0.5</text>
+    <text x="810" y="265">+1.0</text>
+  </g>
+  <text x="440" y="292" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#1f2937">raw signed Stage score</text>
+  <text x="70" y="313" font-family="sans-serif" font-size="12" fill="#6b7280">← efficient evidence</text>
+  <text x="810" y="313" text-anchor="end" font-family="sans-serif" font-size="12" fill="#6b7280">capable evidence →</text>
+</svg>
