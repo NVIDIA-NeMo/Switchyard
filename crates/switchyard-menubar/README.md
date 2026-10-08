@@ -57,6 +57,21 @@ Savings are the difference, so routing overhead counts against the figure and
 a bad day shows a negative number. Dollar figures stay hidden until every
 model seen has a price, so a partial table cannot mislead.
 
+Codex's "Approve for me" reviews count too. The server config that the
+installer writes sends them to `codex-auto-review` on the ChatGPT backend. With
+a ChatGPT login, Codex sends these reviews to `codex-auto-review` even without
+Switchyard, so the installer prices that model at the `baseline_model` rates.
+Each review then adds the same amount to the actual cost and to the baseline,
+so reviews do not change the dollar amount saved. They do lower the percentage
+a little, because the baseline grows. If you change `baseline_model`, update
+this price to match.
+
+The menu bar needs a price for the model ID that the routing log records for
+reviews, which is the reviewer target's `id`. Without that price, the menu bar
+hides the Saved row for every period that includes a review. The installer does
+not overwrite an existing `composite.toml` or `menubar.toml`, so an existing
+install needs the route and the price added by hand.
+
 Codex's "Approve for me" reviews need a price too. Use the reviewer target's
 `id`, which is the model ID recorded in the routing log. The default reviewer
 route uses `codex-auto-review`. With a ChatGPT login, these reviews also happen
