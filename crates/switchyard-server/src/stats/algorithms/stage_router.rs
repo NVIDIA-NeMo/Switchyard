@@ -279,4 +279,37 @@ mod tests {
         assert_eq!(after_reset.routing_decisions["override"].total, 1);
         assert!(!after_reset.routing_decisions.contains_key("dimensions"));
     }
+
+    #[test]
+    fn a_composite_route_reports_its_stage_router_stats() {
+        // CompositeRouter is build_stage_route(..).with_name("composite"), and its
+        // StageClassifier records the same instruments, so the block has to appear
+        // for a deployment whose only route calls itself composite.
+        let registry = Registry::new();
+        let exporter = opentelemetry_prometheus::exporter()
+            .with_registry(registry.clone())
+            .build()
+            .unwrap_or_else(|error| panic!("failed to build metrics exporter: {error}"));
+        let provider = SdkMeterProvider::builder().with_reader(exporter).build();
+        let meter = provider.meter("switchyard");
+        let stats = StatsAccumulator::new(registry, ["composite"]);
+
+        meter
+            .u64_counter("switchyard.stage_router.routing_decisions")
+            .build()
+            .add(
+                3,
+                &[
+                    KeyValue::new("decision_source", "llm-classifier"),
+                    KeyValue::new("target_name", "model/capable"),
+                ],
+            );
+
+        let snapshot = stats.snapshot();
+        let stage = snapshot
+            .algorithm_stats
+            .stage_router
+            .unwrap_or_else(|| panic!("stage-router stats missing for a composite route"));
+        assert_eq!(stage.routing_decisions["llm-classifier"].total, 3);
+    }
 }
