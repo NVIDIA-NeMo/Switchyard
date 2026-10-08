@@ -17,6 +17,67 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn anthropic_reconstruction_preserves_mcp_connections_native_tools_and_results() -> TestResult {
+    let body = json!({
+        "model": "claude-test",
+        "max_tokens": 128,
+        "mcp_servers": [{
+            "type": "url",
+            "name": "inventory",
+            "url": "https://example.invalid/mcp",
+            "authorization_token": "synthetic-inventory-token"
+        }],
+        "tools": [
+            {"type": "mcp_toolset", "mcp_server_name": "inventory",
+             "default_config": {"enabled": false},
+             "configs": {"lookup": {"enabled": true}}},
+            {"type": "web_search_20250305", "name": "web_search",
+             "max_uses": 3, "allowed_domains": ["example.com"]}
+        ],
+        "messages": [
+            {"role": "user", "content": "Look up widget stock and its product page."},
+            {"role": "assistant", "content": [
+                {"type": "mcp_tool_use", "id": "mcptoolu_inventory_1",
+                 "name": "lookup", "server_name": "inventory",
+                 "input": {"sku": "widget"}},
+                {"type": "mcp_tool_result", "tool_use_id": "mcptoolu_inventory_1",
+                 "is_error": false,
+                 "content": [{"type": "text", "text": "12 widgets in stock."}]},
+                {"type": "server_tool_use", "id": "srvtoolu_search_1",
+                 "name": "web_search", "input": {"query": "site:example.com widget"}},
+                {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_search_1",
+                 "content": [{"type": "web_search_result",
+                              "url": "https://example.com/widget", "title": "Widget",
+                              "encrypted_content": "synthetic-search-content"}]},
+                {"type": "text", "text": "There are 12 widgets in stock."}
+            ]},
+            {"role": "user", "content": "Can we fulfill an order for 10 widgets?"}
+        ]
+    });
+    let format = WireFormat::AnthropicMessages;
+    let result = TranslationEngine::default().translate_request(
+        format,
+        format,
+        &body,
+        &normalized_policy(),
+    )?;
+
+    assert_eq!(
+        json!({
+            "mcp_servers": result.body["mcp_servers"],
+            "tools": result.body["tools"],
+            "assistant_history": result.body["messages"][1]["content"]
+        }),
+        json!({
+            "mcp_servers": body["mcp_servers"],
+            "tools": body["tools"],
+            "assistant_history": body["messages"][1]["content"]
+        })
+    );
+    Ok(())
+}
+
+#[test]
 fn responses_allowed_tools_is_translated_or_rejected() -> TestResult {
     let engine = TranslationEngine::default();
     for mode in ["auto", "required"] {
