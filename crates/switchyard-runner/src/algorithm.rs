@@ -360,6 +360,9 @@ pub enum AlgorithmSpec {
         capable_target: String,
         /// Target used from the first edit or write onward.
         efficient_target: String,
+        /// Additional tool names whose mutations trigger handoff.
+        #[serde(default)]
+        tool_semantics: ToolSemantics,
         /// Replaces the built-in planning instruction.
         #[serde(default)]
         planning_prompt: Option<String>,
@@ -1271,12 +1274,14 @@ fn build_algorithm(
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
         AlgorithmSpec::PlanExecute {
+            tool_semantics,
             planning_prompt,
             handoff_prompt,
             planner_reasoning_as_text,
             ..
         } => {
             let mut config = PlanExecuteConfig::default();
+            config.tool_semantics.clone_from(tool_semantics);
             if let Some(prompt) = planning_prompt {
                 config.planning_prompt = prompt.clone();
             }
