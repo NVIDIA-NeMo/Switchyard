@@ -592,6 +592,62 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../integrations/oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -629,7 +685,7 @@
   <span class="md-ellipsis">
     
   
-    Routing
+    Recipes
   
 
     
@@ -642,6 +698,93 @@
         
         <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Recipes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../recipes/single_provider_coding_agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Single-provider coding agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Routing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -722,6 +865,34 @@
     
   
     Execution (Stage Router)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/plan_execute_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
   
 
     
@@ -902,10 +1073,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
             
   
   
@@ -923,8 +1094,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1019,10 +1190,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
-          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
             
   
   
@@ -1040,8 +1211,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_7">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1574,6 +1745,11 @@ and <a href="https://opentelemetry.io/docs/specs/otel/protocol/exporter/">OTLP c
 <td>Waiting for the host to fulfill an offloaded call. Includes host queueing. OpenInference kind <code>CHAIN</code>.</td>
 </tr>
 <tr>
+<td><code>libsy.decision_call</code></td>
+<td>Libsy driver</td>
+<td>An offloaded Decision Model call, including host queueing. OpenInference kind <code>CHAIN</code>.</td>
+</tr>
+<tr>
 <td><code>libsy.client_call</code>, exported as <code>chat &lt;model_id&gt;</code></td>
 <td>LLM client driver</td>
 <td>One candidate model call, including that candidate's retries. OTel kind <code>CLIENT</code>; OpenInference kind <code>LLM</code>.</td>
@@ -1581,6 +1757,10 @@ and <a href="https://opentelemetry.io/docs/specs/otel/protocol/exporter/">OTLP c
 </tbody>
 </table>
 <p>Hosts driving <code>run_stream</code> without the LLM client driver instrument their own model I/O.</p>
+<p><code>libsy.decision_call</code> records <code>algorithm</code>, <code>selected_model</code>, and terminal <code>outcome</code>.
+Successful replies add available <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</code>,
+<code>reasoning_tokens</code>, <code>gen_ai.response.id</code>, and <code>gen_ai.response.model</code> fields.
+Unknown values are omitted; request content, answers, and error details are not recorded.</p>
 <h3 id="routing-outcome-fields">Routing outcome fields<a class="headerlink" href="#routing-outcome-fields" title="Permanent link">&para;</a></h3>
 <p>On <code>libsy.run</code>:</p>
 <table>
@@ -1791,13 +1971,25 @@ invented as zero. Available counts are capped at OTel's signed integer maximum.<
 <td><code>switchyard.llm_calls</code></td>
 <td>Counter</td>
 <td><code>algorithm</code>, <code>selected_model</code>, <code>outcome</code></td>
-<td>Logical offloaded and terminal model calls.</td>
+<td>Routing-time LLM calls and each terminal answer candidate, including failures.</td>
 </tr>
 <tr>
 <td><code>switchyard.llm_call_duration_ms</code></td>
 <td>Histogram</td>
 <td><code>algorithm</code>, <code>selected_model</code>, <code>outcome</code></td>
-<td>Logical call duration in milliseconds; see streaming limits below.</td>
+<td>One duration sample in milliseconds per offloaded LLM call or terminal answer candidate, including failures; see streaming limits below.</td>
+</tr>
+<tr>
+<td><code>switchyard.decision_calls</code></td>
+<td>Counter</td>
+<td><code>algorithm</code>, <code>selected_model</code>, <code>outcome</code></td>
+<td>Offloaded Decision Model calls, recorded once on reply, failure, or unfulfilled drop.</td>
+</tr>
+<tr>
+<td><code>switchyard.decision_call_duration_ms</code></td>
+<td>Histogram</td>
+<td><code>algorithm</code>, <code>selected_model</code>, <code>outcome</code></td>
+<td>One duration sample in milliseconds per Decision Model call, including host queueing.</td>
 </tr>
 <tr>
 <td><code>switchyard.total_requests</code></td>
@@ -1860,9 +2052,19 @@ invented as zero. Available counts are capped at OTel's signed integer maximum.<
 <code>other_error</code> otherwise. <code>code</code> is an allowlisted status, a status-class bucket,
 or <code>none</code>. Classifier <code>reason</code> is <code>timeout</code>, <code>transport</code>, <code>upstream_5xx</code>,
 <code>upstream_non_5xx</code>, <code>invalid_response</code>, <code>parse_error</code>, <code>client_error</code>, or <code>call_error</code>.</p>
-<p>Logical calls, candidate calls, and HTTP attempts are different counts. Candidate
-fallbacks and HTTP retries remain within one logical call. A response produced
-during routing is not counted again as a new terminal model call.</p>
+<p>Client requests, routing decisions, model calls, and HTTP attempts have separate
+counts. For <code>switchyard.llm_calls</code> and <code>switchyard.llm_call_duration_ms</code>, each
+routing-time offloaded call and each terminal answer candidate contributes one
+observation. HTTP retries stay within the same candidate's count and duration.
+Reusing a response produced during routing keeps only its routing-time call observation.</p>
+<p>For example, one buffered client request with no judge calls or retries, a failed
+primary, and a successful fallback produces one client response, one routing decision,
+two <code>llm_calls</code>, and two <code>llm_call_duration_ms</code> samples. The primary has
+<code>selected_model=&lt;primary&gt;</code> and <code>outcome=error</code>; the fallback has
+<code>selected_model=&lt;fallback&gt;</code> and <code>outcome=ok</code>. For terminal answer-candidate observations,
+<code>selected_model</code> identifies the model called. For routing-time observations, it
+identifies the initial routing candidate. For <code>switchyard.decisions</code>, it identifies
+the initial routing selection.</p>
 <p>The five request/error/latency instruments above record each answer candidate after
 routing, not each HTTP attempt. A failed candidate followed by a successful fallback
 adds two to <code>total_requests</code>, one to <code>total_errors</code>, one to <code>errors</code> for the failed
@@ -1870,9 +2072,10 @@ model, and one to <code>requests</code> for the successful model. Routing-time c
 before a routing outcome do not contribute. A response reused from routing contributes
 one to <code>total_requests</code> and one to either <code>requests</code> or <code>errors</code> (also <code>total_errors</code>
 on failure), but no <code>model_call_latency_ms</code> sample. The <code>model</code> label is the
-candidate's configured model ID (the serving model for a reused response), not the
-<code>selected_model</code> label used by logical-call metrics. The two total gauges are cumulative
-process-wide compatibility values, not counts of requests currently in flight.</p>
+candidate's configured model ID (the serving model for a reused response).
+For terminal answer candidates, it matches <code>selected_model</code> on <code>llm_calls</code> and
+<code>llm_call_duration_ms</code>. The two total gauges are cumulative process-wide
+compatibility values.</p>
 <p>For streams, these five instruments record when the response stream ends or is dropped.
 Stream errors count as failures. Dropping an unfinished stream also counts as a failure;
 a terminal message permits a successful drop. Failed calls have no
@@ -1977,7 +2180,9 @@ one sample per application request and are not split by route or session.</p>
 <h3 id="timing-and-streaming">Timing and streaming<a class="headerlink" href="#timing-and-streaming" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>libsy.run</code> may finish before the answer call. Nested algorithms have separate run spans.</li>
-<li><code>libsy.llm_call</code> and logical call-duration metrics end at response-handle availability, not stream completion. The span's <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</code>, and <code>reasoning_tokens</code> fields are buffered-response only.</li>
+<li>Decision calls record <code>error</code> when failed or dropped without a reply, including cancellation. A returned response records its outcome even if the waiting algorithm has already gone away. These metrics work with any host and do not require a client observer.</li>
+<li><code>libsy.llm_call</code> and routing-time call metrics end when the host fulfills the offloaded call. They include host queueing. The LLM client driver buffers routing streams before fulfilling the call. The span's <code>input_tokens</code>, <code>output_tokens</code>, <code>total_tokens</code>, and <code>reasoning_tokens</code> fields are buffered-response only.</li>
+<li>For terminal answer candidates, <code>switchyard.llm_calls</code> and <code>switchyard.llm_call_duration_ms</code> record when the response stream ends or is dropped. Duration includes that candidate's retries and stream consumption. Stream errors and unfinished drops record <code>outcome=error</code>; a terminal message permits a successful drop.</li>
 <li><code>libsy.client_call</code> remains open while its stream is consumed. IDs, usage, and finish reasons update from normalized events. An unfinished stream dropped by its consumer records <code>cancelled</code>; a stream error records <code>error</code>.</li>
 </ul>
 <h3 id="data-exposure">Data exposure<a class="headerlink" href="#data-exposure" title="Permanent link">&para;</a></h3>
@@ -1992,10 +2197,10 @@ configured names and fixed categories, not request/session IDs or user text.</p>
 <p>These are current implementation names, not a separately versioned telemetry schema.
 Debug spans and log events are not a stable field contract.</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/06c0325d5692f61225ada8d6c408e690788e543a/crates/libsy/src/observability.rs">Libsy spans, outcome projection, and metrics</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/06c0325d5692f61225ada8d6c408e690788e543a/crates/libsy-llm-client/src/run.rs">Client span fields</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/06c0325d5692f61225ada8d6c408e690788e543a/crates/libsy-llm-client/src/observability.rs">stream/usage observation</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/06c0325d5692f61225ada8d6c408e690788e543a/crates/libsy-llm-client/src/metrics.rs">Client metrics</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/06c0325d5692f61225ada8d6c408e690788e543a/crates/libsy/src/algorithms/util/stage.rs">Stage Router metrics</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/06c0325d5692f61225ada8d6c408e690788e543a/crates/libsy/src/algorithms/advisor_gate/telemetry.rs">Advisor Gate metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/crates/libsy/src/observability.rs">Libsy spans, outcome projection, and metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/crates/libsy-llm-client/src/run.rs">Client span fields</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/crates/libsy-llm-client/src/observability.rs">stream/usage observation</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/crates/libsy-llm-client/src/metrics.rs">Client metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/crates/libsy/src/algorithms/util/stage.rs">Stage Router metrics</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/crates/libsy/src/algorithms/advisor_gate/telemetry.rs">Advisor Gate metrics</a></li>
 </ul>
 
 
