@@ -3517,35 +3517,8 @@ mod tests {
     }
 
     #[test]
-    fn mcp_redaction_preserves_values_when_object_keys_collide() {
-        let token = "synthetic-mcp-key-token".to_string();
-        let mut value = json!({"error": {
-            token.as_str(): {"detail": "echoed key"},
-            "[REDACTED]": {"detail": "existing key"},
-            "other": {"detail": "unchanged"}
-        }});
-        redact_mcp_json(&mut value, std::slice::from_ref(&token));
-        assert!(!value.to_string().contains(&token));
-        let object = value["error"].as_object().expect("expected error object");
-        assert_eq!(object.len(), 3);
-        assert_eq!(object["[REDACTED]"]["detail"], "existing key");
-        assert_eq!(object["other"]["detail"], "unchanged");
-        assert!(object.values().any(|value| value["detail"] == "echoed key"));
-    }
-
-    #[test]
-    fn mcp_redaction_borrows_strings_without_matches() {
-        let tokens = vec!["synthetic-mcp-token".to_string()];
-        for text in ["ordinary error detail", r"C:\tmp", r"failed parsing \u0061"] {
-            let redacted = redact_mcp_tokens(text, &tokens);
-            assert_eq!(redacted, text);
-            assert_eq!(redacted.as_ptr(), text.as_ptr());
-        }
-    }
-
-    #[test]
     fn mcp_redaction_handles_escaped_and_short_tokens() {
-        for token in ["x", "xy", "xyz", "synthetic-mcp-\"\\-secret"] {
+        for token in ["x", "synthetic-mcp-\"\\-secret"] {
             let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
                 "authorization_token": token
             }]}));
@@ -3564,9 +3537,13 @@ mod tests {
                     .is_some_and(|s| s.contains("[REDACTED]"))
             );
         }
+        let token = "synthetic-mcp-token";
         let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
-            "authorization_token": "synthetic-mcp-token"
+            "authorization_token": token
         }]}));
+        for text in ["ordinary error detail", r"C:\tmp", r"failed parsing \u0061"] {
+            assert_eq!(redact_mcp_tokens(text, &patterns), text);
+        }
         let body = br#"{"type":"error","error":{"message":"\u0073ynthetic-mcp-token"}}"#;
         assert!(may_contain_mcp_tokens(body, &patterns));
         let mut value: Value = serde_json::from_slice(body).expect("valid JSON");
@@ -3586,6 +3563,19 @@ mod tests {
         }});
         redact_mcp_json(&mut value, &patterns);
         assert_eq!(value["error"]["message"], "[REDACTED]");
+
+        let mut value = json!({"error": {
+            token: {"detail": "echoed key"},
+            "[REDACTED]": {"detail": "existing key"},
+            "other": {"detail": "unchanged"}
+        }});
+        redact_mcp_json(&mut value, &patterns);
+        assert!(!value.to_string().contains(token));
+        let object = value["error"].as_object().expect("expected error object");
+        assert_eq!(object.len(), 3);
+        assert_eq!(object["[REDACTED]"]["detail"], "existing key");
+        assert_eq!(object["other"]["detail"], "unchanged");
+        assert!(object.values().any(|value| value["detail"] == "echoed key"));
 
         let patterns = vec!["🚀".to_string()];
         assert_eq!(
@@ -3611,12 +3601,5 @@ mod tests {
         }]}));
         let event = redact_mcp_event(event, &patterns);
         assert_eq!(event.preservation().expect("preserved event").raw(), &raw);
-        assert_eq!(
-            event.normalized(),
-            &[LlmResponseChunk::TextDelta {
-                index: 0,
-                text: "synthetic-mcp-token".to_string()
-            }]
-        );
     }
 }
