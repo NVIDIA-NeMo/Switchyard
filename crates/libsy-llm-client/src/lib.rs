@@ -31,7 +31,7 @@ pub mod run;
 mod system_one;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
-pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
+pub use client::{AuxiliaryOperation, ModelConfig, ReasoningFormat, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use observation::{ModelCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;

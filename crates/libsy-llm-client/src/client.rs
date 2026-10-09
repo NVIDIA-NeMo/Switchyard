@@ -14,6 +14,7 @@ use futures_util::{StreamExt, stream};
 use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -58,6 +59,20 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
+/// OpenAI Chat reasoning field dialect a target expects for assistant reasoning.
+///
+/// Some OpenAI-compatible models only accept reasoning replayed under the exact
+/// field they produced, so a target can pin the spelling here instead of
+/// relying on whatever the inbound request carried.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningFormat {
+    /// The `reasoning` field.
+    OpenAi,
+    /// The `reasoning_content` field.
+    Deepseek,
+}
+
 /// How one model is served: the `default_backend` used when the request does not
 /// pin a wire format, plus any `other_backends` reachable over additional formats.
 #[derive(Clone, Debug)]
@@ -65,6 +80,7 @@ pub struct ModelConfig {
     model_name: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    reasoning_format: Option<ReasoningFormat>,
 }
 
 impl ModelConfig {
@@ -79,7 +95,16 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            reasoning_format: None,
         }
+    }
+
+    /// Pins the OpenAI Chat reasoning field the target expects. After encoding,
+    /// assistant reasoning is moved to this field and the other spelling is
+    /// removed. Unset keeps the encoded field unchanged.
+    pub fn with_reasoning_format(mut self, reasoning_format: ReasoningFormat) -> Self {
+        self.reasoning_format = Some(reasoning_format);
+        self
     }
 }
 
@@ -140,6 +165,21 @@ impl TranslatingLlmClient {
         // Pre-populate so concurrent calls update only atomics and keep map access lock-free.
         let mut unavailable_until = HashMap::new();
         for config in model_configs {
+            if config.reasoning_format.is_some()
+                && !matches!(config.default_backend, Backend::OpenAiChat(_))
+                && !config
+                    .other_backends
+                    .iter()
+                    .flatten()
+                    .any(|backend| matches!(backend, Backend::OpenAiChat(_)))
+            {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {} reasoning_format requires an OpenAI Chat backend",
+                        config.model_name
+                    ),
+                });
+            }
             for backend in std::iter::once(&config.default_backend)
                 .chain(config.other_backends.iter().flatten())
             {
@@ -190,6 +230,13 @@ impl TranslatingLlmClient {
     /// Whether `model` has a backend for `operation`.
     pub fn supports_auxiliary(&self, model: &ModelId, operation: AuxiliaryOperation) -> bool {
         self.backend_for(model, operation.wire_format()).is_some()
+    }
+
+    /// The OpenAI Chat reasoning field dialect `model`'s target pinned, if any.
+    fn reasoning_format(&self, model: &ModelId) -> Option<ReasoningFormat> {
+        self.model_to_config
+            .get(model)
+            .and_then(|config| config.reasoning_format)
     }
 
     /// Calls a model-bearing auxiliary provider operation.
@@ -293,6 +340,11 @@ impl TranslatingLlmClient {
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
+            // The target's field choice wins over whatever spelling the inbound
+            // request carried; the two fields are never emitted together.
+            if let Some(reasoning_format) = self.reasoning_format(model) {
+                apply_reasoning_format(&mut body, reasoning_format);
+            }
         }
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -1177,6 +1229,55 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
     }
 }
 
+// Moves assistant reasoning to the OpenAI Chat field the selected target
+// expects, removing the other spelling. The value keeps the text it carried;
+// when a message somehow carries both spellings, the target field's own value
+// wins rather than concatenating the two.
+fn apply_reasoning_format(body: &mut Value, reasoning_format: ReasoningFormat) {
+    let (target_field, other_field) = match reasoning_format {
+        ReasoningFormat::OpenAi => ("reasoning", "reasoning_content"),
+        ReasoningFormat::Deepseek => ("reasoning_content", "reasoning"),
+    };
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages {
+        let Some(message) = message.as_object_mut() else {
+            continue;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let value = message.remove(other_field);
+        if message.contains_key(target_field) {
+            continue;
+        }
+        let value = value.or_else(|| {
+            let details = message.get("reasoning_details")?.as_array()?;
+            let text = details
+                .iter()
+                .filter_map(|detail| {
+                    detail
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .or_else(|| {
+                            detail
+                                .get("summary")
+                                .and_then(Value::as_str)
+                                .filter(|text| !text.is_empty())
+                        })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.is_empty()).then_some(Value::String(text))
+        });
+        if let Some(value) = value {
+            message.entry(target_field).or_insert(value);
+        }
+    }
+}
+
 // Applies target defaults without overriding fields supplied by the caller.
 fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
     let Value::Object(object) = body else {
@@ -1468,6 +1569,18 @@ mod tests {
         let mut backend = config(base_url);
         backend.reasoning_effort = Some(effort.to_string());
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    // A one-model config list: "gpt" served over OpenAI Chat, with the target's
+    // reasoning field pinned to `reasoning_format`.
+    fn chat_map_with_reasoning_format(
+        base_url: &str,
+        reasoning_format: ReasoningFormat,
+    ) -> Vec<ModelConfig> {
+        vec![
+            ModelConfig::new("gpt", Backend::OpenAiChat(config(base_url)), None)
+                .with_reasoning_format(reasoning_format),
+        ]
     }
 
     fn responses_map_with_effort(base_url: &str, effort: &str) -> Vec<ModelConfig> {
@@ -3003,8 +3116,263 @@ mod tests {
         Ok(())
     }
 
-    // Raw path, buffered: decode an OpenAI Chat body -> call -> encode back to OpenAI
-    // Chat JSON, with the served `model` restamped over the id the caller addressed.
+    // A configured dialect must have a reachable Chat backend, including fallbacks.
+    #[test]
+    fn reasoning_format_requires_a_chat_backend() -> std::result::Result<(), Box<dyn Error>> {
+        for backend in [
+            Backend::Anthropic(config("https://example.com")),
+            Backend::OpenAiResponses(config("https://example.com")),
+        ] {
+            let model = ModelConfig::new("gpt", backend.clone(), None);
+            TranslatingLlmClient::new(std::slice::from_ref(&model))?;
+            let result =
+                TranslatingLlmClient::new(
+                    &[model.with_reasoning_format(ReasoningFormat::Deepseek)],
+                );
+            assert!(matches!(result, Err(LlmClientError::Configuration { .. })));
+
+            let mixed = ModelConfig::new(
+                "gpt",
+                backend,
+                Some(vec![Backend::OpenAiChat(config("https://example.com"))]),
+            )
+            .with_reasoning_format(ReasoningFormat::Deepseek);
+            let client = TranslatingLlmClient::new(&[mixed])?;
+            assert!(
+                client
+                    .backend_for(&ModelId::from("gpt"), WireFormat::OpenAiChat)
+                    .is_some()
+            );
+        }
+        Ok(())
+    }
+
+    // Provider extension fields on other message roles must survive normalization.
+    #[test]
+    fn reasoning_format_preserves_non_assistant_messages() {
+        let untouched = json!([
+            {"role": "user", "reasoning": "user extension", "reasoning_content": "keep"},
+            {"role": "system", "reasoning_content": "system extension"},
+            {"role": "tool", "reasoning": "tool extension"},
+            {"reasoning_content": "unknown role"},
+        ]);
+        for format in [ReasoningFormat::OpenAi, ReasoningFormat::Deepseek] {
+            let mut body = json!({"messages": untouched.clone()});
+            apply_reasoning_format(&mut body, format);
+            assert_eq!(body["messages"], untouched);
+        }
+    }
+
+    #[tokio::test]
+    async fn reasoning_format_replays_details_across_formats_and_streaming()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for streaming in [false, true] {
+            for (format, mut request) in [
+                (
+                    WireFormat::OpenAiChat,
+                    json!({"model": "gpt", "messages": [{"role": "assistant", "content": "answer", "reasoning_details": [{"type": "reasoning.text", "text": "thoughts"}]}]}),
+                ),
+                (
+                    WireFormat::OpenAiResponses,
+                    json!({"model": "gpt", "input": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "thoughts"}]}, {"role": "assistant", "content": "answer"}]}),
+                ),
+                (
+                    WireFormat::AnthropicMessages,
+                    json!({"model": "gpt", "max_tokens": 32, "messages": [{"role": "assistant", "content": [{"type": "thinking", "thinking": "thoughts"}, {"type": "text", "text": "answer"}]}]}),
+                ),
+            ] {
+                let server = MockServer::start().await;
+                let response = if streaming {
+                    ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream")
+                } else {
+                    chat_success_response()
+                };
+                Mock::given(method("POST"))
+                    .and(path("/v1/chat/completions"))
+                    .respond_with(response)
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let client = TranslatingLlmClient::new(&chat_map_with_reasoning_format(
+                    &format!("{}/v1", server.uri()),
+                    ReasoningFormat::Deepseek,
+                ))?;
+                request["stream"] = json!(streaming);
+                client
+                    .call_rewrite_model_raw(request, None, Some(&ModelId::new("gpt")), format)
+                    .await?;
+                let requests = server
+                    .received_requests()
+                    .await
+                    .ok_or("recording disabled")?;
+                let body: Value = serde_json::from_slice(&requests[0].body)?;
+                assert_eq!(body["stream"].as_bool().unwrap_or(false), streaming);
+                assert!(
+                    body["messages"]
+                        .as_array()
+                        .ok_or("missing messages")?
+                        .iter()
+                        .any(|message| message["reasoning_content"] == "thoughts"),
+                    "{format:?}: {body}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reasoning_format_openai_moves_incoming_reasoning_content()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(chat_success_response())
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map_with_reasoning_format(
+            &format!("{}/v1", server.uri()),
+            ReasoningFormat::OpenAi,
+        ))?;
+        let raw = json!({
+            "model": "gpt",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "answer", "reasoning_content": "thoughts"},
+            ],
+        });
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let received = received.first().ok_or("expected one upstream request")?;
+        let body: Value = serde_json::from_slice(&received.body)?;
+        let assistant = &body["messages"][1];
+        // The incoming `reasoning_content` spelling conflicts with the target's
+        // `openai` setting; the conflict resolves to the target's spelling.
+        assert_eq!(assistant["reasoning"], json!("thoughts"));
+        assert!(assistant.get("reasoning_content").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reasoning_format_deepseek_moves_incoming_reasoning()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(chat_success_response())
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map_with_reasoning_format(
+            &format!("{}/v1", server.uri()),
+            ReasoningFormat::Deepseek,
+        ))?;
+        let raw = json!({
+            "model": "gpt",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "answer", "reasoning": "thoughts"},
+            ],
+        });
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let received = received.first().ok_or("expected one upstream request")?;
+        let body: Value = serde_json::from_slice(&received.body)?;
+        let assistant = &body["messages"][1];
+        assert_eq!(assistant["reasoning_content"], json!("thoughts"));
+        assert!(assistant.get("reasoning").is_none());
+        Ok(())
+    }
+
+    // Without a target setting the encoded field is left unchanged: unset keeps
+    // the current behavior.
+    #[tokio::test]
+    async fn unset_reasoning_format_keeps_incoming_spelling()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(chat_success_response())
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let raw = json!({
+            "model": "gpt",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "answer", "reasoning_content": "thoughts"},
+            ],
+        });
+        client
+            .call_rewrite_model_raw(
+                raw,
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let received = received.first().ok_or("expected one upstream request")?;
+        let body: Value = serde_json::from_slice(&received.body)?;
+        let assistant = &body["messages"][1];
+        assert_eq!(assistant["reasoning_content"], json!("thoughts"));
+        assert!(assistant.get("reasoning").is_none());
+        Ok(())
+    }
+
+    // The two spellings are never emitted together: when a message somehow
+    // carries both, the target field's own value wins and the other is dropped.
+    #[test]
+    fn reasoning_format_never_emits_both_fields() {
+        let mut body = json!({
+            "messages": [
+                {"role": "assistant", "content": "answer",
+                 "reasoning": "target spelling", "reasoning_content": "other spelling"},
+            ],
+        });
+        apply_reasoning_format(&mut body, ReasoningFormat::OpenAi);
+        let message = &body["messages"][0];
+        assert_eq!(message["reasoning"], json!("target spelling"));
+        assert!(message.get("reasoning_content").is_none());
+
+        let mut body = json!({
+            "messages": [
+                {"role": "assistant", "content": "answer",
+                 "reasoning": "other spelling", "reasoning_content": "target spelling"},
+            ],
+        });
+        apply_reasoning_format(&mut body, ReasoningFormat::Deepseek);
+        let message = &body["messages"][0];
+        assert_eq!(message["reasoning_content"], json!("target spelling"));
+        assert!(message.get("reasoning").is_none());
+    }
     #[tokio::test]
     async fn call_rewrite_model_raw_round_trips_buffered_json()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
