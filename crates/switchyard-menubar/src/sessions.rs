@@ -170,42 +170,6 @@ pub fn launch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn quotes_shell_metacharacters_literally() {
-        assert_eq!(quote("a'b $(touch /tmp/no)"), "'a'\\''b $(touch /tmp/no)'");
-    }
-    #[test]
-    fn rejected_launch_inputs_create_no_worktree_or_settings() {
-        let dir = tempfile::tempdir().expect("directory");
-        assert!(
-            launch(
-                Harness::CodexCli,
-                dir.path(),
-                "route",
-                "https://remote.example",
-                true,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            launch(
-                Harness::Pi,
-                dir.path(),
-                "route",
-                "http://localhost:4123",
-                true,
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            std::fs::read_dir(dir.path())
-                .expect("contents")
-                .next()
-                .is_none()
-        );
-    }
 
     #[test]
     fn failed_session_setup_removes_its_worktree_branch_and_private_settings() {

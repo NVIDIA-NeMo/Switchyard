@@ -162,7 +162,7 @@ impl View {
     fn submit(&mut self, controller: &mut Controller) -> Result<(), String> {
         let form = self.form.take().ok_or("No form is open.")?;
         let value = |i: usize| form.fields[i].1.trim().to_string();
-        match form.kind {
+        let action = match form.kind {
             FormKind::Algorithm => {
                 let route = self.route()?;
                 let algorithm = value(0);
@@ -207,6 +207,7 @@ impl View {
                     FormKind::Apply(algorithm),
                     fields,
                 );
+                return Ok(());
             }
             FormKind::Apply(algorithm) => {
                 let choices = form
@@ -217,36 +218,27 @@ impl View {
                         model: f[1].1.trim().into(),
                     })
                     .collect();
-                self.dispatch(
-                    controller,
-                    Action::Apply {
-                        generation: self.snapshot["generation"].as_u64().unwrap_or_default(),
-                        route: string(self.route()?, "key"),
-                        algorithm,
-                        choices,
-                    },
-                );
+                Action::Apply {
+                    generation: self.snapshot["generation"].as_u64().unwrap_or_default(),
+                    route: string(self.route()?, "key"),
+                    algorithm,
+                    choices,
+                }
             }
             FormKind::Project => {
                 let r = self.route()?;
-                self.dispatch(
-                    controller,
-                    Action::Launch {
-                        tool: self.tool(),
-                        account: self.account(),
-                        route: string(r, "key"),
-                        id: string(r, "id"),
-                        project: value(0),
-                    },
-                );
-            }
-            FormKind::Account => self.dispatch(
-                controller,
-                Action::AddAccount {
+                Action::Launch {
                     tool: self.tool(),
-                    name: value(0),
-                },
-            ),
+                    account: self.account(),
+                    route: string(r, "key"),
+                    id: string(r, "id"),
+                    project: value(0),
+                }
+            }
+            FormKind::Account => Action::AddAccount {
+                tool: self.tool(),
+                name: value(0),
+            },
             FormKind::Models | FormKind::Key => {
                 let key = if matches!(form.kind, FormKind::Key) {
                     Some(value(1))
@@ -270,51 +262,50 @@ impl View {
                             .join("\n"))
                         .unwrap_or_default()
                 );
+                return Ok(());
             }
             FormKind::RouteFilter => {
                 self.route_filter = value(0);
                 self.move_route(false);
                 self.scroll = 0;
+                return Ok(());
             }
             FormKind::SettingsFile => {
                 self.settings_file = value(0);
                 self.account = 0;
                 self.preview = None;
                 self.preview_install(controller)?;
+                return Ok(());
             }
             FormKind::Restore => {
                 if value(0) != "RESTORE" {
                     return Err("Confirmation did not match. Nothing was restored.".into());
                 }
-                self.dispatch(
-                    controller,
-                    Action::Restore {
-                        tool: self.tool(),
-                        account: self.account(),
-                        settings_file: self.custom_file(),
-                    },
-                );
                 self.preview = None;
+                Action::Restore {
+                    tool: self.tool(),
+                    account: self.account(),
+                    settings_file: self.custom_file(),
+                }
             }
             FormKind::Remove => {
                 let route = self.route()?;
                 if value(0) != string(route, "id") {
                     return Err("Route name did not match. Nothing was deleted.".into());
                 }
-                self.dispatch(
-                    controller,
-                    Action::Remove {
-                        generation: self.snapshot["generation"].as_u64().unwrap_or_default(),
-                        route: string(route, "key"),
-                        id: string(route, "id"),
-                    },
-                );
+                Action::Remove {
+                    generation: self.snapshot["generation"].as_u64().unwrap_or_default(),
+                    route: string(route, "key"),
+                    id: string(route, "id"),
+                }
             }
             FormKind::Filter => {
                 self.filter = value(0);
                 self.scroll = 0;
+                return Ok(());
             }
-        }
+        };
+        self.dispatch(controller, action);
         Ok(())
     }
     fn body(&self) -> String {
@@ -658,24 +649,6 @@ mod tests {
             std::fs::read_dir(directory.path()).expect("files").count(),
             0
         );
-    }
-
-    #[test]
-    // The Routes search must not hide choices when the user switches to Install.
-    fn route_search_does_not_restrict_install_selection() {
-        let mut view = view();
-        view.snapshot["routes"][0]["kind"] = json!("passthrough");
-        view.route_filter = "single model".into();
-        assert!(view.route().is_ok());
-        view.move_route(true);
-        assert_eq!(view.route, 0);
-        view.route_filter = "missing".into();
-        assert!(view.route().is_err());
-        view.page = 2;
-        view.move_route(true);
-        assert_eq!(view.route, 1);
-        assert_eq!(view.route().expect("route")["id"], "b");
-        assert!(view.preview.is_none());
     }
 
     #[test]

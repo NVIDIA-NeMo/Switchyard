@@ -762,9 +762,9 @@ mod tests {
                 vec![dir.path().join("config")]
             };
             let original = if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
-                "model='before'\n"
+                "# user comment\nmodel='before'\nsandbox_mode='workspace-write'\n"
             } else {
-                "{}"
+                "{\"custom\":true}"
             };
             std::fs::write(&files[0], original).expect("settings");
             let result = preview(*tool, &files, "http://localhost:4123", "new-route", false)
@@ -784,6 +784,37 @@ mod tests {
             assert_eq!(
                 result["proposed"],
                 inspect(*tool, &files).expect("installed")
+            );
+            install(
+                *tool,
+                &files,
+                "http://localhost:4123",
+                "refreshed-route",
+                false,
+            )
+            .expect("refresh");
+            let installed = read(&files[0]).expect("settings");
+            assert!(installed.contains("refreshed-route"));
+            assert!(
+                installed.contains(if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
+                    "sandbox_mode"
+                } else {
+                    "custom"
+                })
+            );
+            assert_eq!(read(&backup_path(&files[0])).expect("backup"), original);
+            restore(&files).expect("restore");
+            assert_eq!(read(&files[0]).expect("original"), original);
+            if *tool == Harness::Pi {
+                assert!(!files[1].exists());
+            }
+            std::fs::write(&files[0], original.replace("before", "new-user-model"))
+                .expect("user edit");
+            install(*tool, &files, "http://localhost:4123", "again", false).expect("reinstall");
+            restore(&files).expect("restore again");
+            assert_eq!(
+                read(&files[0]).expect("new original"),
+                original.replace("before", "new-user-model")
             );
             assert!(
                 result["authentication"]
@@ -841,78 +872,6 @@ mod tests {
                 .expect("authentication")
                 .contains("subscription login")
         );
-    }
-    #[test]
-    fn preserves_user_fields_refreshes_and_restores() {
-        let dir = tempfile::tempdir().expect("directory");
-        for (tool, _) in HARNESSES {
-            let files = if *tool == Harness::Pi {
-                vec![
-                    dir.path().join("models.json"),
-                    dir.path().join("settings.json"),
-                ]
-            } else {
-                vec![dir.path().join(format!("{tool:?}.config"))]
-            };
-            let original = if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
-                "# user comment\nmodel = 'old'\nsandbox_mode = 'workspace-write'\n"
-            } else {
-                "{\"custom\":true}"
-            };
-            std::fs::write(&files[0], original).expect("settings");
-            install(*tool, &files, "http://127.0.0.1:4123", "route-a", false).expect("install");
-            install(*tool, &files, "http://127.0.0.1:4123", "route-b", false).expect("refresh");
-            let current = read(&files[0]).expect("read");
-            assert!(current.contains("route-b"));
-            assert!(
-                current.contains(if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
-                    "sandbox_mode"
-                } else {
-                    "custom"
-                })
-            );
-            assert_eq!(read(&backup_path(&files[0])).expect("backup"), original);
-            restore(&files).expect("restore");
-            assert_eq!(read(&files[0]).expect("restored"), original);
-        }
-    }
-    #[test]
-    fn repeated_install_restore_cycles_capture_new_user_settings() {
-        for present in [false, true] {
-            let dir = tempfile::tempdir().expect("directory");
-            let path = dir.path().join("settings.json");
-            let files = std::slice::from_ref(&path);
-            if present {
-                std::fs::write(&path, "{\"original\":true}").expect("original");
-            }
-            install(
-                Harness::Claude,
-                files,
-                "http://localhost:4123",
-                "route",
-                false,
-            )
-            .expect("install");
-            let message = restore(files).expect("restore");
-            assert!(message.contains("switchyard-before-restore-"));
-            assert_eq!(path.exists(), present);
-            assert!(!backup_path(&path).exists());
-            assert!(!absent_path(&path).exists());
-            std::fs::write(&path, "{\"new_user_setting\":true}").expect("user edit");
-            install(
-                Harness::Claude,
-                files,
-                "http://localhost:4123",
-                "another",
-                false,
-            )
-            .expect("reinstall");
-            restore(files).expect("second restore");
-            assert_eq!(
-                read(&path).expect("settings"),
-                "{\"new_user_setting\":true}"
-            );
-        }
     }
 
     #[test]
@@ -1140,20 +1099,6 @@ mod tests {
             Some("http://localhost:4123/v1")
         );
         assert!(doc["model_providers"]["sy"].get("env_key").is_none());
-    }
-
-    #[test]
-    fn restoring_an_absent_original_removes_the_installed_settings() {
-        let dir = tempfile::tempdir().expect("directory");
-        let files = vec![
-            dir.path().join("models.json"),
-            dir.path().join("settings.json"),
-        ];
-        install(Harness::Pi, &files, "http://localhost:4123", "route", false).expect("install");
-        install(Harness::Pi, &files, "http://localhost:4123", "other", false).expect("refresh");
-        restore(&files).expect("restore");
-        assert!(files.iter().all(|path| !path.exists()));
-        assert!(files.iter().all(|path| !absent_path(path).exists()));
     }
 
     #[test]

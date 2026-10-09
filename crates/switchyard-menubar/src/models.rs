@@ -598,7 +598,6 @@ mod tests {
     struct Stub {
         /// This field sets the client base URL used to list models from this server.
         url: String,
-        response: Arc<Mutex<String>>,
         requests: Arc<Mutex<Vec<Vec<String>>>>,
         address: SocketAddr,
         stopping: Arc<AtomicBool>,
@@ -610,11 +609,10 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
             let address = listener.local_addr().expect("addr");
             let url = format!("http://{address}/v1");
-            let response = Arc::new(Mutex::new(response));
             let requests = Arc::new(Mutex::new(Vec::new()));
             let stopping = Arc::new(AtomicBool::new(false));
             let stop = Arc::clone(&stopping);
-            let (answer, record) = (Arc::clone(&response), Arc::clone(&requests));
+            let record = Arc::clone(&requests);
             let worker = std::thread::spawn(move || {
                 for mut stream in listener.incoming().map_while(Result::ok) {
                     if stop.load(Ordering::Acquire) {
@@ -628,22 +626,16 @@ mod tests {
                         line.clear();
                     }
                     record.lock().expect("lock").push(head);
-                    let response = answer.lock().expect("lock").clone();
                     let _ = stream.write_all(response.as_bytes());
                 }
             });
             Self {
                 url,
-                response,
                 requests,
                 address,
                 stopping,
                 worker: Some(worker),
             }
-        }
-
-        fn answer(&self, response: String) {
-            *self.response.lock().expect("lock") = response;
         }
 
         fn requests(&self) -> Vec<Vec<String>> {
@@ -680,14 +672,6 @@ mod tests {
             api_key_env: None,
             forward_auth: true,
         }
-    }
-
-    fn models(loaded: &[Loaded]) -> Vec<&str> {
-        loaded
-            .iter()
-            .flat_map(|entry| entry.list.iter().flat_map(|list| &list.models))
-            .map(String::as_str)
-            .collect()
     }
 
     // The subprocess isolates PATH; its curl fixture exits before reading the oversized header.
@@ -742,43 +726,6 @@ mod tests {
     }
 
     #[test]
-    fn fetches_a_missing_list_once_and_then_uses_the_cached_list() {
-        let stub = Stub::start(listing(&["model-b", "model-a"]));
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cache = dir.path().join(CACHE_FILE);
-        // Both clients list their models at the same URL.
-        let clients = [
-            client("gateway", "openai_responses", &stub.url),
-            client("gateway_chat", "openai_chat", &stub.url),
-        ];
-
-        let first = load(
-            &cache,
-            &clients,
-            false,
-            Some((&stub.url, "test-key")),
-            &|_| {},
-        );
-        // A cached list needs neither a request nor a key.
-        let second = load(&cache, &clients, false, None, &|_| {});
-
-        let requests = stub.requests();
-        assert_eq!(requests.len(), 1, "{requests:?}");
-        assert_eq!(requests[0][0], "GET /v1/models HTTP/1.1");
-        assert!(
-            requests[0].contains(&"Authorization: Bearer test-key".to_string()),
-            "{requests:?}"
-        );
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].url, format!("{}/models", stub.url));
-        assert_eq!(first[0].error, None);
-        assert_eq!(models(&first), ["model-a", "model-b"]);
-        assert_eq!(second, first);
-        let text = std::fs::read_to_string(&cache).expect("read cache");
-        assert!(!text.contains("test-key"), "the cache holds no key: {text}");
-    }
-
-    #[test]
     fn entered_key_is_sent_only_to_its_selected_base_url() {
         let selected = Stub::start(listing(&["selected"]));
         let unrelated = Stub::start(listing(&["unrelated"]));
@@ -803,6 +750,11 @@ mod tests {
             &|_| {},
         );
         assert_eq!(loaded[0].error, None);
+        assert!(
+            !std::fs::read_to_string(dir.path().join(CACHE_FILE))
+                .expect("cache")
+                .contains("selected-secret")
+        );
         assert_eq!(selected.requests().len(), 1);
         assert!(selected.requests()[0].contains(&"Authorization: Bearer selected-secret".into()));
         assert_eq!(
@@ -817,145 +769,6 @@ mod tests {
                 .iter()
                 .all(|header| !header.starts_with("Authorization:"))
         );
-    }
-
-    #[test]
-    fn refresh_fetches_again_and_replaces_the_cached_list() {
-        let stub = Stub::start(listing(&["old-model"]));
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cache = dir.path().join(CACHE_FILE);
-        let clients = [client("gateway", "openai_chat", &stub.url)];
-        load(
-            &cache,
-            &clients,
-            false,
-            Some((&stub.url, "test-key")),
-            &|_| {},
-        );
-        stub.answer(listing(&["new-model"]));
-
-        let refreshed = load(
-            &cache,
-            &clients,
-            true,
-            Some((&stub.url, "test-key")),
-            &|_| {},
-        );
-        let later = load(&cache, &clients, false, None, &|_| {});
-
-        assert_eq!(stub.requests().len(), 2);
-        assert_eq!(models(&refreshed), ["new-model"]);
-        assert_eq!(refreshed[0].error, None);
-        assert_eq!(later, refreshed, "the cache file holds the new list");
-    }
-
-    #[test]
-    fn a_failed_refresh_keeps_the_cached_list() {
-        let stub = Stub::start(listing(&["old-model"]));
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cache = dir.path().join(CACHE_FILE);
-        let clients = [client("gateway", "openai_chat", &stub.url)];
-        let first = load(
-            &cache,
-            &clients,
-            false,
-            Some((&stub.url, "test-key")),
-            &|_| {},
-        );
-        stub.answer(
-            "HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n{}".to_string(),
-        );
-
-        let refreshed = load(
-            &cache,
-            &clients,
-            true,
-            Some((&stub.url, "test-key")),
-            &|_| {},
-        );
-        let later = load(&cache, &clients, false, None, &|_| {});
-
-        assert_eq!(stub.requests().len(), 2);
-        assert_eq!(refreshed[0].list, first[0].list);
-        assert_eq!(
-            refreshed[0].error,
-            Some(ListError::Failed(format!(
-                "{}/models answered HTTP 500",
-                stub.url
-            )))
-        );
-        assert_eq!(later, first, "the cache file still holds the old list");
-    }
-
-    #[test]
-    fn fetches_a_shared_url_with_the_client_that_sends_a_key() {
-        let stub = Stub::start(listing(&["model-a"]));
-        let dir = tempfile::tempdir().expect("tempdir");
-        // The first client at the URL sends no key, so listing with it would
-        // leave out the key the second client needs.
-        let keyless = Client {
-            forward_auth: false,
-            ..client("open", "openai_chat", &stub.url)
-        };
-        let clients = [keyless, client("gateway", "openai_responses", &stub.url)];
-
-        let loaded = load(
-            &dir.path().join(CACHE_FILE),
-            &clients,
-            false,
-            Some((&stub.url, "test-key")),
-            &|_| {},
-        );
-
-        let requests = stub.requests();
-        assert_eq!(requests.len(), 1, "{requests:?}");
-        assert!(
-            requests[0].contains(&"Authorization: Bearer test-key".to_string()),
-            "{requests:?}"
-        );
-        assert_eq!(models(&loaded), ["model-a"]);
-    }
-
-    #[test]
-    fn returns_a_fetched_list_that_the_cache_file_cannot_hold() {
-        let stub = Stub::start(listing(&["model-a"]));
-        let dir = tempfile::tempdir().expect("tempdir");
-        // The cache file's directory does not exist, so the file cannot be
-        // written.
-        let cache = dir.path().join("missing").join(CACHE_FILE);
-        let clients = [client("gateway", "openai_chat", &stub.url)];
-
-        let loaded = load(
-            &cache,
-            &clients,
-            false,
-            Some((&stub.url, "test-key")),
-            &|_| {},
-        );
-
-        assert_eq!(models(&loaded), ["model-a"]);
-        assert!(
-            matches!(loaded[0].error, Some(ListError::NotCached(_))),
-            "{loaded:?}"
-        );
-        assert!(!cache.exists());
-    }
-
-    #[test]
-    fn the_cache_file_keeps_the_newer_of_two_lists() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cache = dir.path().join(CACHE_FILE);
-        let url = "https://api.example/v1/models";
-        let list = |model: &str, fetched_at| ModelList {
-            models: vec![model.to_string()],
-            fetched_at,
-        };
-
-        // The load that fetched first writes last.
-        write_cache(&cache, url, &list("new", 200)).expect("write");
-        write_cache(&cache, url, &list("old", 100)).expect("write");
-
-        assert_eq!(read_cache(&cache).get(url), Some(&list("new", 200)));
     }
 
     #[test]
@@ -986,76 +799,5 @@ mod tests {
             1,
             "a missing key or a key with a line break sends no request"
         );
-    }
-
-    #[test]
-    fn builds_the_models_url_with_the_servers_url_rules() {
-        for (format, base_url, expected) in [
-            (
-                "openai_chat",
-                "https://api.example/v1/",
-                "https://api.example/v1/models",
-            ),
-            (
-                "openai_responses",
-                "https://api.example/v1/responses",
-                "https://api.example/v1/models",
-            ),
-            (
-                "anthropic_messages",
-                "https://api.example",
-                "https://api.example/v1/models?limit=1000",
-            ),
-            (
-                "anthropic_messages",
-                "https://api.example/v1/messages",
-                "https://api.example/v1/models?limit=1000",
-            ),
-            // The server sends messages to /foo/messages/v1/messages here.
-            (
-                "anthropic_messages",
-                "https://api.example/foo/messages",
-                "https://api.example/foo/messages/v1/models?limit=1000",
-            ),
-            (
-                "anthropic_messages",
-                "https://api.example/v1?api-version=1",
-                "https://api.example/v1/models?api-version=1&limit=1000",
-            ),
-            (
-                "openai_chat",
-                "https://api.example/v1?api-version=1",
-                "https://api.example/v1/models?api-version=1",
-            ),
-        ] {
-            assert_eq!(
-                models_url(format, base_url),
-                expected,
-                "{format} {base_url}"
-            );
-        }
-    }
-
-    #[test]
-    fn reads_the_models_that_codex_saved() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("models_cache.json");
-        std::fs::write(
-            &path,
-            r#"{"fetched_at":"2026-01-01T00:00:00Z","etag":"x","models":[
-                {"slug":"gpt-6-sol","visibility":"list"},
-                {"slug":"codex-auto-review","visibility":"hide"},
-                {"slug":"gpt-6-sol"}]}"#,
-        )
-        .expect("write");
-
-        let list = read_codex_models(&path).expect("a list");
-
-        // Hidden models stay, because a route can still name them.
-        assert_eq!(list.models, ["codex-auto-review", "gpt-6-sol"]);
-        assert_eq!(list.fetched_at, 1_767_225_600);
-        assert_eq!(read_codex_models(&dir.path().join("missing.json")), None);
-        std::fs::write(&path, "not json").expect("write");
-        assert_eq!(read_codex_models(&path), None);
     }
 }

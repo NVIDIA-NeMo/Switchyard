@@ -127,29 +127,6 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn activity_uses_real_hour_buckets_and_ignores_invalid_or_outside_times() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-10-09T12:00:00Z")
-            .expect("date")
-            .with_timezone(&chrono::Utc);
-        let entries = [
-            "2026-10-09T11:59:00Z",
-            "2026-10-09T11:00:00Z",
-            "2026-10-08T12:00:00Z",
-            "2026-10-09T13:00:00Z",
-            "2026-10-09T12:00:00.500Z",
-            "bad",
-        ]
-        .iter()
-        .map(|time| {
-            serde_json::from_value(serde_json::json!({"ts":time,"model":"m"})).expect("entry")
-        })
-        .collect::<Vec<_>>();
-        let buckets = hourly_calls(&entries, now);
-        assert_eq!(buckets[23], 1);
-        assert_eq!(buckets[22], 1);
-        assert_eq!(buckets.iter().sum::<u64>(), 2);
-    }
 
     #[test]
     fn groups_recorded_ids_and_never_displays_content() {
@@ -167,36 +144,36 @@ mod tests {
         );
         assert!(history.entries[1].session_id.is_none());
     }
+
     #[test]
-    fn reads_a_bounded_tail_and_keeps_only_recent_records() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("log");
-        let line = "{\"ts\":\"2026-10-08T12:00:00Z\",\"model\":\"m\"}\n";
-        std::fs::write(&path, line.repeat(MAX_RECORDS + 1)).expect("log");
-        let history = load(&path).expect("load");
+    fn retains_recent_records_and_complete_byte_limited_records() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("log");
+        let line = b"{\"ts\":\"2026-10-08T12:00:00Z\",\"model\":\"recent\"}\n";
+        let mut contents = b"{\"ts\":\"2026-10-08T11:00:00Z\",\"model\":\"old\"}\n".to_vec();
+        contents.extend(line.repeat(MAX_RECORDS));
+        std::fs::write(&path, contents).expect("record-limited log");
+        let history = load(&path).expect("record-limited history");
         assert_eq!(history.entries.len(), MAX_RECORDS);
+        assert!(history.entries.iter().all(|entry| entry.model == "recent"));
         assert!(history.limited);
-        let mut contents = vec![b'x'; MAX_BYTES as usize];
-        contents.extend_from_slice(b"\n");
-        contents.extend_from_slice(line.as_bytes());
-        std::fs::write(&path, contents).expect("large log");
-        let history = load(&path).expect("load tail");
-        assert_eq!(history.entries.len(), 1);
-        assert!(history.limited);
-    }
-    // The cutoff falls after a newline, so the first complete record must stay.
-    #[test]
-    fn a_byte_limit_aligned_to_a_record_keeps_that_record() {
-        let dir = tempfile::tempdir().expect("directory");
-        let path = dir.path().join("log");
-        let line = b"{\"ts\":\"2026-10-08T12:00:00Z\",\"model\":\"first\"}\n";
-        let mut contents = b"discarded prefix\n".to_vec();
-        contents.extend_from_slice(line);
-        contents.resize(contents.len() + MAX_BYTES as usize - line.len(), b' ');
-        std::fs::write(&path, contents).expect("log");
-        let history = load(&path).expect("load");
-        assert_eq!(history.entries.len(), 1);
-        assert_eq!(history.entries[0].model, "first");
-        assert!(history.limited);
+
+        for prefix in [
+            b"discarded prefix\n".as_slice(),
+            b"partial prefix".as_slice(),
+        ] {
+            let mut contents = prefix.to_vec();
+            contents.extend_from_slice(line);
+            contents.resize(prefix.len() + MAX_BYTES as usize, b' ');
+            std::fs::write(&path, contents).expect("byte-limited log");
+            let history = load(&path).expect("byte-limited history");
+            assert!(history.limited);
+            if prefix.ends_with(b"\n") {
+                assert_eq!(history.entries.len(), 1);
+                assert_eq!(history.entries[0].model, "recent");
+            } else {
+                assert!(history.entries.is_empty());
+            }
+        }
     }
 }

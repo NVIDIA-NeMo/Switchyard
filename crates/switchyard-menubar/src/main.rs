@@ -8,7 +8,6 @@
 //! restart the server.
 
 mod accounts;
-mod app;
 mod config;
 mod controller;
 #[cfg(target_os = "macos")]
@@ -90,12 +89,17 @@ fn main() -> ExitCode {
     // The default mode prints a summary on platforms without the macOS desktop app.
     // The --tui option starts the terminal app on those platforms.
     if print_only || (!terminal && !cfg!(target_os = "macos")) {
-        let (_, rows) = app::refresh(&config, &mut rollup::Reader::default());
-        for row in rows {
-            match row {
-                summary::Row::Separator => println!(),
-                summary::Row::Label(text) => println!("{text}"),
-            }
+        let usage = rollup::Reader::default()
+            .read(&config.routing_log, chrono::Local::now().date_naive())
+            .unwrap_or_else(|error| {
+                eprintln!(
+                    "switchyard-menubar: read {}: {error}",
+                    config.routing_log.display()
+                );
+                rollup::Usage::default()
+            });
+        for row in summary::build(health::probe(&config.server_url), &usage, &config) {
+            println!("{row}");
         }
         return ExitCode::SUCCESS;
     }

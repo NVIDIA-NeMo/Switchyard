@@ -10,7 +10,6 @@ use crate::{
     history, models, rollup, server,
     server_config::{ALGORITHMS, Choice, Route, ServerConfig},
     sessions,
-    summary::Row,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -140,13 +139,6 @@ impl Controller {
         let metrics = json!({"server_url":self.config.server_url,"running":server_status == crate::health::ServerStatus::Running,
             "today":{"requests":usage.today.requests(),"tokens":usage.today.tokens()},
             "week":{"requests":usage.week.requests(),"tokens":usage.week.tokens()}});
-        let summary: Vec<_> = summary
-            .into_iter()
-            .map(|r| match r {
-                Row::Label(s) => s,
-                Row::Separator => String::new(),
-            })
-            .collect();
         let mut routes = Vec::new();
         let mut clients = Vec::new();
         match self.routes() {
@@ -186,6 +178,7 @@ impl Controller {
     }
     pub fn dispatch(&mut self, action: Action) -> Result<Reply, String> {
         self.reload()?;
+        let preview = matches!(action, Action::PreviewInstall { .. });
         match action {
             Action::Editor {
                 generation,
@@ -283,22 +276,8 @@ impl Controller {
                 route,
                 id,
                 settings_file,
-            } => {
-                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
-                let config = self.routes()?;
-                let route = current_route(&config, &route, Some(&id))?;
-
-                let current = harness::inspect(tool, &files)?;
-                let preview = login_mode(tool, &config, &route).and_then(|login| {
-                    harness::preview(tool, &files, &self.config.server_url, &route.id, login)
-                });
-                Ok(Reply {
-                    message: String::new(),
-                    data: preview
-                        .unwrap_or_else(|error| json!({"current": current, "error": error})),
-                })
             }
-            Action::Install {
+            | Action::Install {
                 tool,
                 account,
                 route,
@@ -308,9 +287,28 @@ impl Controller {
                 let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
                 let config = self.routes()?;
                 let route = current_route(&config, &route, Some(&id))?;
-                let login = login_mode(tool, &config, &route)?;
-                harness::install(tool, &files, &self.config.server_url, &route.id, login)
-                    .map(Reply::message)
+                let login = login_mode(tool, &config, &route);
+                if preview {
+                    let current = harness::inspect(tool, &files)?;
+                    let data = login
+                        .and_then(|login| {
+                            harness::preview(
+                                tool,
+                                &files,
+                                &self.config.server_url,
+                                &route.id,
+                                login,
+                            )
+                        })
+                        .unwrap_or_else(|error| json!({"current": current, "error": error}));
+                    Ok(Reply {
+                        message: String::new(),
+                        data,
+                    })
+                } else {
+                    harness::install(tool, &files, &self.config.server_url, &route.id, login?)
+                        .map(Reply::message)
+                }
             }
             Action::Restore {
                 tool,

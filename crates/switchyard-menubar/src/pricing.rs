@@ -97,111 +97,61 @@ pub fn unpriced<'a>(
 mod tests {
     use super::*;
 
-    fn price(input: f64, output: f64) -> ModelPrice {
-        ModelPrice {
-            input_per_mtok: input,
-            cached_input_per_mtok: None,
-            output_per_mtok: output,
-        }
-    }
-
-    fn table() -> PriceTable {
-        PriceTable::from([
-            ("sol".to_string(), price(1.25, 10.0)),
-            ("luna".to_string(), price(0.25, 2.0)),
-            ("terra".to_string(), price(0.05, 0.4)),
-        ])
-    }
-
-    fn tokens(input: u64, output: u64) -> ModelTokens {
-        ModelTokens {
-            requests: 1,
-            input,
-            cached_input: 0,
-            output,
-        }
-    }
-
     #[test]
-    fn prices_the_cheaper_tier_against_the_capable_baseline() {
+    fn estimates_cost_without_hiding_overhead_or_missing_prices() {
+        let price = ModelPrice {
+            input_per_mtok: 1.0,
+            cached_input_per_mtok: Some(0.1),
+            output_per_mtok: 2.0,
+        };
+        let prices = PriceTable::from([
+            ("baseline".into(), price),
+            (
+                "cheap".into(),
+                ModelPrice {
+                    input_per_mtok: 0.2,
+                    cached_input_per_mtok: None,
+                    output_per_mtok: 0.4,
+                },
+            ),
+        ]);
         let mut totals = Totals::default();
-        totals
-            .routed
-            .insert("luna".to_string(), tokens(1_000_000, 100_000));
-
-        let savings = estimate(&totals, &table(), "sol").expect("priced");
-
-        assert!((savings.actual - 0.45).abs() < 1e-9);
-        assert!((savings.baseline - 2.25).abs() < 1e-9);
-        assert!((savings.percent().expect("percent") - 80.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn classifier_overhead_counts_against_savings() {
-        let mut totals = Totals::default();
-        totals
-            .routed
-            .insert("luna".to_string(), tokens(1_000_000, 100_000));
-        let before = estimate(&totals, &table(), "sol").expect("priced");
-
-        totals
-            .classifier
-            .insert("terra".to_string(), tokens(1_000_000, 10_000));
-        let after = estimate(&totals, &table(), "sol").expect("priced");
-
-        assert_eq!(after.baseline, before.baseline);
-        assert!(after.saved() < before.saved());
-    }
-
-    #[test]
-    fn cache_reads_use_the_cached_rate() {
-        let prices = PriceTable::from([(
-            "sol".to_string(),
-            ModelPrice {
-                input_per_mtok: 1.0,
-                cached_input_per_mtok: Some(0.1),
-                output_per_mtok: 0.0,
-            },
-        )]);
-        let mut totals = Totals::default();
+        let empty = estimate(&totals, &prices, "baseline").expect("empty");
+        assert_eq!(empty.saved(), 0.0);
+        assert!(empty.percent().is_none());
         totals.routed.insert(
-            "sol".to_string(),
+            "cheap".into(),
             ModelTokens {
                 requests: 1,
                 input: 1_000_000,
                 cached_input: 1_000_000,
-                output: 0,
+                output: 100_000,
             },
         );
-
-        let savings = estimate(&totals, &prices, "sol").expect("priced");
-
-        assert!((savings.actual - 1.1).abs() < 1e-9);
-    }
-
-    #[test]
-    fn an_unpriced_model_suppresses_the_estimate() {
-        let mut totals = Totals::default();
+        let routed = estimate(&totals, &prices, "baseline").expect("priced");
+        assert!((routed.actual - 0.44).abs() < 1e-9);
+        assert!((routed.baseline - 1.3).abs() < 1e-9);
+        assert!((routed.percent().expect("percent") - (1.3 - 0.44) / 1.3 * 100.0).abs() < 1e-9);
+        totals.classifier.insert(
+            "baseline".into(),
+            ModelTokens {
+                requests: 1,
+                input: 2_000_000,
+                ..ModelTokens::default()
+            },
+        );
+        let overhead = estimate(&totals, &prices, "baseline").expect("overhead");
+        assert_eq!(overhead.baseline, routed.baseline);
+        assert!((overhead.actual - 2.44).abs() < 1e-9);
+        assert!(overhead.saved() < 0.0);
         totals
             .routed
-            .insert("unknown".to_string(), tokens(1_000, 100));
-
-        assert!(estimate(&totals, &table(), "sol").is_none());
-        assert!(estimate(&Totals::default(), &table(), "absent").is_none());
-    }
-
-    #[test]
-    fn an_empty_period_has_no_percentage() {
-        let savings = estimate(&Totals::default(), &table(), "sol").expect("priced");
-
-        assert_eq!(savings.saved(), 0.0);
-        assert!(savings.percent().is_none());
-    }
-
-    #[test]
-    fn names_each_model_that_has_no_price_once() {
-        let models = ["sol", "mystery", "luna", "other", "mystery"];
-
-        assert_eq!(unpriced(models, &table()), ["mystery", "other"]);
+            .insert("missing".into(), ModelTokens::default());
+        assert!(estimate(&totals, &prices, "baseline").is_none());
+        assert!(estimate(&Totals::default(), &prices, "missing").is_none());
+        assert_eq!(
+            unpriced(["cheap", "missing", "other", "missing"], &prices),
+            ["missing", "other"]
+        );
     }
 }

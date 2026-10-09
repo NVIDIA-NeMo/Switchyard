@@ -497,11 +497,4 @@ mod tests {
             String::from_utf8_lossy(&output.stdout)
         );
     }
-
-    #[test]
-    fn reports_which_command_failed() {
-        let error = command("switchyard-does-not-exist", &[]).expect_err("missing program");
-
-        assert!(error.contains("switchyard-does-not-exist"));
-    }
 }

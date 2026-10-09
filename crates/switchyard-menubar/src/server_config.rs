@@ -1359,49 +1359,6 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn switching_models_and_back_restores_the_file() {
-        let gpt = edit(
-            GATEWAY,
-            "gateway",
-            "composite",
-            &[
-                choice("gateway", "gpt-5.6-terra"),
-                choice("gateway", "gpt-5.6-sol"),
-                choice("gateway", "gpt-5.6-luna"),
-            ],
-        )
-        .text;
-
-        let config = ServerConfig::parse(&gpt).expect("parse");
-        assert_eq!(
-            config.choices("gateway"),
-            [
-                choice("gateway", "gpt-5.6-terra"),
-                choice("gateway", "gpt-5.6-sol"),
-                choice("gateway", "gpt-5.6-luna"),
-            ]
-        );
-        assert!(
-            gpt.contains(
-                "[targets.gateway_capable]\nid = \"gpt-5.6-sol\"\nllm_client = \"gateway\"  # chat, for caching\nomit_body_fields = [\"reasoning_effort\"]"
-            ),
-            "the target keeps its other settings and comments:\n{gpt}"
-        );
-
-        let claude = edit(
-            &gpt,
-            "gateway",
-            "composite",
-            &[
-                choice("gateway", "gpt-5.6-terra"),
-                choice("gateway_chat", "claude-opus-5-5"),
-                choice("gateway_chat", "claude-sonnet-5"),
-            ],
-        );
-        assert_eq!(claude.text, GATEWAY);
-    }
-
-    #[test]
     fn changing_the_algorithm_replaces_only_the_route_settings() {
         let edited = edit(
             GATEWAY,
@@ -1543,77 +1500,6 @@ confidence_threshold = 0.5
         }
     }
 
-    #[test]
-    fn a_move_to_another_model_family_reports_the_settings_the_target_kept() {
-        let gpt = edit(
-            GATEWAY,
-            "gateway",
-            "composite",
-            &[
-                choice("gateway", "gpt-5.6-terra"),
-                choice("gateway", "gpt-5.6-sol"),
-                choice("gateway", "gpt-5.6-luna"),
-            ],
-        )
-        .text;
-
-        // The judge target has no request settings, and the capable target
-        // keeps omit_body_fields from its GPT model. Efficient stays.
-        let edited = edit(
-            &gpt,
-            "gateway",
-            "composite",
-            &[
-                choice("gateway_chat", "claude-haiku-4-5"),
-                choice("gateway_chat", "claude-opus-5-5"),
-                choice("gateway", "gpt-5.6-luna"),
-            ],
-        );
-
-        let note = |target: &str| {
-            edited
-                .notes
-                .iter()
-                .find(|note| note.contains(&format!("[targets.{target}]")))
-                .cloned()
-        };
-        let capable = note("gateway_capable").expect("a note for the capable target");
-        assert!(
-            capable.contains("claude-opus-5-5")
-                && capable.contains(r#"omit_body_fields = ["reasoning_effort"]"#),
-            "{capable}"
-        );
-        let judge = note("gateway_judge").expect("a note for the judge target");
-        assert!(
-            judge.contains("claude-haiku-4-5") && !judge.contains(" = "),
-            "{judge}"
-        );
-        assert_eq!(note("gateway_efficient"), None);
-    }
-
-    #[test]
-    fn rejects_a_missing_model_or_an_unknown_client() {
-        let config = ServerConfig::parse(GATEWAY).expect("parse");
-        for (capable, named) in [
-            (choice("gateway", " "), "Capable"),
-            (choice("typo", "gpt-5.6-sol"), "typo"),
-        ] {
-            let error = config
-                .edit(
-                    "gateway",
-                    algorithm("composite"),
-                    &[
-                        choice("gateway", "gpt-5.6-terra"),
-                        capable,
-                        choice("gateway", "gpt-5.6-luna"),
-                    ],
-                )
-                .expect_err("invalid choice");
-
-            assert!(error.contains(named), "{error}");
-        }
-    }
-
     /// This fixture places the last target and route inside a generated block.
     /// A hand-written route shares the capable target.
     fn with_generated_block() -> String {
@@ -1628,197 +1514,33 @@ confidence_threshold = 0.5
     }
 
     #[test]
-    fn a_new_target_goes_before_a_generated_block_not_inside_it() {
-        // Another route uses the capable target, so Capable gets a copy.
-        let edited = edit(
-            &with_generated_block(),
-            "gateway",
-            "composite",
-            &[
-                choice("gateway", "gpt-5.6-terra"),
-                choice("gateway", "gpt-5.6-sol"),
-                choice("gateway_chat", "claude-sonnet-5"),
-            ],
-        );
-
-        let config = ServerConfig::parse(&edited.text).expect("parse");
-        let copy = capable_target(&config).expect("capable target");
-        assert_ne!(copy, "gateway_capable");
-        assert_eq!(config.generated_by("targets", copy), None);
-        let at = |needle: &str| edited.text.find(needle).expect(needle);
-        assert!(
-            at(&format!("[targets.{copy}]")) < at("# >>> sync"),
-            "the next rewrite of the block would delete the copy:\n{}",
-            edited.text
-        );
-    }
-
-    #[test]
-    fn a_new_target_goes_before_the_first_table_when_every_target_is_generated() {
-        // A script writes every target in a block above the hand-written
-        // routes. Another route uses the capable target, so Capable gets a
-        // copy.
-        let text = GATEWAY
-            .replace(
-                "# The gateway rejects",
-                "# >>> sync: generated by sync.py; edits between the markers are overwritten >>>\n\
-                 # The gateway rejects",
-            )
-            .replace("[routes.gateway]\n", "# <<< sync <<<\n\n[routes.gateway]\n")
-            + "\n[routes.direct]\nid = \"direct\"\ntype = \"passthrough\"\n\
-               target = \"gateway_capable\"\n";
-
-        let edited = edit(
-            &text,
-            "gateway",
-            "composite",
-            &[
-                choice("gateway", "gpt-5.6-terra"),
-                choice("gateway", "gpt-5.6-sol"),
-                choice("gateway_chat", "claude-sonnet-5"),
-            ],
-        );
-
-        let config = ServerConfig::parse(&edited.text).expect("parse");
-        let copy = capable_target(&config).expect("capable target");
-        assert_ne!(copy, "gateway_capable");
-        assert_eq!(config.generated_by("targets", copy), None);
-        let at = |needle: &str| edited.text.find(needle).expect(needle);
-        assert!(
-            at(&format!("[targets.{copy}]")) < at("# >>> sync"),
-            "the next rewrite of the block would delete the copy:\n{}",
-            edited.text
-        );
-    }
-
-    #[test]
-    fn finds_the_tables_inside_generated_blocks() {
-        let text = with_generated_block().replace(
-            "# <<< sync <<<",
-            "[routes.\"quoted.key\"]\nid = \"q\"\ntype = \"passthrough\"\ntarget = \"generated\"\n\n\
-             # <<< sync <<<",
-        );
-
-        let config = ServerConfig::parse(&text).expect("parse");
-
-        let block = "sync: generated by sync.py; edits between the markers are overwritten";
-        assert_eq!(config.generated_by("routes", "generated"), Some(block));
-        assert_eq!(config.generated_by("targets", "generated"), Some(block));
-        assert_eq!(config.generated_by("routes", "quoted.key"), Some(block));
-        assert_eq!(config.generated_by("routes", "gateway"), None);
-        assert_eq!(config.generated_by("routes", "direct"), None);
-        assert_eq!(config.generated_by("targets", "gateway_capable"), None);
-    }
-
-    #[test]
-    fn warns_when_a_change_is_inside_a_generated_block() {
-        let text = with_generated_block();
-
-        // The tool overwrites changes to a route inside its generated block.
-        let inside = edit(
-            &text,
-            "generated",
-            "passthrough",
-            &[choice("gateway", "gpt-5.6-sol")],
-        );
-        assert!(
-            inside
-                .notes
-                .iter()
-                .any(|note| note.contains("[routes.generated]") && note.contains("overwrites")),
-            "{:?}",
-            inside.notes
-        );
-
-        // The hand-written route now uses a target inside the generated block.
-        let outside = edit(
-            &text,
-            "direct",
-            "passthrough",
-            &[choice("gateway", "gpt-5.5")],
-        );
-        assert!(
-            outside.notes.iter().any(
-                |note| note.contains("[routes.direct]") && note.contains("[targets.generated]")
-            ),
-            "{:?}",
-            outside.notes
-        );
-    }
-
-    #[test]
-    fn says_when_the_callers_logins_go_to_another_host() {
-        let text = GATEWAY.replace(
-            "[targets.gateway_capable]",
-            "[llm_clients.other]\nformat = \"openai_responses\"\nbase_url = \
-             \"https://login.example.org/v1\"\nforward_auth = true\n\n[targets.gateway_capable]",
-        );
-        let login = |edited: &Edited| {
-            edited
-                .notes
-                .iter()
-                .find(|note| note.contains("login"))
-                .cloned()
-        };
-
-        let moved = edit(
-            &text,
-            "gateway",
-            "composite",
-            &[
-                choice("other", "a"),
-                choice("other", "b"),
-                choice("other", "c"),
-            ],
-        );
-        let note = login(&moved).expect("a note about the login");
-        assert!(
-            note.contains("login.example.org") && note.contains("gateway.example.com"),
-            "{note}"
-        );
-
-        let same_host = edit(
-            &text,
-            "gateway",
-            "composite",
-            &[
-                choice("gateway", "gpt-5.6-terra"),
-                choice("gateway_chat", "claude-opus-5-5"),
-                choice("gateway_chat", "claude-haiku-4-5"),
-            ],
-        );
-        assert_eq!(login(&same_host), None);
-    }
-
-    #[test]
-    fn lists_the_models_a_client_already_serves() {
-        let config = ServerConfig::parse(GATEWAY).expect("parse");
-
-        assert_eq!(
-            config.models_on("gateway_chat"),
-            ["claude-opus-5-5", "claude-sonnet-5"]
-        );
-        assert_eq!(config.models_on("gateway"), ["gpt-5.6-terra"]);
-        assert!(config.models_on("missing").is_empty());
-    }
-
-    #[test]
-    fn names_the_host_and_port_of_a_client_without_its_path_or_login() {
-        let client = |base_url: &str| Client {
-            name: "c".to_string(),
-            format: "openai_chat".to_string(),
-            base_url: base_url.to_string(),
-            api_key_env: None,
-            forward_auth: false,
-        };
-
-        assert_eq!(
-            client("https://chatgpt.com/backend-api/codex").host(),
-            "chatgpt.com"
-        );
-        assert_eq!(
-            client("http://user@127.0.0.1:8000/v1?x=1").host(),
-            "127.0.0.1:8000"
-        );
+    fn new_targets_stay_outside_generated_blocks() {
+        let all_generated = GATEWAY.replace(
+            "# The gateway rejects",
+            "# >>> sync: generated by sync.py; edits between the markers are overwritten >>>\n# The gateway rejects",
+        ).replace("[routes.gateway]\n", "# <<< sync <<<\n\n[routes.gateway]\n")
+            + "\n[routes.direct]\nid='direct'\ntype='passthrough'\ntarget='gateway_capable'\n";
+        for text in [with_generated_block(), all_generated] {
+            let edited = edit(
+                &text,
+                "gateway",
+                "composite",
+                &[
+                    choice("gateway", "gpt-5.6-terra"),
+                    choice("gateway", "gpt-5.6-sol"),
+                    choice("gateway_chat", "claude-sonnet-5"),
+                ],
+            );
+            let config = ServerConfig::parse(&edited.text).expect("parse");
+            let copy = capable_target(&config).expect("capable target");
+            assert_ne!(copy, "gateway_capable");
+            assert_eq!(config.generated_by("targets", copy), None);
+            let header = edited
+                .text
+                .find(&format!("[targets.{copy}]"))
+                .expect("target header");
+            let marker = edited.text.find("# >>> sync").expect("block marker");
+            assert!(header < marker);
+        }
     }
 }

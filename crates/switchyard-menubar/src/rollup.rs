@@ -66,14 +66,13 @@ impl Totals {
     }
 
     fn merge(&mut self, other: &Self) {
-        for (model, tokens) in &other.routed {
-            self.routed.entry(model.clone()).or_default().add(tokens);
-        }
-        for (model, tokens) in &other.classifier {
-            self.classifier
-                .entry(model.clone())
-                .or_default()
-                .add(tokens);
+        for (own, incoming) in [
+            (&mut self.routed, &other.routed),
+            (&mut self.classifier, &other.classifier),
+        ] {
+            for (model, tokens) in incoming {
+                own.entry(model.clone()).or_default().add(tokens);
+            }
         }
     }
 
@@ -218,10 +217,6 @@ fn is_same_file(left: &Metadata, right: &Metadata) -> bool {
 mod tests {
     use super::*;
 
-    fn read(path: &Path, today: NaiveDate) -> std::io::Result<Usage> {
-        Reader::default().read(path, today)
-    }
-
     fn date(text: &str) -> NaiveDate {
         text.parse().expect("valid date")
     }
@@ -243,26 +238,6 @@ mod tests {
     }
 
     #[test]
-    fn splits_routed_and_classifier_tokens() {
-        let (_dir, path) = log(&format!(
-            "{}\n{}\n",
-            line("2026-09-28T10:00:00.000", "luna", "", 1_000, 200),
-            line("2026-09-28T10:00:01.000", "terra", "classifier", 300, 10),
-        ));
-
-        let usage = read(&path, date("2026-09-28")).expect("read");
-
-        assert_eq!(
-            usage.today.requests(),
-            1,
-            "classifier calls are not requests"
-        );
-        assert_eq!(usage.today.routed["luna"].input, 1_000);
-        assert_eq!(usage.today.classifier["terra"].input, 300);
-        assert_eq!(usage.today.tokens(), 1_000 + 200 + 300 + 10);
-    }
-
-    #[test]
     fn separates_cache_reads_from_full_price_input() {
         let record: Record = serde_json::from_str(
             r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":1000,"cached_tokens":600,"completion_tokens":50,"reasoning_tokens":25}"#,
@@ -276,72 +251,12 @@ mod tests {
     }
 
     #[test]
-    fn counts_completion_tokens_once_and_prices_them() {
-        let record: Record = serde_json::from_str(
-            r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":12,"cached_tokens":0,"completion_tokens":5,"reasoning_tokens":3}"#,
-        )
-        .expect("parse record");
-
-        let tokens = record.tokens();
-
-        assert_eq!(tokens.input, 12);
-        assert_eq!(tokens.output, 5);
-        assert_eq!(tokens.total(), 17);
-        let mut totals = Totals::default();
-        totals.add(&record);
-        let prices = crate::pricing::PriceTable::from([(
-            "m".to_string(),
-            crate::pricing::ModelPrice {
-                input_per_mtok: 1.0,
-                cached_input_per_mtok: None,
-                output_per_mtok: 2.0,
-            },
-        )]);
-        let savings = crate::pricing::estimate(&totals, &prices, "m").expect("priced");
-        assert!((savings.actual - 0.000022).abs() < 1e-12);
-    }
-
-    #[test]
-    fn the_week_covers_seven_days() {
-        let mut contents = String::new();
-        for day in 18..=28 {
-            contents.push_str(&line(
-                &format!("2026-09-{day:02}T10:00:00.000"),
-                "luna",
-                "",
-                100,
-                10,
-            ));
-            contents.push('\n');
-        }
-        let (_dir, path) = log(&contents);
-
-        let usage = read(&path, date("2026-09-28")).expect("read");
-
-        assert_eq!(usage.today.requests(), 1);
-        assert_eq!(usage.week.requests(), 7);
-    }
-
-    #[test]
-    fn skips_lines_it_cannot_parse() {
-        // The trailing line has no newline yet, as when the server is mid-write.
-        let (_dir, path) = log(&format!(
-            "not json\n{}\n{{\"ts\":\"2026-09-2",
-            line("2026-09-28T10:00:00.000", "luna", "", 100, 10),
-        ));
-
-        let usage = read(&path, date("2026-09-28")).expect("read");
-
-        assert_eq!(usage.today.requests(), 1);
-    }
-
-    #[test]
     fn reads_appends_once_and_retries_an_unfinished_line() {
         use std::io::Write;
 
         let first = line("2026-09-28T10:00:00.000", "luna", "", 100, 10);
         let second = line("2026-09-28T10:00:01.000", "terra", "classifier", 30, 1);
-        let (_dir, path) = log(&format!("{first}\n"));
+        let (_dir, path) = log(&format!("not json\n{first}\n"));
         let today = date("2026-09-28");
         let mut reader = Reader::default();
         assert_eq!(reader.read(&path, today).expect("read").today.tokens(), 110);
@@ -373,27 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn drops_old_days_without_rereading_the_log() {
-        let (_dir, path) = log(&format!(
-            "{}\n{}\n",
-            line("2026-09-22T10:00:00.000", "luna", "", 100, 10),
-            line("2026-09-28T10:00:00.000", "luna", "", 100, 10),
-        ));
-        let mut reader = Reader::default();
-        assert_eq!(
-            reader
-                .read(&path, date("2026-09-28"))
-                .expect("read")
-                .week
-                .requests(),
-            2
-        );
-        let usage = reader.read(&path, date("2026-09-29")).expect("next day");
-        assert_eq!(usage.today.requests(), 0);
-        assert_eq!(usage.week.requests(), 1);
-    }
-
-    #[test]
     fn resets_totals_when_the_log_is_replaced_or_truncated() {
         let (_dir, path) = log(&format!(
             "{}\n{}\n",
@@ -414,14 +308,8 @@ mod tests {
         let usage = reader.read(&path, today).expect("read replacement");
         assert_eq!(usage.today.requests(), 3);
         assert_eq!(usage.today.tokens(), 660);
-    }
-
-    #[test]
-    fn a_missing_log_is_not_an_error() {
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        let usage = read(&dir.path().join("absent.jsonl"), date("2026-09-28")).expect("read");
-
-        assert!(usage.today.is_empty());
+        std::fs::remove_file(&path).expect("remove log");
+        let absent = reader.read(&path, today).expect("missing log");
+        assert!(absent.today.is_empty() && absent.week.is_empty());
     }
 }

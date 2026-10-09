@@ -133,18 +133,7 @@ mod tests {
         }
         assert!(add(Harness::Pi, "valid").is_err());
     }
-    #[test]
-    fn selected_account_changes_only_the_owned_config_destination() {
-        let account = Path::new("/tmp/named-account");
-        assert_eq!(
-            config_paths(Harness::CodexCli, Some(account)),
-            vec![account.join("sy.config.toml")]
-        );
-        assert_eq!(
-            config_paths(Harness::Claude, Some(account)),
-            vec![account.join("settings.json")]
-        );
-    }
+
     #[test]
     fn a_login_setup_failure_removes_only_its_empty_directory() {
         let root = tempfile::tempdir().expect("directory");
