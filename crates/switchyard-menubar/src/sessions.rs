@@ -136,7 +136,10 @@ pub fn launch(
         Harness::CodexApp => return Err("Choose a CLI tool.".into()),
     };
     let default_files = harness::paths(tool);
-    let account = account.or_else(|| default_files[0].parent());
+    let account = account.or_else(|| match tool {
+        Harness::Claude if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() => None,
+        _ => default_files[0].parent(),
+    });
     let account_env = match (tool, account) {
         (Harness::CodexCli, Some(path)) => {
             format!("export CODEX_HOME={}\n", quote(&path.display().to_string()))
@@ -261,8 +264,9 @@ mod tests {
                 .contains("session-fixture")
         );
     }
-    // The subprocess isolates HOME and PATH. Its Terminal stub supplies a
-    // conflicting login to check that the generated script selects the account.
+    // The subprocess isolates HOME and PATH.
+    // The Terminal stub injects a conflicting directory when the script must select one.
+    // Claude's default case requires an unset CLAUDE_CONFIG_DIR, not an explicit ~/.claude.
     #[cfg(unix)]
     #[test]
     fn generated_sessions_use_explicit_accounts_without_changing_user_defaults() {
@@ -287,11 +291,13 @@ mod tests {
             .expect("launch");
             return;
         }
-        for (name, named) in [
-            ("codex", false),
-            ("codex", true),
-            ("claude", false),
-            ("claude", true),
+        for (name, named, inherited_dir) in [
+            ("codex", false, true),
+            ("codex", true, true),
+            ("claude", false, true),
+            ("claude", true, true),
+            ("claude", false, false),
+            ("claude", true, false),
         ] {
             let fixture = tempfile::tempdir().expect("fixture");
             let home = fixture.path().join("home");
@@ -336,7 +342,12 @@ mod tests {
             let output = fixture.path().join("arguments");
             let captured = fixture.path().join("session.command");
             let open = bin.join("open");
-            std::fs::write(&open, format!("#!/bin/bash\ncp -- \"$1\" {}\nexport CODEX_HOME=wrong-terminal-login CLAUDE_CONFIG_DIR=wrong-terminal-login ANTHROPIC_AUTH_TOKEN=wrong-token\nbash \"$1\"\n",quote(&captured.display().to_string()))).expect("open");
+            let terminal_claude = if inherited_dir || named {
+                "export CLAUDE_CONFIG_DIR=wrong-terminal-login"
+            } else {
+                "unset CLAUDE_CONFIG_DIR"
+            };
+            std::fs::write(&open, format!("#!/bin/bash\ncp -- \"$1\" {}\nexport CODEX_HOME=wrong-terminal-login ANTHROPIC_AUTH_TOKEN=wrong-token\n{terminal_claude}\nbash \"$1\"\n",quote(&captured.display().to_string()))).expect("open");
             let tool = bin.join(name);
             std::fs::write(&tool, format!("#!/bin/bash\nprintf '%s\\n' \"${{CODEX_HOME:-}}\" \"${{CLAUDE_CONFIG_DIR:-}}\" \"${{ANTHROPIC_AUTH_TOKEN:-}}\" \"$@\" > {}\n", quote(&output.display().to_string()))).expect("tool");
             for path in [&open, &tool] {
@@ -351,6 +362,9 @@ mod tests {
             if named {
                 child.env("SWITCHYARD_SESSION_ACCOUNT", &account);
             }
+            if !inherited_dir {
+                child.env_remove("CLAUDE_CONFIG_DIR");
+            }
             let result = child.output().expect("child");
             assert!(
                 result.status.success(),
@@ -360,17 +374,23 @@ mod tests {
             );
             let arguments = std::fs::read_to_string(output).expect("arguments");
             let lines: Vec<_> = arguments.lines().collect();
-            let expected = if named { &account } else { &default };
-            assert_eq!(
-                lines[usize::from(name == "claude")],
-                expected.to_str().expect("path")
-            );
+            let expected = if named {
+                account.to_str().expect("path")
+            } else if inherited_dir {
+                default.to_str().expect("path")
+            } else {
+                ""
+            };
+            assert_eq!(lines[usize::from(name == "claude")], expected);
             if name == "claude" {
                 assert_eq!(lines[2], "");
             }
             assert!(arguments.contains("route'$(literal)"));
             let script = std::fs::read_to_string(captured).expect("script");
             assert!(script.contains("x-switchyard-session-id"));
+            if name == "claude" && !named && !inherited_dir {
+                assert!(!script.contains("export CLAUDE_CONFIG_DIR="));
+            }
             assert_eq!(
                 std::fs::read_to_string(default.join("settings.json")).expect("settings"),
                 "{\"user\":true}"

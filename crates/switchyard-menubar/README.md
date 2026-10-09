@@ -7,11 +7,10 @@ the terminal app uses Ratatui.
 
 ## Install and update
 
-Run these commands from the repository root:
+Install from the repository root:
 
 ```sh
 make install-macos
-make uninstall-macos
 ```
 
 The installer builds the app and server, installs `~/Applications/Switchyard.app`,
@@ -19,9 +18,29 @@ and loads two per-user LaunchAgents. It signs the app ad hoc for local use;
 the app has no Developer ID signature or notarization. Reinstalling keeps
 existing server settings, prices, accounts, and log history.
 
-The installer writes `~/.codex/sy.config.toml` for `codex --profile sy` and keeps
-`~/.codex/config.toml` unchanged. Set `SY_PROFILE` to choose a descriptive profile
-name and `SY_MODEL` to choose an existing public route ID. New installs use
+By default, the source installer writes `~/.codex/sy.config.toml` for
+`codex -p sy` and keeps `~/.codex/config.toml` unchanged. Set `SY_PROFILE` to
+choose another profile name. The installer writes `$SY_PROFILE.config.toml` in
+the Codex config directory. For example:
+
+```sh
+export SY_PROFILE=stage-gpt-sonnet
+make install-macos
+codex -p "$SY_PROFILE"
+```
+
+Remove the app and selected profile with `make uninstall-macos`. For a named
+profile, pass the same name used during installation:
+
+```sh
+SY_PROFILE=stage-gpt-sonnet make uninstall-macos
+```
+
+Use the same `SY_HOME` and `CODEX_HOME` overrides if you set them for installation.
+When `SY_PROFILE` is unset, uninstall selects `sy`; it does not select a previously
+installed named profile.
+
+Set `SY_MODEL` to choose an existing public route ID. New installs use
 `composite-gpt-6-sol-gpt-6-luna`. Existing server configs stay saved, so set
 `SY_MODEL` to one of their routes when installing with a custom config. The
 profile leaves `approval_policy` and `sandbox_mode` to your existing Codex
@@ -110,10 +129,12 @@ tool. An optional absolute file path selects settings in another location; for
 Pi, choose `models.json`, and the app uses `settings.json` beside it. A custom
 file cannot be combined with a saved account.
 
-Codex CLI gets `sy.config.toml` for `codex -p sy`. The Codex app option changes
-the defaults in `config.toml` for both the app and CLI. Claude Code gets
-environment settings in `settings.json`. Pi gets a custom provider in `models.json` and defaults in
-`settings.json`. Unrelated settings remain.
+The app's **Install** page defaults to `sy.config.toml` for Codex CLI and
+`codex -p sy`. The source installer's `SY_PROFILE` choice does not change this
+destination. Select a custom file to update another profile. The Codex app option
+changes the defaults in `config.toml` for both the app and CLI. Claude Code gets
+environment settings in `settings.json`. Pi gets a custom provider in
+`models.json` and defaults in `settings.json`. Unrelated settings remain.
 
 The app backs up each original file as `<filename>.switchyard-original`. If a
 file did not exist, `<filename>.switchyard-original-missing` records its absence.
