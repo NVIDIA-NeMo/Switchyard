@@ -2450,6 +2450,109 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     Ok(())
 }
 
+// Verifies a streamed response.incomplete that carries a content-filter reason
+// reaches Chat clients as a content-filter finish and Anthropic clients as a
+// refusal, not as a token limit.
+#[test]
+fn responses_content_filter_incomplete_event_translates_to_moderation_stops() -> TestResult {
+    let engine = TranslationEngine::default();
+    let incomplete = json!({
+        "type": "response.incomplete",
+        "response": {"status": "incomplete", "incomplete_details": {"reason": "content_filter"}}
+    });
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &incomplete,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Chat chunk".into());
+    };
+    assert_eq!(terminal["choices"][0]["finish_reason"], "content_filter");
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::AnthropicMessages);
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &incomplete,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let terminal = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    Ok(())
+}
+
+// Verifies streamed Chat and Anthropic moderation stops terminate a Responses
+// stream with response.incomplete and a content-filter reason.
+#[test]
+fn moderation_stops_translate_to_responses_content_filter_incomplete_event() -> TestResult {
+    let engine = TranslationEngine::default();
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let chunk = json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"content": "Half an ans"},
+            "finish_reason": "content_filter"
+        }]
+    });
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &chunk,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Responses event".into());
+    };
+    assert_eq!(terminal["type"], "response.incomplete");
+    assert_eq!(terminal["response"]["status"], "incomplete");
+    assert_eq!(
+        terminal["response"]["incomplete_details"],
+        json!({"reason": "content_filter"})
+    );
+    assert_eq!(terminal["response"]["output"][0]["status"], "incomplete");
+
+    let mut state =
+        StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiResponses);
+    let delta = json!({
+        "type": "message_delta",
+        "delta": {"stop_reason": "refusal"},
+        "usage": {"output_tokens": 1}
+    });
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &delta,
+    )?;
+    events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+    let Some(terminal) = events.last() else {
+        return Err("finish should emit a terminal Responses event".into());
+    };
+    assert_eq!(terminal["type"], "response.incomplete");
+    assert_eq!(
+        terminal["response"]["incomplete_details"],
+        json!({"reason": "content_filter"})
+    );
+    Ok(())
+}
+
 // Interleave text and two tool calls to check that deltas keep the right item IDs.
 // Completion events must include the full text and tool arguments, and the final
 // response must preserve each item's ID.

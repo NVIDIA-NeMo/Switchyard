@@ -357,15 +357,17 @@ impl FormatCodec for OpenAiResponsesCodec {
                 }
             }
         }
-        // The truncation signal is on the response, not the output items.
-        if body.get("status").and_then(Value::as_str) == Some("incomplete")
-            && body
+        // The incomplete signal is on the response, not the output items.
+        if body.get("status").and_then(Value::as_str) == Some("incomplete") {
+            match body
                 .get("incomplete_details")
                 .and_then(|details| details.get("reason"))
                 .and_then(Value::as_str)
-                == Some("max_output_tokens")
-        {
-            stop_reason = Some(StopReason::MaxTokens);
+            {
+                Some("max_output_tokens") => stop_reason = Some(StopReason::MaxTokens),
+                Some("content_filter") => stop_reason = Some(StopReason::ContentFilter),
+                _ => {}
+            }
         }
         let outputs = vec![if has_output {
             ResponseOutput {
@@ -426,18 +428,20 @@ impl FormatCodec for OpenAiResponsesCodec {
                 diagnostics: Vec::new(),
             });
         }
-        let is_truncated = matches!(
-            response
-                .first_output()
-                .and_then(|output| output.stop_reason),
-            Some(StopReason::MaxTokens)
-        );
-        let status = if is_truncated {
+        let incomplete_reason = match response
+            .first_output()
+            .and_then(|output| output.stop_reason)
+        {
+            Some(StopReason::MaxTokens) => Some("max_output_tokens"),
+            Some(StopReason::ContentFilter) => Some("content_filter"),
+            _ => None,
+        };
+        let status = if incomplete_reason.is_some() {
             "incomplete"
         } else {
             "completed"
         };
-        let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
+        let incomplete_details = incomplete_reason.map(|reason| json!({ "reason": reason }));
         Ok(EncodedResponse {
             body: embed_preservation(
                 json!({
@@ -1898,7 +1902,10 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                 });
                 let text = text_from_blocks(&output.content, "");
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
-                let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
+                let status = if matches!(
+                    output.stop_reason,
+                    Some(StopReason::MaxTokens) | Some(StopReason::ContentFilter)
+                ) {
                     "incomplete"
                 } else {
                     "completed"
