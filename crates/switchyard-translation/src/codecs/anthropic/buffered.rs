@@ -37,6 +37,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 /// Format codec for Anthropic Messages payloads.
 pub struct AnthropicMessagesCodec;
 
+const ANTHROPIC_CACHE_CONTROL_KEY: &str = "switchyard_anthropic_cache_control";
+
 impl FormatCodec for AnthropicMessagesCodec {
     fn format(&self) -> FormatId {
         WireFormat::AnthropicMessages.into()
@@ -44,6 +46,7 @@ impl FormatCodec for AnthropicMessagesCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
+        validate_anthropic_cache_control(body)?;
         if body
             .get("fallback_credit_token")
             .is_some_and(|value| !value.is_null())
@@ -100,9 +103,14 @@ impl FormatCodec for AnthropicMessagesCodec {
             ),
             ..LlmRequest::default()
         };
+        let mut cache_controls = Map::new();
+        let mut system_cache_blocks = Vec::new();
         if let Some(system) = body.get("system")
-            && let Some(content) = decode_anthropic_system(system)?
+            && let Some(content) = decode_anthropic_system(system, &mut system_cache_blocks)?
         {
+            if has_block_cache_control(system) {
+                cache_controls.insert("system".to_string(), Value::Array(system_cache_blocks));
+            }
             request.instructions.push(InstructionBlock {
                 role: Role::System,
                 content,
@@ -115,6 +123,10 @@ impl FormatCodec for AnthropicMessagesCodec {
                     path: "$.messages".to_string(),
                     expected: "array",
                 })?;
+            let has_cache_control = messages
+                .iter()
+                .any(|message| message.get("content").is_some_and(has_block_cache_control));
+            let mut cache_blocks = Vec::new();
             let mut generated_id = 0;
             for (index, message) in messages.iter().enumerate() {
                 let Some(message) = message.as_object() else {
@@ -142,6 +154,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                     }
                 };
                 generated_id += 1;
+                let mut blocks = Vec::new();
                 let content = decode_anthropic_content(
                     message
                         .get("content")
@@ -150,8 +163,18 @@ impl FormatCodec for AnthropicMessagesCodec {
                     generated_id,
                     &mut diagnostics,
                     policy,
+                    has_cache_control.then_some(&mut blocks),
                 )?;
+                if has_cache_control {
+                    for block in &mut blocks {
+                        block["assistant"] = Value::Bool(role == Role::Assistant);
+                    }
+                    cache_blocks.extend(blocks);
+                }
                 request.messages.push(Message { role, content });
+            }
+            if has_cache_control {
+                cache_controls.insert("messages".to_string(), Value::Array(cache_blocks));
             }
         }
         request.tools = decode_anthropic_tools(body.get("tools"));
@@ -176,6 +199,32 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "safety_identifier",
             ],
         );
+        let tool_cache_controls: Map<String, Value> = body
+            .get("tools")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|tool| {
+                Some((
+                    tool.get("name")?.as_str()?.to_string(),
+                    tool.get("cache_control")?.clone(),
+                ))
+            })
+            .collect();
+        if !tool_cache_controls.is_empty() {
+            cache_controls.insert("tools".to_string(), Value::Object(tool_cache_controls));
+        }
+        // These controls survive IR reconstruction even when exact replay is disabled.
+        request
+            .extensions
+            .fields
+            .remove(ANTHROPIC_CACHE_CONTROL_KEY);
+        if !cache_controls.is_empty() {
+            request.extensions.fields.insert(
+                ANTHROPIC_CACHE_CONTROL_KEY.to_string(),
+                Value::Object(cache_controls),
+            );
+        }
         if let Some(is_disabled) = body
             .get("tool_choice")
             .and_then(|choice| choice.get("disable_parallel_tool_use"))
@@ -205,6 +254,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::AnthropicMessages, policy)
         {
+            validate_anthropic_cache_control(crate::util::object(&body, "$")?)?;
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),
@@ -221,6 +271,11 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
         }
+        let cache_controls = request
+            .extensions
+            .fields
+            .get(ANTHROPIC_CACHE_CONTROL_KEY)
+            .filter(|_| is_anthropic_request(request));
         let system_text = request
             .instructions
             .iter()
@@ -234,6 +289,30 @@ impl FormatCodec for AnthropicMessagesCodec {
         if !system_text.is_empty() {
             body.insert("system".to_string(), Value::String(system_text));
         }
+        if let Some(cache_blocks) = cache_controls
+            .and_then(|cache| cache.get("system"))
+            .and_then(Value::as_array)
+        {
+            let mut blocks = Vec::new();
+            for block in request
+                .instructions
+                .iter()
+                .flat_map(|instruction| &instruction.content)
+            {
+                if matches!(
+                    block,
+                    ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+                ) {
+                    blocks.extend(encode_one_anthropic_block(block)?);
+                }
+            }
+            // Target prompts are prepended; the original system blocks remain at the end.
+            let start = blocks.len().saturating_sub(cache_blocks.len());
+            restore_anthropic_cache_blocks(&mut blocks[start..], cache_blocks, &mut 0, false);
+            if !blocks.is_empty() {
+                body.insert("system".to_string(), Value::Array(blocks));
+            }
+        }
 
         body.insert(
             "messages".to_string(),
@@ -244,8 +323,55 @@ impl FormatCodec for AnthropicMessagesCodec {
             )?),
         );
 
+        if let Some(cache_blocks) = cache_controls
+            .and_then(|cache| cache.get("messages"))
+            .and_then(Value::as_array)
+            && let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut)
+        {
+            let mut cursor = 0;
+            for message in messages {
+                let is_assistant = message.get("role").and_then(Value::as_str) == Some("assistant");
+                if let Some(content) = message.get_mut("content") {
+                    if let Some(blocks) = content.as_array_mut() {
+                        restore_anthropic_cache_blocks(
+                            blocks,
+                            cache_blocks,
+                            &mut cursor,
+                            is_assistant,
+                        );
+                    } else if let Some(text) = content.as_str() {
+                        let mut blocks = vec![json!({"type": "text", "text": text})];
+                        restore_anthropic_cache_blocks(
+                            &mut blocks,
+                            cache_blocks,
+                            &mut cursor,
+                            is_assistant,
+                        );
+                        if blocks[0].get("cache_control").is_some() {
+                            *content = Value::Array(blocks);
+                        }
+                    }
+                }
+            }
+        }
+
         if !tools.is_empty() {
             body.insert("tools".to_string(), encode_anthropic_tools(tools));
+        }
+        if let Some(cache_tools) = cache_controls
+            .and_then(|cache| cache.get("tools"))
+            .and_then(Value::as_object)
+            && let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut)
+        {
+            for tool in tools {
+                if let Some(cache_control) = tool
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .and_then(|name| cache_tools.get(name))
+                {
+                    tool["cache_control"] = cache_control.clone();
+                }
+            }
         }
         let parallel_tool_calls = request
             .extensions
@@ -344,6 +470,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             )?;
         }
 
+        validate_anthropic_cache_control(&body)?;
         let body = embed_preservation(Value::Object(body), &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })
     }
@@ -586,25 +713,89 @@ fn strip_anthropic_unsupported_constraints(value: &mut Value) -> bool {
     }
 }
 
+fn has_block_cache_control(content: &Value) -> bool {
+    content.as_array().is_some_and(|blocks| {
+        blocks
+            .iter()
+            .any(|block| block.get("cache_control").is_some())
+    })
+}
+
+fn capture_anthropic_cache_blocks(
+    content: &[ContentBlock],
+    source: &Value,
+    cache_blocks: &mut Vec<Value>,
+) -> Result<()> {
+    // All decoded content here belongs to this single source block.
+    // Include unmarked blocks so repeated content keeps its original breakpoint order.
+    for block in content {
+        for encoded in encode_one_anthropic_block(block)? {
+            cache_blocks.push(json!({
+                "block": encoded,
+                "cache_control": source.get("cache_control"),
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn restore_anthropic_cache_blocks(
+    blocks: &mut [Value],
+    cache_blocks: &[Value],
+    cursor: &mut usize,
+    is_assistant: bool,
+) {
+    for block in blocks {
+        if let Some(index) = cache_blocks[*cursor..].iter().position(|cache| {
+            cache.get("block") == Some(block)
+                && cache
+                    .get("assistant")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    == is_assistant
+        }) {
+            *cursor += index + 1;
+            if let Some(cache_control) = cache_blocks[*cursor - 1]
+                .get("cache_control")
+                .filter(|cache_control| !cache_control.is_null())
+            {
+                block["cache_control"] = cache_control.clone();
+            }
+        }
+    }
+}
+
 // Decodes Anthropic's `system` field into instruction blocks.
-fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
+fn decode_anthropic_system(
+    value: &Value,
+    cache_blocks: &mut Vec<Value>,
+) -> Result<Option<Vec<ContentBlock>>> {
     match value {
         Value::String(text) if !text.is_empty() => {
             Ok(Some(vec![ContentBlock::Text { text: text.clone() }]))
         }
         Value::String(_) | Value::Null => Ok(None),
         Value::Array(blocks) => {
+            let has_cache_control = has_block_cache_control(value);
             let mut content = Vec::new();
             for block in blocks {
-                if let Some(block) = block.as_object()
-                    && block.get("type").and_then(Value::as_str) == Some("text")
+                if let Some(object) = block.as_object()
+                    && object.get("type").and_then(Value::as_str) == Some("text")
                 {
-                    let text = block
+                    let text = object
                         .get("text")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    content.push(ContentBlock::Text { text });
+                    let decoded = ContentBlock::Text { text };
+                    if has_cache_control {
+                        capture_anthropic_cache_blocks(
+                            std::slice::from_ref(&decoded),
+                            block,
+                            cache_blocks,
+                        )?;
+                    }
+                    content.push(decoded);
                 }
             }
             Ok((!content.is_empty()).then_some(content))
@@ -623,16 +814,17 @@ fn decode_anthropic_content(
     generated_counter: usize,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
+    mut cache_blocks: Option<&mut Vec<Value>>,
 ) -> Result<Vec<ContentBlock>> {
-    match value {
-        Value::String(text) => Ok(vec![ContentBlock::Text { text: text.clone() }]),
-        Value::Null => Ok(vec![ContentBlock::Text {
+    let content = match value {
+        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
+        Value::Null => vec![ContentBlock::Text {
             text: String::new(),
-        }]),
+        }],
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for (index, block) in blocks.iter().enumerate() {
-                let Some(block) = block.as_object() else {
+                let Some(object) = block.as_object() else {
                     push_lossy(
                         diagnostics,
                         policy,
@@ -640,25 +832,35 @@ fn decode_anthropic_content(
                     )?;
                     continue;
                 };
-                content.extend(decode_anthropic_content_block(
-                    block,
+                let decoded = decode_anthropic_content_block(
+                    object,
                     role,
                     generated_counter + index,
                     diagnostics,
                     policy,
-                )?);
+                )?;
+                if let Some(cache_blocks) = cache_blocks.as_deref_mut() {
+                    capture_anthropic_cache_blocks(&decoded, block, cache_blocks)?;
+                }
+                content.extend(decoded);
             }
             if content.is_empty() {
                 content.push(ContentBlock::Text {
                     text: String::new(),
                 });
             }
-            Ok(content)
+            content
         }
-        other => Ok(vec![ContentBlock::Text {
+        other => vec![ContentBlock::Text {
             text: string_value(other).unwrap_or_default(),
-        }]),
+        }],
+    };
+    if !value.is_array()
+        && let Some(cache_blocks) = cache_blocks
+    {
+        capture_anthropic_cache_blocks(&content, value, cache_blocks)?;
     }
+    Ok(content)
 }
 
 // Decodes one Anthropic content block into one or more IR blocks.
@@ -924,6 +1126,12 @@ fn encode_anthropic_content_with_policy(
     for block in content {
         crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
         match block {
+            ContentBlock::Unknown { provider, raw }
+                if provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                    && raw.get("cache_control").is_some() =>
+            {
+                blocks.push(raw.clone());
+            }
             ContentBlock::Unknown { provider, raw } => {
                 reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)?;
                 push_lossy(
@@ -1317,5 +1525,133 @@ fn anthropic_stop_details(reason: StopReason, source: Option<&Value>) -> Value {
                 })
             }),
         _ => Value::Null,
+    }
+}
+
+fn validate_anthropic_cache_control(body: &Map<String, Value>) -> Result<()> {
+    let mut order = CacheOrder::default();
+    for (index, tool) in body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        order.visit(tool, || format!("$.tools[{index}].cache_control"))?;
+    }
+    if let Some(system) = body.get("system") {
+        if let Some(blocks) = system.as_array() {
+            for (index, block) in blocks.iter().enumerate() {
+                order.visit(block, || format!("$.system[{index}].cache_control"))?;
+            }
+        } else {
+            order.visit(system, || "$.system.cache_control".to_string())?;
+        }
+    }
+    for (message_index, message) in body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if let Some(content) = message.get("content") {
+            if let Some(blocks) = content.as_array() {
+                for (index, block) in blocks.iter().enumerate() {
+                    order.visit(block, || {
+                        format!("$.messages[{message_index}].content[{index}].cache_control")
+                    })?;
+                }
+            } else {
+                order.visit(content, || {
+                    format!("$.messages[{message_index}].content.cache_control")
+                })?;
+            }
+        }
+    }
+    if let Some(cache_control) = body.get("cache_control").filter(|value| !value.is_null()) {
+        let ttl = cache_ttl(cache_control, "$.cache_control")?;
+        // Automatic caching targets the last eligible block, not the first JSON key.
+        if order.has_cacheable_block {
+            if let Some(last_ttl) = order.last_block_ttl {
+                if last_ttl != ttl {
+                    return Err(TranslationError::InvalidValue {
+                        path: "$.cache_control.ttl".to_string(),
+                        message: "automatic and explicit cache TTLs on the last cacheable block must match".to_string(),
+                    });
+                }
+            } else {
+                order.check_ttl(ttl, "$.cache_control")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct CacheOrder {
+    has_short_ttl: bool,
+    has_cacheable_block: bool,
+    last_block_ttl: Option<u16>,
+}
+
+impl CacheOrder {
+    fn visit(&mut self, block: &Value, path: impl FnOnce() -> String) -> Result<()> {
+        let ttl = if let Some(cache_control) =
+            block.get("cache_control").filter(|value| !value.is_null())
+        {
+            let path = path();
+            let ttl = cache_ttl(cache_control, &path)?;
+            self.check_ttl(ttl, &path)?;
+            Some(ttl)
+        } else {
+            None
+        };
+        let is_cacheable = match block.get("type").and_then(Value::as_str) {
+            Some("thinking" | "redacted_thinking") => false,
+            Some("text") => block
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty()),
+            _ => block.as_object().is_some() || block.as_str().is_some_and(|text| !text.is_empty()),
+        };
+        if is_cacheable {
+            self.has_cacheable_block = true;
+            self.last_block_ttl = ttl;
+        }
+        Ok(())
+    }
+
+    fn check_ttl(&mut self, ttl: u16, path: &str) -> Result<()> {
+        if ttl == 3600 && self.has_short_ttl {
+            return Err(TranslationError::InvalidValue {
+                path: format!("{path}.ttl"),
+                message: "a 1h cache marker cannot follow a 5m cache marker in tools, system, messages order".to_string(),
+            });
+        }
+        self.has_short_ttl |= ttl == 300;
+        Ok(())
+    }
+}
+
+fn cache_ttl(cache_control: &Value, path: &str) -> Result<u16> {
+    let object = crate::util::object(cache_control, path)?;
+    if object.get("type").and_then(Value::as_str) != Some("ephemeral") {
+        return Err(TranslationError::InvalidValue {
+            path: format!("{path}.type"),
+            message: "expected ephemeral cache type".to_string(),
+        });
+    }
+
+    // Only "5m" and "1h" are valid TTL values; omission defaults to "5m".
+    // https://platform.claude.com/docs/en/api/messages/create#code_execution_tool_result_block_param.cache_control
+    match object.get("ttl") {
+        None => Ok(300),
+        Some(Value::String(ttl)) if ttl == "5m" => Ok(300),
+        Some(Value::String(ttl)) if ttl == "1h" => Ok(3600),
+        Some(_) => Err(TranslationError::InvalidValue {
+            path: format!("{path}.ttl"),
+            message: "expected cache TTL of 5m or 1h".to_string(),
+        }),
     }
 }
