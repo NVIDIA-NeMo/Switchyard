@@ -296,9 +296,20 @@ fn decode_responses_stream(
             out
         }
         // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
+        Some("response.incomplete") => {
+            let reason = match event
+                .get("response")
+                .and_then(|response| response.get("incomplete_details"))
+                .and_then(|details| details.get("reason"))
+                .and_then(Value::as_str)
+            {
+                Some("content_filter") => "refusal",
+                _ => "max_tokens",
+            };
+            vec![LlmResponseChunk::MessageStop {
+                reason: Some(reason.to_string()),
+            }]
+        }
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("response")
@@ -415,16 +426,17 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished {
         return Vec::new();
     }
-    let is_truncated = matches!(
-        state.stop_reason.as_deref(),
-        Some("length") | Some("max_tokens")
-    );
-    let (event_type, status) = if is_truncated {
+    let incomplete_reason = match state.stop_reason.as_deref() {
+        Some("length") | Some("max_tokens") => Some("max_output_tokens"),
+        Some("content_filter") | Some("refusal") => Some("content_filter"),
+        _ => None,
+    };
+    let (event_type, status) = if incomplete_reason.is_some() {
         ("response.incomplete", "incomplete")
     } else {
         ("response.completed", "completed")
     };
-    let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
+    let incomplete_details = incomplete_reason.map(|reason| json!({ "reason": reason }));
     let mut out = open_held_reasoning(state, None);
     out.extend(ensure_responses_created(state));
     if state.response_text_started

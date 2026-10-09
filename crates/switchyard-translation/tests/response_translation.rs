@@ -1133,6 +1133,101 @@ fn content_filter_and_refusal_translate_across_formats() -> TestResult {
     Ok(())
 }
 
+// Verifies a Responses content-filter stop stays distinguishable from a normal
+// finish in both directions, like a token limit already does.
+#[test]
+fn responses_content_filter_translates_across_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let responses = json!({
+        "id": "resp_probe",
+        "object": "response",
+        "model": "gpt-probe",
+        "status": "incomplete",
+        "incomplete_details": {"reason": "content_filter"},
+        "output": [{
+            "type": "message",
+            "id": "msg_1",
+            "role": "assistant",
+            "status": "incomplete",
+            "content": [{"type": "output_text", "text": "partial answer", "annotations": []}]
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    });
+
+    // A Responses content-filter stop reaches Anthropic clients as `refusal`.
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &responses,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(output["stop_reason"], "refusal");
+
+    // It reaches Chat clients as `content_filter`.
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiChat,
+            &responses,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(output["choices"][0]["finish_reason"], "content_filter");
+
+    // A Chat content-filter stop reaches Responses clients as incomplete.
+    let chat = json!({
+        "id": "chatcmpl-test",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "Partial answer"},
+            "finish_reason": "content_filter"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+    let output = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &chat,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(output["status"], "incomplete");
+    assert_eq!(
+        output["incomplete_details"],
+        json!({"reason": "content_filter"})
+    );
+    assert_eq!(output["output"][0]["status"], "incomplete");
+
+    // An Anthropic refusal reaches Responses clients the same way.
+    let anthropic = json!({
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-5",
+        "content": [{"type": "text", "text": "Partial answer"}],
+        "stop_reason": "refusal",
+        "usage": {"input_tokens": 10, "output_tokens": 5}
+    });
+    let output = engine
+        .translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &anthropic,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(output["status"], "incomplete");
+    assert_eq!(
+        output["incomplete_details"],
+        json!({"reason": "content_filter"})
+    );
+    Ok(())
+}
+
 // A Responses reasoning item that carries only `encrypted_content` must survive a
 // buffered decode/encode through the codec (preservation disabled so the same-format
 // shortcut cannot mask a lossy codec), or a buffering caller loses the client's only
