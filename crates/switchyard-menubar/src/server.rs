@@ -401,23 +401,10 @@ mod tests {
         assert_eq!(backups(dir.path()).len(), 1);
         assert_eq!(std::fs::read_to_string(&backup).expect("read"), "old");
         assert_eq!(mode(&backup), 0o640, "the backup gets the same permissions");
-    }
-
-    #[test]
-    fn a_second_save_keeps_the_first_backup() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let config = dir.path().join("composite.toml");
-        std::fs::write(&config, "old").expect("write config");
-        let binary = fake_server(dir.path(), "exit 0");
-
-        // Both saves usually fall in the same second, so their backups get
-        // the same timestamp.
-        save_checked(&binary, &config, "old", "new").expect("saved");
-        save_checked(&binary, &config, "new", "newer").expect("saved");
-
-        let mut kept: Vec<String> = backups(dir.path())
+        save_checked(&binary, &config, "new", "newer").expect("saved again");
+        let mut kept: Vec<_> = backups(dir.path())
             .iter()
-            .map(|backup| std::fs::read_to_string(backup).expect("read"))
+            .map(|path| std::fs::read_to_string(path).expect("backup"))
             .collect();
         kept.sort();
         assert_eq!(kept, ["new", "old"]);

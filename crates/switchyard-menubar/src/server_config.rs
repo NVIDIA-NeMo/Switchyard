@@ -518,6 +518,9 @@ impl ServerConfig {
         if self.route(route).is_none() {
             return Err(format!("The config has no [routes.{route}] table."));
         }
+        let current = self
+            .algorithm(route)
+            .ok_or("This route must be edited in the server config file.")?;
         let roles = self.roles(route, algorithm);
         if roles.len() != choices.len() {
             return Err(format!(
@@ -543,11 +546,8 @@ impl ServerConfig {
             }
         }
 
-        let current = self.algorithm(route);
-        let same_type = current.is_some_and(|current| current.kind == algorithm.kind);
-        let old_roles = current
-            .map(|current| self.roles(route, current))
-            .unwrap_or_default();
+        let same_type = current.kind == algorithm.kind;
+        let old_roles = self.roles(route, current);
         // When the type changes, each new role starts from the old role with
         // the same tier, so a composite's capable target stays the capable one.
         let by_tier: Vec<(Option<Tier>, &str)> = old_roles

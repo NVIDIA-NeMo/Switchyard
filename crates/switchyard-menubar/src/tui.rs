@@ -266,7 +266,18 @@ impl View {
             }
             FormKind::RouteFilter => {
                 self.route_filter = value(0);
-                self.move_route(false);
+                if !self
+                    .routes()
+                    .get(self.route)
+                    .is_some_and(|r| self.matches_route(r))
+                {
+                    self.route = self
+                        .routes()
+                        .iter()
+                        .position(|r| self.matches_route(r))
+                        .unwrap_or(0);
+                }
+                self.preview = None;
                 self.scroll = 0;
                 return Ok(());
             }
@@ -628,6 +639,25 @@ mod tests {
             message: String::new(),
             form: None,
         }
+    }
+
+    #[test]
+    fn route_search_preserves_matching_selection_and_selects_the_first_match() {
+        let dir = tempfile::tempdir().expect("directory");
+        let mut controller = Controller::new(Config::default(), dir.path().join("app.toml"));
+        let mut view = view();
+        view.route = 1;
+        for (filter, expected) in [("", 1), ("beta", 1), ("alpha", 0), ("missing", 0)] {
+            view.form(
+                "Search",
+                FormKind::RouteFilter,
+                vec![("Search".into(), filter.into())],
+            );
+            view.submit(&mut controller).expect("search");
+            assert_eq!(view.route, expected);
+            assert!(view.preview.is_none());
+        }
+        assert!(view.route().is_err());
     }
 
     #[test]

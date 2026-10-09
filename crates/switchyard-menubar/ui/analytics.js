@@ -124,11 +124,13 @@ function renderDaily(parent) {
   for(let offset=6;offset>=0;offset--) {const date=new Date(end);date.setDate(date.getDate()-offset);days.push(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`);}
   const models=modelRows(snapshot.analytics.week).sort((a,b)=>tokenTotal(b)-tokenTotal(a)||a.id.localeCompare(b.id));
   if(!models.length){panel.append(node('p','No model calls recorded in the past 7 days.','empty-state'));return;}
-  const series=models.slice(0,5).map((model,i)=>({name:model.id,type:'bar',stack:'models',barMaxWidth:40,itemStyle:{color:chartColors[i]},data:days.map(day=>tokenTotal(modelRows(snapshot.analytics.days[day]||{routed:{},classifier:{}}).find(row=>row.id===model.id)||emptyTokens()))}));
-  if(models.length>5)series.push({name:'Other models',type:'bar',stack:'models',itemStyle:{color:chartColors[5]},data:days.map(day=>modelRows(snapshot.analytics.days[day]||{routed:{},classifier:{}}).filter(row=>!models.slice(0,5).some(model=>model.id===row.id)).reduce((sum,row)=>sum+tokenTotal(row),0))});
+  const shown=models.slice(0,5),ids=new Set(shown.map(model=>model.id));
+  const daily=days.map(day=>new Map(modelRows(snapshot.analytics.days[day]||{routed:{},classifier:{}}).map(row=>[row.id,tokenTotal(row)])));
+  const series=shown.map((model,i)=>({name:model.id,type:'bar',stack:'models',barMaxWidth:40,itemStyle:{color:chartColors[i]},data:daily.map(totals=>totals.get(model.id)||0)}));
+  if(models.length>5)series.push({name:'Other models',type:'bar',stack:'models',itemStyle:{color:chartColors[5]},data:daily.map(totals=>[...totals].reduce((sum,[id,count])=>sum+(ids.has(id)?0:count),0))});
   mountChart(panel,{grid:{left:12,right:20,top:20,bottom:28,containLabel:true},
     xAxis:{type:'category',data:days.map(day=>new Date(`${day}T12:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'})),axisLabel:{color:'#d1d7e0'},axisTick:{show:false}},
     yAxis:{type:'value',axisLabel:{color:'#d1d7e0',formatter:compactNumber},splitLine:{lineStyle:{color:'#454d59'}}},series},220,'Daily recorded tokens. Exact daily totals follow.');
   const key=node('div',undefined,'chart-key');series.forEach((item,i)=>{const label=node('span'),swatch=node('i');swatch.style.background=chartColors[i];label.append(swatch,document.createTextNode(item.name));key.append(label);});panel.append(key);
-  const daily=node('details');daily.append(node('summary','Exact daily totals'));for(const [index,day] of days.entries())daily.append(node('p',`${day}: ${series.map(item=>`${item.name} ${item.data[index].toLocaleString()}`).join(' · ')}`,'summary-row'));panel.append(daily);
+  const details=node('details');details.append(node('summary','Exact daily totals'));for(const [index,day] of days.entries())details.append(node('p',`${day}: ${series.map(item=>`${item.name} ${item.data[index].toLocaleString()}`).join(' · ')}`,'summary-row'));panel.append(details);
 }

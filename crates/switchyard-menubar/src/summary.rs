@@ -131,6 +131,7 @@ fn money(value: f64) -> String {
 }
 
 /// The tray ranks models by recorded tokens and combines models below the top three.
+#[cfg(any(target_os = "macos", test))]
 pub fn tray_models(totals: &Totals) -> Vec<String> {
     let mut models = totals.routed.clone();
     for (model, overhead) in &totals.classifier {

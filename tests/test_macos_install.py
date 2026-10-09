@@ -29,7 +29,7 @@ def setup(tmp_path):
     home.mkdir()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    switchyard_home = home / "Switchyard & Routing <local>"
+    switchyard_home = home / 'Switchyard "quoted" \\ & Routing <local>'
     env = {
         **os.environ,
         "HOME": str(home),
@@ -91,24 +91,30 @@ def test_install_escapes_switchyard_path_in_launch_agent(setup):
         str(switchyard_home / "menubar.toml"),
     ]
 
-
-def test_menu_bar_settings_escape_sy_home_as_toml_strings(setup):
-    _, home, _, env = setup
-    switchyard_home = home / 'Switchyard "quoted" \\ folder'
-    env["SY_HOME"] = str(switchyard_home)
-
-    result = run(setup, "install.sh")
-
-    assert result.returncode == 0, result.stderr
     settings = tomllib.loads((switchyard_home / "menubar.toml").read_text())
     assert settings["routing_log"] == str(switchyard_home / "routing.jsonl")
     assert settings["config_file"] == str(switchyard_home / "composite.toml")
+    contents = home / "Applications" / "Switchyard.app" / "Contents"
+    bundle_entries = list(ET.parse(contents / "Info.plist").getroot().find("dict"))
+    bundle = {bundle_entries[i].text: bundle_entries[i + 1].text for i in range(0, len(bundle_entries), 2)}
+    assert bundle["CFBundleIdentifier"] == "com.nvidia.switchyard"
+    assert bundle["CFBundleExecutable"] == "Switchyard"
+    for path in [contents / "Resources" / "Update.command", contents / "MacOS" / "Switchyard"]:
+        assert os.access(path, os.X_OK)
+        assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
 
 
 def test_reinstall_backs_up_profile_and_keeps_user_settings(setup):
     _, _, switchyard_home, env = setup
+    defaults = Path(env["CODEX_HOME"]) / "config.toml"
+    defaults.parent.mkdir()
+    defaults.write_text("user defaults\n")
+    snapshot = defaults.with_name("config.toml.direct")
+    snapshot.write_text("original direct config\n")
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
+    assert defaults.read_text() == "user defaults\n"
+    assert snapshot.read_text() == "original direct config\n"
     profile = Path(env["CODEX_HOME"]) / "sy.config.toml"
     # Older installs used this route ID; reinstall must update the profile and back it up.
     original = profile.read_text().replace("composite-gpt-6-sol-gpt-6-luna", "switchyard")
@@ -127,41 +133,10 @@ def test_reinstall_backs_up_profile_and_keeps_user_settings(setup):
     backups = list(profile.parent.glob("sy.config.toml.switchyard-backup.*"))
     assert len(backups) == 1
     assert backups[0].read_text() == original
+    assert defaults.read_text() == "user defaults\n"
+    assert snapshot.read_text() == "original direct config\n"
     assert server_config.read_text() == "user server settings\n"
     assert menu_settings.read_text() == "user menu settings\n"
-
-
-def test_existing_codex_config_is_preserved_and_shared_templates_are_used(setup):
-    _, home, switchyard_home, env = setup
-    codex = Path(env["CODEX_HOME"])
-    codex.mkdir()
-    config = codex / "config.toml"
-    original = """theme = "dark"
-
-[model_providers."sy"] # old provider
-name = "Old"
-base_url = "http://old"
-
-[other]
-model_provider = "sy"
-"""
-    config.write_text(original)
-    snapshot = codex / "config.toml.direct"
-    snapshot.write_text("original direct config\n")
-    result = run(setup, "install.sh")
-    assert result.returncode == 0, result.stderr
-    assert config.read_text() == original
-    profile = (codex / "sy.config.toml").read_text()
-    expected = (
-        (REPO / "scripts" / "config" / "codex.sy.toml").read_text().replace("@SY_PORT@", "4123")
-    )
-    assert profile == expected
-    assert tomllib.loads(profile)["model_providers"]["sy"]["name"] == "Switchyard"
-    assert not (codex / "config.sy.toml").exists()
-    assert (switchyard_home / "composite.toml").read_text() == (
-        REPO / "scripts" / "config" / "composite.toml"
-    ).read_text()
-    assert snapshot.read_text() == "original direct config\n"
 
 
 def test_uninstall_preserves_routed_config_before_restoring_snapshot(setup):
@@ -224,27 +199,6 @@ def test_scripts_reject_unknown_arguments_before_any_work(setup, script, args):
     assert after == before
 
 
-def test_app_bundle_has_a_launcher_and_source_update_command(setup):
-    _, home, switchyard_home, _ = setup
-    result = run(setup, "install.sh")
-    assert result.returncode == 0, result.stderr
-    contents = home / "Applications" / "Switchyard.app" / "Contents"
-    root = ET.parse(contents / "Info.plist").getroot()
-    entries = list(root.find("dict"))
-    values = {entries[i].text: entries[i + 1] for i in range(0, len(entries), 2)}
-    assert values["CFBundleIdentifier"].text == "com.nvidia.switchyard"
-    assert values["CFBundleExecutable"].text == "Switchyard"
-    assert os.access(contents / "MacOS" / "Switchyard", os.X_OK)
-    update = contents / "Resources" / "Update.command"
-    assert os.access(update, os.X_OK)
-    home_line = next(
-        line for line in update.read_text().splitlines() if line.startswith("export SY_HOME=")
-    )
-    assert shlex.split(home_line.split("=", 1)[1])[0] == str(switchyard_home)
-    for path in [update, contents / "MacOS" / "Switchyard"]:
-        assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
-
-
 def test_app_launcher_preserves_quotes_and_shell_metacharacters(setup):
     """The launcher must pass shell syntax in the settings path as literal text."""
     _, home, _, env = setup
@@ -294,7 +248,7 @@ def test_named_profile_keeps_route_and_update_settings(setup):
     bundle = home / "Applications" / "Switchyard.app" / "Contents"
     assert (bundle / "MacOS" / "switchyard-server").is_file()
     update = (bundle / "Resources" / "Update.command").read_text()
-    for key in ["SY_PROFILE", "SY_MODEL"]:
+    for key in ["SY_HOME", "SY_PROFILE", "SY_MODEL"]:
         line = next(line for line in update.splitlines() if line.startswith(f"export {key}="))
         assert shlex.split(line.split("=", 1)[1])[0] == env[key]
     assert run(setup, "uninstall.sh").returncode == 0

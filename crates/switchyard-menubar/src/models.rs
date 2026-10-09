@@ -13,7 +13,7 @@
 //! a list from the cache file until the user refreshes it, so it fetches a
 //! list on its own only when the file does not have it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -141,75 +141,11 @@ pub fn missing_env(client: &Client) -> Option<&str> {
         .filter(|_| env_key(client).is_none())
 }
 
-/// SavedKeys stores the Keychain's answer for each `base_url`. The threads of one [`load`]
-/// share it.
-type SavedKeys = Mutex<HashMap<String, Result<Option<String>, String>>>;
-
-/// This function returns the model list at each URL that `clients` use, in the order the
-/// URLs first appear. Clients whose models share a URL share one list and
-/// one request.
-///
-/// Each URL loads on its own thread, so a slow URL does not hold back the
-/// others. `loaded` gets each URL's result as soon as it is ready.
-///
-/// Without `refresh`, a list in the cache file comes back without a
-/// request, and only a URL with no cached list is fetched. With `refresh`,
-/// every URL is fetched. A fetched list replaces the one in the cache file
-/// unless the file holds a newer list for that URL. When the file cannot be
-/// written, the fetched list still comes back, with
-/// [`ListError::NotCached`], and the file keeps its old list. When a fetch
-/// fails, the cached list comes back with the error.
-///
-/// `typed_key` contains the selected `base_url` and the key the user entered.
-/// Clients with that exact URL use the key instead of their environment variable
-/// or the Keychain when they require authentication. Other URLs keep their own credentials.
-pub fn load(
-    cache: &Path,
-    clients: &[Client],
-    refresh: bool,
-    typed_key: Option<(&str, &str)>,
-    loaded: &(dyn Fn(&Loaded) + Sync),
-) -> Vec<Loaded> {
-    let cached = read_cache(cache);
-    let saved_keys = SavedKeys::default();
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = by_url(clients)
-            .into_iter()
-            .map(|(url, client)| {
-                let old = cached.get(&url).cloned();
-                let saved_keys = &saved_keys;
-                scope.spawn(move || {
-                    let typed_key = typed_key
-                        .filter(|(base_url, _)| *base_url == client.base_url)
-                        .map(|(_, key)| key);
-                    let entry = load_url(cache, url, client, old, refresh, typed_key, saved_keys);
-                    loaded(&entry);
-                    entry
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .map(|worker| {
-                worker
-                    .join()
-                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-            })
-            .collect()
-    })
-}
-
-/// This function loads the list at one URL: from the cache file, or fetched with the
-/// client's key and then added to the cache file.
-fn load_url(
-    cache: &Path,
-    url: String,
-    client: &Client,
-    old: Option<ModelList>,
-    refresh: bool,
-    typed_key: Option<&str>,
-    saved_keys: &SavedKeys,
-) -> Loaded {
+/// This function loads one endpoint's models and retains the cached list when refresh fails.
+/// The selected endpoint alone receives the entered key.
+pub fn load(cache: &Path, client: &Client, refresh: bool, typed_key: Option<&str>) -> Loaded {
+    let url = list_url(client);
+    let old = read_cache(cache).remove(&url);
     if unlisted(client) {
         // ChatGPT has no list to fetch, so nothing goes in the cache file.
         return Loaded {
@@ -225,7 +161,7 @@ fn load_url(
             error: None,
         };
     }
-    match key(client, typed_key, saved_keys).and_then(|key| list(client, key.as_deref())) {
+    match key(client, typed_key).and_then(|key| list(client, key.as_deref())) {
         Ok(models) => {
             let new = ModelList {
                 models,
@@ -346,21 +282,6 @@ fn models_url(format: &str, base_url: &str) -> String {
     format!("{path}{query}")
 }
 
-/// This function pairs each models URL with the client whose settings fetch it: the first
-/// client with that URL that sends a key, or else the first client with it.
-fn by_url(clients: &[Client]) -> Vec<(String, &Client)> {
-    let mut urls: Vec<(String, &Client)> = Vec::new();
-    for client in clients {
-        let url = list_url(client);
-        match urls.iter_mut().find(|(seen, _)| *seen == url) {
-            Some(entry) if !sends_key(entry.1) && sends_key(client) => entry.1 = client,
-            Some(_) => {}
-            None => urls.push((url, client)),
-        }
-    }
-    urls
-}
-
 /// This function returns whether the server sends this client a key. If it does, listing
 /// the client's models needs a key too.
 fn sends_key(client: &Client) -> bool {
@@ -370,29 +291,15 @@ fn sends_key(client: &Client) -> bool {
 /// This function returns the key to list the client's models with, or `None` when the
 /// client needs no key or none is available.
 ///
-/// The typed key comes first, then the client's `api_key_env` variable when
-/// this process has it, then the Keychain item for the client's `base_url`.
-/// `saved` stores each Keychain answer, and a thread holds its lock while
-/// it reads the Keychain. So macOS asks at most once per `base_url` when it
-/// needs the user's permission to hand over a key.
-fn key(
-    client: &Client,
-    typed_key: Option<&str>,
-    saved: &SavedKeys,
-) -> Result<Option<String>, ListError> {
+/// The entered key takes precedence over the environment and the Keychain.
+fn key(client: &Client, typed_key: Option<&str>) -> Result<Option<String>, ListError> {
     if !sends_key(client) {
         return Ok(None);
     }
     if let Some(key) = typed_key.map(str::to_string).or_else(|| env_key(client)) {
         return Ok(Some(key));
     }
-    saved
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry(client.base_url.clone())
-        .or_insert_with(|| saved_key(&client.base_url))
-        .clone()
-        .map_err(ListError::Keychain)
+    saved_key(&client.base_url).map_err(ListError::Keychain)
 }
 
 fn env_key(client: &Client) -> Option<String> {
@@ -742,13 +649,18 @@ mod tests {
                 ..client("public", "openai_chat", &unauthenticated.url)
             },
         ];
-        let loaded = load(
-            &dir.path().join(CACHE_FILE),
-            &clients,
-            true,
-            Some((&selected.url, "selected-secret")),
-            &|_| {},
-        );
+        let loaded: Vec<_> = clients
+            .iter()
+            .enumerate()
+            .map(|(index, client)| {
+                load(
+                    &dir.path().join(CACHE_FILE),
+                    client,
+                    true,
+                    (index == 0).then_some("selected-secret"),
+                )
+            })
+            .collect();
         assert_eq!(loaded[0].error, None);
         assert!(
             !std::fs::read_to_string(dir.path().join(CACHE_FILE))

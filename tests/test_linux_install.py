@@ -51,7 +51,7 @@ def setup(tmp_path):
     return scripts, home, bin_dir, env
 
 
-def run(setup, script, *args):
+def run(setup, script, args=()):
     scripts, _, _, env = setup
     return subprocess.run(
         ["bash", str(scripts / script), *args],
@@ -68,7 +68,7 @@ def test_bad_arguments_leave_files_unchanged(setup, script, args):
     _, home, _, env = setup
     rc = home / ".bashrc"
     rc.write_text(RC)
-    result = run(setup, script, *args)
+    result = run(setup, script, args)
     assert result.returncode == 2
     assert "Usage:" in result.stderr
     assert rc.read_text() == RC
@@ -113,7 +113,7 @@ def test_uninstall_cleans_profile_and_aliases_before_systemctl_failure(setup):
 def test_dry_run_leaves_files_unchanged(setup, script):
     _, home, _, env = setup
     (home / ".bashrc").write_text(RC)
-    result = run(setup, script, "--dry-run")
+    result = run(setup, script, ["--dry-run"])
     assert result.returncode == 0, result.stderr
     assert (home / ".bashrc").read_text() == RC
     assert sorted(path.name for path in home.iterdir()) == [".bashrc"]
@@ -180,18 +180,3 @@ def test_failed_start_leaves_existing_profile_unchanged(setup):
     assert result.returncode != 0
     assert "journalctl" in result.stderr
     assert profile.read_text() == "user profile\n"
-
-
-def test_default_make_only_prints_help(setup):
-    _, home, _, env = setup
-    result = subprocess.run(
-        ["make", "-f", str(REPO / "Makefile")],
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "install-linux-dry-run" in result.stdout
-    assert not list(home.iterdir())

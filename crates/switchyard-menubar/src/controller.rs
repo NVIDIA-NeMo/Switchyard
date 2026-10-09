@@ -165,7 +165,7 @@ impl Controller {
                     routes.push(json!({"key": route.key, "id": route.id, "kind": route.kind,
                         "label": format!("{} · {} · {}", route.id, route.kind, models), "choices": choices,
                         "tiers": config.algorithm(&route.key).map(|a| config.roles(&route.key, a).iter().map(|r| r.tier.map(|t| format!("{t:?}"))).collect::<Vec<_>>()),
-                        "editable": true, "generated": config.generated_by("routes", &route.key)}));
+                        "editable": config.algorithm(&route.key).is_some(), "generated": config.generated_by("routes", &route.key)}));
                 }
                 clients = config.clients().iter().map(|c| json!({"name":c.name,"host":c.host(),"models":config.models_on(&c.name),"unlisted":models::unlisted(c),"accepts_key":cfg!(target_os = "macos") && !models::unlisted(c) && (c.forward_auth || c.api_key_env.is_some()),"note":models::missing_env(c).map(models::missing_env_note)})).collect();
             }
@@ -201,6 +201,9 @@ impl Controller {
                 self.check_generation(generation)?;
                 let config = self.routes()?;
                 current_route(&config, &route, None)?;
+                config
+                    .algorithm(&route)
+                    .ok_or("This route must be edited in the server config file.")?;
                 let algorithm = algorithm_by_id(&algorithm)?;
                 let roles = config.roles(&route, algorithm);
                 let data = json!({"roles": roles.iter().map(|r|json!({"label":r.label,"hint":r.hint,"tier":r.tier.map(|t|format!("{t:?}"))})).collect::<Vec<_>>(),"choices":config.choices(&route)});
@@ -218,6 +221,9 @@ impl Controller {
                 self.check_generation(generation)?;
                 let config = self.routes()?;
                 current_route(&config, &route, None)?;
+                config
+                    .algorithm(&route)
+                    .ok_or("This route must be edited in the server config file.")?;
                 let algorithm = algorithm_by_id(&algorithm)?;
                 server::apply(&self.config, &route, algorithm, &choices).map(Reply::message)
             }
@@ -254,14 +260,8 @@ impl Controller {
                     models::save_key(&client.base_url, key)?;
                 }
                 let cache = self.settings.with_file_name(models::CACHE_FILE);
-                let result = models::load(
-                    &cache,
-                    std::slice::from_ref(&client),
-                    refresh || key.is_some(),
-                    key.as_deref().map(|key| (client.base_url.as_str(), key)),
-                    &|_| {},
-                );
-                let loaded = result.into_iter().next().ok_or("No model list returned.")?;
+                let loaded =
+                    models::load(&cache, &client, refresh || key.is_some(), key.as_deref());
                 if let Some(key) = &key {
                     match &loaded.error {
                         None | Some(models::ListError::NotCached(_)) => {
@@ -813,6 +813,48 @@ mod tests {
                 .err()
                 .expect("rejection");
             assert_eq!(error, expected);
+            assert_eq!(std::fs::read_to_string(&config).expect("config"), original);
+            assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
+        }
+    }
+
+    #[test]
+    fn unsupported_routes_are_read_only_before_any_write() {
+        let dir = tempfile::tempdir().expect("directory");
+        let config = dir.path().join("server.toml");
+        let settings = dir.path().join("app.toml");
+        std::fs::write(
+            &settings,
+            format!("config_file={config:?}\nserver_url='http://127.0.0.1:0'"),
+        )
+        .expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        // These fixtures use valid server algorithms that the app cannot edit.
+        for fields in [
+            "type='noop'",
+            "type='prefill_router'\ntargets=['answer']\ncheckpoint='router.pt'",
+            "type='llm_classifier'\nmode='custom'\nmodels={judge=['judge'],any=['answer']}\ndefault_target='any'\nprompt='Select a target.'\nresponse_schema='{\"type\":\"object\"}'\npolicy={type='target_selector',selector='/target'}",
+        ] {
+            let _: switchyard_runner::AlgorithmSpec =
+                toml::from_str(fields).expect("server route schema");
+            let original = format!("[routes.r]\nid='public'\n{fields}\n");
+            std::fs::write(&config, &original).expect("config");
+            assert_eq!(
+                controller.snapshot().expect("snapshot")["routes"][0]["editable"],
+                false
+            );
+            for kind in ["editor", "apply"] {
+                let mut raw =
+                    json!({"kind":kind,"generation":0,"route":"r","algorithm":"passthrough"});
+                if kind == "apply" {
+                    raw["choices"] = json!([]);
+                }
+                let action = serde_json::from_value(raw).expect("action");
+                assert_eq!(
+                    controller.dispatch(action).err().expect("read only"),
+                    "This route must be edited in the server config file."
+                );
+            }
             assert_eq!(std::fs::read_to_string(&config).expect("config"), original);
             assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
         }
