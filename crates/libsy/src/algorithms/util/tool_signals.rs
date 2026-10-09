@@ -1071,7 +1071,8 @@ fn extract_tool_signals_with_window_and_semantics(
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    let is_retrieval_result = retrieval_calls.contains(result.tool_call_id.as_str());
+                    let is_retrieval_result =
+                        retrieval_calls.contains(result.tool_call_id.as_str());
                     if is_retrieval_result {
                         // Shell reads can return bare JSON from a file. Hermes wraps
                         // terminal output with output and exit_code fields.
