@@ -46,8 +46,8 @@ codex_config_uses_switchyard() {
 
 SY_PROFILE="${SY_PROFILE-sy}"
 SY_MODEL="${SY_MODEL-composite-gpt-6-sol-gpt-6-luna}"
-if [[ ! "$SY_PROFILE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || (( ${#SY_PROFILE} > 128 )); then
-  say "SY_PROFILE must be a short profile name containing letters, digits, dots, underscores, or hyphens." >&2
+if [[ ! "$SY_PROFILE" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || (( ${#SY_PROFILE} > 128 )); then
+  say "SY_PROFILE must start with a letter or digit and contain only letters, digits, underscores, or hyphens, up to 128 characters." >&2
   exit 2
 fi
 if [[ -z "$SY_MODEL" || "$SY_MODEL" =~ [[:cntrl:]] ]]; then

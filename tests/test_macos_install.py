@@ -363,7 +363,7 @@ def test_named_profile_keeps_route_and_update_settings(setup):
     assert not profile.exists()
 
 
-@pytest.mark.parametrize("name", ["../escape", "", "a/b", "a\nname", "x" * 129])
+@pytest.mark.parametrize("name", ["../escape", "", "a/b", "a\nname", "team.dev", "x" * 129])
 def test_invalid_profile_name_rejects_before_install(setup, name):
     _, home, switchyard_home, env = setup
     env["SY_PROFILE"] = name
