@@ -29,4 +29,4 @@ ENV HOME=/tmp
 USER 1000:1000
 EXPOSE 4000
 
-ENTRYPOINT ["switchyard-server"]
+ENTRYPOINT ["switchyard-server", "--host", "0.0.0.0"]
