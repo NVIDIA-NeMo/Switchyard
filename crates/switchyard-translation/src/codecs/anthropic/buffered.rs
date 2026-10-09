@@ -34,7 +34,7 @@ use crate::util::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-use super::{ANTHROPIC_TOOLS_KEY, is_provider_tool, is_provider_tool_block};
+use super::{ANTHROPIC_TOOLS_KEY, is_provider_tool_block, is_server_tool};
 
 /// Format codec for Anthropic Messages payloads.
 pub struct AnthropicMessagesCodec;
@@ -180,7 +180,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             ],
         );
         if let Some(tools) = body.get("tools").and_then(Value::as_array)
-            && tools.iter().any(is_provider_tool)
+            && tools.iter().any(is_server_tool)
         {
             // Keep the original order while custom functions remain editable through the IR.
             request
@@ -803,7 +803,7 @@ fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|tool| !is_provider_tool(tool))
+        .filter(|tool| !is_server_tool(tool))
         .filter_map(Value::as_object)
         .filter_map(|tool| {
             let name = tool.get("name").and_then(Value::as_str)?.to_string();
@@ -1229,7 +1229,7 @@ fn encode_anthropic_tools(tools: &[ToolDefinition], extensions: &ProviderExtensi
         .and_then(Value::as_array)
     {
         for tool in original {
-            if is_provider_tool(tool) {
+            if is_server_tool(tool) {
                 encoded.push(tool.clone());
             } else if let Some(index) = remaining.iter().position(|current| {
                 tool.get("name").and_then(Value::as_str) == Some(current.name.as_str())

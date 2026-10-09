@@ -504,8 +504,10 @@ impl TranslatingLlmClient {
             };
             metrics::record_upstream_attempt(Some(status.as_u16()));
             let mut body = body.to_vec();
+            // Anthropic can return an error envelope under HTTP 200.
             if !mcp_tokens.is_empty()
                 && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
+                && value.get("type").and_then(Value::as_str) == Some("error")
             {
                 redact_mcp_json(&mut value, &mcp_tokens);
                 body = value.to_string().into_bytes();
@@ -883,13 +885,25 @@ fn redact_mcp_json(value: &mut Value, tokens: &[String]) {
             }
         }
         Value::Object(object) => {
-            *object = std::mem::take(object)
-                .into_iter()
-                .map(|(key, mut value)| {
-                    redact_mcp_json(&mut value, tokens);
-                    (redact_mcp_tokens(&key, tokens), value)
+            for value in object.values_mut() {
+                redact_mcp_json(value, tokens);
+            }
+            let redacted_keys = object
+                .keys()
+                .filter_map(|key| {
+                    let redacted = redact_mcp_tokens(key, tokens);
+                    (redacted != *key).then(|| (key.clone(), redacted))
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            for (key, mut redacted) in redacted_keys {
+                if let Some(value) = object.remove(&key) {
+                    // Keep both fields if a redacted key already exists.
+                    while object.contains_key(&redacted) {
+                        redacted.push('_');
+                    }
+                    object.insert(redacted, value);
+                }
+            }
         }
         _ => {}
     }
@@ -3389,5 +3403,57 @@ mod tests {
             )
             .await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_mcp_success_preserves_buffered_response_bytes()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let response_body = r#"{ "type": "message", "z": 1e2, "a": 2, "content": [{"type": "text", "text": "done"}] }"#;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(response_body, "application/json"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = Backend::Anthropic(config(&server.uri()));
+        let model = ModelId::from("claude");
+        let client =
+            TranslatingLlmClient::new(&[ModelConfig::new(model.clone(), backend.clone(), None)])?;
+        let response = client
+            .send_once(
+                &backend.url(),
+                &backend,
+                &json!({"mcp_servers": [{"authorization_token": "synthetic-mcp-token"}]}),
+                None,
+                &model,
+                false,
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        let EncodedResponse::Buffered { body, .. } = response else {
+            return Err("expected a buffered response".into());
+        };
+        assert_eq!(body, response_body.as_bytes());
+        server.verify().await;
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_redaction_preserves_values_when_object_keys_collide() {
+        let token = "synthetic-mcp-key-token".to_string();
+        let mut value = json!({"error": {
+            token.as_str(): {"detail": "echoed key"},
+            "[REDACTED]": {"detail": "existing key"},
+            "other": {"detail": "unchanged"}
+        }});
+        redact_mcp_json(&mut value, std::slice::from_ref(&token));
+        assert!(!value.to_string().contains(&token));
+        let object = value["error"].as_object().expect("expected error object");
+        assert_eq!(object.len(), 3);
+        assert_eq!(object["[REDACTED]"]["detail"], "existing key");
+        assert_eq!(object["other"]["detail"], "unchanged");
+        assert!(object.values().any(|value| value["detail"] == "echoed key"));
     }
 }

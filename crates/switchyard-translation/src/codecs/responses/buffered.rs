@@ -175,17 +175,20 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        let mut diagnostics = Vec::new();
         // Responses supports MCP, but conversion from Anthropic is not yet implemented in Switchyard.
-        super::super::anthropic::validate_request_tools(request, WireFormat::OpenAiResponses)?;
+        let prepared = super::super::anthropic::prepare_request_tools(
+            request,
+            WireFormat::OpenAiResponses,
+            &mut diagnostics,
+            policy,
+        )?;
+        let request = prepared.as_ref();
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, policy)
         {
-            return Ok(EncodedRequest {
-                body,
-                diagnostics: Vec::new(),
-            });
+            return Ok(EncodedRequest { body, diagnostics });
         }
-        let mut diagnostics = Vec::new();
         validate_request_capabilities(request, &mut diagnostics, policy)?;
         let mut body = Map::new();
         if let Some(model) = &request.model {

@@ -11,10 +11,12 @@ pub use stream::AnthropicMessagesStreamCodec;
 
 const ANTHROPIC_TOOLS_KEY: &str = "switchyard_anthropic_tools";
 
-pub(crate) fn validate_request_tools(
-    request: &crate::LlmRequest,
+pub(crate) fn prepare_request_tools<'a>(
+    request: &'a crate::LlmRequest,
     target: crate::WireFormat,
-) -> crate::Result<()> {
+    diagnostics: &mut Vec<crate::TranslationDiagnostic>,
+    policy: &crate::TranslationPolicy,
+) -> crate::Result<std::borrow::Cow<'a, crate::LlmRequest>> {
     let has_provider_tool_fields = |body: &serde_json::Value| {
         body.get("mcp_servers")
             .and_then(serde_json::Value::as_array)
@@ -22,7 +24,7 @@ pub(crate) fn validate_request_tools(
             || body
                 .get("tools")
                 .and_then(serde_json::Value::as_array)
-                .is_some_and(|tools| tools.iter().any(is_provider_tool))
+                .is_some_and(|tools| tools.iter().any(is_server_tool))
     };
     let has_mcp_servers = super::common::is_anthropic_request(request)
         && request
@@ -36,7 +38,7 @@ pub(crate) fn validate_request_tools(
         .fields
         .get(ANTHROPIC_TOOLS_KEY)
         .and_then(serde_json::Value::as_array)
-        .is_some_and(|tools| tools.iter().any(is_provider_tool));
+        .is_some_and(|tools| tools.iter().any(is_server_tool));
     let has_provider_tool_history = request
         .messages
         .iter()
@@ -59,18 +61,60 @@ pub(crate) fn validate_request_tools(
         || has_provider_tool_history
         || has_preserved_tool_fields
     {
-        return Err(crate::TranslationError::UnsupportedTranslation {
-            from: crate::WireFormat::AnthropicMessages.into(),
-            to: target.into(),
+        crate::util::push_lossy(
+            diagnostics,
+            policy,
+            format!(
+                "Anthropic MCP servers, server tools, and their history are dropped for {target}"
+            ),
+        )?;
+        let mut request = request.clone();
+        request.extensions.fields.remove("mcp_servers");
+        request.extensions.fields.remove(ANTHROPIC_TOOLS_KEY);
+        // Original bodies can restore dropped tools or embed MCP credentials.
+        request.preservation = crate::PreservationMetadata::default();
+        if let Some(metadata) = request
+            .extensions
+            .fields
+            .get_mut("metadata")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.remove(crate::PRESERVATION_METADATA_KEY);
+        }
+        request.instructions.retain_mut(|instruction| {
+            drop_provider_tool_content(&mut instruction.content);
+            !instruction.content.is_empty()
         });
+        request.messages.retain_mut(|message| {
+            drop_provider_tool_content(&mut message.content);
+            !message.content.is_empty()
+        });
+        if request.tools.is_empty()
+            || matches!(&request.tool_choice, Some(crate::ToolChoice::Tool { name })
+                if !request.tools.iter().any(|tool| &tool.name == name))
+        {
+            request.tool_choice = None;
+        }
+        return Ok(std::borrow::Cow::Owned(request));
     }
-    Ok(())
+    Ok(std::borrow::Cow::Borrowed(request))
 }
 
-fn is_provider_tool(tool: &serde_json::Value) -> bool {
+fn is_server_tool(tool: &serde_json::Value) -> bool {
     tool.get("type")
         .and_then(serde_json::Value::as_str)
-        .is_some_and(|kind| kind != "custom")
+        .is_some_and(|kind| {
+            kind == "mcp_toolset"
+                || [
+                    "web_search_",
+                    "web_fetch_",
+                    "code_execution_",
+                    "tool_search_tool_",
+                    "advisor_",
+                ]
+                .iter()
+                .any(|prefix| kind.starts_with(prefix))
+        })
 }
 
 fn is_provider_tool_block(block: &serde_json::Value) -> bool {
@@ -93,4 +137,13 @@ fn is_provider_tool_content(block: &crate::ContentBlock) -> bool {
         }
         _ => false,
     }
+}
+
+fn drop_provider_tool_content(content: &mut Vec<crate::ContentBlock>) {
+    content.retain_mut(|block| {
+        if let crate::ContentBlock::ToolResult(result) = block {
+            drop_provider_tool_content(&mut result.content);
+        }
+        !is_provider_tool_content(block)
+    });
 }

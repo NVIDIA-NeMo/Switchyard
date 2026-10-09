@@ -4676,13 +4676,17 @@ fn anthropic_reconstruction_preserves_mcp_connections_provider_tools_and_results
 }
 
 #[test]
-fn anthropic_provider_tools_are_rejected_by_other_request_encoders() -> TestResult {
+fn anthropic_provider_tools_follow_loss_policy_in_other_request_encoders() -> TestResult {
     let engine = TranslationEngine::default();
     for fields in [
         json!({"mcp_servers": [{"type": "url", "name": "inventory",
             "url": "https://example.invalid/mcp", "authorization_token": "synthetic-token"}]}),
         json!({"tools": [{"type": "mcp_toolset", "mcp_server_name": "inventory"}]}),
         json!({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}),
+        json!({"tools": [{"type": "web_fetch_20250910", "name": "web_fetch"}]}),
+        json!({"tools": [{"type": "code_execution_20250825", "name": "code_execution"}]}),
+        json!({"tools": [{"type": "tool_search_tool_regex_20251119", "name": "tool_search"}]}),
+        json!({"tools": [{"type": "advisor_20260301", "name": "advisor"}]}),
         json!({"messages": [{"role": "assistant", "content": [
             {"type": "mcp_tool_result", "tool_use_id": "mcptoolu_1", "content": []}
         ]}]}),
@@ -4713,28 +4717,47 @@ fn anthropic_provider_tools_are_rejected_by_other_request_encoders() -> TestResu
                     .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
                     .request;
                 for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
-                    // A previously preserved target body must not bypass rejection.
+                    // Cached target bodies must not bypass the loss policy.
                     request
                         .preservation
                         .requests
                         .insert(target.into(), json!({"model": "cached"}));
-                    let error = engine
-                        .encode_request(target, &request, &policy)
-                        .expect_err("provider tools must be rejected");
-                    assert!(matches!(
-                        error,
-                        TranslationError::UnsupportedTranslation { .. }
-                    ));
-                    assert!(!error.to_string().contains("synthetic-token"));
-                    assert!(matches!(
+                    for result in [
+                        engine.encode_request(target, &request, &policy),
                         engine.translate_request(
                             WireFormat::AnthropicMessages,
                             target,
                             &body,
-                            &policy
+                            &policy,
                         ),
-                        Err(TranslationError::UnsupportedTranslation { .. })
-                    ));
+                    ] {
+                        match lossy_conversion_policy {
+                            LossyConversionPolicy::Reject => {
+                                let error = result.expect_err("provider tools must be rejected");
+                                assert!(matches!(error, TranslationError::LossyConversion(_)));
+                                assert!(!error.to_string().contains("synthetic-token"));
+                            }
+                            LossyConversionPolicy::AllowWithDiagnostics => {
+                                let output = result?;
+                                assert_eq!(output.body["model"], "route");
+                                assert!(
+                                    output.diagnostics.iter().any(|diagnostic| {
+                                        diagnostic.code == "lossy_conversion"
+                                    })
+                                );
+                                let serialized = output.body.to_string();
+                                for dropped in [
+                                    "synthetic-token",
+                                    "mcp_servers",
+                                    "mcp_toolset",
+                                    "web_search_tool_result",
+                                    "mcp_tool_result",
+                                ] {
+                                    assert!(!serialized.contains(dropped));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4757,11 +4780,118 @@ fn anthropic_mcp_credentials_in_preservation_cannot_be_embedded_in_other_formats
         .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
         .request;
     request.extensions.fields.remove("mcp_servers");
+    request.extensions.fields.insert(
+        "metadata".to_string(),
+        json!({"purpose": "retained", switchyard_translation::PRESERVATION_METADATA_KEY: {
+            "requests": {"anthropic_messages": body}
+        }}),
+    );
     for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let output = engine.encode_request(target, &request, &policy)?;
+        assert!(!output.body.to_string().contains("synthetic-token"));
+        assert_eq!(output.body["metadata"]["purpose"], "retained");
+        assert!(!output.diagnostics.is_empty());
+        let strict = TranslationPolicy {
+            lossy_conversion_policy: LossyConversionPolicy::Reject,
+            ..policy.clone()
+        };
         assert!(matches!(
-            engine.encode_request(target, &request, &policy),
-            Err(TranslationError::UnsupportedTranslation { .. })
+            engine.encode_request(target, &request, &strict),
+            Err(TranslationError::LossyConversion(_))
         ));
     }
+    Ok(())
+}
+
+#[test]
+fn anthropic_client_tools_remain_translatable_to_openai() -> TestResult {
+    let engine = TranslationEngine::default();
+    for tool in [
+        json!({"type": "bash_20250124", "name": "bash"}),
+        json!({"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"}),
+        json!({"type": "computer_20250124", "name": "computer",
+               "display_width_px": 1024, "display_height_px": 768}),
+        json!({"type": "memory_20250818", "name": "memory"}),
+    ] {
+        let body = json!({"model": "route", "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hello"}], "tools": [tool]});
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+                let output = engine
+                    .translate_request(WireFormat::AnthropicMessages, target, &body, &policy)?
+                    .body;
+                let tools = output["tools"].as_array().ok_or("expected tools")?;
+                assert_eq!(tools.len(), 1);
+                assert_eq!(tools[0]["type"], "function");
+                let function = if target == WireFormat::OpenAiChat {
+                    &tools[0]["function"]
+                } else {
+                    &tools[0]
+                };
+                assert_eq!(function["name"], tool["name"]);
+                assert_eq!(function["parameters"], json!({}));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_lossy_tool_conversion_retains_custom_functions_and_visible_text() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({"model": "route", "max_tokens": 32,
+    "mcp_servers": [{"type": "url", "name": "inventory",
+        "url": "https://example.invalid/mcp", "authorization_token": "synthetic-token"}],
+    "tools": [
+        {"type": "mcp_toolset", "mcp_server_name": "inventory"},
+        {"type": "web_search_20250305", "name": "web_search"},
+        {"name": "local_lookup", "input_schema": {"type": "object"}}
+    ],
+    "tool_choice": {"type": "tool", "name": "web_search"},
+    "messages": [
+        {"role": "user", "content": "Look up widget stock."},
+        {"role": "assistant", "content": [
+            {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+             "input": {"query": "widget stock"}},
+            {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []},
+            {"type": "text", "text": "There are 12 widgets in stock."}
+        ]},
+        {"role": "user", "content": "Can we fulfill an order for 10 widgets?"}
+    ]});
+    let request = engine
+        .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+        .request;
+    for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let output = engine.encode_request(target, &request, &policy)?;
+        let tools = output.body["tools"].as_array().ok_or("expected tools")?;
+        assert_eq!(tools.len(), 1);
+        assert!(output.body.get("tool_choice").is_none());
+        let serialized = output.body.to_string();
+        assert!(serialized.contains("local_lookup"));
+        assert!(serialized.contains("There are 12 widgets in stock."));
+        for dropped in [
+            "synthetic-token",
+            "mcp_servers",
+            "mcp_toolset",
+            "web_search",
+            "server_tool_use",
+        ] {
+            assert!(!serialized.contains(dropped));
+        }
+        assert!(!output.diagnostics.is_empty());
+    }
+    let restored = engine
+        .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .body;
+    assert_eq!(restored["mcp_servers"], body["mcp_servers"]);
+    assert_eq!(
+        restored["messages"][1]["content"],
+        body["messages"][1]["content"]
+    );
+    assert_eq!(
+        restored["tools"].as_array().ok_or("expected tools")?.len(),
+        3
+    );
     Ok(())
 }
