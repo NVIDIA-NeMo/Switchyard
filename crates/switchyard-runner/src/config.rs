@@ -9,7 +9,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use libsy::RuntimeModels;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -17,7 +16,7 @@ use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     SystemOneClient, TranslatingLlmClient,
 };
-use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
+use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -265,9 +264,9 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let algorithm = config
+            let (algorithm, models) = config
                 .algorithm
-                .build(route_name, &targets)
+                .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients, &decision_clients)?;
@@ -280,14 +279,6 @@ impl DeploymentConfig {
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
-            let names = config
-                .algorithm
-                .runtime_model_names(route_name)
-                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            let mut models = RuntimeModels::new(resolve_category_models(names.parent, &targets)?);
-            if let Some(subagent) = names.subagent {
-                models = models.with_subagent(resolve_category_models(subagent, &targets)?);
-            }
             let route = Route::new(
                 algorithm,
                 route_clients,
@@ -751,29 +742,6 @@ impl ClientFormat {
     }
 }
 
-/// Resolves one scope's configured target names to the models the driver serves.
-fn resolve_category_models(
-    names: HashMap<Category, Vec<String>>,
-    targets: &BTreeMap<String, ModelId>,
-) -> RunnerResult<HashMap<Category, Vec<ModelId>>> {
-    names
-        .into_iter()
-        .map(|(category, names)| {
-            let models = names
-                .into_iter()
-                .map(|name| {
-                    targets.get(&name).cloned().ok_or_else(|| {
-                        RunnerError::configuration(format!(
-                            "route references unknown target {name}"
-                        ))
-                    })
-                })
-                .collect::<RunnerResult<Vec<_>>>()?;
-            Ok((category, models))
-        })
-        .collect()
-}
-
 fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
@@ -917,6 +885,7 @@ bogus = true
 mod deployment_tests {
     use super::*;
     use serde_json::json;
+    use switchyard_protocol::Category;
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1

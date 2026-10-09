@@ -15,8 +15,8 @@ use libsy::{
     CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig, EscalationJudgeConfig,
     GateTrigger, HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
     LlmTaskClassifier, Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics,
+    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
+    TaskClassifierConfig, ToolSemantics,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -704,10 +704,7 @@ impl AlgorithmSpec {
     }
 
     /// Target names grouped as the runtime [`Driver`](libsy::Driver) expects them.
-    pub(crate) fn runtime_model_names(
-        &self,
-        route_name: &str,
-    ) -> AlgorithmResult<RuntimeModelNames> {
+    fn runtime_model_names(&self, route_name: &str) -> AlgorithmResult<RuntimeModelNames> {
         let parent = match self {
             Self::Noop { .. } => HashMap::new(),
             Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
@@ -826,19 +823,35 @@ impl AlgorithmSpec {
     /// Builds this algorithm after resolving configured target names.
     pub fn build(
         &self,
-        context: &str,
+        route_name: &str,
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-        build_algorithm(context, self, targets)
+        build_algorithm(route_name, self, targets)
+    }
+
+    /// Resolves target names to host model IDs and builds the algorithm and runtime groups.
+    pub fn build_with_runtime_models(
+        &self,
+        route_name: &str,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<(Arc<dyn Algorithm>, RuntimeModels)> {
+        let algorithm = self.build(route_name, targets)?;
+        let names = self.runtime_model_names(route_name)?;
+        let mut models =
+            RuntimeModels::new(resolve_runtime_models(route_name, names.parent, targets)?);
+        if let Some(subagent) = names.subagent {
+            models = models.with_subagent(resolve_runtime_models(route_name, subagent, targets)?);
+        }
+        Ok((algorithm, models))
     }
 }
 
 /// One route's target names, grouped by category and by routing scope.
-pub(crate) struct RuntimeModelNames {
+struct RuntimeModelNames {
     /// Groups the algorithm itself routes over.
-    pub(crate) parent: HashMap<Category, Vec<String>>,
+    parent: HashMap<Category, Vec<String>>,
     /// Groups delegated sub-agent work routes over, when the route has a `subagents` table.
-    pub(crate) subagent: Option<HashMap<Category, Vec<String>>>,
+    subagent: Option<HashMap<Category, Vec<String>>>,
 }
 
 fn category_models(
@@ -1599,4 +1612,21 @@ fn resolve_target_model_id(
             "route {route_name} references unknown target {name}"
         ))
     })
+}
+
+fn resolve_runtime_models(
+    route_name: &str,
+    names: HashMap<Category, Vec<String>>,
+    targets: &BTreeMap<String, ModelId>,
+) -> AlgorithmResult<HashMap<Category, Vec<ModelId>>> {
+    names
+        .into_iter()
+        .map(|(category, names)| {
+            let models = names
+                .into_iter()
+                .map(|name| resolve_target_model_id(route_name, &name, targets))
+                .collect::<AlgorithmResult<Vec<_>>>()?;
+            Ok((category, models))
+        })
+        .collect()
 }
