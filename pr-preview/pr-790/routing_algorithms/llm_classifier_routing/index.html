@@ -1810,7 +1810,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ab7aaebe391b4db20aad1c441e855db90f1a4826/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1884,9 +1884,6 @@ Switchyard does not fetch or resize images for this limit.</p>
 optional message-hash affinity key uses only text, so identical questions about
 different images must not share that key. Escalation mode uses a text summary
 and rejects <code>judge_max_images</code>.</p>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3ba06be18d08947faf2a081e5ab06894444cd73/examples/vision_judge/README.md">Cosmos vision judge example</a> includes
-both modes, a pinned VANTAGE still image, Cosmos/Astra answer targets, and a live
-runner that verifies the images sent to each model.</p>
 <h3 id="override-the-classifier-prompt">Override the classifier prompt<a class="headerlink" href="#override-the-classifier-prompt" title="Permanent link">&para;</a></h3>
 <p>Set <code>prompt</code> on the route when the packaged capability rubric does not describe
 your weak model. Do not copy the response schema into the prompt: Switchyard
