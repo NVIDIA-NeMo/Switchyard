@@ -30,14 +30,14 @@ test("auto uses Luna, escalates to Sol on tool failure, and returns to Luna on r
   assert.deepEqual(definition.thinkingLevels, ["medium"]);
   const messages = request().messages;
   const initial = await route(request({ messages }));
-  assert.equal(initial.model.id, "gpt-5.6-luna");
+  assert.equal(initial.model.id, "gpt-6-luna");
   assert.equal(initial.thinkingLevel, "medium");
   messages.push(...tool("failed", "bash", { command: "pytest" }, "out of memory", true));
   const escalated = await route(request({ reason: "continuation", messages }));
-  assert.equal(escalated.model.id, "gpt-5.6-sol");
+  assert.equal(escalated.model.id, "gpt-6.1-sol");
   for (let i = 0; i < 3; i++) messages.push(...tool(`write-${i}`, "write", { path: `file-${i}` }, "wrote file"));
   const recovered = await route(request({ reason: "retry", messages }));
-  assert.equal(recovered.model.id, "gpt-5.6-luna");
+  assert.equal(recovered.model.id, "gpt-6-luna");
 });
 
 test("passes text, tool arguments, results, and failure flags to Switchyard", async (t) => {

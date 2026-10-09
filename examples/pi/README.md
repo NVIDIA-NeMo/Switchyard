@@ -3,8 +3,8 @@
 This example registers `switchyard/auto` and asks Switchyard to select a model on
 every request:
 
-- **Efficient:** Luna (`openai-codex/gpt-5.6-luna`).
-- **Capable:** Sol (`openai-codex/gpt-5.6-sol`).
+- **Efficient:** Luna (`openai-codex/gpt-6-luna`).
+- **Capable:** Sol (`openai-codex/gpt-6.1-sol`).
 - **Thinking:** always `medium`.
 
 `auto` currently uses Switchyard's stage router with an efficient-first default
@@ -19,8 +19,8 @@ requests such as compaction summaries.
 
 ```toml
 type = "auto"
-efficient_target = "openai-codex/gpt-5.6-luna"
-capable_target = "openai-codex/gpt-5.6-sol"
+efficient_target = "openai-codex/gpt-6-luna"
+capable_target = "openai-codex/gpt-6.1-sol"
 ```
 
 Set either target to a `provider/model` reference available in Pi's catalog, such
