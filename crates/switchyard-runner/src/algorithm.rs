@@ -346,6 +346,16 @@ pub enum AlgorithmSpec {
         /// Makes the sequence of choices repeatable.
         seed: Option<u64>,
     },
+    /// Selects among equally eligible targets using host-provided serving observations.
+    CacheAware {
+        /// Eligible targets in fallback order.
+        targets: Vec<String>,
+        /// Relative prefill costs in target order. Defaults to one per target.
+        prefill_costs: Option<Vec<f64>>,
+        /// Maximum local age of an observation.
+        #[serde(default = "default_signal_age_ms")]
+        max_signal_age_ms: u64,
+    },
     /// Sends every request to one target.
     Passthrough {
         /// Target that serves the request.
@@ -579,7 +589,9 @@ impl AlgorithmSpec {
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
             Self::Noop { .. } => Vec::new(),
-            Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::Random { targets, .. } | Self::CacheAware { targets, .. } => {
+                targets.iter().map(String::as_str).collect()
+            }
             Self::Passthrough {
                 target, subagents, ..
             } => {
@@ -710,7 +722,9 @@ impl AlgorithmSpec {
     ) -> AlgorithmResult<RuntimeModelNames> {
         let parent = match self {
             Self::Noop { .. } => HashMap::new(),
-            Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
+            Self::Random { targets, .. }
+            | Self::CacheAware { targets, .. }
+            | Self::PrefillRouter { targets, .. } => {
                 category_models([(Category::Any, targets.clone())])
             }
             Self::Passthrough { target, .. } => {
@@ -813,6 +827,7 @@ impl AlgorithmSpec {
             } => Some((executor_target, advisor_target)),
             Self::Noop { .. }
             | Self::Random { .. }
+            | Self::CacheAware { .. }
             | Self::Passthrough { .. }
             | Self::PlanExecute { .. }
             | Self::LlmClassifier { .. }
@@ -1268,6 +1283,31 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
+        AlgorithmSpec::CacheAware {
+            targets: names,
+            prefill_costs,
+            max_signal_age_ms,
+        } => {
+            let costs = prefill_costs
+                .clone()
+                .unwrap_or_else(|| vec![1.0; names.len()]);
+            if costs.len() != names.len()
+                || names.iter().collect::<BTreeSet<_>>().len() != names.len()
+            {
+                return Err(AlgorithmConfigError::new(
+                    "cache_aware requires unique targets and one cost per target",
+                ));
+            }
+            let algorithm =
+                libsy::CacheAware::new(costs, std::time::Duration::from_millis(*max_signal_age_ms))
+                    .map_err(|e| {
+                        AlgorithmConfigError::with_source(
+                            format!("cache_aware route {route_name}: {e}"),
+                            e,
+                        )
+                    })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Passthrough { subagents, .. } => {
             let algorithm = Passthrough;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
@@ -1599,4 +1639,8 @@ fn resolve_target_model_id(
             "route {route_name} references unknown target {name}"
         ))
     })
+}
+
+fn default_signal_age_ms() -> u64 {
+    1000
 }
