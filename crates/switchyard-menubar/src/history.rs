@@ -38,6 +38,20 @@ pub struct History {
     pub skipped: usize,
 }
 
+// hourly_calls uses bounded recent history, so its buckets may omit calls from a busy day.
+pub fn hourly_calls(entries: &[Entry], now: chrono::DateTime<chrono::Utc>) -> [u64; 24] {
+    let mut buckets = [0; 24];
+    for entry in entries {
+        if let Ok(time) = chrono::DateTime::parse_from_rfc3339(&entry.ts) {
+            let age = now.signed_duration_since(time);
+            if (chrono::Duration::zero()..chrono::Duration::hours(24)).contains(&age) {
+                buckets[23 - age.num_seconds() as usize / 3600] += 1;
+            }
+        }
+    }
+    buckets
+}
+
 pub fn load(path: &Path) -> Result<History, String> {
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -113,6 +127,30 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activity_uses_real_hour_buckets_and_ignores_invalid_or_outside_times() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-09T12:00:00Z")
+            .expect("date")
+            .with_timezone(&chrono::Utc);
+        let entries = [
+            "2026-10-09T11:59:00Z",
+            "2026-10-09T11:00:00Z",
+            "2026-10-08T12:00:00Z",
+            "2026-10-09T13:00:00Z",
+            "2026-10-09T12:00:00.500Z",
+            "bad",
+        ]
+        .iter()
+        .map(|time| {
+            serde_json::from_value(serde_json::json!({"ts":time,"model":"m"})).expect("entry")
+        })
+        .collect::<Vec<_>>();
+        let buckets = hourly_calls(&entries, now);
+        assert_eq!(buckets[23], 1);
+        assert_eq!(buckets[22], 1);
+        assert_eq!(buckets.iter().sum::<u64>(), 2);
+    }
+
     #[test]
     fn groups_recorded_ids_and_never_displays_content() {
         let bytes = b"{\"ts\":\"2026-10-08T12:00:00Z\",\"model\":\"actual\",\"session_id\":\"s\",\"turn_id\":\"t\",\"prompt_tokens\":12,\"completion_tokens\":3,\"messages\":\"SECRET\"}\n{\"ts\":\"2026-10-08T12:00:01Z\",\"model\":\"judge\",\"tier\":\"classifier\"}\ninvalid\n{\"model\":\"unfinished\"}";

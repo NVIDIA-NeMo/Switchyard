@@ -11,7 +11,8 @@ use crate::{
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout},
-    widgets::{Block, Paragraph, Wrap},
+    style::{Color, Style},
+    widgets::{Block, Paragraph, Sparkline, Tabs, Wrap},
 };
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -32,6 +33,10 @@ enum FormKind {
     Models,
     Key,
     Filter,
+    RouteFilter,
+    SettingsFile,
+    Remove,
+    Restore,
 }
 struct View {
     snapshot: Value,
@@ -41,6 +46,9 @@ struct View {
     account: usize,
     session: usize,
     filter: String,
+    route_filter: String,
+    settings_file: String,
+    preview: Option<Value>,
     scroll: u16,
     message: String,
     form: Option<Form>,
@@ -54,7 +62,25 @@ impl View {
     fn tools(&self) -> &[Value] {
         self.snapshot["tools"].as_array().map_or(&[], Vec::as_slice)
     }
+    fn matches_route(&self, route: &Value) -> bool {
+        let kind = string(route, "kind");
+        let title = crate::server_config::ALGORITHMS
+            .iter()
+            .find(|algorithm| algorithm.kind == kind)
+            .map_or("", |algorithm| algorithm.title);
+        format!("{} {title}", string(route, "label"))
+            .to_lowercase()
+            .contains(&self.route_filter.to_lowercase())
+    }
     fn route(&self) -> Result<&Value, String> {
+        if self.page == 1
+            && self
+                .routes()
+                .get(self.route)
+                .is_some_and(|route| !self.matches_route(route))
+        {
+            return Err("No route matches the search. Clear or change the search first.".into());
+        }
         self.routes()
             .get(self.route)
             .ok_or_else(|| "Choose a route first.".into())
@@ -82,8 +108,48 @@ impl View {
     }
     fn refresh(&mut self, controller: &mut Controller) -> Result<(), String> {
         self.snapshot = controller.snapshot()?;
+        self.preview = None;
         self.route = self.route.min(self.routes().len().saturating_sub(1));
         Ok(())
+    }
+    fn preview_install(&mut self, controller: &mut Controller) -> Result<(), String> {
+        self.preview = None;
+        let route = self.route()?;
+        let reply = controller.dispatch(Action::PreviewInstall {
+            tool: self.tool(),
+            account: self.account(),
+            settings_file: self.custom_file(),
+            route: string(route, "key"),
+            id: string(route, "id"),
+        })?;
+        self.preview = Some(reply.data);
+        self.message =
+            "Review the diff. Press i to install; changing the selection clears the preview."
+                .into();
+        Ok(())
+    }
+    fn custom_file(&self) -> Option<String> {
+        (!self.settings_file.is_empty()).then(|| self.settings_file.clone())
+    }
+    fn move_route(&mut self, forward: bool) {
+        let visible: Vec<_> = self
+            .routes()
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| self.page != 1 || self.matches_route(r))
+            .map(|(i, _)| i)
+            .collect();
+        if visible.is_empty() {
+            return;
+        }
+        let index = visible.iter().position(|i| *i == self.route).unwrap_or(0);
+        let next = if forward {
+            (index + 1) % visible.len()
+        } else {
+            index.saturating_sub(1)
+        };
+        self.route = visible[next];
+        self.preview = None;
     }
     fn form(&mut self, title: &str, kind: FormKind, fields: Vec<(String, String)>) {
         self.form = Some(Form {
@@ -205,6 +271,45 @@ impl View {
                         .unwrap_or_default()
                 );
             }
+            FormKind::RouteFilter => {
+                self.route_filter = value(0);
+                self.move_route(false);
+                self.scroll = 0;
+            }
+            FormKind::SettingsFile => {
+                self.settings_file = value(0);
+                self.account = 0;
+                self.preview = None;
+                self.preview_install(controller)?;
+            }
+            FormKind::Restore => {
+                if value(0) != "RESTORE" {
+                    return Err("Confirmation did not match. Nothing was restored.".into());
+                }
+                self.dispatch(
+                    controller,
+                    Action::Restore {
+                        tool: self.tool(),
+                        account: self.account(),
+                        settings_file: self.custom_file(),
+                    },
+                );
+                self.preview = None;
+            }
+            FormKind::Remove => {
+                let route = self.route()?;
+                if value(0) != string(route, "id") {
+                    return Err("Route name did not match. Nothing was deleted.".into());
+                }
+                self.dispatch(
+                    controller,
+                    Action::Remove {
+                        generation: self.snapshot["generation"].as_u64().unwrap_or_default(),
+                        route: string(route, "key"),
+                        id: string(route, "id"),
+                    },
+                );
+            }
             FormKind::Filter => {
                 self.filter = value(0);
                 self.scroll = 0;
@@ -214,13 +319,37 @@ impl View {
     }
     fn body(&self) -> String {
         match self.page {
-            0=>strings(&self.snapshot["summary"]),
+            0=>{
+                let mut period="";
+                let details=self.snapshot["summary"].as_array().map(|rows|rows.iter().filter_map(Value::as_str).filter_map(|line| {
+                    if line.starts_with("Today —") {period="Today";}
+                    if line.starts_with("This week —") {period="Past 7 days";}
+                    if line.contains("Saved") {Some(format!("{period}: {}",line.trim()))}
+                    else if line.contains("prices")||line.contains("Savings hidden")||line.trim().ends_with('%') {Some(line.trim().into())}
+                    else {None}
+                }).collect::<Vec<String>>().join("\n")).unwrap_or_default();
+                format!("CONNECTION\n{} · {}\n\nTODAY\n{} model calls · {} tokens\n\nPAST 7 DAYS\n{} model calls · {} tokens\n\nUSAGE DETAILS\n{}",if self.snapshot["metrics"]["running"]==true {"Connected"} else {"Not responding"},string(&self.snapshot["metrics"],"server_url"),self.snapshot["metrics"]["today"]["requests"],self.snapshot["metrics"]["today"]["tokens"],self.snapshot["metrics"]["week"]["requests"],self.snapshot["metrics"]["week"]["tokens"],details)
+            },
             1=>{
-                let mut rows=vec!["e Edit route   m Refresh models   k Save endpoint key\nAlgorithms: passthrough, random, llm_classifier, composite, stage_router, advisor, plan_execute, auto\n".into()];
-                for (i,r) in self.routes().iter().enumerate(){rows.push(format!("{} {}",if i==self.route {">"}else{" "},string(r,"label")));}
-                rows.push(format!("\nEndpoints: {}",self.snapshot["clients"].as_array().map(|a|a.iter().map(|c|format!("{} ({})",string(c,"name"),string(c,"host"))).collect::<Vec<_>>().join(", ")).unwrap_or_default()));rows.join("\n")
+                let visible:Vec<_>=self.routes().iter().enumerate().filter(|(_,r)|self.matches_route(r)).collect();
+                let index=visible.iter().position(|(i,_)|*i==self.route).unwrap_or(0);
+                let mut rows=vec![format!("/ Search routes   e Edit   d Delete route   m Refresh models   k Save endpoint key\n{} of {} routes · Search: {}\n",visible.len(),self.routes().len(),self.route_filter)];
+                for(i,r) in visible.iter().skip(index.saturating_sub(4)).take(10){rows.push(format!("{} {}",if *i==self.route {">"}else{" "},string(r,"label")));}
+                if visible.is_empty(){ rows.push("No routes match your search.".into()); }
+                if let Ok(route)=self.route(){rows.push(format!("\nSELECTED ROUTE\n{}",string(route,"label")));}
+                rows.join("\n")
             }
-            2|4=>format!("t Next tool   r Next route   a Next account\n{}\n\nTool: {}\nAccount: {}\nRoute: {}\n\n{}",if self.page==2 {"i Install / update   u Restore backup   n Add native login"}else{"l Launch worktree session   n Add native login"},string(&self.tools()[self.tool],"label"),self.account().unwrap_or_else(||"Current login".into()),self.route().map(|r|string(r,"label")).unwrap_or_default(),string(&self.tools()[self.tool],"status")),
+            2|4=>{
+                let mut body=format!("t Next tool   r Next route   a Next account\n{}\n\nTool: {} ({})\nAccount: {}\nRoute: {}\nSettings: {}\n\nDetected user settings:\n{}",if self.page==2 {"p Preview diff   i Review / install   u Restore backup   x Custom settings file\nn Sign in to another subscription account"}else{"l Launch worktree session   n Sign in to another subscription account"},string(&self.tools()[self.tool],"label"),if self.tools()[self.tool]["available"]==true {"Detected"}else{"Binary not found"},self.account().unwrap_or_else(||"Existing user settings".into()),self.route().map(|r|string(r,"label")).unwrap_or_default(),if self.settings_file.is_empty(){"Detected location"}else{&self.settings_file},string(&self.tools()[self.tool],"status"));
+                if let Some(preview)=&self.preview {
+                    body.push_str(&format!("\n\nSELECTED SETTINGS\n{}",string(preview,"current")));
+                    body.push_str("\n\nSETTINGS DIFF · − current / + proposed\n");
+                    if let Some(error)=preview["error"].as_str(){body.push_str(error);}
+                    if let Some(changes)=preview["changes"].as_array(){for change in changes{body.push_str(&format!("\n{} · {}\n− {}\n+ {}\n",string(change,"file"),string(change,"key"),string(change,"before"),string(change,"after")));}}
+                    body.push_str(&format!("\n{}",string(preview,"authentication")));
+                }
+                body
+            }
             3=>{
                 let selected=self.session.checked_sub(1).and_then(|i|self.snapshot["sessions"].as_array()?.get(i)).and_then(Value::as_str);
                 let mut lines=vec![format!("s Next session   f Filter turn/model/route\nSession: {}   Filter: {}\n{} recent calls{}; {} unreadable records skipped.\nEach row is one model call; a turn can contain several calls. Input includes cached reads.\n",selected.unwrap_or("All sessions"),self.filter,self.snapshot["entries"].as_array().map_or(0,Vec::len),if self.snapshot["limited"]==true{" (8 MiB / 5,000 record limit)"}else{""},self.snapshot["skipped"])];
@@ -243,23 +372,25 @@ impl View {
                 self.page = (self.page + PAGES.len() - 1) % PAGES.len();
                 self.scroll = 0;
             }
-            KeyCode::Down | KeyCode::Char('r') => {
-                self.route = (self.route + 1) % self.routes().len().max(1)
-            }
-            KeyCode::Up => self.route = self.route.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('r') => self.move_route(true),
+            KeyCode::Up => self.move_route(false),
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::F(5) => self.refresh(controller)?,
             KeyCode::Char('t') => {
                 self.tool = (self.tool + 1) % self.tools().len();
                 self.account = 0;
+                self.settings_file.clear();
+                self.preview = None;
             }
             KeyCode::Char('a') => {
                 self.account = (self.account + 1)
                     % (self.tools()[self.tool]["accounts"]
                         .as_array()
                         .map_or(0, Vec::len)
-                        + 1)
+                        + 1);
+                self.settings_file.clear();
+                self.preview = None;
             }
             KeyCode::Char('e') if self.page == 1 => {
                 let kind = string(self.route()?, "kind");
@@ -290,27 +421,59 @@ impl View {
                     fields,
                 );
             }
+            KeyCode::Char('p') if self.page == 2 => self.preview_install(controller)?,
+            KeyCode::Char('x') if self.page == 2 => self.form(
+                "Custom settings file; empty uses detected settings",
+                FormKind::SettingsFile,
+                vec![(
+                    "Absolute file path (Pi: models.json)".into(),
+                    self.settings_file.clone(),
+                )],
+            ),
+            KeyCode::Char('/') if self.page == 1 => self.form(
+                "Find a route",
+                FormKind::RouteFilter,
+                vec![(
+                    "Name, method, endpoint, or model".into(),
+                    self.route_filter.clone(),
+                )],
+            ),
+            KeyCode::Char('d') if self.page == 1 => self.form(
+                &format!(
+                    "Delete {}? Targets stay; config is backed up",
+                    string(self.route()?, "id")
+                ),
+                FormKind::Remove,
+                vec![("Type the route name to delete".into(), String::new())],
+            ),
             KeyCode::Char('i') if self.page == 2 => {
-                let r = self.route()?;
-                self.dispatch(
-                    controller,
-                    Action::Install {
-                        tool: self.tool(),
-                        account: self.account(),
-                        route: string(r, "key"),
-                        id: string(r, "id"),
-                    },
-                );
+                if self.preview.is_none() {
+                    self.preview_install(controller)?;
+                } else if let Some(error) = self.preview.as_ref().and_then(|p| p["error"].as_str())
+                {
+                    return Err(error.into());
+                } else {
+                    let r = self.route()?;
+                    self.dispatch(
+                        controller,
+                        Action::Install {
+                            tool: self.tool(),
+                            account: self.account(),
+                            settings_file: self.custom_file(),
+                            route: string(r, "key"),
+                            id: string(r, "id"),
+                        },
+                    );
+                    self.preview = None;
+                }
             }
-            KeyCode::Char('u') if self.page == 2 => self.dispatch(
-                controller,
-                Action::Restore {
-                    tool: self.tool(),
-                    account: self.account(),
-                },
+            KeyCode::Char('u') if self.page == 2 => self.form(
+                "Restore coding-tool settings? Switchyard routes are kept",
+                FormKind::Restore,
+                vec![("Type RESTORE to confirm".into(), String::new())],
             ),
             KeyCode::Char('n') if self.page == 2 || self.page == 4 => self.form(
-                "Add native login",
+                "Sign in to another subscription account",
                 FormKind::Account,
                 vec![("Account name".into(), String::new())],
             ),
@@ -342,16 +505,6 @@ impl View {
 fn string(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().into()
 }
-fn strings(v: &Value) -> String {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
-}
 pub fn run(mut controller: Controller) -> Result<(), String> {
     let snapshot = controller.snapshot()?;
     let mut view = View {
@@ -362,6 +515,9 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
         account: 0,
         session: 0,
         filter: String::new(),
+        route_filter: String::new(),
+        settings_file: String::new(),
+        preview: None,
         scroll: 0,
         message: String::new(),
         form: None,
@@ -375,13 +531,14 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                     Constraint::Min(5),
                     Constraint::Length(5),
                 ]).split(frame.area());
-                let title = PAGES.iter().enumerate().map(|(i, page)| {
-                    if i == view.page { format!("[{page}]") } else { page.to_string() }
-                }).collect::<Vec<_>>().join("   ");
-                frame.render_widget(
-                    Paragraph::new(title).block(Block::bordered().title("Switchyard")),
-                    areas[0],
-                );
+                frame.render_widget(Tabs::new(PAGES.iter().copied()).select(view.page).highlight_style(Style::default().fg(Color::White).bg(Color::Rgb(40,56,76))).block(Block::bordered().title("Switchyard")),areas[0]);
+                let mut body_area=areas[1];
+                if view.page==0 && view.form.is_none() {
+                    let split=Layout::vertical([Constraint::Min(5),Constraint::Length(6)]).split(body_area);
+                    body_area=split[0];
+                    let data=view.snapshot["activity"].as_array().map(|items|items.iter().filter_map(Value::as_u64).collect::<Vec<_>>()).unwrap_or_default();
+                    frame.render_widget(Sparkline::default().data(&data).style(Style::default().fg(Color::LightBlue)).block(Block::bordered().title("Recent model calls · past 24h · hourly")),split[1]);
+                }
                 let (body, title) = if let Some(form) = &view.form {
                     let rows = form.fields.iter().enumerate().map(|(i, (label, value))| {
                         let marker = if i == form.index { ">" } else { " " };
@@ -397,7 +554,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                         .wrap(Wrap { trim: false })
                         .scroll((view.scroll, 0))
                         .block(Block::bordered().title(title)),
-                    areas[1],
+                    body_area,
                 );
                 frame.render_widget(
                     Paragraph::new(format!("Tab: section · ↑/↓: route · PgUp/PgDn: scroll · F5: refresh · q: quit\nForms: Tab: field · Ctrl-U: clear · Enter: submit · Esc: cancel\n{}", view.message)),
@@ -456,4 +613,87 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
         let _ = ratatui::try_restore();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use serde_json::json;
+
+    fn view() -> View {
+        View {
+            snapshot: json!({"routes":[{"key":"a","id":"a","label":"alpha"},{"key":"b","id":"b","label":"beta"}]}),
+            page: 1,
+            route: 0,
+            tool: 0,
+            account: 0,
+            session: 0,
+            filter: String::new(),
+            route_filter: "alpha".into(),
+            settings_file: String::new(),
+            preview: Some(json!({"proposed":"old settings"})),
+            scroll: 0,
+            message: String::new(),
+            form: None,
+        }
+    }
+
+    #[test]
+    // A mismatched confirmation must fail before controller dispatch can create files.
+    fn unconfirmed_restore_leaves_files_untouched() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut controller = Controller::new(Config::default(), directory.path().join("app.toml"));
+        let mut view = view();
+        view.form(
+            "Restore",
+            FormKind::Restore,
+            vec![("Confirmation".into(), "no".into())],
+        );
+        assert_eq!(
+            view.submit(&mut controller).expect_err("reject"),
+            "Confirmation did not match. Nothing was restored."
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.path()).expect("files").count(),
+            0
+        );
+    }
+
+    #[test]
+    // The Routes search must not hide choices when the user switches to Install.
+    fn route_search_does_not_restrict_install_selection() {
+        let mut view = view();
+        view.snapshot["routes"][0]["kind"] = json!("passthrough");
+        view.route_filter = "single model".into();
+        assert!(view.route().is_ok());
+        view.move_route(true);
+        assert_eq!(view.route, 0);
+        view.route_filter = "missing".into();
+        assert!(view.route().is_err());
+        view.page = 2;
+        view.move_route(true);
+        assert_eq!(view.route, 1);
+        assert_eq!(view.route().expect("route")["id"], "b");
+        assert!(view.preview.is_none());
+    }
+
+    #[test]
+    fn refreshing_the_snapshot_invalidates_the_install_preview() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("app.toml");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={:?}\nrouting_log={:?}\nserver_url='http://127.0.0.1:0'\n",
+                directory.path().join("server.toml"),
+                directory.path().join("history.jsonl")
+            ),
+        )
+        .expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        let mut view = view();
+        view.refresh(&mut controller).expect("refresh");
+        assert!(view.preview.is_none());
+    }
 }

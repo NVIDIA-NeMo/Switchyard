@@ -383,6 +383,24 @@ impl ServerConfig {
             .collect()
     }
 
+    pub fn remove(&self, route: &str) -> Result<Edited, String> {
+        let mut doc = self.doc.clone();
+        let routes = doc
+            .get_mut("routes")
+            .and_then(Item::as_table_like_mut)
+            .ok_or("No routes are configured.")?;
+        let removed = routes
+            .remove(route)
+            .ok_or("The route was already removed. Refresh and choose it again.")?;
+        retain_block_markers(&mut doc, &removed);
+        Ok(Edited {
+            text: doc.to_string(),
+            notes: vec![
+                "Removed the route. Its targets and endpoint settings are preserved.".into(),
+            ],
+        })
+    }
+
     pub fn clients(&self) -> Vec<Client> {
         entries(self.table("llm_clients"))
             .map(|(name, client)| Client {
@@ -1073,6 +1091,62 @@ fn login_hosts<'c>(clients: &'c [Client], choices: &[Choice]) -> Vec<&'c str> {
     hosts
 }
 
+// Generated-block markers can occur on nested route tables and still apply to retained targets.
+fn retain_block_markers(doc: &mut DocumentMut, removed: &Item) {
+    let mut markers = Vec::new();
+    let mut tables: Vec<_> = removed.as_table().into_iter().collect();
+    while let Some(table) = tables.pop() {
+        if let Some(position) = table.position()
+            && let Some(prefix) = table.decor().prefix().and_then(|value| value.as_str())
+            && prefix
+                .lines()
+                .any(|line| line.trim().starts_with("# >>>") || line.trim().starts_with("# <<<"))
+        {
+            markers.push((position, prefix.to_string()));
+        }
+        tables.extend(table.iter().filter_map(|(_, item)| item.as_table()));
+    }
+    markers.sort_by_key(|(position, _)| *position);
+    let mut positions = Vec::new();
+    let mut tables = vec![doc.as_table()];
+    while let Some(table) = tables.pop() {
+        positions.extend(table.position());
+        tables.extend(table.iter().filter_map(|(_, item)| item.as_table()));
+    }
+    let mut prefixes: HashMap<isize, String> = HashMap::new();
+    let mut trailing = String::new();
+    for (removed_position, prefix) in markers {
+        if let Some(next) = positions
+            .iter()
+            .copied()
+            .filter(|position| *position > removed_position)
+            .min()
+        {
+            prefixes.entry(next).or_default().push_str(&prefix);
+        } else {
+            trailing.push_str(&prefix);
+        }
+    }
+    let mut tables = vec![doc.as_table_mut()];
+    while let Some(table) = tables.pop() {
+        if let Some(position) = table.position()
+            && let Some(mut prefix) = prefixes.remove(&position)
+        {
+            prefix.push_str(
+                table
+                    .decor()
+                    .prefix()
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default(),
+            );
+            table.decor_mut().set_prefix(prefix);
+        }
+        tables.extend(table.iter_mut().filter_map(|(_, item)| item.as_table_mut()));
+    }
+    trailing.push_str(doc.trailing().as_str().unwrap_or_default());
+    doc.set_trailing(trailing);
+}
+
 /// This function finds the route and target tables that sit inside blocks another tool
 /// writes. A block starts at a line that begins with `# >>>` and ends at the
 /// next line that begins with `# <<<`, the markers that the installer scripts
@@ -1193,6 +1267,54 @@ confidence_threshold = 0.5
 
     fn capable_target(config: &ServerConfig) -> Option<&str> {
         config.target_at("gateway", &Slot::Key(&["stage", "capable_target"]))
+    }
+
+    #[test]
+    fn removing_a_route_keeps_generated_block_markers_for_retained_targets() {
+        for (suffix, target, owned) in [
+            (
+                "# >>> generated >>>\n[routes.generated]\nid='generated'\ntype='passthrough'\ntarget='owned'\n[targets.owned]\nid='m'\nllm_client='gateway'\n# <<< generated <<<\n",
+                "owned",
+                true,
+            ),
+            (
+                "# >>> generated >>>\n[targets.owned]\nid='m'\nllm_client='gateway'\n# <<< generated <<<\n[routes.generated]\nid='generated'\ntype='passthrough'\ntarget='owned'\n[targets.unowned]\nid='other'\nllm_client='gateway'\n",
+                "unowned",
+                false,
+            ),
+            (
+                "[routes.generated]\nid='generated'\ntype='composite'\n# >>> generated >>>\n[routes.generated.classifier]\ntarget='owned'\n[targets.owned]\nid='m'\nllm_client='gateway'\n# <<< generated <<<\n",
+                "owned",
+                true,
+            ),
+        ] {
+            let config = ServerConfig::parse(&format!("{GATEWAY}\n{suffix}")).expect("config");
+            assert_eq!(config.generated_by("targets", target).is_some(), owned);
+            let edited = config.remove("generated").expect("remove");
+            let remaining = ServerConfig::parse(&edited.text).expect("config");
+            assert_eq!(
+                remaining.generated_by("targets", target).is_some(),
+                owned,
+                "{}",
+                edited.text
+            );
+        }
+    }
+
+    #[test]
+    // Routes can share targets, so deleting one route must leave those targets usable.
+    fn removing_a_route_preserves_shared_targets_and_other_routes() {
+        let original = format!(
+            "{GATEWAY}\n[routes.keep]\nid='keep'\ntype='passthrough'\ntarget='gateway_capable'\n"
+        );
+        let config = ServerConfig::parse(&original).expect("config");
+        let edited = config.remove("gateway").expect("remove");
+        let remaining = ServerConfig::parse(&edited.text).expect("config");
+        assert_eq!(remaining.routes().len(), 1);
+        assert_eq!(remaining.routes()[0].id, "keep");
+        assert_eq!(remaining.models_on("gateway"), config.models_on("gateway"));
+        switchyard_runner::Runner::from_toml(&edited.text).expect("server accepts remaining route");
+        assert!(config.remove("missing").is_err());
     }
 
     #[test]

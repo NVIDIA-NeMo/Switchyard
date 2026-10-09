@@ -22,6 +22,7 @@ struct Shared {
 struct TrayPreview {
     today: MenuItem<tauri::Wry>,
     week: MenuItem<tauri::Wry>,
+    activity: MenuItem<tauri::Wry>,
 }
 impl TrayPreview {
     fn update(&self, snapshot: &serde_json::Value) -> tauri::Result<()> {
@@ -36,6 +37,23 @@ impl TrayPreview {
                 .unwrap_or("Usage unavailable");
             item.set_text(label)?;
         }
+        let values = snapshot["activity"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_u64().unwrap_or(0))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let max = values.iter().copied().max().unwrap_or(1).max(1);
+        let levels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        let graph: String = values
+            .iter()
+            .map(|value| levels[(*value as f64 / max as f64 * 7.0).round() as usize])
+            .collect();
+        self.activity
+            .set_text(format!("Recent calls · 24h {graph} → Usage"))?;
         Ok(())
     }
 }
@@ -135,6 +153,13 @@ pub fn run(controller: Controller) -> Result<(), String> {
                 true,
                 None::<&str>,
             )?;
+            let activity = MenuItem::with_id(
+                app,
+                "activity",
+                "Recent calls · loading… → Usage",
+                true,
+                None::<&str>,
+            )?;
             let usage = MenuItem::with_id(app, "usage", "View usage…", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Switchyard", true, None::<&str>)?;
@@ -148,13 +173,18 @@ pub fn run(controller: Controller) -> Result<(), String> {
                     &separator,
                     &today,
                     &week,
+                    &activity,
                     &usage,
                     &bottom_separator,
                     &settings,
                     &quit,
                 ],
             )?;
-            app.manage(TrayPreview { today, week });
+            app.manage(TrayPreview {
+                today,
+                week,
+                activity,
+            });
             if let Ok(snapshot) = app
                 .state::<Shared>()
                 .controller
@@ -176,7 +206,7 @@ pub fn run(controller: Controller) -> Result<(), String> {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => open_page(app, "overview"),
                     "install" => open_page(app, "install"),
-                    "today" | "week" | "usage" => open_page(app, "usage"),
+                    "today" | "week" | "activity" | "usage" => open_page(app, "usage"),
                     "settings" => open_page(app, "settings"),
                     "quit" if app.state::<Shared>().quit() => app.exit(0),
                     _ => {}

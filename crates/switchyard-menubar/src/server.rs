@@ -44,6 +44,25 @@ pub fn apply(
     })?;
     let config = ServerConfig::parse(&text)?;
     let edited = config.edit(route, algorithm, choices)?;
+    save_edit(settings, &text, edited)
+}
+
+pub fn remove(settings: &Config, route: &str, id: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(&settings.config_file).map_err(|error| error.to_string())?;
+    let config = ServerConfig::parse(&text)?;
+    if !config.routes().iter().any(|r| r.key == route && r.id == id) {
+        return Err("The route changed or was removed. Refresh and choose it again.".into());
+    }
+    let edited = config.remove(route)?;
+    save_edit(settings, &text, edited)
+}
+
+fn save_edit(
+    settings: &Config,
+    text: &str,
+    edited: crate::server_config::Edited,
+) -> Result<String, String> {
+    let path = &settings.config_file;
     if edited.text == text {
         return Ok(
             "Nothing to save. The route already uses this algorithm and these models.".to_string(),
@@ -51,7 +70,7 @@ pub fn apply(
     }
 
     let binary = server_binary()?;
-    let backup = save_checked(&binary, path, &text, &edited.text).map_err(explain)?;
+    let backup = save_checked(&binary, path, text, &edited.text).map_err(explain)?;
     let label = &settings.launchd_label;
     let health = format!("{}/health", settings.server_url);
     let mut lines = vec![format!(
@@ -77,7 +96,7 @@ pub fn apply(
         ),
     });
     lines.extend(edited.notes);
-    let routes = config.routes().len();
+    let routes = ServerConfig::parse(&edited.text)?.routes().len();
     let plural = if routes == 1 { "" } else { "s" };
     lines.push(format!(
         "The switchyard-server --dry-run check passed for {routes} route{plural}."

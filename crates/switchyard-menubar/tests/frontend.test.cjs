@@ -48,3 +48,13 @@ test('editor redraw retains the saved route and restart result', async () => {
   })()`, context);
   assert.equal(result, 'Saved the route. Restart failed.');
 });
+
+test('reopening an edited route preserves untiered model choices', () => {
+  const context = editor();
+  const result = vm.runInContext(`
+    const route = {kind:'passthrough',choices:[{model:'original'}]};
+    const draft = {algorithm:'random',loadedAlgorithm:'random',choices:[{model:'edited-first'},{model:'edited-second'}],memory:new Map()};
+    [roleChoice(draft,route,{tier:null},0).model,roleChoice(draft,route,{tier:null},1).model];
+  `, context);
+  assert.deepEqual(Array.from(result), ['edited-first', 'edited-second']);
+});

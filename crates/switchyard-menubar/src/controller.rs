@@ -4,7 +4,7 @@
 //! Both frontends call these operations so validation stays independent of widgets.
 
 use crate::{
-    accounts, app,
+    accounts,
     config::Config,
     harness::{self, Harness},
     history, models, rollup, server,
@@ -30,6 +30,11 @@ pub enum Action {
         algorithm: String,
         choices: Vec<Choice>,
     },
+    Remove {
+        generation: u64,
+        route: String,
+        id: String,
+    },
     Models {
         client: String,
         refresh: bool,
@@ -40,16 +45,19 @@ pub enum Action {
         account: Option<String>,
         route: String,
         id: String,
+        settings_file: Option<String>,
     },
     Install {
         tool: Harness,
         account: Option<String>,
         route: String,
         id: String,
+        settings_file: Option<String>,
     },
     Restore {
         tool: Harness,
         account: Option<String>,
+        settings_file: Option<String>,
     },
     AddAccount {
         tool: Harness,
@@ -119,7 +127,19 @@ impl Controller {
     }
     pub fn snapshot(&mut self) -> Result<Value, String> {
         self.reload()?;
-        let (_, summary) = app::refresh(&self.config, &mut self.reader);
+        let mut errors = Vec::new();
+        let usage = self
+            .reader
+            .read(&self.config.routing_log, chrono::Local::now().date_naive())
+            .unwrap_or_else(|error| {
+                errors.push(format!("Could not read usage: {error}"));
+                rollup::Usage::default()
+            });
+        let server_status = crate::health::probe(&self.config.server_url);
+        let summary = crate::summary::build(server_status, &usage, &self.config);
+        let metrics = json!({"server_url":self.config.server_url,"running":server_status == crate::health::ServerStatus::Running,
+            "today":{"requests":usage.today.requests(),"tokens":usage.today.tokens()},
+            "week":{"requests":usage.week.requests(),"tokens":usage.week.tokens()}});
         let summary: Vec<_> = summary
             .into_iter()
             .map(|r| match r {
@@ -127,7 +147,6 @@ impl Controller {
                 Row::Separator => String::new(),
             })
             .collect();
-        let mut errors = Vec::new();
         let mut routes = Vec::new();
         let mut clients = Vec::new();
         match self.routes() {
@@ -152,15 +171,16 @@ impl Controller {
             errors.push(e);
             history::History::default()
         });
+        let activity = history::hourly_calls(&history.entries, chrono::Utc::now());
         let tools: Vec<_> = harness::HARNESSES.iter().map(|(tool,label)| {
             let accounts: Vec<_> = accounts::list(*tool).into_iter().map(|(name,_)| name).collect();
             json!({"tool":tool,"label":label,"available":harness::binary(*tool).is_some(),
-                "status":harness::inspect(*tool,&harness::paths(*tool)).unwrap_or_else(|e| e),"accounts":accounts})
+                "files":harness::paths(*tool),"status":harness::inspect(*tool,&harness::paths(*tool)).unwrap_or_else(|e| e),"accounts":accounts})
         }).collect();
         Ok(
-            json!({"generation":self.generation,"summary":summary,"routes":routes,"clients":clients,"tools":tools,
+            json!({"generation":self.generation,"summary":summary,"metrics":metrics,"routes":routes,"clients":clients,"tools":tools,
             "algorithms":ALGORITHMS.iter().map(|a|json!({"kind":a.kind,"title":a.title,"summary":a.summary})).collect::<Vec<_>>(),
-            "sessions":history.sessions(),"entries":history.entries,"limited":history.limited,"skipped":history.skipped,
+            "activity":activity,"sessions":history.sessions(),"entries":history.entries,"limited":history.limited,"skipped":history.skipped,
             "errors":errors,"refresh_seconds":self.config.refresh_seconds.max(1)}),
         )
     }
@@ -194,6 +214,15 @@ impl Controller {
                 current_route(&config, &route, None)?;
                 let algorithm = algorithm_by_id(&algorithm)?;
                 server::apply(&self.config, &route, algorithm, &choices).map(Reply::message)
+            }
+            Action::Remove {
+                generation,
+                route,
+                id,
+            } => {
+                self.check_generation(generation)?;
+                current_route(&self.routes()?, &route, Some(&id))?;
+                server::remove(&self.config, &route, &id).map(Reply::message)
             }
             Action::Models {
                 client,
@@ -253,11 +282,12 @@ impl Controller {
                 account,
                 route,
                 id,
+                settings_file,
             } => {
-                let account = account_path(tool, account.as_deref())?;
+                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
                 let config = self.routes()?;
                 let route = current_route(&config, &route, Some(&id))?;
-                let files = accounts::config_paths(tool, account.as_deref());
+
                 let current = harness::inspect(tool, &files)?;
                 let preview = login_mode(tool, &config, &route).and_then(|login| {
                     harness::preview(tool, &files, &self.config.server_url, &route.id, login)
@@ -273,24 +303,22 @@ impl Controller {
                 account,
                 route,
                 id,
+                settings_file,
             } => {
-                let account = account_path(tool, account.as_deref())?;
+                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
                 let config = self.routes()?;
                 let route = current_route(&config, &route, Some(&id))?;
                 let login = login_mode(tool, &config, &route)?;
-                harness::install(
-                    tool,
-                    &accounts::config_paths(tool, account.as_deref()),
-                    &self.config.server_url,
-                    &route.id,
-                    login,
-                )
-                .map(Reply::message)
-            }
-            Action::Restore { tool, account } => {
-                let account = account_path(tool, account.as_deref())?;
-                harness::restore(&accounts::config_paths(tool, account.as_deref()))
+                harness::install(tool, &files, &self.config.server_url, &route.id, login)
                     .map(Reply::message)
+            }
+            Action::Restore {
+                tool,
+                account,
+                settings_file,
+            } => {
+                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
+                harness::restore(&files).map(Reply::message)
             }
             Action::AddAccount { tool, name } => {
                 accounts::add(tool, name.trim()).map(Reply::message)
@@ -341,6 +369,35 @@ fn current_route(config: &ServerConfig, key: &str, id: Option<&str>) -> Result<R
         .find(|r| r.key == key && id.is_none_or(|id| id == r.id))
         .ok_or_else(|| "The route changed or was removed. Refresh and choose it again.".into())
 }
+// A custom file selects one settings location; saved accounts select their own folders.
+fn install_paths(
+    tool: Harness,
+    account: Option<&str>,
+    file: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
+    if let Some(file) = file {
+        if account.is_some() {
+            return Err("Choose a saved account or a custom settings file, not both.".into());
+        }
+        let path = PathBuf::from(file);
+        if !path.is_absolute() || file.trim().is_empty() || file.contains(['\n', '\r']) {
+            return Err("Enter an absolute settings file path without line breaks.".into());
+        }
+        if path.is_dir() {
+            return Err("Choose a settings file, not a folder.".into());
+        }
+        if tool == Harness::Pi {
+            if path.file_name().is_none_or(|name| name != "models.json") {
+                return Err("Choose Pi’s models.json; settings.json is read beside it.".into());
+            }
+            return Ok(vec![path.clone(), path.with_file_name("settings.json")]);
+        }
+        return Ok(vec![path]);
+    }
+    let account = account_path(tool, account)?;
+    Ok(accounts::config_paths(tool, account.as_deref()))
+}
+
 fn account_path(tool: Harness, name: Option<&str>) -> Result<Option<PathBuf>, String> {
     let Some(name) = name else {
         return Ok(None);
@@ -430,6 +487,89 @@ mod tests {
             assert!(serde_json::from_str::<Action>(input).is_err());
         }
     }
+    #[test]
+    // A custom destination must use the same files for preview, installation, backup, and restore.
+    fn custom_settings_are_validated_and_restored() {
+        let dir = tempfile::tempdir().expect("directory");
+        for (tool, _) in harness::HARNESSES {
+            let file = dir.path().join(if *tool == Harness::Pi {
+                "models.json"
+            } else {
+                "custom-settings"
+            });
+            assert_eq!(
+                install_paths(*tool, None, Some(file.to_str().expect("path"))).expect("custom")[0],
+                file
+            );
+        }
+        for (account, file) in [
+            (None, "relative.json"),
+            (None, ""),
+            (Some("account"), "/tmp/settings.json"),
+            (None, "/tmp/settings\n.json"),
+        ] {
+            assert!(install_paths(Harness::Claude, account, Some(file)).is_err());
+        }
+        assert!(install_paths(Harness::Pi, None, Some("/tmp/settings.json")).is_err());
+        assert!(install_paths(Harness::Claude, None, dir.path().to_str()).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 0);
+        let settings = dir.path().join("app.toml");
+        let config = dir.path().join("server.toml");
+        std::fs::write(&config,"[llm_clients.c]\nbase_url='https://example.com/v1'\nformat='openai_chat'\n[targets.m]\nid='actual'\nllm_client='c'\n[routes.r]\nid='public'\ntype='passthrough'\ntarget='m'\n").expect("config");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={config:?}\nrouting_log={:?}",
+                dir.path().join("log")
+            ),
+        )
+        .expect("settings");
+        let custom = dir.path().join("custom.json");
+        std::fs::write(&custom, "{\"user\":true}").expect("custom");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        let file = Some(custom.display().to_string());
+        let preview = controller
+            .dispatch(Action::PreviewInstall {
+                tool: Harness::Claude,
+                account: None,
+                settings_file: file.clone(),
+                route: "r".into(),
+                id: "public".into(),
+            })
+            .expect("preview");
+        assert!(
+            preview.data["changes"]
+                .as_array()
+                .expect("diff")
+                .iter()
+                .any(|change| change["file"] == custom.display().to_string())
+        );
+        controller
+            .dispatch(Action::Install {
+                tool: Harness::Claude,
+                account: None,
+                settings_file: file.clone(),
+                route: "r".into(),
+                id: "public".into(),
+            })
+            .expect("install");
+        assert_eq!(
+            preview.data["proposed"],
+            harness::inspect(Harness::Claude, std::slice::from_ref(&custom)).expect("inspect")
+        );
+        controller
+            .dispatch(Action::Restore {
+                tool: Harness::Claude,
+                account: None,
+                settings_file: file,
+            })
+            .expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(custom).expect("custom"),
+            "{\"user\":true}"
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     // A cached list must not let an untested key reach Keychain.
@@ -442,6 +582,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             for _ in 0..200 {
                 if let Ok((mut stream, _)) = listener.accept() {
+                    stream.set_nonblocking(false).expect("blocking request");
                     stream
                         .set_read_timeout(Some(std::time::Duration::from_secs(1)))
                         .expect("timeout");
@@ -684,6 +825,7 @@ mod tests {
                     .dispatch(Action::Install {
                         tool: Harness::CodexCli,
                         account: None,
+                        settings_file: None,
                         route: "r".into(),
                         id: id.into()
                     })

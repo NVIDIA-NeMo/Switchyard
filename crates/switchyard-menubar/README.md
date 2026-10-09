@@ -26,11 +26,16 @@ name and `SY_MODEL` to choose an existing public route ID. New installs use
 `SY_MODEL` to one of their routes when installing with a custom config. The
 profile leaves `approval_policy` and `sandbox_mode` to your existing Codex
 settings. Reinstalling backs up the profile before replacing changed contents.
+`SY_PROFILE` must start with an ASCII letter or digit, use only ASCII letters,
+digits, underscores, or hyphens, and contain at most 128 characters. For example,
+the installer rejects `SY_PROFILE=team.dev` before creating app or config files.
 
 Open the app from Finder or Spotlight. Closing the window keeps the tray menu.
-The tray includes **Install…**, daily and weekly usage previews, **View usage…**,
-and **Settings…**. Clicking a usage preview opens Usage. Choose **Open Switchyard**
-to return or **Quit Switchyard** to exit. The app rejects Quit while an operation is queued or running; try again after it finishes.
+The tray includes **Install…**, daily and weekly usage previews, a graph of recent
+calls by hour, **View usage…**, and **Settings…**. Clicking a usage preview or the
+graph opens Usage. Choose **Open Switchyard** to return or **Quit Switchyard** to
+exit. The app rejects Quit while an operation is queued or running; try again
+after it finishes.
 
 **Settings → Update from source…** opens Terminal to rebuild and reinstall from
 the checkout used for this installation. It builds that checkout's current commit
@@ -45,7 +50,12 @@ Run the terminal app with:
 cargo run -p switchyard-menubar -- --tui
 ```
 
-Tab changes sections. The footer lists navigation keys. In Routes, press `e` to
+Tab changes sections. The footer lists navigation keys. In Routes, `/` searches
+and the arrow keys select matching routes; `d` deletes a route only after you
+type its name. In Install, `p` previews a diff, `x` selects a custom file, and `i`
+shows the preview before a second `i` installs the route. Restore asks you to type
+`RESTORE` before changing coding-tool settings. Changing the tool,
+account, or route clears the preview. In Routes, press `e` to
 edit the algorithm and model roles. Tab changes form fields, Ctrl-U clears a
 field, Enter submits, and Escape cancels. The terminal restores its screen and
 input mode on exit. `--print` prints the usage summary without opening either
@@ -53,13 +63,16 @@ app. `--tui` cannot be combined with `--print` or `--validate-toml`.
 
 ## Routes
 
-Each route label shows its public model ID, algorithm, endpoint name, and model
-choices. In **Routes**, choose an algorithm and enter the endpoint and model for
-each role. **Refresh models** loads the endpoint's list; you can also type an
+The route library searches public model IDs, algorithms, endpoints, and model
+choices. Select a route to edit its algorithm and model roles. The app opens one
+editor at a time, even when the config contains hundreds of routes.
+**Refresh models** loads the endpoint's list; you can also type an
 unlisted model ID. ChatGPT's private Codex endpoint uses the saved Codex model
 list and configured targets. The app keeps drafts until **Save and restart** or
-**Discard changes**. Refresh keeps drafts unless the settings select a different
-server config file.
+**Revert unsaved edits**. Reverting changes only resets the editor. **Delete route…**
+removes the selected route after confirmation, preserves its targets and endpoint
+settings, and uses the same validation, backup, and restart as saving. Refresh
+keeps drafts unless the settings select a different server config file.
 
 **Save and restart** checks the complete edited file with the bundled
 server's `--dry-run`. It preserves comments and unrelated tables, saves a backup
@@ -89,17 +102,22 @@ instead.
 
 ## Install coding-tool settings
 
-**Install** shows one card for Codex CLI, Codex app, Claude Code, and Pi.
-Choose a route to compare the current model, endpoint, and settings files with
-the proposed settings. The preview changes no files. Click **Install route**
-to save the settings. Codex CLI gets `sy.config.toml` for `codex -p sy`. The Codex app option changes the defaults
-in `config.toml` for both the app and CLI. Claude Code gets environment settings
-in `settings.json`. Pi gets a custom provider in `models.json` and defaults in
+**Install** has one coding-tool selector for Codex CLI, Codex app, Claude Code,
+and Pi. It shows whether the tool's binary was detected. Choose a route and
+settings location to review a diff of the routing settings. Credential values
+stay hidden. The preview changes no files. The install button names the selected
+tool. An optional absolute file path selects settings in another location; for
+Pi, choose `models.json`, and the app uses `settings.json` beside it. A custom
+file cannot be combined with a saved account.
+
+Codex CLI gets `sy.config.toml` for `codex -p sy`. The Codex app option changes
+the defaults in `config.toml` for both the app and CLI. Claude Code gets
+environment settings in `settings.json`. Pi gets a custom provider in `models.json` and defaults in
 `settings.json`. Unrelated settings remain.
 
 The app backs up each original file as `<filename>.switchyard-original`. If a
 file did not exist, `<filename>.switchyard-original-missing` records its absence.
-**Restore original settings** keeps a copy of the current file, then restores
+**Restore backed-up settings…** keeps a copy of the current file, then restores
 the backup or removes a file that was originally absent. The result lists the
 recovery copies. A successful restore retires the original backup, so the next
 installation backs up your current settings. If backup cleanup fails, retry
@@ -173,6 +191,9 @@ prompts.
 Recent history reads the last 8 MiB of the log plus one byte to check whether the
 first record is complete. It keeps at most 5,000 complete records and excludes
 partial records. Usage labels a limited view and counts unreadable records.
+The hourly activity graphs count recent recorded calls from the past 24 hours
+and exclude future timestamps. They use this bounded history, so they may omit
+calls from a busy day.
 Overview totals use a separate incremental reader, so the history limit does
 not truncate weekly savings. Routing history stores no prompt or response text.
 Observed tokens do not report provider quotas, reset windows, or authoritative

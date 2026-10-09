@@ -296,11 +296,158 @@ pub fn preview(
         .map(|text| text.clone().unwrap_or_default())
         .collect::<Vec<_>>();
     Ok(json!({
+        "changes": settings_changes(tool, files, &current, &incoming)?,
         "current": inspect_settings(tool, files, &current)?,
         "proposed": inspect_settings(tool, files, &incoming)?,
         "authentication": if login { "This route uses the coding tool’s subscription login." } else { "This route uses the API credentials configured on the Switchyard server." },
         "files": files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>()
     }))
+}
+
+// PreviewModel and its nested types omit unknown fields that could contain credentials.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewModel {
+    id: Option<String>,
+    name: Option<String>,
+    reasoning: Option<bool>,
+    input: Option<Vec<PreviewInput>>,
+    context_window: Option<u64>,
+    max_tokens: Option<u64>,
+    cost: Option<PreviewCosts>,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PreviewInput {
+    Text,
+    Image,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewCosts {
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+}
+
+// settings_changes compares supported routing fields and hides credential values before display.
+fn settings_changes(
+    tool: Harness,
+    files: &[PathBuf],
+    before: &[String],
+    after: &[String],
+) -> Result<Vec<Value>, String> {
+    let mut changes = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let decode = |text: &str| -> Result<Value, String> {
+            if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
+                let doc: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+                serde_json::to_value(doc).map_err(|e| e.to_string())
+            } else {
+                object(text)
+            }
+        };
+        let old = decode(&before[index])?;
+        let new = decode(&after[index])?;
+        let keys: &[&str] = match tool {
+            Harness::CodexCli | Harness::CodexApp => &[
+                "/model",
+                "/model_provider",
+                "/model_providers/sy/name",
+                "/model_providers/sy/env_key",
+                "/model_providers/sy/base_url",
+                "/model_providers/sy/requires_openai_auth",
+                "/model_providers/sy/wire_api",
+            ],
+            Harness::Claude => &[
+                "/model",
+                "/env/ANTHROPIC_MODEL",
+                "/env/ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "/env/ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "/env/ANTHROPIC_BASE_URL",
+                "/env/ANTHROPIC_AUTH_TOKEN",
+                "/env/ANTHROPIC_API_KEY",
+            ],
+            Harness::Pi if index == 0 => &[
+                "/providers/switchyard/baseUrl",
+                "/providers/switchyard/api",
+                "/providers/switchyard/apiKey",
+                "/providers/switchyard/headers",
+                "/providers/switchyard/models",
+            ],
+            Harness::Pi => &["/defaultModel", "/defaultProvider"],
+        };
+        for key in keys {
+            let left = old.pointer(key);
+            let right = new.pointer(key);
+            if left == right {
+                continue;
+            }
+            let display = |value: Option<&Value>| -> String {
+                let Some(value) = value else {
+                    return "(unset)".into();
+                };
+                match *key {
+                    "/env/ANTHROPIC_AUTH_TOKEN"
+                    | "/env/ANTHROPIC_API_KEY"
+                    | "/providers/switchyard/apiKey" => if value.as_str() == Some("") {
+                        "(empty)"
+                    } else {
+                        "(set; hidden)"
+                    }
+                    .into(),
+                    "/providers/switchyard/headers" => value
+                        .as_object()
+                        .map(|headers| {
+                            headers
+                                .keys()
+                                .map(|name| format!("{name}: (set; hidden)"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_else(|| "(configured headers; values hidden)".into()),
+                    "/providers/switchyard/models" => value
+                        .as_array()
+                        .map(|models| {
+                            models
+                                .iter()
+                                .map(|model| {
+                                    serde_json::from_value::<PreviewModel>(model.clone())
+                                        .and_then(serde_json::to_value)
+                                        .unwrap_or_else(|_| {
+                                            json!("(unsupported model metadata; hidden)")
+                                        })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .map(|models| Value::Array(models).to_string())
+                        .unwrap_or_default(),
+                    "/env/ANTHROPIC_BASE_URL"
+                    | "/model_providers/sy/base_url"
+                    | "/providers/switchyard/baseUrl" => value
+                        .as_str()
+                        .and_then(|v| url::Url::parse(v).ok())
+                        .map(|mut url| {
+                            let _ = url.set_username("");
+                            let _ = url.set_password(None);
+                            url.set_query(None);
+                            url.set_fragment(None);
+                            url.to_string()
+                        })
+                        .unwrap_or_else(|| "(configured endpoint)".into()),
+                    _ => match value {
+                        Value::String(value) => value.clone(),
+                        Value::Bool(value) => value.to_string(),
+                        _ => "(set; hidden)".into(),
+                    },
+                }
+            };
+            changes.push(json!({"file":file.display().to_string(),"key":key.trim_start_matches('/').replace('/',"."),"before":display(left),"after":display(right)}));
+        }
+    }
+    Ok(changes)
 }
 
 // Both preview and installation use these transformations so the proposed settings match the saved settings.
@@ -408,10 +555,12 @@ pub fn restore(files: &[PathBuf]) -> Result<String, String> {
         let original = match pending {
             Some(text) => serde_json::from_str::<Option<String>>(&text)
                 .map_err(|e| format!("Read pending restore: {e}"))?,
-            // A cleared receipt means this file finished restoring; retry preserves later user edits.
-            None if original.is_none() && !absent && resuming => read_file(path)?,
             None if original.is_none() && !absent => {
-                return Err("No original backup is available for this installation.".into());
+                if !resuming {
+                    return Err("No original backup is available for this installation.".into());
+                }
+                // A cleared receipt means this file finished restoring, so a retry preserves later edits.
+                read_file(path)?
             }
             None => original,
         };
@@ -562,6 +711,44 @@ pub fn binary(tool: Harness) -> Option<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    // Nested unknown fields and malformed metadata must not expose credentials in the preview.
+    fn pi_preview_includes_model_limits_and_redacts_headers() {
+        let dir = tempfile::tempdir().expect("directory");
+        let files = vec![
+            dir.path().join("models.json"),
+            dir.path().join("settings.json"),
+        ];
+        std::fs::write(&files[0], r#"{"providers":{"switchyard":{"baseUrl":"http://localhost:4123/v1","api":"openai-completions","apiKey":"SECRET","headers":{"Authorization":"SECRET"},"models":[{"id":"route","name":"Route","reasoning":true,"input":["text","image"],"contextWindow":1000,"maxTokens":20,"cost":{"input":12,"output":3,"cacheRead":1,"cacheWrite":2,"unknown":{"key":"SECRET"}}},{"id":"bad-name","name":{"key":"SECRET"}},{"id":"bad-cost","cost":{"input":{"key":"SECRET"}}},{"id":"bad-input","input":["text",{"key":"SECRET"}]}]}}}"#).expect("models");
+        let result =
+            preview(Harness::Pi, &files, "http://localhost:4123", "route", false).expect("preview");
+        assert!(!result.to_string().contains("SECRET"));
+        let changes = result["changes"].as_array().expect("changes");
+        let models = changes
+            .iter()
+            .find(|change| change["key"] == "providers.switchyard.models")
+            .expect("models diff");
+        assert!(models["before"].as_str().expect("before").contains("1000"));
+        assert!(models["after"].as_str().expect("after").contains("128000"));
+        let projected: Value =
+            serde_json::from_str(models["before"].as_str().expect("before")).expect("models");
+        assert_eq!(
+            projected[0]["cost"],
+            json!({"input":12.0,"output":3.0,"cacheRead":1.0,"cacheWrite":2.0})
+        );
+        assert_eq!(projected[0]["input"], json!(["text", "image"]));
+        assert_eq!(projected[0]["name"], "Route");
+        for model in projected.as_array().expect("models").iter().skip(1) {
+            assert_eq!(model, "(unsupported model metadata; hidden)");
+        }
+
+        assert!(
+            changes
+                .iter()
+                .any(|change| change["key"] == "providers.switchyard.headers")
+        );
+    }
+
+    #[test]
     // Preview must match the installed settings without creating files or backups.
     fn preview_matches_installation_without_writes() {
         for (tool, _) in HARNESSES {
@@ -582,6 +769,15 @@ mod tests {
             std::fs::write(&files[0], original).expect("settings");
             let result = preview(*tool, &files, "http://localhost:4123", "new-route", false)
                 .expect("preview");
+            assert!(
+                result["changes"]
+                    .as_array()
+                    .expect("diff")
+                    .iter()
+                    .any(|change| change["after"]
+                        .as_str()
+                        .is_some_and(|value| value.contains("new-route")))
+            );
             assert_eq!(read(&files[0]).expect("unchanged"), original);
             assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
             install(*tool, &files, "http://localhost:4123", "new-route", false).expect("install");
@@ -598,7 +794,8 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("directory");
         let files = vec![dir.path().join("settings.json")];
-        let original = r#"{"env":{"ANTHROPIC_API_KEY":"SECRET"}}"#;
+        let original =
+            r#"{"env":{"ANTHROPIC_API_KEY":"SECRET","ANTHROPIC_MODEL":{"key":"SECRET"}}}"#;
         std::fs::write(&files[0], original).expect("settings");
         assert!(
             preview(
@@ -612,6 +809,23 @@ mod tests {
         );
         assert_eq!(read(&files[0]).expect("unchanged"), original);
         assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
+        let safe = preview(
+            Harness::Claude,
+            &files,
+            "http://localhost:4123",
+            "route",
+            false,
+        )
+        .expect("API preview");
+        assert!(!safe.to_string().contains("SECRET"));
+        assert!(
+            safe["changes"]
+                .as_array()
+                .expect("diff")
+                .iter()
+                .any(|change| change["key"] == "env.ANTHROPIC_API_KEY"
+                    && change["before"] == "(set; hidden)")
+        );
         std::fs::write(&files[0], "{}").expect("settings");
         let result = preview(
             Harness::Claude,
