@@ -65,6 +65,7 @@ pub struct ModelConfig {
     model_name: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    responses_reasoning: crate::ResponsesReasoningPolicy,
 }
 
 impl ModelConfig {
@@ -79,7 +80,15 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            responses_reasoning: crate::ResponsesReasoningPolicy::default(),
         }
+    }
+
+    /// Sets how Responses reasoning items are replayed to this model.
+    #[must_use]
+    pub fn with_responses_reasoning(mut self, policy: crate::ResponsesReasoningPolicy) -> Self {
+        self.responses_reasoning = policy;
+        self
     }
 }
 
@@ -285,6 +294,13 @@ impl TranslatingLlmClient {
         }
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            self.model_to_config
+                .get(model)
+                .map(|config| config.responses_reasoning)
+                .unwrap_or_default()
+                .normalize(&mut body);
+        }
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
@@ -1488,6 +1504,13 @@ mod tests {
         )]
     }
 
+    fn responses_map_with_drop_policy(base_url: &str) -> Vec<ModelConfig> {
+        vec![
+            ModelConfig::new("gpt", Backend::OpenAiResponses(config(base_url)), None)
+                .with_responses_reasoning(crate::ResponsesReasoningPolicy::Drop),
+        ]
+    }
+
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
         vec![ModelConfig::new(
             "gpt",
@@ -2231,6 +2254,78 @@ mod tests {
                 WireFormat::AnthropicMessages,
             )
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_reasoning_policy_preserves_replay_history()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let history = json!([
+            {"type": "message", "role": "user", "content": "continue"},
+            {"type": "reasoning", "encrypted_content": "opaque", "content": [{"type": "reasoning_text", "text": "private"}]},
+            {"type": "reasoning", "id": "rs_stored", "summary": []},
+            {"type": "reasoning", "encrypted_content": null},
+            {"type": "reasoning", "encrypted_content": ""},
+            {"type": "reasoning"},
+            {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+        ]);
+        for is_drop in [false, true] {
+            for has_input_override in [false, true] {
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .and(path("/v1/responses"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "id": "resp_1", "object": "response", "model": "gpt",
+                        "status": "completed", "output": [],
+                        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                    })))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let base_url = format!("{}/v1", server.uri());
+                let mut models = if is_drop {
+                    responses_map_with_drop_policy(&base_url)
+                } else {
+                    responses_map(&base_url)
+                };
+                if has_input_override {
+                    let Backend::OpenAiResponses(backend) = &mut models[0].default_backend else {
+                        return Err("expected Responses backend".into());
+                    };
+                    backend.omit_body_fields.insert("input".to_string());
+                    backend
+                        .extra_body
+                        .insert("input".to_string(), history.clone());
+                }
+                let client = TranslatingLlmClient::new(&models)?;
+                client
+                    .call_rewrite_model_raw(
+                        json!({"model": "gpt", "input": history, "store": true}),
+                        None,
+                        Some(&ModelId::from("gpt")),
+                        WireFormat::OpenAiResponses,
+                    )
+                    .await?;
+                let requests = server.received_requests().await.ok_or("missing requests")?;
+                let body: Value = serde_json::from_slice(&requests[0].body)?;
+                let mut expected = vec![history[0].clone()];
+                if !is_drop {
+                    let mut encrypted = history[1].clone();
+                    encrypted["content"] = json!([]);
+                    expected.push(encrypted);
+                    let mut stored = history[2].clone();
+                    stored["content"] = json!([]);
+                    expected.push(stored);
+                }
+                expected.extend([history[6].clone(), history[7].clone()]);
+                assert_eq!(
+                    body["input"],
+                    json!(expected),
+                    "drop={is_drop}, replace={has_input_override}"
+                );
+            }
+        }
         Ok(())
     }
 

@@ -15,7 +15,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    SystemOneClient, TranslatingLlmClient,
+    ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -318,6 +318,13 @@ impl DeploymentConfig {
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
+            if client_config.responses_reasoning.is_some()
+                && !matches!(client_config.format, ClientFormat::OpenAiResponses)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "llm client {name} responses_reasoning is only valid for openai_responses"
+                )));
+            }
             let backend = build_backend(
                 name,
                 client_config,
@@ -356,17 +363,20 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            model_configs.push(ModelConfig::new(
-                target.id.clone(),
-                build_backend(
-                    &target.llm_client,
-                    client_config,
-                    &target.extra_body,
-                    &target.omit_body_fields,
-                    target.reasoning_effort.clone(),
-                )?,
-                None,
-            ));
+            model_configs.push(
+                ModelConfig::new(
+                    target.id.clone(),
+                    build_backend(
+                        &target.llm_client,
+                        client_config,
+                        &target.extra_body,
+                        &target.omit_body_fields,
+                        target.reasoning_effort.clone(),
+                    )?,
+                    None,
+                )
+                .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default()),
+            );
         }
 
         let mut clients = BTreeMap::new();
@@ -688,6 +698,7 @@ struct LlmClientConfig {
     failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
+    responses_reasoning: Option<ResponsesReasoningPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1920,6 +1931,61 @@ confidence_threshold = 0.5
         };
         assert_eq!(primary.max_retries, MAX_CONFIGURED_RETRIES);
         Ok(())
+    }
+
+    #[test]
+    fn responses_reasoning_defaults_and_accepts_drop() -> RunnerResult<()> {
+        let default: DeploymentConfig = toml::from_str(VALID_CONFIG).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse config: {error}"))
+        })?;
+        let responses = default
+            .llm_clients
+            .get("responses")
+            .ok_or_else(|| RunnerError::configuration("responses llm client is missing"))?;
+        assert_eq!(responses.responses_reasoning, None);
+
+        let configured = VALID_CONFIG.replacen(
+            "[llm_clients.responses]\nformat = \"openai_responses\"\nbase_url = \"https://example.test/v1\"",
+            "[llm_clients.responses]\nformat = \"openai_responses\"\nbase_url = \"https://example.test/v1\"\nresponses_reasoning = \"drop\"",
+            1,
+        );
+        let config: DeploymentConfig = toml::from_str(&configured).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse config: {error}"))
+        })?;
+        let responses = config
+            .llm_clients
+            .get("responses")
+            .ok_or_else(|| RunnerError::configuration("responses llm client is missing"))?;
+        assert_eq!(
+            responses.responses_reasoning,
+            Some(ResponsesReasoningPolicy::Drop)
+        );
+        runner_from_toml(&configured)?;
+        Ok(())
+    }
+
+    #[test]
+    fn responses_reasoning_rejects_other_formats() {
+        let invalid = VALID_CONFIG.replacen(
+            "format = \"openai_chat\"",
+            "format = \"openai_chat\"\nresponses_reasoning = \"drop\"",
+            1,
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("responses_reasoning is only valid for openai_responses")
+        );
+    }
+
+    #[test]
+    fn responses_reasoning_rejects_unreferenced_other_format() {
+        let invalid = format!(
+            "{VALID_CONFIG}\n[llm_clients.unused]\nformat = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\nresponses_reasoning = \"drop\"\n"
+        );
+        assert!(
+            error_message(&invalid)
+                .contains("responses_reasoning is only valid for openai_responses")
+        );
     }
 
     #[test]
