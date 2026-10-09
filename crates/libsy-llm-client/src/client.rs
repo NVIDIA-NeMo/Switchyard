@@ -284,7 +284,7 @@ impl TranslatingLlmClient {
             strip_unsigned_thinking_blocks(&mut body);
         }
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
-        merge_extra_body(&mut body, backend.extra_body());
+        let mut injected_extra_body = merge_extra_body(&mut body, backend.extra_body());
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
@@ -294,6 +294,8 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
         }
+        // Only attribute defaults that survived later request normalization unchanged.
+        injected_extra_body.retain(|key| body.get(key) == backend.extra_body().get(key));
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let url = endpoint.url(backend);
@@ -313,7 +315,24 @@ impl TranslatingLlmClient {
             until.fetch_max(deadline, Ordering::Relaxed);
         }
         // Let cooldown expire naturally; a successful in-flight call may overlap a newer failure.
-        result
+        match result {
+            Err(LlmClientError::UpstreamHttp { status, body })
+                if matches!(status.as_u16(), 400 | 422) =>
+            {
+                let rejected = rejected_extra_body_keys(&body, &injected_extra_body);
+                if rejected.is_empty() {
+                    Err(LlmClientError::UpstreamHttp { status, body })
+                } else {
+                    Err(LlmClientError::Configuration {
+                        message: format!(
+                            "model {model} rejected extra_body keys [{}]; remove or correct them in the target configuration",
+                            rejected.join(", ")
+                        ),
+                    })
+                }
+            }
+            result => result,
+        }
     }
 
     // Sends the encoded body, retrying retryable failures within the backend's retry budget.
@@ -1178,13 +1197,41 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
 }
 
 // Applies target defaults without overriding fields supplied by the caller.
-fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) {
+fn merge_extra_body(body: &mut Value, extra_body: &BTreeMap<String, Value>) -> Vec<String> {
     let Value::Object(object) = body else {
-        return;
+        return Vec::new();
     };
+    let mut injected = Vec::new();
     for (key, value) in extra_body {
-        object.entry(key.clone()).or_insert_with(|| value.clone());
+        if !object.contains_key(key) {
+            object.insert(key.clone(), value.clone());
+            injected.push(key.clone());
+        }
     }
+    injected
+}
+
+// Use structured field names; free-form messages cannot reliably attribute a rejection.
+fn rejected_extra_body_keys(body: &str, injected: &[String]) -> Vec<String> {
+    let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
+    injected
+        .iter()
+        .filter(|key| {
+            parsed.pointer("/error/param").and_then(Value::as_str) == Some(key.as_str())
+                || parsed
+                    .get("detail")
+                    .and_then(Value::as_array)
+                    .is_some_and(|details| {
+                        details.iter().any(|detail| {
+                            matches!(
+                                detail["type"].as_str(),
+                                Some("extra_forbidden" | "value_error.extra")
+                            ) && detail["loc"] == json!(["body", key])
+                        })
+                    })
+        })
+        .cloned()
+        .collect()
 }
 
 fn omit_configured_body_fields(body: &mut Value, omit_body_fields: &BTreeSet<String>) {
@@ -3298,6 +3345,137 @@ mod tests {
                 WireFormat::OpenAiChat,
             )
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn extra_body_rejections_use_structured_injected_fields()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (status, rejection, supplied, configuration) in [
+            (
+                400,
+                json!({"error": {"param": "service_tier", "message": "Unsupported parameter: service_tier"}}),
+                false,
+                true,
+            ),
+            (
+                422,
+                json!({"detail": [{"type": "extra_forbidden", "loc": ["body", "service_tier"]}]}),
+                false,
+                true,
+            ),
+            (
+                422,
+                json!({"detail": [{"type": "value_error.extra", "loc": ["body", "service_tier"]}]}),
+                false,
+                true,
+            ),
+            (
+                400,
+                json!({"error": {"param": "service_tier"}}),
+                true,
+                false,
+            ),
+            (
+                400,
+                json!({"error": {"param": "service_tier_other"}}),
+                false,
+                false,
+            ),
+            (
+                400,
+                json!({"error": {"message": "Unrecognized request argument supplied: service_tier"}}),
+                false,
+                false,
+            ),
+            (
+                422,
+                json!({"detail": [{"type": "extra_forbidden", "loc": ["body", "nested", "service_tier"]}]}),
+                false,
+                false,
+            ),
+            (
+                429,
+                json!({"error": {"param": "service_tier"}}),
+                false,
+                false,
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(rejection.clone()))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = TranslatingLlmClient::new(&chat_map_with_extra_body(
+                &format!("{}/v1", server.uri()),
+                BTreeMap::from([("service_tier".to_string(), json!("flex"))]),
+            ))?;
+            let mut request =
+                json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}]});
+            if supplied {
+                request["service_tier"] = json!("priority");
+            }
+            let error = client
+                .call_rewrite_model_raw(
+                    request,
+                    None,
+                    Some(&ModelId::new("gpt")),
+                    WireFormat::OpenAiChat,
+                )
+                .await
+                .err()
+                .ok_or("expected rejection")?;
+            if configuration {
+                let LlmClientError::Configuration { message } = error else {
+                    return Err(format!("expected configuration error, got {error:?}").into());
+                };
+                assert!(message.contains("[service_tier]"));
+                assert!(!message.contains("flex"));
+            } else {
+                assert!(
+                    matches!(error, LlmClientError::UpstreamHttp { .. }),
+                    "{error:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+    #[tokio::test]
+    async fn normalized_defaults_are_not_blamed_on_extra_body()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (key, responses, streaming) in [
+            ("reasoning", true, false),
+            ("reasoning_effort", false, false),
+            ("stream_options", false, true),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(400).set_body_json(json!({"error": {"param": key}})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let mut config = config(&format!("{}/v1", server.uri()));
+            config.extra_body.insert(key.to_string(), Value::Null);
+            config.reasoning_effort = Some("high".to_string());
+            let backend = if responses {
+                Backend::OpenAiResponses(config)
+            } else {
+                Backend::OpenAiChat(config)
+            };
+            let client = TranslatingLlmClient::new(&[ModelConfig::new("gpt", backend, None)])?;
+            let error = client.call_rewrite_model_raw(
+                json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}], "stream": streaming}),
+                None, Some(&ModelId::new("gpt")), WireFormat::OpenAiChat,
+            ).await.err().ok_or("expected rejection")?;
+            assert!(
+                matches!(error, LlmClientError::UpstreamHttp { .. }),
+                "{key}: {error:?}"
+            );
+        }
         Ok(())
     }
 }
