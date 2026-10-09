@@ -35,18 +35,25 @@ type SessionIdentity = (String, String, Option<String>);
 pub struct Router {
     runner: Runner,
     sessions: Mutex<HashMap<SessionIdentity, Instant>>,
+    probe: Option<crate::probe::Client>,
 }
 
 impl Router {
     pub fn load(routes: impl AsRef<Path>) -> Result<Self> {
         // SDK parse/build access would allow validation of decision-only options before construction.
-        Ok(Self::new(Runner::load(routes)?))
+        let mut router = Self::new(Runner::load(routes)?);
+        router.probe = std::env::var("PROBE_CONFIG")
+            .ok()
+            .map(|path| crate::probe::Client::load(Path::new(&path)))
+            .transpose()?;
+        Ok(router)
     }
 
     pub fn new(runner: Runner) -> Self {
         Self {
             runner,
             sessions: Mutex::new(HashMap::new()),
+            probe: None,
         }
     }
 
@@ -56,7 +63,7 @@ impl Router {
         headers: &http::HeaderMap,
     ) -> Result<(Vec<u8>, String)> {
         let started = Instant::now();
-        let request = {
+        let mut request = {
             let raw = serde_json::from_slice(body)?;
             request::decode(&raw, headers)?
         };
@@ -101,6 +108,23 @@ impl Router {
         } else {
             None
         };
+        if let Some(probe) = &self.probe {
+            let observations = probe
+                .collect(
+                    body,
+                    headers,
+                    route
+                        .models()
+                        .models_for(&switchyard_protocol::Category::Any),
+                )
+                .await;
+            if probe.use_signals() {
+                request
+                    .metadata
+                    .get_or_insert_default()
+                    .serving_observations = observations;
+            }
+        }
         let mut original_ir = request.llm_request.clone();
         original_ir.model = None;
         let outcome = tokio::time::timeout(Duration::from_secs(1), route.decide(request))
@@ -133,7 +157,7 @@ impl Router {
     }
 }
 
-fn replace_model(body: &[u8], model: &str) -> Result<Vec<u8>, serde_json::Error> {
+pub(crate) fn replace_model(body: &[u8], model: &str) -> Result<Vec<u8>, serde_json::Error> {
     // Preserve original values, including precise numbers and provider-specific fields.
     let mut fields: BTreeMap<String, &RawValue> = serde_json::from_slice(body)?;
     let model = to_raw_value(model)?;
@@ -156,6 +180,50 @@ mod tests {
         let mut h = http::HeaderMap::new();
         h.insert("x-switchyard-session-id", id.parse().unwrap());
         h
+    }
+
+    #[tokio::test]
+    async fn cache_policy_uses_fresh_complete_observations_only() {
+        let runner = Runner::from_toml(include_str!("../config/cache-aware.toml")).unwrap();
+        let route = runner.route("auto").unwrap();
+        let mut request = request::decode(&neutral(), &http::HeaderMap::new()).unwrap();
+        for (model, work) in [("Qwen/Qwen3-0.6B", 100), ("Qwen/Qwen3-1.7B", 10)] {
+            request
+                .metadata
+                .get_or_insert_default()
+                .serving_observations
+                .insert(
+                    model.into(),
+                    switchyard_protocol::ServingObservation {
+                        received_at: Instant::now(),
+                        effective_prefill_tokens: work,
+                        active_prefill_tokens: Some(0),
+                    },
+                );
+        }
+        let outcome = route.decide(request.clone()).await.unwrap();
+        assert_eq!(
+            outcome.selected_model_id().unwrap().as_str(),
+            "Qwen/Qwen3-1.7B"
+        );
+        for case in ["missing", "stale", "unknown_load"] {
+            let mut request = request.clone();
+            let signals = &mut request.metadata.as_mut().unwrap().serving_observations;
+            let model = ModelId::from("Qwen/Qwen3-1.7B");
+            match case {
+                "missing" => {
+                    signals.remove(&model);
+                }
+                "stale" => signals.get_mut(&model).unwrap().received_at -= Duration::from_secs(2),
+                _ => signals.get_mut(&model).unwrap().active_prefill_tokens = None,
+            }
+            let outcome = route.decide(request).await.unwrap();
+            assert_eq!(
+                outcome.selected_model_id().unwrap().as_str(),
+                "Qwen/Qwen3-0.6B",
+                "{case}"
+            );
+        }
     }
 
     #[tokio::test]

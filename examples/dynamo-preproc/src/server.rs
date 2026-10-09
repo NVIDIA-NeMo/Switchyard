@@ -113,7 +113,9 @@ impl Server {
                 Ok((h.key, value))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let (headers, mut remove_headers) = headers(&values)?;
+        let (mut headers, mut remove_headers) = headers(&values)?;
+        let request_id = uuid::Uuid::now_v7().to_string();
+        headers.insert("x-request-id", request_id.parse()?);
         let mut body = Vec::new();
         let mut has_trailers = false;
         loop {
@@ -145,7 +147,10 @@ impl Server {
         Ok(Prepared {
             body,
             headers: ext::HeaderMutation {
-                set_headers: vec![set_header(MODEL_HEADER, &model)],
+                set_headers: vec![
+                    set_header(MODEL_HEADER, &model),
+                    set_header("x-request-id", &request_id),
+                ],
                 remove_headers,
             },
             has_trailers,

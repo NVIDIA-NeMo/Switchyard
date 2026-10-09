@@ -14,6 +14,7 @@
 // limitations under the License.
 
 mod preprocessor;
+mod probe;
 mod request;
 mod router;
 mod server;

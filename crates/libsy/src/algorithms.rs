@@ -7,6 +7,7 @@
 //! `use switchyard_libsy::Random`.
 
 pub mod advisor_gate;
+pub mod cache_aware;
 pub mod composite;
 mod escalation;
 pub mod fall_through;
