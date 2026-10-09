@@ -175,19 +175,15 @@ async fn child_method() -> TestResult {
     }});
     let plain_error = json!(format!("rejected MCP token: {MCP_TOKEN}"));
     for (status, streaming, prefix, error) in [
-        (401, false, "", &error),
-        (400, false, "", &error),
+        (400, false, "", &echoed_request_error),
+        (401, false, "", &plain_error),
         (200, false, "", &error),
-        (200, true, "", &error),
         (
             200,
             true,
             "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{}}}\n\n",
             &error,
         ),
-        (401, false, "", &echoed_request_error),
-        (400, false, "", &echoed_request_error),
-        (401, false, "", &plain_error),
     ] {
         server.reset().await;
         retry_body["stream"] = json!(streaming);

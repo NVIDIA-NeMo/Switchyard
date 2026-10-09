@@ -89,6 +89,7 @@ pub(crate) fn prepare_request_tools<'a>(
 }
 
 fn is_server_tool(tool: &Value) -> bool {
+    // Add new server-tool families here; typed client tools must keep their function conversion.
     tool.get("type")
         .and_then(Value::as_str)
         .is_some_and(|kind| {

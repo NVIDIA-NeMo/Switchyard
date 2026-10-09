@@ -1228,6 +1228,7 @@ fn encode_anthropic_tools(tools: &[ToolDefinition], extensions: &ProviderExtensi
         .get(ANTHROPIC_TOOLS_KEY)
         .and_then(Value::as_array)
     {
+        // Match functions by name; renamed functions are appended as new tools.
         for tool in original {
             if is_server_tool(tool) {
                 encoded.push(tool.clone());
