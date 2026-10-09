@@ -565,6 +565,21 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
+    /// Whether this configuration only selects a model, with state owned by the caller.
+    pub(crate) fn supports_model_selection(&self) -> bool {
+        match self {
+            Self::Passthrough {
+                subagents: None, ..
+            }
+            | Self::Auto { .. } => true,
+            Self::LlmClassifier { config } => {
+                matches!(config.classifier_mode(), ClassifierMode::Capability)
+                    && config.classify_trigger == ClassifyTrigger::EveryRequest
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
         match self {
             Self::LlmClassifier { config, .. } => config

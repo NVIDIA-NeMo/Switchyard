@@ -52,6 +52,27 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     config.build()
 }
 
+pub(crate) fn model_selection_from_toml(source: &str) -> RunnerResult<Runner> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|error: toml::de::Error| {
+        // Report the location while keeping document excerpts in the source error.
+        let mut message = "failed to parse TOML".to_string();
+        if let Some(prefix) = error.span().and_then(|span| source.get(..span.start)) {
+            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = prefix
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .count()
+                + 1;
+            message = format!("{message} at line {line}, column {column}");
+        }
+        RunnerError::configuration_source(message, error)
+    })?;
+    config.validate_model_selection()?;
+    config.build()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeploymentConfig {
@@ -146,6 +167,36 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
+    fn validate_model_selection(&self) -> RunnerResult<()> {
+        for (name, client) in &self.llm_clients {
+            if client.forward_auth {
+                return Err(RunnerError::configuration(format!(
+                    "llm client {name}: model selection requires configured classifier credentials"
+                )));
+            }
+        }
+        for (name, route) in &self.routes {
+            if !route.algorithm.supports_model_selection() {
+                return Err(RunnerError::configuration(format!(
+                    "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
+                )));
+            }
+            for target_name in route.routing_target_names() {
+                if let Some(target) = self.targets.get(target_name)
+                    && (target.system_prompt.is_some()
+                        || target.reasoning_effort.is_some()
+                        || !target.extra_body.is_empty()
+                        || !target.omit_body_fields.is_empty())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name}: model selection requires completion settings to be owned by the caller"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn decision_target(&self, name: &str) -> Option<DecisionTarget> {
         let target = self.targets.get(name)?;
         let client = self.llm_clients.get(&target.llm_client)?;

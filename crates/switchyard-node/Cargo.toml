@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Node.js model-selection bindings for Switchyard"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt", "dyn-symbols"] }
+napi-derive = "3"
+serde_json.workspace = true
+switchyard-runner.workspace = true
+switchyard-protocol.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[build-dependencies]
+napi-build = "2"

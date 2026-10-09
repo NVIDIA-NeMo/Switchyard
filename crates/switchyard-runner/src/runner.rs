@@ -56,6 +56,15 @@ impl Runner {
         config::runner_from_toml(source)
     }
 
+    /// Loads routes whose only completion-side effect is model selection.
+    ///
+    /// Accepts auto, passthrough, and capability classifiers with per-request decisions.
+    /// Completion request overrides and forwarded authentication are rejected;
+    /// the caller owns completion dispatch and session state.
+    pub fn from_toml_for_model_selection(source: &str) -> Result<Self, RunnerError> {
+        config::model_selection_from_toml(source)
+    }
+
     /// Builds a runner from named routes in caller-provided order.
     /// Pre-condition: There must be at least one route.
     pub fn new(routes: Vec<(ModelId, Route)>) -> Self {

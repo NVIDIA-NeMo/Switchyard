@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+# Node.js bindings
+node_modules/
+*.node
+/bindings/typescript/LICENSE
+/bindings/typescript/NOTICE
+
 # Distribution / packaging
 leaderboard/
 report/
