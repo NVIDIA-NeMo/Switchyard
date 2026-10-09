@@ -340,13 +340,16 @@ pub struct LlmRequest {
 /// Normalized token usage counts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
+    /// The upstream provider reports this monetary charge in USD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_cost: Option<f64>,
     /// Non-cached input tokens. Provider codecs normalize aggregate OpenAI
     /// input counts by subtracting the cache detail fields.
     pub input_tokens: Option<u64>,
     /// Cache-read and cache-creation token detail, when reported.
     #[serde(flatten)]
     pub cache: Option<Box<InputCacheUsage>>,
-    /// Generated output tokens, excluding reasoning detail when the provider reports it separately.
+    /// The output count includes reasoning tokens when the provider counts them.
     pub output_tokens: Option<u64>,
     /// Provider-reported or codec-computed total token count.
     ///
@@ -360,6 +363,9 @@ pub struct Usage {
 /// Optional cache-token detail kept out of the common, cache-free usage allocation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InputCacheUsage {
+    /// The provider reports these cache-write tokens at the one-hour rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_1h_input_tokens: Option<u64>,
     /// Input tokens read from a provider cache.
     pub cached_input_tokens: Option<u64>,
     /// Input tokens written into a provider cache.
@@ -376,6 +382,7 @@ impl Usage {
             return None;
         }
         Some(Box::new(InputCacheUsage {
+            cache_creation_1h_input_tokens: None,
             cached_input_tokens,
             cache_creation_input_tokens,
         }))

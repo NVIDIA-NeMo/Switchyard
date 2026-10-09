@@ -348,6 +348,7 @@ fn openai_usage(usage: &Map<String, Value>) -> Usage {
         })
         .and_then(Value::as_u64);
     Usage {
+        provider_cost: crate::codecs::common::provider_cost(usage),
         input_tokens: usage
             .get("prompt_tokens")
             .and_then(Value::as_u64)
@@ -356,7 +357,11 @@ fn openai_usage(usage: &Map<String, Value>) -> Usage {
                     .saturating_sub(cached_input_tokens.unwrap_or(0))
                     .saturating_sub(cache_creation_input_tokens.unwrap_or(0))
             }),
-        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
+        cache: crate::codecs::common::cache_usage_details(
+            usage,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        ),
         output_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
         reasoning_tokens: usage
@@ -454,10 +459,10 @@ fn openai_usage_value(state: &StreamTranslationState) -> Value {
     {
         usage["prompt_tokens_details"] = json!({
             "cached_tokens": cache_read_tokens,
-            "cache_creation_tokens": cache_creation_tokens,
+            "cache_write_tokens": cache_creation_tokens,
         });
     }
-    usage
+    crate::codecs::common::encode_usage_metadata(usage, &state.usage)
 }
 
 // Converts any upstream message ID into an OpenAI-looking stream ID.

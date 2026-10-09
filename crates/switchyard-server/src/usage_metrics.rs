@@ -66,6 +66,10 @@ pub(crate) fn observe(
                             }
                         }
                     }
+                    if failed && !recorded
+                        && let Some((log, context)) = routing_log.as_ref() {
+                        log.append(context.clone(), &model, None, &Usage::default());
+                    }
                     if failed {
                         record_stream_error(&stats, &model);
                     }
@@ -186,6 +190,47 @@ mod tests {
     use switchyard_protocol::{LlmResponseChunk, LlmResponseStreamEvent, Metadata, Response};
 
     use super::*;
+
+    /// A stream error must leave one unpriced record even when no usage was reported.
+    #[tokio::test]
+    async fn stream_failure_records_one_unknown_call_and_terminates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let log = SharedRoutingLog::new(dir.path().join("routing.jsonl"))?;
+        let context = RoutingLogContext::from_metadata(&Metadata {
+            session_id: Some("failed-stream".to_string()),
+            ..Metadata::default()
+        });
+        let error = LlmResponseStreamEvent::new(vec![LlmResponseChunk::StreamError {
+            message: "failed".to_string(),
+        }]);
+        let source = stream::iter([Ok(error.clone()), Ok(error)]);
+        let observed = observe(
+            Response {
+                llm_response: LlmResponse::Stream(Box::pin(source)),
+                metadata: None,
+                upstream_headers: http::HeaderMap::new(),
+            },
+            "model/worker",
+            Instant::now(),
+            StatsAccumulator::default(),
+            0.0,
+            Some((log.clone(), context)),
+        );
+        let LlmResponse::Stream(mut observed) = observed.llm_response else {
+            return Err("expected stream".into());
+        };
+        assert!(observed.next().await.is_some());
+        assert!(observed.next().await.is_none());
+        let snapshot = log
+            .snapshot_session("failed-stream")?
+            .ok_or("missing session")?;
+        let snapshot = serde_json::to_value(snapshot)?;
+        assert_eq!(snapshot["total_calls"], 1);
+        assert_eq!(snapshot["cost"]["unknown_calls"], 1);
+        assert!(snapshot["cost"]["total_usd"].is_null());
+        Ok(())
+    }
 
     /// An OpenAI Responses client may stop polling immediately after receiving the
     /// terminal `response.completed` event. Switchyard must record usage and routing

@@ -14,6 +14,7 @@ use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
 
+use crate::pricing::{CostTotals, Pricing, RecordedCost};
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
 
@@ -23,7 +24,10 @@ const TASK_HEADER: &str = "x-switchyard-intake-task";
 const TRIAL_ID_HEADER: &str = "x-switchyard-trial-id";
 
 /// Append-only writer for one routing JSONL file.
-pub(crate) struct RoutingLog(fs::File);
+pub(crate) struct RoutingLog {
+    file: fs::File,
+    pub(crate) pricing: Pricing,
+}
 
 impl RoutingLog {
     pub(crate) fn new(path: impl Into<PathBuf>) -> ServerResult<Self> {
@@ -39,7 +43,10 @@ impl RoutingLog {
             .append(true)
             .open(&path)
             .map_err(|error| routing_log_error(&path, error))?;
-        Ok(Self(file))
+        Ok(Self {
+            file,
+            pricing: Pricing::default(),
+        })
     }
 
     pub(crate) fn append(
@@ -49,8 +56,10 @@ impl RoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) -> std::io::Result<()> {
+        let cost = self.pricing.cost(model, usage);
         let usage = token_usage(usage);
         let record = RoutingRecord {
+            cost,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
             algorithm: context.algorithm.into(),
@@ -70,7 +79,7 @@ impl RoutingLog {
         let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         line.push(b'\n');
 
-        self.0.write_all(&line)
+        self.file.write_all(&line)
     }
 }
 
@@ -148,6 +157,8 @@ impl RoutingLogContext {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct RoutingRecord<'a> {
+    #[serde(default)]
+    cost: Option<RecordedCost>,
     ts: Cow<'a, str>,
     route_id: Cow<'a, str>,
     algorithm: Cow<'a, str>,
@@ -173,6 +184,9 @@ struct RoutingRecord<'a> {
 #[derive(Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
+    cost: CostTotals,
+    answer_cost: CostTotals,
+    routing_cost: CostTotals,
     total_calls: u64,
     total_prompt_tokens: u64,
     total_cached_tokens: u64,
@@ -183,6 +197,7 @@ pub(crate) struct SessionStatsSnapshot {
 
 #[derive(Default, Serialize)]
 struct SessionModelStats {
+    cost: CostTotals,
     calls: u64,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -194,6 +209,9 @@ impl SessionStatsSnapshot {
     fn new(session_id: &str) -> Self {
         Self {
             session_id: session_id.to_string(),
+            cost: CostTotals::default(),
+            answer_cost: CostTotals::default(),
+            routing_cost: CostTotals::default(),
             total_calls: 0,
             total_prompt_tokens: 0,
             total_cached_tokens: 0,
@@ -212,6 +230,13 @@ impl SessionStatsSnapshot {
             model => model,
         };
         let stats = self.models.entry(ModelId::from(model)).or_default();
+        stats.cost.add(record.cost);
+        self.cost.add(record.cost);
+        if record.tier == "classifier" {
+            self.routing_cost.add(record.cost);
+        } else {
+            self.answer_cost.add(record.cost);
+        }
         stats.calls = stats.calls.saturating_add(1);
         stats.prompt_tokens = stats.prompt_tokens.saturating_add(record.prompt_tokens);
         stats.cached_tokens = stats.cached_tokens.saturating_add(record.cached_tokens);
@@ -296,7 +321,7 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2}"#,
+                r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2,"cost":{"usd":0.25,"source":"estimated"}}"#,
                 "\n",
                 r#"{"session_id":"b","model":"m1","prompt_tokens":99,"completion_tokens":99}"#,
                 "\n",
@@ -313,6 +338,10 @@ mod tests {
         assert_eq!(stats.total_completion_tokens, 2);
         assert_eq!(stats.models["m1"].calls, 1);
         assert_eq!(stats.models["unknown"].prompt_tokens, 5);
+        assert_eq!(stats.cost.known_usd, 0.25);
+        assert_eq!(stats.cost.estimated_calls, 1);
+        assert_eq!(stats.cost.unknown_calls, 1);
+        assert_eq!(stats.cost.total_usd, None);
         assert!(snapshot(&path, "missing").expect("read log").is_none());
     }
 }

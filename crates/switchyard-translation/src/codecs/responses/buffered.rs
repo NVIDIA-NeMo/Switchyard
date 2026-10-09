@@ -2083,8 +2083,13 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
         .or_else(|| value.get("completion_tokens"))
         .and_then(Value::as_u64);
     Usage {
+        provider_cost: crate::codecs::common::provider_cost(value),
         input_tokens,
-        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
+        cache: crate::codecs::common::cache_usage_details(
+            value,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        ),
         output_tokens,
         total_tokens: value
             .get("total_tokens")
@@ -2115,19 +2120,22 @@ fn encode_responses_usage(usage: &Usage) -> Value {
     // upstream that reports no cache or reasoning breakdown means zero, not "unknown"; omitting
     // them instead yields a payload that fails to deserialize into the OpenAI SDK's
     // ResponseUsage, which types both as non-optional.
-    json!({
-        "input_tokens": input_tokens,
-        "output_tokens": usage.output_tokens.unwrap_or(0),
-        "total_tokens": usage
-            .total_tokens
-            .or_else(|| Some(input_tokens + usage.output_tokens.unwrap_or(0)))
-            .unwrap_or(0),
-        "input_tokens_details": {
-            "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
-            "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
-        },
-        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
-    })
+    crate::codecs::common::encode_usage_metadata(
+        json!({
+            "input_tokens": input_tokens,
+            "output_tokens": usage.output_tokens.unwrap_or(0),
+            "total_tokens": usage
+                .total_tokens
+                .or_else(|| Some(input_tokens + usage.output_tokens.unwrap_or(0)))
+                .unwrap_or(0),
+            "input_tokens_details": {
+                "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
+                "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
+            },
+            "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
+        }),
+        usage,
+    )
 }
 
 /// Re-emits captured request extensions that the Responses format accepts.
