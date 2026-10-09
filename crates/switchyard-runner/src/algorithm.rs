@@ -817,10 +817,7 @@ impl AlgorithmSpec {
         }
     }
 
-    /// Builds only the routing algorithm from this specification.
-    ///
-    /// Embedding hosts should normally use [`Self::build_with_runtime_models`], which also
-    /// resolves the model groups supplied to the algorithm at execution time.
+    /// Builds this algorithm after resolving configured target names.
     pub fn build(
         &self,
         route_name: &str,
@@ -829,10 +826,7 @@ impl AlgorithmSpec {
         build_algorithm(route_name, self, targets)
     }
 
-    /// Builds the routing algorithm and its matching runtime model groups.
-    ///
-    /// `route_name` identifies the route in validation errors. `targets` maps configured target
-    /// names to the model IDs served by the embedding host.
+    /// Resolves target names to host model IDs and builds the algorithm and runtime groups.
     pub fn build_with_runtime_models(
         &self,
         route_name: &str,
