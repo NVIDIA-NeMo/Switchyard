@@ -751,6 +751,45 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#claude-through-an-llm-gateway" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude through an LLM gateway
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude through an LLM gateway">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#thinking-on-anthropic-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thinking on anthropic-messages
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forwarded-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forwarded keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1540,6 +1579,45 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#claude-through-an-llm-gateway" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude through an LLM gateway
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Claude through an LLM gateway">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#thinking-on-anthropic-messages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thinking on anthropic-messages
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#forwarded-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Forwarded keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1586,7 +1664,8 @@ with route id <code>switchyard</code>.</p>
 <ul>
 <li><code>auth: none</code> marks the provider as keyless. Switchyard ignores client keys unless an
   LLM client sets <code>forward_auth = true</code>. Without <code>auth: none</code>, <code>omp</code> refuses to send a
-  request.</li>
+  request. To send your gateway key through a route that forwards it, see
+  <a href="#forwarded-keys">Forwarded keys</a>.</li>
 <li><code>models[].id</code> must equal a route <code>id</code> from your TOML file. <code>contextWindow</code> and
   <code>maxTokens</code> set <code>omp</code>'s compaction limit and output cap. <code>reasoning: true</code> turns on the
   <code>--thinking</code> flag.</li>
@@ -1616,8 +1695,8 @@ after you change the routes.</p>
 the default model.</p>
 <h2 id="check-the-routing">Check the routing<a class="headerlink" href="#check-the-routing" title="Permanent link">&para;</a></h2>
 <p>The checks in <a href="../pi/#check-the-routing">Use Switchyard with pi</a> work the same way for
-<code>omp</code>. On the Chat Completions API, <code>omp</code> sends no session header for a custom provider,
-so the routing log records <code>"session_id": null</code>. Routes with
+<code>omp</code>. On the Chat Completions and Responses APIs, <code>omp</code> sends no session header for a
+custom provider, so the routing log records <code>"session_id": null</code>. Routes with
 <code>classify_trigger = "user_turn"</code> or <code>"new_session"</code>, advisor budgets, and the stage
 router's <code>capable_hold_turns</code> then treat each request as its own session. If you need
 per-session routing, use <code>anthropic-messages</code>. On that API <code>omp</code> sends the
@@ -1659,6 +1738,37 @@ replay or compaction.</p>
 as a LiteLLM proxy. In that case, run Switchyard on another port or set
 <code>LITELLM_BASE_URL</code>. Set <code>cost</code> on the model entry if you want <code>omp</code> to show a non-zero
 cost.</p>
+<h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
+<p>The pi guide's <a href="../pi/#claude-through-an-llm-gateway">Claude through an LLM gateway</a>
+section applies to <code>omp</code>: give Claude targets an LLM client with
+<code>format = "anthropic_messages"</code>. It shows how to check prompt caching and estimate the
+cost. This section covers what differs for <code>omp</code>, tested with Oh My Pi 18.2.11.</p>
+<h3 id="thinking-on-anthropic-messages">Thinking on <code>anthropic-messages</code><a class="headerlink" href="#thinking-on-anthropic-messages" title="Permanent link">&para;</a></h3>
+<p>On <code>openai-completions</code> and <code>openai-responses</code>, Switchyard turns <code>omp</code>'s thinking level
+into adaptive thinking for an <code>anthropic_messages</code> target. On <code>anthropic-messages</code>,
+Switchyard sends <code>omp</code>'s own <code>thinking</code> object unchanged. <code>omp</code> does not
+recognize a route ID such as <code>switchyard</code> as a Claude model. With thinking on, it sends
+<code>thinking: {type: "enabled"}</code>, and Claude Opus 5.5 and Sonnet 5 return HTTP 400. Set
+adaptive thinking on the model entry:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">switchyard</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">        </span><span class="nt">reasoning</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">        </span><span class="nt">thinking</span><span class="p">:</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">          </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">anthropic-adaptive</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">          </span><span class="nt">efforts</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">low</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">medium</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">high</span><span class="p p-Indicator">]</span>
+</span></code></pre></div>
+<p><code>omp</code> requires <code>efforts</code> next to <code>mode</code>. With both set, it sends
+<code>thinking: {type: "adaptive"}</code> and <code>output_config.effort</code>.</p>
+<h3 id="forwarded-keys">Forwarded keys<a class="headerlink" href="#forwarded-keys" title="Permanent link">&para;</a></h3>
+<p>To forward <code>omp</code>'s key, remove <code>auth: none</code> and set <code>apiKey: GATEWAY_API_KEY</code>, the name of
+the environment variable that holds your gateway key. Unlike pi, <code>omp</code> reads the name
+without a leading <code>$</code>. With <code>auth: none</code>, <code>omp</code> sends no key, and the gateway returns HTTP
+401. Only standalone <code>switchyard-server</code> forwards keys. The native Nemo Relay plugin
+rejects routes that use <code>forward_auth = true</code> (see
+<a href="../nemo_relay/#request-handling">Request Handling</a>).</p>
+<p>The pi guide's <a href="../pi/#forwarded-keys">Forwarded keys</a> table shows which request APIs a
+route accepts when it forwards the key. A route that forwards the key to an OpenAI-format
+LLM client, such as a classifier's GPT judge, accepts only <code>openai-completions</code> and
+<code>openai-responses</code> requests.</p>
 
 
 
