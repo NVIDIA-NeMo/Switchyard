@@ -127,13 +127,25 @@ impl Controller {
     pub fn snapshot(&mut self) -> Result<Value, String> {
         self.reload()?;
         let mut errors = Vec::new();
+        // One local date keeps aggregate totals and frontend filters aligned across midnight.
+        let today = chrono::Local::now().date_naive();
         let usage = self
             .reader
-            .read(&self.config.routing_log, chrono::Local::now().date_naive())
+            .read(&self.config.routing_log, today)
             .unwrap_or_else(|error| {
                 errors.push(format!("Could not read usage: {error}"));
                 rollup::Usage::default()
             });
+        let estimates: std::collections::BTreeMap<_, _> = [
+            ("today", &usage.today), ("week", &usage.week), ("all", &usage.all),
+        ].into_iter().map(|(period, totals)| {
+            let missing = crate::pricing::unpriced(
+                totals.routed.keys().chain(totals.classifier.keys())
+                    .map(String::as_str).chain(std::iter::once(self.config.baseline_model.as_str())),
+                &self.config.prices,
+            );
+            (period, json!({"cost":crate::pricing::estimate(totals, &self.config.prices, &self.config.baseline_model),"missing":missing}))
+        }).collect();
         let server_status = crate::health::probe(&self.config.server_url);
         let summary = crate::summary::build(server_status, &usage, &self.config);
         let metrics = json!({"server_url":self.config.server_url,"running":server_status == crate::health::ServerStatus::Running,
@@ -172,6 +184,7 @@ impl Controller {
         Ok(
             json!({"generation":self.generation,"summary":summary,"metrics":metrics,"routes":routes,"clients":clients,"tools":tools,
             "algorithms":ALGORITHMS.iter().map(|a|json!({"kind":a.kind,"title":a.title,"summary":a.summary})).collect::<Vec<_>>(),
+            "today":today,"analytics":usage,"estimates":estimates,"baseline_model":self.config.baseline_model,
             "activity":activity,"sessions":history.sessions(),"entries":history.entries,"limited":history.limited,"skipped":history.skipped,
             "errors":errors,"refresh_seconds":self.config.refresh_seconds.max(1)}),
         )
@@ -703,6 +716,11 @@ mod tests {
             let snapshot = controller.snapshot().expect("snapshot");
             assert_eq!(snapshot["sessions"], json!(["session"]));
             assert_eq!(snapshot["entries"][0]["model"], "actual");
+            assert_eq!(
+                snapshot["analytics"]["all"]["routed"]["actual"]["requests"],
+                1
+            );
+            assert!(snapshot["estimates"]["all"]["cost"].is_null());
             assert!(!snapshot["errors"].as_array().expect("errors").is_empty());
             assert!(!snapshot.to_string().contains("PRIVATE_VALUE"));
         }

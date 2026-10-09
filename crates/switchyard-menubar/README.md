@@ -50,11 +50,12 @@ digits, underscores, or hyphens, and contain at most 128 characters. For example
 the installer rejects `SY_PROFILE=team.dev` before creating app or config files.
 
 Open the app from Finder or Spotlight. Closing the window keeps the tray menu.
-The tray includes **Install…**, daily and weekly usage previews, a graph of recent
-calls by hour, **View usage…**, and **Settings…**. Clicking a usage preview or the
-graph opens Usage. Choose **Open Switchyard** to return or **Quit Switchyard** to
-exit. The app rejects Quit while an operation is queued or running; try again
-after it finishes.
+The tray includes **Install…**, the three models with the most recorded tokens,
+**View model usage…**, and **Settings…**. Model totals cover the retained log and
+include classifier calls. A final row combines any remaining models. Clicking
+a model row opens Overview. Choose **Open Switchyard** to return or
+**Quit Switchyard** to exit. The app rejects Quit while an operation is queued
+or running; try again after it finishes.
 
 **Settings → Update from source…** opens Terminal to rebuild and reinstall from
 the checkout used for this installation. It builds that checkout's current commit
@@ -212,11 +213,27 @@ prompts.
 Recent history reads the last 8 MiB of the log plus one byte to check whether the
 first record is complete. It keeps at most 5,000 complete records and excludes
 partial records. Usage labels a limited view and counts unreadable records.
-The hourly activity graphs count recent recorded calls from the past 24 hours
-and exclude future timestamps. They use this bounded history, so they may omit
-calls from a busy day.
-Overview totals use a separate incremental reader, so the history limit does
-not truncate weekly savings. Routing history stores no prompt or response text.
+Overview starts with model totals. Use **Period** to select today, the past
+seven local calendar days, or all retained history. **Compare** switches between
+models, routes, and sessions; **Measure** switches between tokens and calls.
+The chart shows the ten largest totals, and the table lists every matching
+name with exact counts. Click a name to see its recent calls with the same
+period filter. The daily chart shows usage by model for the past seven days.
+
+Model, route, and daily totals use the incremental full-log reader. Session
+comparisons and per-turn details use the bounded recent history and label its
+limits. Replacing or truncating the log resets full-log totals. The terminal
+app's hourly sparkline still uses recent history.
+
+Charts use Apache ECharts 6.1.0, bundled in `ui/vendor` with its Apache license
+and NOTICE. They load locally and require no CDN or frontend build tool.
+The minified dependency adds about 1.1 MB before compression. Tooltips render
+on the canvas, and tables provide readable counts and keyboard links.
+The layout follows free references from [Carbon](https://www.carbondesignsystem.com/building-blocks/data-visualization/dashboards),
+[Tabler](https://docs.tabler.io/ui/getting-started), and
+[Primer](https://primer.style/product/components/page-layout/).
+
+Routing history stores no prompt or response text.
 Observed tokens do not report provider quotas, reset windows, or authoritative
 billing. Both apps refresh usage at the configured `refresh_seconds` interval.
 
@@ -249,9 +266,10 @@ its token counts.
   without Switchyard they would not happen.
 
 Savings are the difference, so routing overhead counts against the figure and
-a bad day shows a negative number. Today's and this week's dollar figures stay hidden until every model seen in that period, and the baseline
-model, has a price, so a partial table cannot mislead. While this week's
-figures are hidden, the Overview names the models that have no price.
+a bad day shows a negative number. Each period's cost and savings estimates
+stay hidden until every model recorded in that period and the baseline model
+have prices. Overview names missing prices under
+**How cost estimates work**.
 
 Codex's "Approve for me" reviews count too. The server config that the
 installer writes sends them to `codex-auto-review` on the ChatGPT backend. With

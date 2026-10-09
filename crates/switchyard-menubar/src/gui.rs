@@ -20,40 +20,25 @@ struct Shared {
     operation: Arc<AtomicU8>,
 }
 struct TrayPreview {
-    today: MenuItem<tauri::Wry>,
-    week: MenuItem<tauri::Wry>,
-    activity: MenuItem<tauri::Wry>,
+    menu: Menu<tauri::Wry>,
 }
 impl TrayPreview {
-    fn update(&self, snapshot: &serde_json::Value) -> tauri::Result<()> {
-        for (prefix, item) in [("Today —", &self.today), ("This week —", &self.week)] {
-            let label = snapshot["summary"]
-                .as_array()
-                .and_then(|rows| {
-                    rows.iter()
-                        .filter_map(|row| row.as_str())
-                        .find(|row| row.starts_with(prefix) || *row == "No requests recorded yet")
-                })
-                .unwrap_or("Usage unavailable");
-            item.set_text(label)?;
+    fn update(&self, app: &tauri::AppHandle, snapshot: &serde_json::Value) -> Result<(), String> {
+        let totals: crate::rollup::Totals =
+            serde_json::from_value(snapshot["analytics"]["all"].clone())
+                .map_err(|error| error.to_string())?;
+        for item in self.menu.items().map_err(|error| error.to_string())? {
+            if item.id().as_ref().starts_with("model:") {
+                self.menu.remove(&item).map_err(|error| error.to_string())?;
+            }
         }
-        let values = snapshot["activity"]
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| item.as_u64().unwrap_or(0))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let max = values.iter().copied().max().unwrap_or(1).max(1);
-        let levels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        let graph: String = values
-            .iter()
-            .map(|value| levels[(*value as f64 / max as f64 * 7.0).round() as usize])
-            .collect();
-        self.activity
-            .set_text(format!("Recent calls · 24h {graph} → Usage"))?;
+        for (index, label) in crate::summary::tray_models(&totals).into_iter().enumerate() {
+            let item = MenuItem::with_id(app, format!("model:{index}"), label, true, None::<&str>)
+                .map_err(|error| error.to_string())?;
+            self.menu
+                .insert(&item, 4 + index)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(())
     }
 }
@@ -96,9 +81,7 @@ async fn snapshot(
     })
     .await
     .map_err(|e| e.to_string())??;
-    app.state::<TrayPreview>()
-        .update(&snapshot)
-        .map_err(|e| e.to_string())?;
+    app.state::<TrayPreview>().update(&app, &snapshot)?;
     Ok(snapshot)
 }
 #[tauri::command]
@@ -144,23 +127,14 @@ pub fn run(controller: Controller) -> Result<(), String> {
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Switchyard", true, None::<&str>)?;
             let install = MenuItem::with_id(app, "install", "Install…", true, None::<&str>)?;
-            let today =
-                MenuItem::with_id(app, "today", "Today — loading usage…", true, None::<&str>)?;
-            let week = MenuItem::with_id(
+            let period = MenuItem::with_id(
                 app,
-                "week",
-                "This week — loading usage…",
-                true,
+                "period",
+                "Models · all retained history",
+                false,
                 None::<&str>,
             )?;
-            let activity = MenuItem::with_id(
-                app,
-                "activity",
-                "Recent calls · loading… → Usage",
-                true,
-                None::<&str>,
-            )?;
-            let usage = MenuItem::with_id(app, "usage", "View usage…", true, None::<&str>)?;
+            let usage = MenuItem::with_id(app, "usage", "View model usage…", true, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit Switchyard", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
@@ -171,20 +145,14 @@ pub fn run(controller: Controller) -> Result<(), String> {
                     &open,
                     &install,
                     &separator,
-                    &today,
-                    &week,
-                    &activity,
+                    &period,
                     &usage,
                     &bottom_separator,
                     &settings,
                     &quit,
                 ],
             )?;
-            app.manage(TrayPreview {
-                today,
-                week,
-                activity,
-            });
+            app.manage(TrayPreview { menu: menu.clone() });
             if let Ok(snapshot) = app
                 .state::<Shared>()
                 .controller
@@ -192,7 +160,7 @@ pub fn run(controller: Controller) -> Result<(), String> {
                 .map_err(|e| e.to_string())?
                 .snapshot()
             {
-                app.state::<TrayPreview>().update(&snapshot)?;
+                app.state::<TrayPreview>().update(app.handle(), &snapshot)?;
             }
             TrayIconBuilder::new()
                 .icon(tauri::image::Image::new_owned(
@@ -206,7 +174,8 @@ pub fn run(controller: Controller) -> Result<(), String> {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => open_page(app, "overview"),
                     "install" => open_page(app, "install"),
-                    "today" | "week" | "activity" | "usage" => open_page(app, "usage"),
+                    "usage" => open_page(app, "overview"),
+                    id if id.starts_with("model:") => open_page(app, "overview"),
                     "settings" => open_page(app, "settings"),
                     "quit" if app.state::<Shared>().quit() => app.exit(0),
                     _ => {}

@@ -129,3 +129,50 @@ fn money(value: f64) -> String {
         format!("${value:.2}")
     }
 }
+
+/// The tray ranks models by recorded tokens and combines models below the top three.
+pub fn tray_models(totals: &Totals) -> Vec<String> {
+    let mut models = totals.routed.clone();
+    for (model, overhead) in &totals.classifier {
+        let counts = models.entry(model.clone()).or_default();
+        counts.requests += overhead.requests;
+        counts.input += overhead.input;
+        counts.cached_input += overhead.cached_input;
+        counts.output += overhead.output;
+    }
+    let mut models: Vec<_> = models.into_iter().collect();
+    models.sort_by(|left, right| {
+        right
+            .1
+            .total()
+            .cmp(&left.1.total())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    if models.is_empty() {
+        return vec!["No model calls recorded".into()];
+    }
+    let mut rows: Vec<_> = models
+        .iter()
+        .take(3)
+        .map(|(model, counts)| {
+            format!(
+                "{model} — {} tokens · calls: {}",
+                tokens(counts.total()),
+                counts.requests
+            )
+        })
+        .collect();
+    if models.len() > 3 {
+        let remaining: u64 = models
+            .iter()
+            .skip(3)
+            .map(|(_, counts)| counts.total())
+            .sum();
+        rows.push(format!(
+            "{} more models — {} tokens",
+            models.len() - 3,
+            tokens(remaining)
+        ));
+    }
+    rows
+}

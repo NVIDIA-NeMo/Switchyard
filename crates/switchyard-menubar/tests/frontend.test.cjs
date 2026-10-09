@@ -58,3 +58,19 @@ test('reopening an edited route preserves untiered model choices', () => {
   `, context);
   assert.deepEqual(Array.from(result), ['edited-first', 'edited-second']);
 });
+
+// Model totals combine answer and classifier calls; session counts use only the chosen period.
+test('usage totals retain cached tokens, routing overhead, and session dates', () => {
+  const context = editor();
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../ui/analytics.js'), 'utf8'), context);
+  const result = vm.runInContext(`(() => {
+    const row=modelRows({routed:{model:{requests:2,input:100,cached_input:40,output:20}},classifier:{model:{requests:1,input:10,cached_input:0,output:2}}})[0];
+    const entries=[
+      {ts:new Date(2026,8,1,12).toISOString(),session_id:'s',prompt_tokens:90,cached_tokens:30,completion_tokens:10},
+      {ts:new Date(2026,8,28,12).toISOString(),session_id:'s',prompt_tokens:50,cached_tokens:20,completion_tokens:5},
+      {ts:new Date(2026,8,29,0).toISOString(),session_id:null,prompt_tokens:1,cached_tokens:0,completion_tokens:1},
+    ];
+    return [row.requests,tokenTotal(row),sessionRows(entries,'today','2026-09-28')[0].requests,sessionRows(entries,'all','2026-09-28').length];
+  })()`, context);
+  assert.deepEqual(Array.from(result), [3,172,1,2]);
+});

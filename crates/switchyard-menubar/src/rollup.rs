@@ -1,21 +1,22 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module totals tokens for today and the past week from the server's routing log.
+//! This module totals recorded model calls from the retained routing log.
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
+use crate::history::Entry;
 use chrono::{DateTime, Local, NaiveDate};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// CLASSIFIER_TIER matches the tier recorded for classifier and judge calls.
 const CLASSIFIER_TIER: &str = "classifier";
 
 /// ModelTokens stores recorded token counts for one model.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelTokens {
     pub requests: u64,
     /// This field counts input tokens priced at the full rate, including cache writes.
@@ -44,16 +45,18 @@ impl ModelTokens {
 ///
 /// The split matters for savings: without Switchyard the `routed` calls would
 /// still have happened, but the `classifier` calls would not exist at all.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Totals {
     /// This field groups caller-facing calls by the model that answered.
     pub routed: BTreeMap<String, ModelTokens>,
     /// This field groups classifier and judge calls by model.
     pub classifier: BTreeMap<String, ModelTokens>,
+    /// Each route includes its answer calls and routing overhead.
+    pub routes: BTreeMap<String, ModelTokens>,
 }
 
 impl Totals {
-    fn add(&mut self, record: &Record) {
+    fn add(&mut self, record: &Entry) {
         let bucket = if record.tier == CLASSIFIER_TIER {
             &mut self.classifier
         } else {
@@ -62,13 +65,18 @@ impl Totals {
         bucket
             .entry(record.model.clone())
             .or_default()
-            .add(&record.tokens());
+            .add(&ModelTokens::from(record));
+        self.routes
+            .entry(record.route_id.clone())
+            .or_default()
+            .add(&ModelTokens::from(record));
     }
 
     fn merge(&mut self, other: &Self) {
         for (own, incoming) in [
             (&mut self.routed, &other.routed),
             (&mut self.classifier, &other.classifier),
+            (&mut self.routes, &other.routes),
         ] {
             for (model, tokens) in incoming {
                 own.entry(model.clone()).or_default().add(tokens);
@@ -96,47 +104,35 @@ impl Totals {
     }
 }
 
-/// Usage stores totals for the daily and weekly summaries.
-#[derive(Clone, Debug, Default)]
+/// Usage stores totals from the retained log and seven local calendar days.
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Usage {
     pub today: Totals,
     pub week: Totals,
+    pub all: Totals,
+    pub days: BTreeMap<NaiveDate, Totals>,
 }
 
-/// Record contains the fields used to total one routing log entry.
-#[derive(Deserialize)]
-struct Record {
-    ts: String,
-    model: String,
-    #[serde(default)]
-    tier: String,
-    #[serde(default)]
-    prompt_tokens: u64,
-    #[serde(default)]
-    cached_tokens: u64,
-    #[serde(default)]
-    completion_tokens: u64,
-}
-
-impl Record {
-    fn tokens(&self) -> ModelTokens {
-        ModelTokens {
+impl From<&Entry> for ModelTokens {
+    fn from(record: &Entry) -> Self {
+        Self {
             requests: 1,
-            // `prompt_tokens` is the whole input, cache reads included.
-            input: self.prompt_tokens.saturating_sub(self.cached_tokens),
-            cached_input: self.cached_tokens,
-            // Completion tokens already include reasoning tokens.
-            output: self.completion_tokens,
+            // The recorded input includes cached reads; output includes reasoning.
+            input: record.prompt_tokens.saturating_sub(record.cached_tokens),
+            cached_input: record.cached_tokens,
+            output: record.completion_tokens,
         }
     }
 }
 
-/// Reader keeps daily totals and reads only newly completed log lines.
+/// Reader keeps model and route totals without retaining individual calls.
+/// Each read consumes only newly completed log lines.
 #[derive(Default)]
 pub struct Reader {
     metadata: Option<Metadata>,
     offset: u64,
     days: BTreeMap<NaiveDate, Totals>,
+    all: Totals,
 }
 
 impl Reader {
@@ -159,6 +155,7 @@ impl Reader {
         {
             self.offset = 0;
             self.days.clear();
+            self.all = Totals::default();
         }
         self.metadata = Some(metadata);
         file.seek(SeekFrom::Start(self.offset))?;
@@ -175,24 +172,33 @@ impl Reader {
                 break;
             }
             self.offset += bytes as u64;
-            let Ok(record) = serde_json::from_slice::<Record>(&line) else {
+            // Entry applies the same token and optional-ID rules as recent history.
+            let Ok(record) = serde_json::from_slice::<Entry>(&line) else {
                 continue;
             };
+            if record.model.trim().is_empty() {
+                continue;
+            }
             let Ok(ts) = DateTime::parse_from_rfc3339(&record.ts) else {
                 continue;
             };
             let day = ts.with_timezone(&Local).date_naive();
+            self.all.add(&record);
             if day >= week_start {
                 self.days.entry(day).or_default().add(&record);
             }
         }
-        let mut usage = Usage::default();
+        let mut usage = Usage {
+            all: self.all.clone(),
+            ..Usage::default()
+        };
         for (day, totals) in &self.days {
             if *day == today {
                 usage.today = totals.clone();
             }
             if *day <= today {
                 usage.week.merge(totals);
+                usage.days.insert(*day, totals.clone());
             }
         }
         Ok(usage)
@@ -239,11 +245,11 @@ mod tests {
 
     #[test]
     fn separates_cache_reads_from_full_price_input() {
-        let record: Record = serde_json::from_str(
+        let record: Entry = serde_json::from_str(
             r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":1000,"cached_tokens":600,"completion_tokens":50,"reasoning_tokens":25}"#,
         )
         .expect("parse record");
-        let tokens = record.tokens();
+        let tokens = ModelTokens::from(&record);
         assert_eq!(tokens.input, 400);
         assert_eq!(tokens.cached_input, 600);
         assert_eq!(tokens.output, 50);
@@ -287,6 +293,42 @@ mod tests {
         assert_eq!(usage.today.classifier["terra"].requests, 1);
     }
 
+    // The old calls exceed the detail limit, so bounded history cannot supply these totals.
+    #[test]
+    fn totals_the_full_log_by_model_route_and_local_day() {
+        let old = line("2026-08-01T12:00:00.000", "older-model", "", 100, 10);
+        let answer = line("2026-09-28T12:00:00.000", "answer", "", 50, 5);
+        let judge = line("2026-09-28T12:00:01.000", "answer", "classifier", 20, 2);
+        let with_route =
+            |text: &str| text.replace("\"model\":", "\"route_id\":\"router\",\"model\":");
+        let (_dir, path) = log(&format!(
+            "{}{}\n{}\n{}\n",
+            format!("{old}\n").repeat(5_001),
+            with_route(&answer),
+            with_route(&judge),
+            line("2026-09-28T12:00:02.000", " ", "", 900, 90)
+        ));
+        let mut reader = Reader::default();
+        let usage = reader.read(&path, date("2026-09-28")).expect("read");
+        assert_eq!(usage.all.requests(), 5_002);
+        assert_eq!(usage.all.tokens(), 550_187);
+        assert_eq!(usage.week.tokens(), 77);
+        assert_eq!(usage.today.routes["router"].requests, 2);
+        assert_eq!(usage.today.routes["router"].total(), 77);
+        assert_eq!(usage.days[&date("2026-09-28")], usage.today);
+        assert_eq!(
+            reader
+                .read(&path, date("2026-09-29"))
+                .expect("next day")
+                .all,
+            usage.all
+        );
+        assert_eq!(
+            crate::summary::tray_models(&usage.today),
+            ["answer — 77 tokens · calls: 2"]
+        );
+    }
+
     #[test]
     fn resets_totals_when_the_log_is_replaced_or_truncated() {
         let (_dir, path) = log(&format!(
@@ -302,14 +344,16 @@ mod tests {
         let usage = reader.read(&path, today).expect("read truncated");
         assert_eq!(usage.today.requests(), 1);
         assert_eq!(usage.today.tokens(), 220);
+        assert_eq!(usage.all.tokens(), 220);
 
         std::fs::rename(&path, path.with_extension("old")).expect("rotate");
         std::fs::write(&path, replacement.repeat(3)).expect("replace");
         let usage = reader.read(&path, today).expect("read replacement");
         assert_eq!(usage.today.requests(), 3);
         assert_eq!(usage.today.tokens(), 660);
+        assert_eq!(usage.all.tokens(), 660);
         std::fs::remove_file(&path).expect("remove log");
         let absent = reader.read(&path, today).expect("missing log");
-        assert!(absent.today.is_empty() && absent.week.is_empty());
+        assert!(absent.today.is_empty() && absent.week.is_empty() && absent.all.is_empty());
     }
 }

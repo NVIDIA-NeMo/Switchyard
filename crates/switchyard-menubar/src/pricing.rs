@@ -36,7 +36,7 @@ impl ModelPrice {
 pub type PriceTable = BTreeMap<String, ModelPrice>;
 
 /// Savings stores estimated costs with and without routing.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
 pub struct Savings {
     /// This field stores the estimated cost of recorded calls, including classifier calls.
     pub actual: f64,

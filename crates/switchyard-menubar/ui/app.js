@@ -7,7 +7,7 @@ const status = document.querySelector('#status');
 let snapshot, page = 'overview', busy = false;
 let operationQueue = Promise.resolve();
 const drafts = new Map(), lists = new Map();
-const usageView = {session:'',search:''};
+const usageView = {session:'',search:'',exact:null};
 const routeView = {selected:'',search:''};
 const installView = {tool:'',account:'',route:'',file:''};
 function node(tag, text, cls) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n; }
@@ -76,37 +76,12 @@ let generation;
 function render() {
   if (!snapshot) return;
   if (generation !== snapshot.generation) { drafts.clear(); lists.clear(); generation = snapshot.generation; }
+  disposeCharts();
   content.replaceChildren();
   document.querySelector('#title').textContent = {overview:'Overview',routes:'Routes',install:'Install',usage:'Usage',sessions:'Sessions',settings:'Settings'}[page];
   document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));
   if (page==='overview') {
-    const metrics=snapshot.metrics;
-    const connection=card('Connection');
-    connection.append(node('span',metrics.running?'Connected':'Not responding',metrics.running?'badge connected':'badge'));
-    connection.append(node('p',metrics.server_url,'endpoint-address'));
-    const totals=node('div',undefined,'metric-grid');content.append(totals);
-    for(const [label,period] of [['Today',metrics.today],['Past 7 days',metrics.week]]) {
-      const panel=node('div',undefined,'card metric');panel.append(node('h3',label),node('strong',period.requests.toLocaleString()),node('span',' model calls'),node('p',`${period.tokens.toLocaleString()} tokens, including routing overhead`,'muted'));totals.append(panel);
-    }
-    renderActivity(card('Recent activity'));
-    const notes=card('Cost estimates');
-    let period='';for(const line of snapshot.summary){if(line.startsWith('Today —'))period='Today';if(line.startsWith('This week —'))period='Past 7 days';if(line.includes('Saved'))notes.append(node('p',`${period}: ${line.trim()}`));else if(line.includes('prices')||line.includes('Savings hidden'))notes.append(node('p',line.trim()));}
-    if(notes.children.length===1)notes.append(node('p','No cost estimate is available yet.','muted'));
-    const breakdown=node('details');breakdown.append(node('summary','Model breakdown and full usage summary'));for(const line of snapshot.summary)if(line.trim())breakdown.append(node('p',line.trim(),'summary-row'));notes.append(breakdown);
-    const c=card('Routes');c.classList.add('routing-board');
-    const heading=node('div',undefined,'board-head');
-    for(const title of ['Route','Routing','Models'])heading.append(node('span',title));
-    c.append(heading);
-    const list=node('div',undefined,'route-list');
-    for(const route of snapshot.routes.slice(0,6)) {
-      const row=node('div',undefined,'route-row board-row');
-      const models=node('div',undefined,'board-models');
-      for(const choice of route.choices)models.append(node('p',`${choice.model} · ${choice.client}`));
-      row.append(node('h4',route.id),node('span',snapshot.algorithms.find(a=>a.kind===route.kind)?.title || route.kind,'board-routing'),models);
-      list.append(row);
-    }
-    if(!snapshot.routes.length)list.append(node('p','No routes are configured. Open the server config in Settings to add one.','empty-state'));
-    c.append(list);button(actions(c),`Manage ${snapshot.routes.length} routes →`,()=>{page='routes';render();});
+    renderOverview();
   } else if (page==='routes') {
     renderRouteBrowser();
     if (!snapshot.routes.length) text(card('No routes loaded'),'Check the server config in Settings, then refresh.');
@@ -124,6 +99,11 @@ function render() {
     const c=card('Model calls');
     c.append(node('p','Each row shows a completed model call. A turn may include several calls. Input tokens include cached reads.'));
     c.append(node('p',`${snapshot.entries.length} recent calls${snapshot.limited?' (limited to 8 MiB / 5,000 records)':''}; Switchyard skipped ${snapshot.skipped} unreadable records.`,'muted'));
+    if(usageView.exact) {
+      const {group,id,period}=usageView.exact,pill=node('div',undefined,'usage-filter');
+      pill.append(node('span',`${group}: ${id||'Not recorded'} · ${period==='all'?'All retained history':period==='week'?'Past 7 days':'Today'}`));
+      button(pill,'Clear comparison filter',()=>{usageView.exact=null;render();});c.append(pill);
+    }
     const filters=node('div',undefined,'field-grid');c.append(filters);
     const session=field(filters,'Session',select([['','All sessions'],...snapshot.sessions.map(s=>[s,s])],usageView.session));
     const search=field(filters,'Search turn, model, or route',input(usageView.search));
@@ -134,6 +114,8 @@ function render() {
       const thead=node('thead');thead.append(head);table.append(thead);const tbody=node('tbody');table.append(tbody);
       const query=search.value.toLowerCase();
       for(const e of [...snapshot.entries].reverse()) {
+        const exact=usageView.exact;
+        if(exact && ((e[{model:'model',route:'route_id',session:'session_id'}[exact.group]]||'')!==exact.id || !inPeriod(e.ts,exact.period,snapshot.today)))continue;
         if(session.value && e.session_id!==session.value)continue;
         if(query && ![e.model,e.turn_id,e.route_id].join(' ').toLowerCase().includes(query))continue;
         const row=node('tr');
@@ -167,15 +149,6 @@ function render() {
     c.append(node('p','Closing the window keeps Switchyard running. To exit, choose Quit Switchyard from the menu bar after any operation finishes.'));
   }
 }
-function renderActivity(c) {
-  c.append(node('p','Model calls per hour · past 24 hours · recent recorded calls','muted'));
-  const buckets=snapshot.activity;
-  const graph=node('div',undefined,'activity-graph');graph.setAttribute('role','img');graph.setAttribute('aria-label',`Hourly model calls, oldest first: ${buckets.join(', ')}`);
-  const max=Math.max(1,...buckets);
-  buckets.forEach((count,index)=>{const bar=node('div',undefined,'activity-bar');bar.style.height=`${Math.max(2,count/max*100)}%`;bar.title=`${24-index}–${23-index} hours ago · ${count} calls`;graph.append(bar);});c.append(graph);
-  const axis=node('div',undefined,'graph-axis');axis.append(node('span','24h ago'),node('span','Now'));c.append(axis);
-  c.append(node('small',`${buckets.reduce((a,b)=>a+b,0)} recorded calls${snapshot.limited?' · recent history is limited':''}`));
-}
 function renderRouteBrowser() {
   const c=card('Route library');
   const search=field(c,'Find a route by name, routing method, endpoint, or model',input(routeView.search));
@@ -186,7 +159,7 @@ function renderRouteBrowser() {
     const routes=snapshot.routes.filter(r=>routeMatches(r,search.value));
     count.textContent=`${routes.length} of ${snapshot.routes.length} routes`;
     list.replaceChildren();
-    for(const route of routes){const b=button(list,route.id,()=>{routeView.selected=route.key;draw();});b.classList.toggle('selected',route.key===routeView.selected);b.setAttribute('aria-pressed',String(route.key===routeView.selected));b.append(node('small',snapshot.algorithms.find(a=>a.kind===route.kind)?.title||route.kind));if(drafts.get(route.key)?.dirty)b.append(node('small','Unsaved edits'));}
+    for(const route of routes){const b=button(list,'',()=>{routeView.selected=route.key;draw();});b.classList.toggle('selected',route.key===routeView.selected);b.setAttribute('aria-pressed',String(route.key===routeView.selected));b.append(node('span',route.id,'route-name'));b.append(node('small',snapshot.algorithms.find(a=>a.kind===route.kind)?.title||route.kind));if(drafts.get(route.key)?.dirty)b.append(node('small','Unsaved edits'));}
     detail.replaceChildren();
     if(!routes.length){list.append(node('p','No routes match your search.','empty-state'));return;}
     const route=routes.find(r=>r.key===routeView.selected)||routes[0];routeView.selected=route.key;
@@ -288,6 +261,7 @@ document.querySelectorAll('[data-page]').forEach(b=>b.onclick=()=>{page=b.datase
 document.querySelector('#refresh').onclick=refresh;
 window.addEventListener?.('switchyard-page', event=>{
   if(!['overview','routes','install','usage','sessions','settings'].includes(event.detail))return;
+  if(event.detail==='overview')Object.assign(analyticsView,{period:'all',group:'model',search:''});
   page=event.detail;render();
   if(!snapshot)refresh();
 });
