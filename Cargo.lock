@@ -5093,6 +5093,8 @@ name = "switchyard-menubar"
 version = "0.3.0"
 dependencies = [
  "chrono",
+ "objc2-app-kit",
+ "objc2-foundation",
  "ratatui",
  "security-framework",
  "serde",

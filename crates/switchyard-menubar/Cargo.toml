@@ -25,6 +25,8 @@ uuid.workspace = true
 ratatui = "0.30.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL"] }
 security-framework = "3"
 tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
 

@@ -47,6 +47,7 @@ section { display: grid; gap: 18px; }
 button, input, select { font: inherit; color: inherit; border: 1px solid var(--control-border); border-radius: 5px; background: var(--control); min-height: 32px; padding: 6px 10px; }
 button { cursor: pointer; text-align: left; font-weight: 500; line-height: 1.35; }
 button:hover { background: var(--hover); }
+button:active:not(:disabled) { transform: translateY(1px); }
 button:disabled, input:disabled, select:disabled { opacity: .55; }
 button:disabled { cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
@@ -63,6 +64,9 @@ pre + p { margin-top: 12px; }
 pre { font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 #status { margin: 0 0 18px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--status); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 #status:empty { display: none; }
+.install-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 20px; margin-bottom: 18px; }
+.install-progress:empty { display: none; }
+.install-progress { padding: 12px; border: 1px solid var(--line); color: var(--status); white-space: pre-wrap; overflow-wrap: anywhere; }
 [data-role] { padding: 16px 0; border-top: 1px solid var(--line); }
 [data-role] label:first-child { margin-top: 0; }
 [data-role] .actions { margin-top: 10px; }

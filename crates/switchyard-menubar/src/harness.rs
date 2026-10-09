@@ -682,6 +682,17 @@ fn replace(
 
 pub fn binary(tool: Harness) -> Option<PathBuf> {
     if tool == Harness::CodexApp {
+        #[cfg(target_os = "macos")]
+        if let Some(path) = objc2_app_kit::NSWorkspace::sharedWorkspace()
+            .URLForApplicationWithBundleIdentifier(&objc2_foundation::NSString::from_str(
+                "com.openai.codex",
+            ))
+            .and_then(|url| url.path())
+            .map(|path| PathBuf::from(path.to_string()))
+            .filter(|path| path.is_dir())
+        {
+            return Some(path);
+        }
         return [
             PathBuf::from("/Applications/Codex.app"),
             crate::config::expand_home(Path::new("~/Applications/Codex.app")),

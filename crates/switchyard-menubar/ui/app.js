@@ -89,7 +89,7 @@ function render() {
     const intro=card('Connect your coding tools');
     intro.append(node('p','Choose a Switchyard route for each coding tool, review the settings below, then install the route.'));
     const help=node('details');help.append(node('summary','How accounts and settings work'));help.append(node('p','Subscription routes use the coding tool’s login. API routes use credentials configured on the Switchyard server. Keys entered in Routes only load model lists.'));help.append(node('p','Installation backs up the original settings. Shell variables and project settings may override these defaults.'));intro.append(help);
-    const tool=field(intro,'Coding tool',select(snapshot.tools.map(t=>[t.tool,`${t.label} · ${t.available?'Detected':'Binary not found'}`]),installView.tool||snapshot.tools[0].tool));
+    const tool=field(intro,'Coding tool',select(snapshot.tools.map(t=>[t.tool,`${t.label} · ${t.available?'Detected':'Not detected'}`]),installView.tool||snapshot.tools[0].tool));
     installView.tool=tool.value;
     const panel=node('div');content.append(panel);
     const show=()=>{installView.tool=tool.value;installView.account='';installView.file='';panel.replaceChildren();renderInstall(snapshot.tools.find(t=>t.tool===tool.value),panel);};
@@ -170,7 +170,13 @@ function renderRouteBrowser() {
 // renderInstall checks each reply's revision before updating the preview or Install button.
 function renderInstall(tool, parent) {
   const c=card(tool.label);parent.append(c);c.dataset.tool=tool.tool;
-  c.append(node('p',tool.available?'Coding tool detected.':'Binary not found. You can configure settings before installing the tool.','muted'));
+  c.append(node('p',tool.available?'Coding tool detected.':'Coding tool not detected. You can still prepare its settings.','muted'));
+  c.append(node('p',{
+    codex_cli:'This changes the selected Codex CLI profile file. The default is sy.config.toml, used with codex -p sy.',
+    codex_app:'The normal user settings location changes shared defaults for the Codex app and CLI. A custom file or saved account changes only that destination. The coding tool must load those settings separately.',
+    claude:'This changes the selected Claude Code user settings. Start a new Claude Code session to use the route.',
+    pi:'This adds a Switchyard provider and selects the route in Pi. Start a new Pi session to use it.',
+  }[tool.tool]));
   const fields=node('div',undefined,'field-grid');c.append(fields);
   const account=field(fields,'Settings location',select([['','Detected user settings'],...tool.accounts.map(name=>[name,`Account: ${name}`])],installView.account));
   const route=routeField(fields);if(installView.route&&snapshot.routes.some(r=>r.key===installView.route))route.value=installView.route;
@@ -179,31 +185,51 @@ function renderInstall(tool, parent) {
   c.append(node('small','Use an absolute file path for settings in another location. Leave empty to use the selected settings location. Pi also uses settings.json beside models.json.'));
   const comparison=node('div',undefined,'install-diff');c.append(comparison);
   const authentication=node('p',undefined,'install-auth');c.append(authentication);
+  const progress=node('p',undefined,'install-progress');progress.setAttribute('role','status');progress.setAttribute('aria-live','polite');c.append(progress);
   const target=()=>({tool:tool.tool,account:account.value||null,settings_file:file.value||null});
-  const a=actions(c),install=button(a,`Install into ${tool.label} →`,()=>run({kind:'install',...target(),...routeArgs(route)}),true);
+  let plan;
+  const a=actions(c),install=button(a,'Apply routing…',()=>{
+    if(!plan)return;
+    const selected=plan;
+    confirmAction(`Apply routing to ${tool.label}?`,`${selected.data.proposed}\n\n${selected.data.authentication}\n\nSwitchyard will back up the original settings and update these files. Unrelated settings are preserved. Use “Restore backed-up settings…” to undo this installation.`, 'Apply routing',async()=>{
+      // A confirmation applies only while its panel and preview plan are still current.
+      if(!c.isConnected||selected!==plan)return;
+      progress.textContent='Saving routing settings and backing up the originals…';install.textContent='Applying routing…';
+      const result=await run(selected.action,false);
+      progress.textContent=result?.message||status.textContent;install.textContent='Apply routing…';
+      update();
+    });
+  },true);
   button(a,'Restore backed-up settings…',()=>confirmAction('Restore coding-tool settings?','Restore the settings saved before the first installation. This changes coding tool settings and keeps your Switchyard routes.','Restore settings',()=>run({kind:'restore',...target()})));
   let revision=0;
   const update=()=>{
     installView.account=account.value;installView.route=route.value;installView.file=file.value;
-    const requested=++revision;install.dataset.blocked='true';install.disabled=true;comparison.replaceChildren(node('p','Loading settings preview…'));authentication.textContent='';
+    const requested=++revision;plan=undefined;install.dataset.blocked='true';install.disabled=true;install.textContent='Checking settings…';comparison.replaceChildren(node('p','Loading settings preview…'));authentication.textContent='';
     enqueue(async()=>{
       if(!c.isConnected||requested!==revision)return;
-      if(!route.value){comparison.replaceChildren(node('p',snapshot.routes.length?'Choose a route to preview its settings.':'Add a route in the server config first.'));return;}
+      if(!route.value){install.textContent='Choose a route';comparison.replaceChildren(node('p',snapshot.routes.length?'Choose a route to preview its settings.':'Add a route in the server config first.'));return;}
       setBusy(true);
       try {
         const result=await invoke('action',{action:{kind:'preview_install',...target(),...routeArgs(route)}});
         if(!c.isConnected||requested!==revision)return;
-        comparison.replaceChildren(node('h4','Settings diff · − current / + proposed'));
-        if(result.data.error)comparison.append(node('p',result.data.error));
-        else {for(const change of result.data.changes){comparison.append(node('pre',`${change.file} · ${change.key}`,'diff-heading'));comparison.append(node('pre',`− ${change.before}`,'diff-remove'),node('pre',`+ ${change.after}`,'diff-add'));}if(!result.data.changes.length)comparison.append(node('p','These settings already match the selected route.'));}
-        if(result.data.current){const current=node('details');current.append(node('summary','Current settings and file locations'),node('pre',result.data.current));comparison.append(current);}
+        comparison.replaceChildren();
+        const summaries=node('div',undefined,'install-summary');comparison.append(summaries);
+        for(const [title,value] of [['Current settings',result.data.current],['After applying routing',result.data.proposed]])if(value){const summary=node('div');summary.append(node('h4',title),node('pre',value));summaries.append(summary);}
+        comparison.append(node('h4','Settings diff · − current / + proposed'));
         authentication.textContent=result.data.authentication||'';
-        install.dataset.blocked=String(Boolean(result.data.error));
-      } catch(error) { if(c.isConnected&&requested===revision)comparison.replaceChildren(node('p',String(error))); }
+        if(result.data.error){comparison.append(node('p',result.data.error));install.textContent='Preview unavailable';return;}
+        for(const change of result.data.changes){comparison.append(node('pre',`${change.file} · ${change.key}`,'diff-heading'));comparison.append(node('pre',`− ${change.before}`,'diff-remove'),node('pre',`+ ${change.after}`,'diff-add'));}
+        if(!result.data.changes.length)comparison.append(node('p','These settings already match the selected route.'));
+        const ready=result.data.changes.length>0;
+        if(ready)plan={data:result.data,action:{kind:'install',...target(),...routeArgs(route)}};
+        install.textContent=ready?'Apply routing…':'Routing already applied';
+        install.dataset.blocked=String(!ready);
+      } catch(error) { if(c.isConnected&&requested===revision){install.textContent='Preview unavailable';comparison.replaceChildren(node('p',String(error)));} }
       finally { setBusy(false); }
     });
   };
-  account.onchange=update;route.onchange=update;file.oninput=()=>{installView.file=file.value;revision++;install.dataset.blocked='true';install.disabled=true;comparison.replaceChildren(node('p','Finish entering the file path, then press Enter or leave the field to preview.'));};file.onchange=update;file.onkeydown=event=>{if(event.key==='Enter')update();};update();
+  const changed=()=>{progress.textContent='';update();};
+  account.onchange=changed;route.onchange=changed;file.oninput=()=>{installView.file=file.value;revision++;plan=undefined;progress.textContent='';install.dataset.blocked='true';install.disabled=true;install.textContent='Preview required';comparison.replaceChildren(node('p','Finish entering the file path, then press Enter or leave the field to preview.'));};file.onchange=changed;file.onkeydown=event=>{if(event.key==='Enter')changed();};update();
 }
 function renderAccounts() {
   const c=card('Subscription accounts');const disclosure=node('details');disclosure.append(node('summary','Sign in to another subscription account…'));c.append(disclosure);const parent=disclosure;
@@ -266,7 +292,7 @@ window.addEventListener?.('switchyard-page', event=>{
   if(!snapshot)refresh();
 });
 async function poll() {
-  if(document.querySelector('[role="dialog"]')){setTimeout(poll,(snapshot?.refresh_seconds||30)*1000);return;}
+  if(page==='install'||document.querySelector('[role="dialog"]')){setTimeout(poll,(snapshot?.refresh_seconds||30)*1000);return;}
   if(page==='overview'||page==='usage')await refresh();
   else if(!busy) {
     setBusy(true);

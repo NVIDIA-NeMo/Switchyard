@@ -123,19 +123,25 @@ instead.
 ## Install coding-tool settings
 
 **Install** has one coding-tool selector for Codex CLI, Codex app, Claude Code,
-and Pi. It shows whether the tool's binary was detected. Choose a route and
-settings location to review a diff of the routing settings. Credential values
-stay hidden. The preview changes no files. The install button names the selected
-tool. An optional absolute file path selects settings in another location; for
-Pi, choose `models.json`, and the app uses `settings.json` beside it. A custom
-file cannot be combined with a saved account.
+and Pi. macOS finds the Codex app by its registered bundle identity, including
+copies renamed to `ChatGPT.app`. Choose a route and settings location to compare
+the current and proposed settings and their exact file paths. Credential values
+stay hidden. The preview changes no files. **Apply routing…** shows a confirmation
+before saving. Progress and the result appear beside the button. If the settings
+already match, the button reads **Routing already applied**. An optional absolute
+file path selects settings in another location. For Pi, choose `models.json`;
+the app also uses `settings.json` beside it. A custom file cannot be combined
+with a saved account.
 
 The app's **Install** page defaults to `sy.config.toml` for Codex CLI and
 `codex -p sy`. The source installer's `SY_PROFILE` choice does not change this
-destination. Select a custom file to update another profile. The Codex app option
-changes the defaults in `config.toml` for both the app and CLI. Claude Code gets
-environment settings in `settings.json`. Pi gets a custom provider in
-`models.json` and defaults in `settings.json`. Unrelated settings remain.
+destination. Select a custom file to update another profile. With the normal
+user settings location, the Codex app option changes shared defaults in
+`config.toml` for both the app and CLI. A custom file or saved account changes
+only that destination; the coding tool must load those settings separately.
+Claude Code gets environment settings in `settings.json`. Pi gets a custom
+provider in `models.json` and defaults in `settings.json`. Unrelated settings
+remain.
 
 The app backs up each original file as `<filename>.switchyard-original`. If a
 file did not exist, `<filename>.switchyard-original-missing` records its absence.
