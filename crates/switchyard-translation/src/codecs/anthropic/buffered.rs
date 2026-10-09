@@ -34,6 +34,8 @@ use crate::util::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
+use super::{ANTHROPIC_TOOLS_KEY, is_provider_tool_block, is_server_tool};
+
 /// Format codec for Anthropic Messages payloads.
 pub struct AnthropicMessagesCodec;
 
@@ -174,8 +176,18 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "stream",
                 // OpenAI-only identity fields must not leak through Anthropic decoding.
                 "safety_identifier",
+                ANTHROPIC_TOOLS_KEY,
             ],
         );
+        if let Some(tools) = body.get("tools").and_then(Value::as_array)
+            && tools.iter().any(is_server_tool)
+        {
+            // Keep the original order while custom functions remain editable through the IR.
+            request
+                .extensions
+                .fields
+                .insert(ANTHROPIC_TOOLS_KEY.to_string(), json!(tools));
+        }
         if let Some(is_disabled) = body
             .get("tool_choice")
             .and_then(|choice| choice.get("disable_parallel_tool_use"))
@@ -244,15 +256,17 @@ impl FormatCodec for AnthropicMessagesCodec {
             )?),
         );
 
-        if !tools.is_empty() {
-            body.insert("tools".to_string(), encode_anthropic_tools(tools));
+        let encoded_tools = encode_anthropic_tools(tools, &request.extensions);
+        let has_tools = !encoded_tools.is_empty();
+        if has_tools {
+            body.insert("tools".to_string(), Value::Array(encoded_tools));
         }
         let parallel_tool_calls = request
             .extensions
             .fields
             .get("parallel_tool_calls")
             .and_then(Value::as_bool);
-        if tool_choice.is_some() || (parallel_tool_calls.is_some() && !tools.is_empty()) {
+        if tool_choice.is_some() || (parallel_tool_calls.is_some() && has_tools) {
             let mut choice = encode_anthropic_tool_choice(tool_choice.unwrap_or(&ToolChoice::Auto));
             if let Some(is_enabled) = parallel_tool_calls
                 && let Some(object) = choice.as_object_mut()
@@ -276,6 +290,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "speed",
                 "diagnostics",
                 "fallback_credit_token",
+                "mcp_servers",
             ] {
                 if let Some(value) = request.extensions.fields.get(field) {
                     body.insert(field.to_string(), value.clone());
@@ -788,6 +803,7 @@ fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|tool| !is_server_tool(tool))
         .filter_map(Value::as_object)
         .filter_map(|tool| {
             let name = tool.get("name").and_then(Value::as_str)?.to_string();
@@ -924,6 +940,12 @@ fn encode_anthropic_content_with_policy(
     for block in content {
         crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
         match block {
+            ContentBlock::Unknown { provider, raw }
+                if provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                    && is_provider_tool_block(raw) =>
+            {
+                blocks.push(raw.clone());
+            }
             ContentBlock::Unknown { provider, raw } => {
                 reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)?;
                 push_lossy(
@@ -1198,23 +1220,40 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
 }
 
 // Encodes normalized tool definitions into Anthropic tool JSON.
-fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                let mut item = json!({
-                    "name": tool.name,
-                    "description": tool.description.clone().unwrap_or_default(),
-                    "input_schema": tool.parameters,
-                });
-                if let Some(strict) = tool.strict {
-                    item["strict"] = Value::Bool(strict);
-                }
-                item
-            })
-            .collect(),
-    )
+fn encode_anthropic_tools(tools: &[ToolDefinition], extensions: &ProviderExtensions) -> Vec<Value> {
+    let mut remaining = tools.iter().collect::<Vec<_>>();
+    let mut encoded = Vec::new();
+    if extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true))
+        && let Some(original) = extensions
+            .fields
+            .get(ANTHROPIC_TOOLS_KEY)
+            .and_then(Value::as_array)
+    {
+        // Match functions by name; renamed functions are appended as new tools.
+        for tool in original {
+            if is_server_tool(tool) {
+                encoded.push(tool.clone());
+            } else if let Some(index) = remaining.iter().position(|current| {
+                tool.get("name").and_then(Value::as_str) == Some(current.name.as_str())
+            }) {
+                encoded.push(encode_anthropic_function(remaining.remove(index)));
+            }
+        }
+    }
+    encoded.extend(remaining.into_iter().map(encode_anthropic_function));
+    encoded
+}
+
+fn encode_anthropic_function(tool: &ToolDefinition) -> Value {
+    let mut item = json!({
+        "name": tool.name,
+        "description": tool.description.clone().unwrap_or_default(),
+        "input_schema": tool.parameters,
+    });
+    if let Some(strict) = tool.strict {
+        item["strict"] = Value::Bool(strict);
+    }
+    item
 }
 
 // Encodes normalized tool choice into Anthropic tool-choice JSON.

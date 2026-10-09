@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
 
+use crate::codecs::anthropic::prepare_request_tools;
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_anthropic_request, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
@@ -175,15 +176,20 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        let mut diagnostics = Vec::new();
+        // Responses supports MCP; unmapped Anthropic MCP definitions follow the loss policy.
+        let prepared = prepare_request_tools(
+            request,
+            WireFormat::OpenAiResponses,
+            &mut diagnostics,
+            policy,
+        )?;
+        let request = prepared.as_ref();
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, policy)
         {
-            return Ok(EncodedRequest {
-                body,
-                diagnostics: Vec::new(),
-            });
+            return Ok(EncodedRequest { body, diagnostics });
         }
-        let mut diagnostics = Vec::new();
         validate_request_capabilities(request, &mut diagnostics, policy)?;
         let mut body = Map::new();
         if let Some(model) = &request.model {
