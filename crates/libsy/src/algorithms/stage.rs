@@ -18,7 +18,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::fall_through::FallThrough;
-use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
+use super::llm_class::{
+    LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig, affinity_router,
+};
 use super::util::prompts::prepend_system_prompt;
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
@@ -124,8 +126,10 @@ impl Classifier<State> for FallOpen {
 pub struct LlmFallback {
     /// Judge configuration. `recent_turn_window` is worth setting to this router's
     /// `recent_window` so the judge reads the same span the signal scorer scored.
-    /// Note: `classify_trigger = new_session` and `message_hash_fallback` have no effect here —
-    /// the judge runs as a cascade classifier, not a standalone algorithm.
+    /// `classify_trigger` and `message_hash_fallback` apply here: a retaining
+    /// trigger keeps the judge's verdict for the rest of the user turn or the
+    /// session, so a later undecided turn reuses it instead of calling the
+    /// judge again.
     pub config: TaskClassifierConfig,
 }
 
@@ -236,6 +240,18 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
         .with_processor(Arc::new(signals))
         .with_classifier(Arc::new(classifier));
     if let Some(fallback) = config.llm_fallback {
+        // A retaining trigger keeps the judge's verdict, so the cascade needs
+        // the affinity component the standalone route builds for itself. Both
+        // roles share one `Arc`, and the classifier sits ahead of the judge so
+        // a retained verdict short-circuits the judge call.
+        if let Some(affinity) = affinity_router(
+            fallback.config.classify_trigger,
+            fallback.config.message_hash_fallback,
+        ) {
+            router = router
+                .with_processor(affinity.clone())
+                .with_classifier(affinity);
+        }
         router = router.with_classifier(Arc::new(SourceStamp {
             inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                 config: fallback.config,
@@ -267,11 +283,12 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::*;
+    use crate::algorithms::util::affinity::ClassifyTrigger;
     use crate::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_fall_open, set_fall_open};
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
     use crate::core::state::StateValue;
     use crate::core::testing::{empty_driver, test_drive_with_models};
-    use switchyard_protocol::{Category, ModelId};
+    use switchyard_protocol::{Category, Message, ModelId, Role};
 
     /// A classifier that always picks `target`, standing in for a cascade member.
     struct Fixed(&'static str);
@@ -608,6 +625,128 @@ mod tests {
                 .count(),
             2,
             "each undecided turn is its own question"
+        );
+        Ok(())
+    }
+
+    fn config_with_judge_trigger(
+        recorder: &Arc<Recorder>,
+        p_solve: f64,
+        trigger: ClassifyTrigger,
+    ) -> StageRouterConfig {
+        let mut c = config_with_judge(recorder, p_solve);
+        // The capable hold also keeps a tier across requests. It is off here
+        // so only the trigger's retention can pin the verdict.
+        c.capable_hold_turns = 0;
+        if let Some(fallback) = c.llm_fallback.as_mut() {
+            fallback.config.classify_trigger = trigger;
+        }
+        c
+    }
+
+    fn judge_call_count(recorder: &Arc<Recorder>) -> usize {
+        recorder
+            .calls
+            .lock()
+            .iter()
+            .filter(|c| c.target == JUDGE)
+            .count()
+    }
+
+    /// The same turn shape with a new user message on the end, so the turn the
+    /// request belongs to is a new one.
+    fn next_user_turn_request() -> Request {
+        let mut request = turn_request(false);
+        request
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "now rewrite the parser"));
+        request
+    }
+
+    #[tokio::test]
+    async fn a_user_turn_trigger_pins_the_judges_verdict_within_one_turn() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge_trigger(
+            &recorder,
+            0.1,
+            ClassifyTrigger::UserTurn,
+        ))?;
+
+        test_drive_with_models(
+            router.clone(),
+            turn_request(false),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        // The judge would now pick the other tier, but a tool step inside the
+        // same user turn reuses the retained verdict instead of paying for a
+        // second judge call.
+        *recorder.judge_p_solve.lock() = 0.9;
+        test_drive_with_models(
+            router.clone(),
+            turn_request(false),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+
+        let routed = recorder.routed();
+        assert_eq!(routed[0].target, "strong");
+        assert_eq!(routed[1].target, "strong");
+        assert_eq!(
+            judge_call_count(&recorder),
+            1,
+            "one user turn should pay for one judge call"
+        );
+
+        // A new user message starts a new turn, so the judge runs again.
+        test_drive_with_models(
+            router.clone(),
+            next_user_turn_request(),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+
+        assert_eq!(recorder.routed()[2].target, "weak");
+        assert_eq!(judge_call_count(&recorder), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_new_session_trigger_pins_the_judges_verdict_for_the_session() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge_trigger(
+            &recorder,
+            0.1,
+            ClassifyTrigger::NewSession,
+        ))?;
+
+        test_drive_with_models(
+            router.clone(),
+            turn_request(false),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        *recorder.judge_p_solve.lock() = 0.9;
+        test_drive_with_models(
+            router.clone(),
+            next_user_turn_request(),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+
+        let routed = recorder.routed();
+        assert_eq!(routed[0].target, "strong");
+        assert_eq!(routed[1].target, "strong");
+        assert_eq!(
+            judge_call_count(&recorder),
+            1,
+            "one session should pay for one judge call"
         );
         Ok(())
     }
