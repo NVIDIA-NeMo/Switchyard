@@ -897,16 +897,53 @@ fn redact_mcp_tokens<'a>(text: &'a str, patterns: &[String]) -> Cow<'a, str> {
             text = Cow::Owned(text.replace(pattern, "[REDACTED]"));
         }
     }
-    if !patterns.is_empty() && text.contains('\\') {
+    if !patterns.is_empty() && text.contains('\\') && contains_escaped_mcp_tokens(&text, patterns) {
         // Further JSON decoding can reveal a token that literal matching missed.
         if let Ok(mut value) = serde_json::from_str::<Value>(&text) {
             redact_mcp_json(&mut value, patterns);
             return Cow::Owned(value.to_string());
         }
-        // Escaped fragments cannot be decoded safely as a complete JSON value.
+        // A fragment containing an encoded credential cannot be safely rewritten as JSON.
         return Cow::Owned("[REDACTED]".to_string());
     }
     text
+}
+
+fn contains_escaped_mcp_tokens(text: &str, patterns: &[String]) -> bool {
+    let mut text = Cow::Borrowed(text);
+    loop {
+        let mut decoded = String::with_capacity(text.len());
+        let mut remaining = text.as_ref();
+        while let Some(index) = remaining.find('\\') {
+            decoded.push_str(&remaining[..index]);
+            remaining = &remaining[index..];
+            // Simple escapes, Unicode escapes, and UTF-16 surrogate pairs.
+            let escape = [2, 6, 12].into_iter().find_map(|len| {
+                let fragment = remaining.get(..len)?;
+                let value = serde_json::from_str::<String>(&format!("\"{fragment}\"")).ok()?;
+                Some((len, value))
+            });
+            if let Some((len, value)) = escape {
+                decoded.push_str(&value);
+                remaining = &remaining[len..];
+            } else {
+                decoded.push('\\');
+                remaining = &remaining[1..];
+            }
+        }
+        decoded.push_str(remaining);
+        if decoded == text {
+            return false;
+        }
+        if patterns
+            .iter()
+            .any(|pattern| decoded.contains(pattern.as_str()))
+        {
+            return true;
+        }
+        // Serialized JSON can add several layers of escaping.
+        text = Cow::Owned(decoded);
+    }
 }
 
 fn redact_mcp_json(value: &mut Value, patterns: &[String]) {
@@ -3498,11 +3535,12 @@ mod tests {
 
     #[test]
     fn mcp_redaction_borrows_strings_without_matches() {
-        let text = "ordinary error detail";
         let tokens = vec!["synthetic-mcp-token".to_string()];
-        let redacted = redact_mcp_tokens(text, &tokens);
-        assert_eq!(redacted, text);
-        assert_eq!(redacted.as_ptr(), text.as_ptr());
+        for text in ["ordinary error detail", r"C:\tmp", r"failed parsing \u0061"] {
+            let redacted = redact_mcp_tokens(text, &tokens);
+            assert_eq!(redacted, text);
+            assert_eq!(redacted.as_ptr(), text.as_ptr());
+        }
     }
 
     #[test]
@@ -3543,9 +3581,17 @@ mod tests {
                 .expect("embedded JSON");
         assert_eq!(recovered["authorization_token"], "[REDACTED]");
 
-        let mut value = json!({"error": {"message": format!("rejected request: {embedded}")}});
+        let mut value = json!({"error": {
+            "message": format!(r"rejected request at C:\users: {embedded}")
+        }});
         redact_mcp_json(&mut value, &patterns);
         assert_eq!(value["error"]["message"], "[REDACTED]");
+
+        let patterns = vec!["🚀".to_string()];
+        assert_eq!(
+            redact_mcp_tokens(r"rejected request: \\ud83d\\ude80", &patterns),
+            "[REDACTED]"
+        );
     }
 
     #[test]
