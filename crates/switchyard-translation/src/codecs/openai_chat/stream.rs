@@ -173,6 +173,15 @@ fn decode_openai_chat_stream(
             }
         }
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            // `abort`, `error` and `repetition` mean the generation did not
+            // complete, matching the buffered decoder. The stop is an error,
+            // not a finish the client formats render as a normal one.
+            if matches!(reason, "abort" | "error" | "repetition") {
+                out.push(LlmResponseChunk::StreamError {
+                    message: format!("provider finished with finish_reason \"{reason}\""),
+                });
+                continue;
+            }
             for (index, name) in std::mem::take(&mut state.pending_chat_tool_names) {
                 out.push(LlmResponseChunk::ToolCallDelta {
                     index,

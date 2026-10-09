@@ -2450,6 +2450,78 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     Ok(())
 }
 
+// Verifies a streamed Chat `abort`, `error` or `repetition` finish reason
+// reaches other clients as a stream error, not a normal finish.
+#[test]
+fn failed_finish_reasons_stream_as_errors() -> TestResult {
+    let engine = TranslationEngine::default();
+    for reason in ["abort", "error", "repetition"] {
+        let chunk = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "partial"},
+                "finish_reason": reason
+            }]
+        });
+
+        // Anthropic clients get an error event, not an `end_turn` stop.
+        let mut state =
+            StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+        let mut events = engine.translate_event(
+            &mut state,
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &chunk,
+        )?;
+        events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+        let error = events
+            .iter()
+            .find(|event| event["type"] == "error")
+            .ok_or_else(|| format!("no Anthropic error event for finish_reason {reason}"))?;
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(reason)),
+            "the error should name the finish reason: {error}"
+        );
+        assert!(
+            !events.iter().any(|event| event["type"] == "message_delta"),
+            "a failed finish must not close the message as a stop: {events:?}"
+        );
+
+        // Responses clients get an error event, not a completed response.
+        let mut state =
+            StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+        let mut events = engine.translate_event(
+            &mut state,
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &chunk,
+        )?;
+        events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+        let error = events
+            .iter()
+            .find(|event| event["type"] == "error")
+            .ok_or_else(|| format!("no Responses error event for finish_reason {reason}"))?;
+        assert!(
+            error["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(reason)),
+            "the error should name the finish reason: {error}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| event["type"] == "response.completed"),
+            "a failed finish must not complete the response: {events:?}"
+        );
+    }
+    Ok(())
+}
+
 // Interleave text and two tool calls to check that deltas keep the right item IDs.
 // Completion events must include the full text and tool arguments, and the final
 // response must preserve each item's ID.
