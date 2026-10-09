@@ -1057,6 +1057,49 @@ fn failed_responses_return_upstream_failure_with_provider_message() -> TestResul
     Ok(())
 }
 
+#[test]
+fn error_bodies_return_upstream_failure_with_provider_message() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let cases = [
+        (
+            WireFormat::OpenAiChat,
+            json!({"choices": [], "error": {"message": "deterministic upstream failure"}}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "hi"}}], "error": {}}),
+        ),
+        (
+            WireFormat::OpenAiChat,
+            json!({"choices": [{"message": {"role": "assistant", "content": "partial"}, "finish_reason": null, "error": {"message": "deterministic upstream failure"}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop", "error": null}]}),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"type": "error", "error": {"type": "api_error", "message": "deterministic upstream failure"}}),
+            json!({"type": "message", "content": [{"type": "text", "text": "hi"}], "error": {}}),
+        ),
+    ];
+    for (source, error_body, output_body) in cases {
+        let error = engine
+            .translate_response(source, WireFormat::OpenAiChat, &error_body, &policy)
+            .err()
+            .ok_or_else(|| format!("error body decoded as a completion: {error_body}"))?;
+        assert_eq!(error.kind(), "UpstreamFailure", "input: {error_body}");
+        assert!(
+            error.to_string().contains("deterministic upstream failure"),
+            "input: {error_body}"
+        );
+
+        let output = engine
+            .translate_response(source, WireFormat::OpenAiChat, &output_body, &policy)?
+            .body;
+        assert_eq!(
+            output["choices"][0]["message"]["content"], "hi",
+            "input: {output_body}"
+        );
+    }
+    Ok(())
+}
+
 // Verifies a moderation stop stays distinguishable from a normal turn in both
 // directions, and that a named refusal category survives re-encoding.
 #[test]
