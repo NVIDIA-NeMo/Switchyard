@@ -897,6 +897,15 @@ fn redact_mcp_tokens<'a>(text: &'a str, patterns: &[String]) -> Cow<'a, str> {
             text = Cow::Owned(text.replace(pattern, "[REDACTED]"));
         }
     }
+    if !patterns.is_empty() && text.contains('\\') {
+        // Further JSON decoding can reveal a token that literal matching missed.
+        if let Ok(mut value) = serde_json::from_str::<Value>(&text) {
+            redact_mcp_json(&mut value, patterns);
+            return Cow::Owned(value.to_string());
+        }
+        // Escaped fragments cannot be decoded safely as a complete JSON value.
+        return Cow::Owned("[REDACTED]".to_string());
+    }
     text
 }
 
@@ -3523,6 +3532,18 @@ mod tests {
         let body = br#"{"type":"error","error":{"message":"\u0073ynthetic-mcp-token"}}"#;
         assert!(may_contain_mcp_tokens(body, &patterns));
         let mut value: Value = serde_json::from_slice(body).expect("valid JSON");
+        redact_mcp_json(&mut value, &patterns);
+        assert_eq!(value["error"]["message"], "[REDACTED]");
+
+        let embedded = r#"{"authorization_token":"\u0073ynthetic-mcp-token"}"#;
+        let mut value = json!({"type": "error", "error": {"message": embedded}});
+        redact_mcp_json(&mut value, &patterns);
+        let recovered: Value =
+            serde_json::from_str(value["error"]["message"].as_str().expect("error message"))
+                .expect("embedded JSON");
+        assert_eq!(recovered["authorization_token"], "[REDACTED]");
+
+        let mut value = json!({"error": {"message": format!("rejected request: {embedded}")}});
         redact_mcp_json(&mut value, &patterns);
         assert_eq!(value["error"]["message"], "[REDACTED]");
     }

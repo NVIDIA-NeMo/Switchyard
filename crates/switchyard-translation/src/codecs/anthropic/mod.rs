@@ -30,12 +30,12 @@ pub(crate) fn prepare_request_tools<'a>(
 ) -> Result<Cow<'a, LlmRequest>> {
     // Check small definition fields before walking the conversation history.
     let has_provider_tools = (is_anthropic_request(request)
-        && request.extensions.fields.get("mcp_servers")
-            .and_then(Value::as_array)
-            .is_some_and(|servers| !servers.is_empty()))
-        || request.extensions.fields.get(ANTHROPIC_TOOLS_KEY)
-            .and_then(Value::as_array)
-            .is_some_and(|tools| tools.iter().any(is_server_tool))
+        && (request.extensions.fields.get("mcp_servers")
+                .and_then(Value::as_array)
+                .is_some_and(|servers| !servers.is_empty())
+            || request.extensions.fields.get(ANTHROPIC_TOOLS_KEY)
+                .and_then(Value::as_array)
+                .is_some_and(|tools| tools.iter().any(is_server_tool))))
         // Preserved source bodies can carry credentials absent from normalized fields.
         || request.preservation.requests.get(&WireFormat::AnthropicMessages.into())
             .is_some_and(|body| {

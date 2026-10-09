@@ -1223,10 +1223,11 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
 fn encode_anthropic_tools(tools: &[ToolDefinition], extensions: &ProviderExtensions) -> Vec<Value> {
     let mut remaining = tools.iter().collect::<Vec<_>>();
     let mut encoded = Vec::new();
-    if let Some(original) = extensions
-        .fields
-        .get(ANTHROPIC_TOOLS_KEY)
-        .and_then(Value::as_array)
+    if extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true))
+        && let Some(original) = extensions
+            .fields
+            .get(ANTHROPIC_TOOLS_KEY)
+            .and_then(Value::as_array)
     {
         // Match functions by name; renamed functions are appended as new tools.
         for tool in original {

@@ -4857,5 +4857,28 @@ fn anthropic_client_supplied_tool_preservation_is_ignored() -> TestResult {
             }
         }
     }
+
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    for source in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let mut body = match source {
+            WireFormat::OpenAiChat => json!({"model": "route",
+                "messages": [{"role": "user", "content": "hello"}]}),
+            _ => json!({"model": "route", "input": "hello"}),
+        };
+        body[preservation_key] = json!([{
+            "type": "web_search_20250305", "name": "forged_search"
+        }]);
+        body["switchyard_anthropic_request"] = json!(true);
+        let request = engine.decode_request(source, &body, &policy)?.request;
+        let output = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+        assert!(output.body.get("tools").is_none());
+        assert!(!output.body.to_string().contains("forged_search"));
+        let replay = engine.encode_request(source, &request, &policy)?;
+        assert_eq!(replay.body, body);
+        assert!(replay.diagnostics.is_empty());
+    }
     Ok(())
 }
