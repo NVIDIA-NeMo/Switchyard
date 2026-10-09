@@ -145,8 +145,9 @@ such clients.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `id` | Yes | — | Exact model ID sent upstream. |
+| `id` | Yes | — | Routing identifier of the target, unique per `llm_client`. Also the model ID sent upstream unless `model` is set. |
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
+| `model` | No | same as `id` | Provider model name sent upstream when it differs from `id`. Lets several targets address one provider model with different settings, for example one target per reasoning effort; the routing id stays unique. |
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
 | `omit_body_fields` | No | `[]` | Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's `format`, so use that format's field names, for example `reasoning_effort` on `openai_chat` or `reasoning` on `openai_responses`. Switchyard applies `extra_body` and `reasoning_effort` after the removal, so either can set a removed field again. |
