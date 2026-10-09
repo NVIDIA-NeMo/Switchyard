@@ -65,7 +65,7 @@ fn register_buffered(
     ctx.register_llm_execution_intercept(
         "switchyard.runner.buffered",
         priority,
-        move |name, request, next| {
+        move |name, request, _context, next| {
             let runtime = Arc::clone(&runtime);
             let plugin_runtime = plugin_runtime.clone();
             async move {
@@ -93,7 +93,7 @@ fn register_stream(
     ctx.register_llm_stream_execution_intercept(
         "switchyard.runner.streaming",
         priority,
-        move |name, request, next| {
+        move |name, request, _context, next| {
             let runtime = Arc::clone(&runtime);
             let plugin_runtime = plugin_runtime.clone();
             async move {

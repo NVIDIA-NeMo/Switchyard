@@ -8,23 +8,21 @@ deployment through Relay's
 
 ## Upstream Error Compatibility
 
-Relay 0.8.x and 0.9.0 have a native-plugin error propagation issue. Enabling the
-Switchyard plugin can change an upstream 401 or 403 into a generic 400 for a
-non-streaming request. A streaming request can receive HTTP 200 followed by an
-aborted body. This is not a successful response or an authentication bypass.
+The plugin requires NeMo Relay `>=0.10.0, <1.0.0`.
 
-This also affects **unmanaged models**: requested model names that do not match
-a configured Switchyard route. For example, if the route is `switchyard/core`
-and its target is `azure/openai/gpt-5.5`, requesting the target name directly
-still delegates the request to Relay.
+Relay 0.10.0 still has a native-plugin error propagation issue. With the
+Switchyard plugin enabled, an unmanaged upstream 403 can become a generic
+400 for a non-streaming request. Unmanaged models are requested model names
+that do not match a configured Switchyard route. For example, if the route
+is `switchyard/core` and its target is `azure/openai/gpt-5.5`, requesting the
+target name directly delegates the request to Relay.
 
-This is a known issue. A proposed correction is tracked in
+This issue was also present in older Relay versions. See
 [NeMo Relay PR #1109](https://github.com/NVIDIA/NeMo-Relay/pull/1109).
-The correction has not been released. Until a fix is available, send unmanaged
-traffic through a separate Relay instance with the plugin disabled.
-Do not assume that upgrading Switchyard alone fixes this.
-The plugin's `>=0.8.0, <1.0.0` compatibility range describes which hosts can load
-it; it does not mean those older hosts preserve upstream errors correctly.
+Send unmanaged traffic through a separate Relay instance with the plugin
+disabled when you need to preserve upstream errors. The compatibility range
+states which hosts can load the plugin. It does not guarantee that upstream
+errors retain their original status and details.
 
 ## Why Use Switchyard with NeMo Relay?
 
@@ -173,7 +171,7 @@ and how it
 
 !!! note "Relay compatibility"
 
-    The plugin requires `relay = ">=0.8.0, <1.0.0"` and native plugin API `1`.
+    The plugin requires `relay = ">=0.10.0, <1.0.0"` and native plugin API `1`.
     The packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
     is the source of truth.
