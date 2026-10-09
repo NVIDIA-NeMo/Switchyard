@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
 
+use crate::codecs::anthropic::prepare_request_tools;
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_anthropic_request, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
@@ -176,8 +177,8 @@ impl FormatCodec for OpenAiResponsesCodec {
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         let mut diagnostics = Vec::new();
-        // Responses supports MCP, but conversion from Anthropic is not yet implemented in Switchyard.
-        let prepared = super::super::anthropic::prepare_request_tools(
+        // Responses supports MCP; unmapped Anthropic MCP definitions follow the loss policy.
+        let prepared = prepare_request_tools(
             request,
             WireFormat::OpenAiResponses,
             &mut diagnostics,

@@ -259,6 +259,11 @@ fn build_multi_format_client(
   To replace either top-level field for a target, list it in `omit_body_fields` and
   supply its replacement in `extra_body`. Omission runs before defaults are merged.
   Target `reasoning_effort` overrides apply to OpenAI backends.
+- MCP authorization tokens are masked in HTTP error bodies, Anthropic error envelopes
+  returned under HTTP 200, and stream error events. Successful response bodies and
+  stream events, including MCP tool results, pass through unchanged. Tokens echoed
+  in those successful outputs are not masked. All nonempty tokens are masked in
+  errors; short tokens can also mask unrelated parts of an error message.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after

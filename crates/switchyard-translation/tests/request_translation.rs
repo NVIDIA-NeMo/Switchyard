@@ -4857,7 +4857,13 @@ fn anthropic_lossy_tool_conversion_retains_custom_functions_and_visible_text() -
             {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []},
             {"type": "text", "text": "There are 12 widgets in stock."}
         ]},
-        {"role": "user", "content": "Can we fulfill an order for 10 widgets?"}
+        {"role": "user", "content": "Can we fulfill an order for 10 widgets?"},
+        {"role": "assistant", "content": [
+            {"type": "mcp_tool_use", "id": "mcptoolu_1", "name": "inventory",
+             "server_name": "inventory", "input": {}},
+            {"type": "mcp_tool_result", "tool_use_id": "mcptoolu_1", "content": []}
+        ]},
+        {"role": "user", "content": "Please confirm the stock count."}
     ]});
     let request = engine
         .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
@@ -4870,12 +4876,34 @@ fn anthropic_lossy_tool_conversion_retains_custom_functions_and_visible_text() -
         let serialized = output.body.to_string();
         assert!(serialized.contains("local_lookup"));
         assert!(serialized.contains("There are 12 widgets in stock."));
+        let messages_key = match target {
+            WireFormat::OpenAiChat => "messages",
+            _ => "input",
+        };
+        let messages = output.body[messages_key]
+            .as_array()
+            .ok_or("expected messages")?;
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[3]["role"], "user");
+        assert!(
+            messages[2]
+                .to_string()
+                .contains("Can we fulfill an order for 10 widgets?")
+        );
+        assert!(
+            messages[3]
+                .to_string()
+                .contains("Please confirm the stock count.")
+        );
         for dropped in [
             "synthetic-token",
             "mcp_servers",
             "mcp_toolset",
             "web_search",
             "server_tool_use",
+            "mcp_tool_use",
+            "mcp_tool_result",
         ] {
             assert!(!serialized.contains(dropped));
         }

@@ -5,6 +5,7 @@
 
 use serde_json::{Map, Value, json};
 
+use crate::codecs::anthropic::prepare_request_tools;
 use crate::codecs::common::{
     first_nonempty_string, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
     reasoning_text_from_details, text_from_blocks,
@@ -189,13 +190,9 @@ impl FormatCodec for OpenAiChatCodec {
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         let mut diagnostics = Vec::new();
-        // MCP connections are not supported by Chat Completions.
-        let prepared = super::super::anthropic::prepare_request_tools(
-            request,
-            WireFormat::OpenAiChat,
-            &mut diagnostics,
-            policy,
-        )?;
+        // Chat Completions cannot represent MCP server definitions; apply the loss policy.
+        let prepared =
+            prepare_request_tools(request, WireFormat::OpenAiChat, &mut diagnostics, policy)?;
         let request = prepared.as_ref();
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiChat, policy)

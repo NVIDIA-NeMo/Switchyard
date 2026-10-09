@@ -4,6 +4,7 @@
 //! [`TranslatingLlmClient`]: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::ready;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -436,15 +437,7 @@ impl TranslatingLlmClient {
         model: &ModelId,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
-        let mcp_tokens = body
-            .get("mcp_servers")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|server| server.get("authorization_token").and_then(Value::as_str))
-            .filter(|token| !token.is_empty())
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let mcp_patterns = mcp_token_patterns(body);
         let client = if backend.is_forwarding_auth() {
             &self.forward_auth_client
         } else {
@@ -472,7 +465,7 @@ impl TranslatingLlmClient {
             if streaming {
                 let upstream_headers = response.headers().clone();
                 let chunks =
-                    match prepare_response_stream(response, backend, model, mcp_tokens).await {
+                    match prepare_response_stream(response, backend, model, mcp_patterns).await {
                         Ok(chunks) => chunks,
                         Err(error) => {
                             metrics::record_upstream_attempt(None);
@@ -504,12 +497,13 @@ impl TranslatingLlmClient {
             };
             metrics::record_upstream_attempt(Some(status.as_u16()));
             let mut body = body.to_vec();
-            // Anthropic can return an error envelope under HTTP 200.
-            if !mcp_tokens.is_empty()
+            // Anthropic can return an error envelope under HTTP 200. Successful model
+            // output stays unchanged, including tool results and signed content.
+            if may_contain_mcp_tokens(&body, &mcp_patterns)
                 && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
                 && value.get("type").and_then(Value::as_str) == Some("error")
             {
-                redact_mcp_json(&mut value, &mcp_tokens);
+                redact_mcp_json(&mut value, &mcp_patterns);
                 body = value.to_string().into_bytes();
             }
             return Ok(EncodedResponse::Buffered {
@@ -532,13 +526,13 @@ impl TranslatingLlmClient {
             }
         };
         let mut body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
-        if !mcp_tokens.is_empty() {
+        if may_contain_mcp_tokens(body.as_bytes(), &mcp_patterns) {
             body = match serde_json::from_str::<Value>(&body) {
                 Ok(mut value) => {
-                    redact_mcp_json(&mut value, &mcp_tokens);
+                    redact_mcp_json(&mut value, &mcp_patterns);
                     value.to_string()
                 }
-                Err(_) => redact_mcp_tokens(&body, &mcp_tokens),
+                Err(_) => redact_mcp_tokens(&body, &mcp_patterns).into_owned(),
             };
         }
         metrics::record_upstream_attempt(Some(status.as_u16()));
@@ -836,7 +830,7 @@ async fn prepare_response_stream(
     response: reqwest::Response,
     backend: &Backend,
     model: &ModelId,
-    mcp_tokens: Vec<String>,
+    mcp_patterns: Vec<String>,
 ) -> Result<LlmResponseStream> {
     let bytes = response.bytes_stream().map(|chunk| {
         chunk
@@ -844,7 +838,7 @@ async fn prepare_response_stream(
             .map_err(convert_reqwest_error)
     });
     let mut chunks = decode_stream(bytes, backend.wire_format())?
-        .map(move |item| item.map(|event| redact_mcp_event(event, &mcp_tokens)));
+        .map(move |item| item.map(|event| redact_mcp_event(event, &mcp_patterns)));
     match chunks.next().await {
         None => Ok(stream::empty().boxed()),
         // Nothing has reached the caller, so transport failures can still be retried.
@@ -864,35 +858,69 @@ async fn prepare_response_stream(
     }
 }
 
-// Redact both literal tokens and the escaped form used by JSON error bodies.
-fn redact_mcp_tokens(text: &str, tokens: &[String]) -> String {
-    let mut text = text.to_string();
-    for token in tokens {
+// Precompute literal and JSON-escaped forms once per HTTP attempt.
+fn mcp_token_patterns(body: &Value) -> Vec<String> {
+    let mut patterns = Vec::new();
+    for token in body
+        .get("mcp_servers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|server| server.get("authorization_token").and_then(Value::as_str))
+        .filter(|token| !token.is_empty())
+    {
         if let Ok(escaped) = serde_json::to_string(token) {
-            text = text.replace(&escaped[1..escaped.len() - 1], "[REDACTED]");
+            let escaped = &escaped[1..escaped.len() - 1];
+            if escaped != token {
+                patterns.push(escaped.to_owned());
+            }
         }
-        text = text.replace(token, "[REDACTED]");
+        // Short credentials must also be masked in errors, even at the cost of detail.
+        patterns.push(token.to_owned());
+    }
+    patterns
+}
+
+fn may_contain_mcp_tokens(body: &[u8], patterns: &[String]) -> bool {
+    !patterns.is_empty()
+        // JSON escapes can hide literal tokens, including in nested serialized JSON.
+        && (body.contains(&b'\\')
+            || patterns.iter().any(|pattern| {
+                body.windows(pattern.len()).any(|bytes| bytes == pattern.as_bytes())
+            }))
+}
+
+fn redact_mcp_tokens<'a>(text: &'a str, patterns: &[String]) -> Cow<'a, str> {
+    let mut text = Cow::Borrowed(text);
+    for pattern in patterns {
+        if text.contains(pattern.as_str()) {
+            text = Cow::Owned(text.replace(pattern, "[REDACTED]"));
+        }
     }
     text
 }
 
-fn redact_mcp_json(value: &mut Value, tokens: &[String]) {
+fn redact_mcp_json(value: &mut Value, patterns: &[String]) {
     match value {
-        Value::String(text) => *text = redact_mcp_tokens(text, tokens),
+        Value::String(text) => {
+            if let Cow::Owned(redacted) = redact_mcp_tokens(text, patterns) {
+                *text = redacted;
+            }
+        }
         Value::Array(values) => {
             for value in values {
-                redact_mcp_json(value, tokens);
+                redact_mcp_json(value, patterns);
             }
         }
         Value::Object(object) => {
             for value in object.values_mut() {
-                redact_mcp_json(value, tokens);
+                redact_mcp_json(value, patterns);
             }
             let redacted_keys = object
                 .keys()
-                .filter_map(|key| {
-                    let redacted = redact_mcp_tokens(key, tokens);
-                    (redacted != *key).then(|| (key.clone(), redacted))
+                .filter_map(|key| match redact_mcp_tokens(key, patterns) {
+                    Cow::Owned(redacted) => Some((key.clone(), redacted)),
+                    Cow::Borrowed(_) => None,
                 })
                 .collect::<Vec<_>>();
             for (key, mut redacted) in redacted_keys {
@@ -909,8 +937,9 @@ fn redact_mcp_json(value: &mut Value, tokens: &[String]) {
     }
 }
 
-fn redact_mcp_event(event: LlmResponseStreamEvent, tokens: &[String]) -> LlmResponseStreamEvent {
-    if tokens.is_empty()
+// Scrub error diagnostics and their preserved frames; successful stream events stay intact.
+fn redact_mcp_event(event: LlmResponseStreamEvent, patterns: &[String]) -> LlmResponseStreamEvent {
+    if patterns.is_empty()
         || !event.normalized().iter().any(|chunk| {
             matches!(
                 chunk,
@@ -922,16 +951,17 @@ fn redact_mcp_event(event: LlmResponseStreamEvent, tokens: &[String]) -> LlmResp
     }
     let (preserved, mut normalized) = event.into_parts();
     for chunk in &mut normalized {
-        if let LlmResponseChunk::StreamError { message }
-        | LlmResponseChunk::DecodeError { message } = chunk
+        if let LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } =
+            chunk
+            && let Cow::Owned(redacted) = redact_mcp_tokens(message, patterns)
         {
-            *message = redact_mcp_tokens(message, tokens);
+            *message = redacted;
         }
     }
     match preserved {
         Some(preserved) => {
             let (source, mut raw) = preserved.into_parts();
-            redact_mcp_json(&mut raw, tokens);
+            redact_mcp_json(&mut raw, patterns);
             LlmResponseStreamEvent::preserved(source, raw, normalized)
         }
         None => LlmResponseStreamEvent::new(normalized),
@@ -3409,7 +3439,7 @@ mod tests {
     async fn anthropic_mcp_success_preserves_buffered_response_bytes()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
-        let response_body = r#"{ "type": "message", "z": 1e2, "a": 2, "content": [{"type": "text", "text": "done"}] }"#;
+        let response_body = r#"{ "type": "message", "z": 1e2, "a": 2, "content": [{"type": "mcp_tool_result", "tool_use_id": "mcptoolu_1", "content": [{"type": "text", "text": "synthetic-mcp-token"}]}] }"#;
         Mock::given(method("POST"))
             .respond_with(
                 ResponseTemplate::new(200).set_body_raw(response_body, "application/json"),
@@ -3455,5 +3485,71 @@ mod tests {
         assert_eq!(object["[REDACTED]"]["detail"], "existing key");
         assert_eq!(object["other"]["detail"], "unchanged");
         assert!(object.values().any(|value| value["detail"] == "echoed key"));
+    }
+
+    #[test]
+    fn mcp_redaction_borrows_strings_without_matches() {
+        let text = "ordinary error detail";
+        let tokens = vec!["synthetic-mcp-token".to_string()];
+        let redacted = redact_mcp_tokens(text, &tokens);
+        assert_eq!(redacted, text);
+        assert_eq!(redacted.as_ptr(), text.as_ptr());
+    }
+
+    #[test]
+    fn mcp_redaction_handles_escaped_and_short_tokens() {
+        for token in ["x", "xy", "xyz", "synthetic-mcp-\"\\-secret"] {
+            let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
+                "authorization_token": token
+            }]}));
+            assert!(!may_contain_mcp_tokens(b"ordinary error detail", &patterns));
+            let echo = json!({"authorization_token": token}).to_string();
+            let mut value = json!({"type": "error", "error": {"message": echo}});
+            assert!(may_contain_mcp_tokens(
+                value.to_string().as_bytes(),
+                &patterns
+            ));
+            redact_mcp_json(&mut value, &patterns);
+            assert!(!value.to_string().contains(token));
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("[REDACTED]"))
+            );
+        }
+        let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
+            "authorization_token": "synthetic-mcp-token"
+        }]}));
+        let body = br#"{"type":"error","error":{"message":"\u0073ynthetic-mcp-token"}}"#;
+        assert!(may_contain_mcp_tokens(body, &patterns));
+        let mut value: Value = serde_json::from_slice(body).expect("valid JSON");
+        redact_mcp_json(&mut value, &patterns);
+        assert_eq!(value["error"]["message"], "[REDACTED]");
+    }
+
+    #[test]
+    fn mcp_redaction_preserves_successful_stream_events() {
+        let raw = json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "synthetic-mcp-token"}});
+        let event = LlmResponseStreamEvent::preserved(
+            WireFormat::AnthropicMessages,
+            raw.clone(),
+            vec![LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "synthetic-mcp-token".to_string(),
+            }],
+        );
+        let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
+            "authorization_token": "synthetic-mcp-token"
+        }]}));
+        let event = redact_mcp_event(event, &patterns);
+        assert_eq!(event.preservation().expect("preserved event").raw(), &raw);
+        assert_eq!(
+            event.normalized(),
+            &[LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "synthetic-mcp-token".to_string()
+            }]
+        );
     }
 }
