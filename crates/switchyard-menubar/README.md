@@ -24,7 +24,7 @@ choose another profile name. The installer writes `$SY_PROFILE.config.toml` in
 the Codex config directory. For example:
 
 ```sh
-export SY_PROFILE=stage-gpt-sonnet
+export SY_PROFILE=composite-gpt-6-sol-gpt-6-luna
 make install-macos
 codex -p "$SY_PROFILE"
 ```
@@ -33,7 +33,7 @@ Remove the app and selected profile with `make uninstall-macos`. For a named
 profile, pass the same name used during installation:
 
 ```sh
-SY_PROFILE=stage-gpt-sonnet make uninstall-macos
+SY_PROFILE=composite-gpt-6-sol-gpt-6-luna make uninstall-macos
 ```
 
 Use the same `SY_HOME` and `CODEX_HOME` overrides if you set them for installation.
