@@ -295,38 +295,23 @@ async def test_judge_image_limit_preserves_answer_request(
             config=TaskClassifierConfig(0.5, judge_max_images=image_limit),
         )
         verdict = '{"crux":"visible object","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}'
-    algorithm = algorithms.llm_classifier(config)
-    judged = False
-    models = {
-        "judge": ["judge"], "weak": ["weak"], "strong": ["strong"],
-        "efficient": ["weak"], "capable": ["strong"], "any": ["weak", "strong"],
-    }
-    async for step in algorithm.run_stream(request, models):
-        match step:
-            case Step.CallModel(call):
-                judged = True
-                content = call.request["messages"][0]["content"]
-                images = [block for block in content if block["type"] == "image"]
-                assert len(images) == (2 if image_limit is None else image_limit)
-                if image_limit == 1:
-                    assert images[0]["source"]["data"]["url"].endswith("/1.png")
-                call.respond(
-                    LlmResponse.Agg(
-                        {
-                            "outputs": [
-                                {
-                                    "role": "assistant",
-                                    "content": [{"type": "text", "text": verdict}],
-                                    "stop_reason": "end_turn",
-                                }
-                            ]
-                        }
-                    )
-                )
-            case Step.Done(outcome):
-                assert outcome.selected_model_ids[0] == "weak"
-                assert outcome.request["messages"] == request["messages"]
-    assert judged
+    judge, answer = EchoClient(verdict), EchoClient("weak")
+    selected, _ = await run_algorithm(
+        algorithms.llm_classifier(config),
+        {"judge": judge, "weak": answer},
+        models={
+            "judge": ["judge"], "weak": ["weak"], "strong": ["strong"],
+            "efficient": ["weak"], "capable": ["strong"], "any": ["weak", "strong"],
+        },
+        request=request,
+    )
+    assert selected == "weak"
+    assert len(judge.calls) == len(answer.calls) == 1
+    images = [b for b in judge.calls[0]["messages"][0]["content"] if b["type"] == "image"]
+    assert len(images) == (2 if image_limit is None else image_limit)
+    if image_limit == 1:
+        assert images[0]["source"]["data"]["url"].endswith("/1.png")
+    assert answer.calls[0]["messages"] == request["messages"]
 
 
 async def test_custom_classifier_routes_across_named_targets() -> None:
