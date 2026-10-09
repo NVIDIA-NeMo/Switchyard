@@ -1,11 +1,12 @@
 {
-  "name": "switchyard-pi-example",
+  "name": "switchyard-pi",
   "version": "0.3.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
   "engines": { "node": ">=22.19.0" },
   "pi": { "extensions": ["./switchyard-router.ts"] },
+  "keywords": ["pi-package"],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test test/*.test.mjs"
