@@ -3430,3 +3430,80 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
     }
     Ok(())
 }
+
+// LiteLLM in front of Bedrock streams a freeform call as function-style argument deltas that
+// spell `{"content": ...}`. OpenAI streams it with custom input deltas. Both must decode to
+// one call whose only arguments are the finished input, and the terminal snapshot that
+// repeats the call must neither conflict with it nor repeat it.
+#[test]
+fn responses_custom_tool_calls_decode_from_the_finished_item() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let call =
+        json!({"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1", "name": "exec"});
+    let mut added = call.clone();
+    added["input"] = json!("");
+    let mut done = call;
+    done["input"] = json!("ls");
+    let added = json!({"type": "response.output_item.added", "output_index": 1, "item": added});
+    let item_done = json!({"type": "response.output_item.done", "output_index": 1, "item": done});
+    let completed = json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}, done]}});
+    let litellm = vec![
+        added.clone(),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "{\"content\": "}),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "\"ls\"}"}),
+        json!({"type": "response.function_call_arguments.done", "output_index": 1, "arguments": "{\"content\": \"ls\"}"}),
+        item_done.clone(),
+        completed.clone(),
+    ];
+    let openai = vec![
+        added,
+        json!({"type": "response.custom_tool_call_input.delta", "output_index": 1, "delta": "ls"}),
+        json!({"type": "response.custom_tool_call_input.done", "output_index": 1, "input": "ls"}),
+        item_done,
+        completed,
+    ];
+    for (shape, events) in [("litellm", litellm), ("openai", openai)] {
+        let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+        let mut chunks = Vec::new();
+        for event in events {
+            chunks.extend(
+                engine
+                    .decode_stream_event(&mut state, source, event)?
+                    .normalized()
+                    .to_vec(),
+            );
+        }
+        assert!(
+            !chunks.iter().any(|chunk| matches!(
+                chunk,
+                LlmResponseChunk::DecodeError { .. } | LlmResponseChunk::StreamError { .. }
+            )),
+            "{shape}: {chunks:?}"
+        );
+        let arguments: String = chunks
+            .iter()
+            .filter_map(|chunk| match chunk {
+                LlmResponseChunk::ToolCallDelta {
+                    arguments_delta: Some(arguments),
+                    ..
+                } => Some(arguments.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arguments, r#"{"input":"ls"}"#, "{shape}");
+        assert!(
+            chunks.iter().any(|chunk| matches!(chunk,
+                LlmResponseChunk::ToolCallDelta { id: Some(id), name: Some(name), .. }
+                if id == "call_1" && name == "exec")),
+            "{shape}: {chunks:?}"
+        );
+        assert!(
+            chunks.iter().any(|chunk| matches!(chunk,
+                LlmResponseChunk::MessageStop { reason: Some(reason) } if reason == "tool_use")),
+            "{shape}: {chunks:?}"
+        );
+    }
+    Ok(())
+}
