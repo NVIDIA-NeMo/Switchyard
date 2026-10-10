@@ -44,8 +44,6 @@ jobs:
           cargo clippy --locked -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server
-      - name: Build release app from this checkout
-        run: cargo build --locked --release -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server
       - name: Exercise real tasks, running updates, restart, and uninstall
         env:
           SWITCHYARD_WINDOWS_LOG_DIR: ${{ runner.temp }}/switchyard-windows-logs

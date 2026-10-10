@@ -890,9 +890,11 @@ fn reconcile_desktop_port(s: &Settings) -> Result<Option<String>, String> {
             s.port
         ));
     }
-    if current.is_none() || current == Some(expected.as_str()) {
-        document["server_url"] = toml_edit::value(format!("http://127.0.0.1:{}", s.port));
+    // Unchanged and custom URLs must retain the original TOML bytes, including quotes and line endings.
+    if current.is_some_and(|url| url != expected || s.port == old_port) {
+        return Ok(None);
     }
+    document["server_url"] = toml_edit::value(format!("http://127.0.0.1:{}", s.port));
     let updated = document.to_string();
     Ok((updated != text).then_some(updated))
 }

@@ -573,6 +573,13 @@ fn source_update_preserves_profile_bytes_and_uninstall_keeps_recovery() {
     let profile = f.settings.codex_home.join("team-dev.config.toml");
     let current = "# Personal settings\nmodel='custom-selection'\nexperimental='retained'\n";
     fs::write(&profile, current).expect("edited profile");
+    let settings = f.settings.desktop_settings();
+    // Mixed line endings and single quotes expose a rewrite even when the parsed settings stay the same.
+    let retained_settings = format!(
+        "# Personal settings\r\nserver_url = 'http://127.0.0.1:{}'\nbaseline_model='custom'\r\n[prices.custom]\r\ninput_per_mtok=9.25\noutput_per_mtok=12.5\r\n",
+        f.settings.port
+    );
+    fs::write(&settings, &retained_settings).expect("edited settings");
     let output = f.run("update", false);
     assert!(
         output.status.success(),
@@ -580,6 +587,10 @@ fn source_update_preserves_profile_bytes_and_uninstall_keeps_recovery() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(fs::read_to_string(&profile).expect("profile"), current);
+    assert_eq!(
+        fs::read(&settings).expect("settings"),
+        retained_settings.as_bytes()
+    );
     assert_eq!(
         switchyard_desktop_install::update_status(&f.metadata).expect("status")["state"],
         "completed"
