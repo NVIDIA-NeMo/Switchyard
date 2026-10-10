@@ -3419,7 +3419,7 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
         )?;
         assert!(matches!(
             decoded.normalized().last(),
-            Some(LlmResponseChunk::StreamError { .. })
+            Some(LlmResponseChunk::DecodeError { .. })
         ));
         assert!(
             !decoded

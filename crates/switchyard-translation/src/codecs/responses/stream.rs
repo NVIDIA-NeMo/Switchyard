@@ -270,7 +270,7 @@ fn decode_responses_stream(
                 for (position, item) in items.iter().enumerate() {
                     if let Some(item) = item.as_object() {
                         out.extend(decode_responses_completed_item(item, position, state));
-                        if matches!(out.last(), Some(LlmResponseChunk::StreamError { .. })) {
+                        if matches!(out.last(), Some(LlmResponseChunk::DecodeError { .. })) {
                             return out;
                         }
                     }
@@ -788,13 +788,15 @@ fn decode_responses_completed_item(
     Vec::new()
 }
 
-// A snapshot may extend streamed content, but cannot retract content already sent.
+// A snapshot may extend streamed content, but cannot retract content already sent. A
+// conflict means the provider sent inconsistent data, so it decodes to `DecodeError`: the
+// server then replaces the event with an error frame instead of replaying it.
 fn snapshot_suffix(
     decoded: &mut String,
     snapshot: &str,
 ) -> Result<Option<String>, LlmResponseChunk> {
     let Some(suffix) = snapshot.strip_prefix(decoded.as_str()) else {
-        return Err(LlmResponseChunk::StreamError {
+        return Err(LlmResponseChunk::DecodeError {
             message: "Responses snapshot conflicts with streamed content".to_string(),
         });
     };

@@ -3290,7 +3290,9 @@ target = "openai"
 /// Streams a tool call the way the LiteLLM Responses gateway in front of Bedrock Claude does.
 /// The gateway sends data-only frames, streams a custom tool's call as
 /// `response.function_call_arguments.delta` events whose JSON differs from the finished
-/// item's `input`, and closes an empty text message at output index 0 after the call.
+/// item's `input`, and closes an empty text message at output index 0 after the call. With
+/// `conflicting-arguments` in the request, the call is a `function_call` whose finished
+/// `arguments` do not start with the streamed deltas.
 async fn upstream_gateway_tool_stream(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     Json(body): Json<Value>,
@@ -3305,6 +3307,16 @@ async fn upstream_gateway_tool_stream(
     let mut done = call;
     done["status"] = json!("completed");
     done["input"] = json!("ls");
+    if body.to_string().contains("conflicting-arguments") {
+        let call =
+            json!({"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "exec"});
+        added = call.clone();
+        added["status"] = json!("in_progress");
+        added["arguments"] = json!("");
+        done = call;
+        done["status"] = json!("completed");
+        done["arguments"] = json!("{\"path\": \"b\"}");
+    }
     let message = json!({"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
         "content": [{"type": "output_text", "text": "", "annotations": []}]});
     let response = json!({"id": "resp_gateway", "object": "response", "model": model, "status": "completed",
@@ -3387,6 +3399,43 @@ async fn responses_stream_completes_a_gateway_custom_tool_call() -> TestResult {
     assert_eq!(call["item"]["input"], "ls");
     let last = events.last().ok_or("the stream must not be empty")?;
     assert_eq!(last["type"], "response.completed", "{events:#?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn responses_stream_reports_a_conflicting_tool_call_snapshot_as_an_error() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&gateway_stream_config(
+        &upstream.base_url,
+    ))?);
+    let response = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/gateway-claude",
+            "input": "conflicting-arguments",
+            "tools": [{"type": "function", "name": "exec", "parameters": {"type": "object"}}],
+            "stream": true
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    let events = sse_events(response.text()?);
+    // The finished call contradicts the streamed arguments, so the server sends an error
+    // event in its place and ends the stream there.
+    let last = events.last().ok_or("the stream must not be empty")?;
+    assert_eq!(last["type"], "error", "{events:#?}");
+    assert_eq!(
+        last["message"],
+        "Responses snapshot conflicts with streamed content"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["type"] == "response.output_item.done"),
+        "{events:#?}"
+    );
     Ok(())
 }
 
