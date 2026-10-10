@@ -65,6 +65,11 @@ impl MockUpstream {
                 "/gateway-stream/responses",
                 post(upstream_gateway_tool_stream),
             )
+            .route("/bedrock-gateway/responses", post(upstream_bedrock_gateway))
+            .route(
+                "/bedrock-gateway/chat/completions",
+                post(upstream_bedrock_gateway),
+            )
             .route("/capture", post(upstream_redirect_capture))
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
             .route(
@@ -3436,6 +3441,202 @@ async fn responses_stream_reports_a_conflicting_tool_call_snapshot_as_an_error()
             .any(|event| event["type"] == "response.output_item.done"),
         "{events:#?}"
     );
+    Ok(())
+}
+
+/// Answers like LiteLLM in front of Bedrock Claude: a request whose history calls a tool but
+/// that defines no tools gets HTTP 400, and any other request gets the text "ok".
+async fn upstream_bedrock_gateway(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    uri: Uri,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    let model = body["model"].as_str().unwrap_or_default();
+    let calls_a_tool = body["input"].as_array().into_iter().flatten().any(|item| {
+        matches!(
+            item["type"].as_str(),
+            Some("function_call" | "custom_tool_call")
+        )
+    }) || body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|message| message.get("tool_calls").is_some());
+    let defines_tools = body["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty());
+    if calls_a_tool && !defines_tools {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {
+                "message": "litellm.UnsupportedParamsError: Bedrock doesn't support tool calling without `tools=` param specified.",
+                "type": "invalid_request_error", "code": "400"
+            }})),
+        )
+            .into_response();
+    }
+    if uri.path().ends_with("/chat/completions") {
+        return Json(json!({
+            "id": "chatcmpl-gateway", "object": "chat.completion", "model": model,
+            "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }))
+        .into_response();
+    }
+    let response = responses_body("resp_gateway", model, "ok");
+    if body["stream"] != true {
+        return Json(response).into_response();
+    }
+    let events = [
+        json!({"type": "response.created", "response": {"id": "resp_gateway", "model": model, "status": "in_progress", "output": []}}),
+        json!({"type": "response.output_text.delta", "output_index": 0, "delta": "ok"}),
+        json!({"type": "response.completed", "response": response}),
+    ];
+    let stream = futures_util::stream::iter(
+        events
+            .into_iter()
+            .map(|event| Ok::<Event, Infallible>(Event::default().data(event.to_string()))),
+    );
+    Sse::new(stream).into_response()
+}
+
+#[tokio::test]
+async fn requests_replaying_tool_calls_without_tools_get_tool_definitions() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let root = upstream.base_url.trim_end_matches("/v1");
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.responses]
+format = "openai_responses"
+base_url = "{root}/bedrock-gateway"
+max_retries = 0
+
+[llm_clients.chat]
+format = "openai_chat"
+base_url = "{root}/bedrock-gateway"
+max_retries = 0
+
+[targets.responses]
+id = "model/bedrock-responses"
+llm_client = "responses"
+
+[targets.chat]
+id = "model/bedrock-chat"
+llm_client = "chat"
+
+[routes.responses]
+id = "switchyard/bedrock-responses"
+type = "passthrough"
+target = "responses"
+
+[routes.chat]
+id = "switchyard/bedrock-chat"
+type = "passthrough"
+target = "chat"
+"#
+    ))?);
+
+    // Codex compacts a conversation by sending its history with an empty `tools` list.
+    let compaction = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/bedrock-responses",
+            "stream": true,
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": false,
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "List files"}]},
+                {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls"},
+                {"type": "custom_tool_call_output", "call_id": "call_1", "output": "README.md"},
+                {"type": "function_call", "call_id": "call_2", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_2", "output": "ok"},
+                {"type": "function_call", "call_id": "call_3", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_3", "output": "ok"},
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Summarize the conversation."}]}
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(compaction.status, StatusCode::OK, "{}", compaction.text()?);
+    let events = sse_events(compaction.text()?);
+    assert_eq!(
+        events.last().ok_or("the stream must not be empty")?["type"],
+        "response.completed"
+    );
+
+    let chat = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/bedrock-chat",
+            "messages": [
+                {"role": "user", "content": "List files"},
+                {"role": "assistant", "content": null, "tool_calls": [{"id": "call_1", "type": "function",
+                    "function": {"name": "shell", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "README.md"},
+                {"role": "user", "content": "Summarize the conversation."}
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(chat.status, StatusCode::OK, "{}", chat.text()?);
+
+    // A request that already defines tools reaches the gateway with its own definitions.
+    let defined = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/bedrock-responses",
+            "tools": [{"type": "function", "name": "shell", "description": "Run a command",
+                "parameters": {"type": "object"}}],
+            "tool_choice": "auto",
+            "input": [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "List files"}]},
+                {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "README.md"}
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(defined.status, StatusCode::OK, "{}", defined.text()?);
+
+    let calls = upstream.calls.lock().await;
+    let tool_list = |call: &Value| -> Vec<(String, String)> {
+        let tools = call["tools"].as_array().cloned().unwrap_or_default();
+        tools
+            .iter()
+            .map(|tool| {
+                let name = tool["name"].as_str().or(tool["function"]["name"].as_str());
+                (
+                    tool["type"].as_str().unwrap_or_default().to_string(),
+                    name.unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(calls.len(), 3);
+    assert_eq!(
+        tool_list(&calls[0]),
+        [
+            ("custom".into(), "exec".into()),
+            ("function".into(), "shell".into())
+        ]
+    );
+    assert_eq!(calls[0]["tool_choice"], "none");
+    assert_eq!(tool_list(&calls[1]), [("function".into(), "shell".into())]);
+    assert_eq!(calls[1]["tool_choice"], "none");
+    assert_eq!(calls[2]["tools"][0]["description"], "Run a command");
+    assert_eq!(calls[2]["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(calls[2]["tool_choice"], "auto");
     Ok(())
 }
 
