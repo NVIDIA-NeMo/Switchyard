@@ -23,15 +23,25 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.99 --profile minimal --component clippy,rustfmt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default 1.99
+      - uses: actions/cache@v4
         with:
-          toolchain: '1.99'
-          components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@v2
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: temporary-windows-desktop-${{ runner.os }}-1.99-${{ hashFiles('Cargo.lock') }}
+          restore-keys: temporary-windows-desktop-${{ runner.os }}-1.99-
       - name: Check Windows desktop and installer
         run: |
           cargo fmt --all --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --locked -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server
       - name: Build release app from this checkout
         run: cargo build --locked --release -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server
