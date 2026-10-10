@@ -1693,16 +1693,17 @@ mod tests {
 
     use super::*;
 
-    /// A successful judge call lands in the per-session routing snapshot under its
-    /// model id with the classifier tier, while routed calls stay off the observer's
-    /// log path — they are logged with terminal usage when the served response is
-    /// observed, so an append here would double count them.
+    /// The observer logs judge calls with their model IDs, classifier tier, and
+    /// recorded session and turn IDs. The served response logs routed calls with
+    /// their final usage, so logging them here would count each routed call twice.
     #[test]
-    fn stats_observer_logs_judge_calls_to_the_routing_log() {
+    fn stats_observer_logs_judge_calls_to_the_routing_log() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir().expect("temp dir");
         let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
         let mut headers = HeaderMap::new();
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
+        headers.insert("x-switchyard-turn-id", "turn-1".parse()?);
         let metadata = metadata_from_headers(headers);
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
@@ -1736,6 +1737,10 @@ mod tests {
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
+        let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&log.path)?)?;
+        assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["turn_id"], "turn-1");
+        Ok(())
     }
 
     #[derive(Clone)]

@@ -1,0 +1,35 @@
+use std::{env, fs, path::Path};
+fn main() {
+    let args: Vec<_> = env::args().collect();
+    let exe = env::current_exe().unwrap();
+    let name = Path::new(&args[0]).file_name().unwrap().to_str().unwrap();
+    if matches!(name, "launchctl" | "systemctl") {
+        use std::io::Write;
+        let mut calls = fs::OpenOptions::new().create(true).append(true)
+            .open(Path::new(&env::var_os("HOME").unwrap()).join("service_calls")).unwrap();
+        writeln!(calls, "{args:?}").unwrap();
+    }
+    match name {
+        "cargo" => {
+            let target = &args[args.iter().position(|s| s == "--target-dir").unwrap() + 1];
+            let release = Path::new(target).join("release");
+            fs::create_dir_all(&release).unwrap();
+            for bin in ["switchyard-server", "switchyard-desktop"] { fs::copy(&exe, release.join(bin)).unwrap(); }
+            fs::copy(env::var("INSTALLER_BIN").unwrap(), release.join("switchyard-desktop-install")).unwrap();
+        }
+        "switchyard-desktop-install" => {
+            let output = std::process::Command::new("ps")
+                .args(["-o", "pgid=", "-p", &std::process::id().to_string()])
+                .output().unwrap();
+            assert!(output.status.success());
+            print!("{}", String::from_utf8(output.stdout).unwrap());
+        }
+        "systemctl" if args.get(2).is_some_and(|s| s == "disable")
+            && !Path::new(&env::var_os("HOME").unwrap()).join(".config/systemd/user/switchyard.service").exists()
+            => std::process::exit(1),
+        "id" => println!("501"),
+        "launchctl" if args.get(1).is_some_and(|s| s == "print") => std::process::exit(1),
+        "switchyard-server" if env::var("FIXTURE_FAIL_VALIDATE").as_deref() == Ok("1") => std::process::exit(1),
+        _ => {}
+    }
+}

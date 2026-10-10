@@ -131,6 +131,11 @@ pub(crate) struct StreamToolState {
     pub(crate) decoded_arguments: String,
     #[serde(default)]
     pub(crate) has_decoded_identity: bool,
+    /// True when the source announced a `custom_tool_call`. The decoder then reads the call's
+    /// input only from the completed item, because some providers also stream argument deltas
+    /// whose JSON does not match that input.
+    #[serde(default)]
+    pub(crate) decoded_custom_call: bool,
     pub(crate) pending_arguments: String,
     pub(crate) started: bool,
     pub(crate) content_index: Option<usize>,

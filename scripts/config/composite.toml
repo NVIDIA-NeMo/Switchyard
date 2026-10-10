@@ -26,7 +26,7 @@ extra_body = { store = false, stream = true }
 omit_body_fields = ["max_output_tokens"]
 
 [routes.switchyard]
-id = "switchyard"
+id = "composite-gpt-6-sol-gpt-6-luna"
 type = "composite"
 
 [routes.switchyard.classifier]

@@ -93,3 +93,6 @@ releases. Pin the version you integrate.
 [Report an issue](https://github.com/NVIDIA-NeMo/Switchyard/issues) · [Contribute](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md)
 
 [Apache 2.0](LICENSE). Copyright NVIDIA Corporation.
+
+The [desktop and terminal quickstart](crates/switchyard-desktop/README.md) covers
+local installation, coding-tool connections, sessions, usage, recovery, and uninstall.
