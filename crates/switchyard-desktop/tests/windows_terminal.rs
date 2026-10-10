@@ -30,11 +30,7 @@ fn native_and_npm_launchers_preserve_arguments_accounts_and_working_directory() 
             .success()
     );
     let shim = root.path().join("tool.cmd");
-    fs::write(
-        &shim,
-        format!("@echo off\r\n@\"{}\" %*\r\n", tool.display()),
-    )
-    .expect("npm shim");
+    fs::write(&shim, "@echo off\r\n@\"%~dp0tool.exe\" %*\r\n").expect("npm shim");
     let args = vec![
         "space équipe".to_string(),
         "a\"b".into(),
@@ -48,16 +44,20 @@ fn native_and_npm_launchers_preserve_arguments_accounts_and_working_directory() 
     for binary in [tool, shim] {
         let launch = root.path().join("launch.json");
         fs::write(&launch,serde_json::to_vec(&serde_json::json!({"binary":binary,"args":args,"directory":root.path(),"environment":[["CODEX_HOME",account.display().to_string()],["FIXTURE_OUTPUT",output.display().to_string()]],"remove_environment":["ANTHROPIC_AUTH_TOKEN"]})).expect("launch JSON")).expect("launch record");
-        let status = Command::new(env!("CARGO_BIN_EXE_switchyard-desktop"))
+        let result = Command::new(env!("CARGO_BIN_EXE_switchyard-desktop"))
             .arg("--terminal-job")
             .arg(&launch)
             .env("ANTHROPIC_AUTH_TOKEN", "must-be-removed")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .output()
             .expect("terminal job");
-        assert!(status.success(), "terminal launch failed");
+        assert!(
+            result.status.success(),
+            "terminal launch failed for {binary:?}: status={:?}; stdout={}; stderr={}",
+            result.status,
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
         let captured = fs::read_to_string(&output).expect("captured tool launch");
         assert!(captured.starts_with(&format!("{args:?}\n")), "{captured}");
         assert!(captured.contains(&format!("Ok({:?})", account.display().to_string())));
