@@ -61,6 +61,10 @@ impl MockUpstream {
                 post(upstream_responses_requires_forwarded_auth),
             )
             .route("/silo/{silo}/responses", post(upstream_responses_silo))
+            .route(
+                "/gateway-stream/responses",
+                post(upstream_gateway_tool_stream),
+            )
             .route("/capture", post(upstream_redirect_capture))
             .route("/v1/messages/count_tokens", post(upstream_count_tokens))
             .route(
@@ -3280,6 +3284,109 @@ target = "openai"
     assert!(error.contains("[REDACTED]"));
     assert!(!error.contains("codex-login-token"));
 
+    Ok(())
+}
+
+/// Streams a tool call the way the LiteLLM Responses gateway in front of Bedrock Claude does.
+/// The gateway sends data-only frames, streams a custom tool's call as
+/// `response.function_call_arguments.delta` events whose JSON differs from the finished
+/// item's `input`, and closes an empty text message at output index 0 after the call.
+async fn upstream_gateway_tool_stream(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(body.clone());
+    let model = body["model"].as_str().unwrap_or_default();
+    let call =
+        json!({"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1", "name": "exec"});
+    let mut added = call.clone();
+    added["status"] = json!("in_progress");
+    added["input"] = json!("");
+    let mut done = call;
+    done["status"] = json!("completed");
+    done["input"] = json!("ls");
+    let message = json!({"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+        "content": [{"type": "output_text", "text": "", "annotations": []}]});
+    let response = json!({"id": "resp_gateway", "object": "response", "model": model, "status": "completed",
+        "output": [message, done],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}});
+    let mut created = response.clone();
+    created["status"] = json!("in_progress");
+    created["output"] = json!([]);
+    let events = [
+        json!({"type": "response.created", "response": created}),
+        json!({"type": "response.output_item.added", "output_index": 1, "item": added}),
+        json!({"type": "response.function_call_arguments.delta", "item_id": "ctc_1", "output_index": 1, "delta": "{\"content\": "}),
+        json!({"type": "response.function_call_arguments.delta", "item_id": "ctc_1", "output_index": 1, "delta": "\"ls\"}"}),
+        json!({"type": "response.function_call_arguments.done", "item_id": "ctc_1", "output_index": 1, "arguments": "{\"content\": \"ls\"}"}),
+        json!({"type": "response.output_item.done", "output_index": 1, "item": done}),
+        json!({"type": "response.output_text.done", "item_id": "msg_1", "output_index": 0, "content_index": 0, "text": ""}),
+        json!({"type": "response.content_part.done", "item_id": "msg_1", "output_index": 0, "content_index": 0,
+            "part": {"type": "output_text", "text": "", "annotations": []}}),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": message}),
+        json!({"type": "response.completed", "response": response}),
+    ];
+    let stream = futures_util::stream::iter(
+        events
+            .into_iter()
+            .map(|event| Ok::<Event, Infallible>(Event::default().data(event.to_string()))),
+    );
+    Sse::new(stream).into_response()
+}
+
+fn gateway_stream_config(base_url: &str) -> String {
+    let root = base_url.trim_end_matches("/v1");
+    format!(
+        r#"
+schema_version = 1
+
+[llm_clients.gateway]
+format = "openai_responses"
+base_url = "{root}/gateway-stream"
+max_retries = 0
+
+[targets.claude]
+id = "model/gateway-claude"
+llm_client = "gateway"
+
+[routes.claude]
+id = "switchyard/gateway-claude"
+type = "passthrough"
+target = "claude"
+"#
+    )
+}
+
+#[tokio::test]
+async fn responses_stream_completes_a_gateway_custom_tool_call() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&gateway_stream_config(
+        &upstream.base_url,
+    ))?);
+    let response = send(
+        &app,
+        "POST",
+        "/v1/responses",
+        Some(json!({
+            "model": "switchyard/gateway-claude",
+            "input": "list files",
+            "tools": [{"type": "custom", "name": "exec", "format": {"type": "text"}}],
+            "stream": true
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+    let events = sse_events(response.text()?);
+    let call = events
+        .iter()
+        .find(|event| {
+            event["type"] == "response.output_item.done"
+                && event["item"]["type"] == "custom_tool_call"
+        })
+        .ok_or("the stream must close the custom tool call")?;
+    assert_eq!(call["item"]["input"], "ls");
+    let last = events.last().ok_or("the stream must not be empty")?;
+    assert_eq!(last["type"], "response.completed", "{events:#?}");
     Ok(())
 }
 

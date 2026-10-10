@@ -188,22 +188,23 @@ fn decode_responses_stream(
             event
                 .get("delta")
                 .and_then(Value::as_str)
-                .map(|delta| {
+                .and_then(|delta| {
                     state.decoded_tool_call = true;
+                    let tool = state.tool_states.entry(output_index as usize).or_default();
+                    // The completed item carries a custom call's input. The decoder skips
+                    // argument deltas for that call because their JSON can differ from it.
+                    if tool.decoded_custom_call {
+                        return None;
+                    }
                     // Recorded so `response.output_item.done`, which repeats
                     // the complete arguments, can tell it is a repeat.
-                    state
-                        .tool_states
-                        .entry(output_index as usize)
-                        .or_default()
-                        .decoded_arguments
-                        .push_str(delta);
-                    vec![LlmResponseChunk::ToolCallDelta {
+                    tool.decoded_arguments.push_str(delta);
+                    Some(vec![LlmResponseChunk::ToolCallDelta {
                         index: output_index as usize,
                         id: None,
                         name: None,
                         arguments_delta: Some(delta.to_string()),
-                    }]
+                    }])
                 })
                 .unwrap_or_default()
         }
@@ -670,12 +671,10 @@ fn decode_responses_output_item_added(
         .or_else(|| item.get("id"))
         .and_then(Value::as_str);
     let name = item.get("name").and_then(Value::as_str);
-    state
-        .tool_states
-        .entry(index)
-        .or_default()
-        .has_decoded_identity |=
+    let tool = state.tool_states.entry(index).or_default();
+    tool.has_decoded_identity |=
         id.is_some_and(|id| !id.is_empty()) && name.is_some_and(|name| !name.is_empty());
+    tool.decoded_custom_call |= item_type == Some("custom_tool_call");
     // A freeform call's `input` becomes the single `input` argument; it is only complete on
     // the done event, so nothing is emitted for it here beyond id and name.
     let arguments_delta = if item_type == Some("custom_tool_call") {
