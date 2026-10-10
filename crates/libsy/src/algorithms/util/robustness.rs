@@ -90,6 +90,7 @@ mod tests {
             source: LlmClientError::UpstreamHttp {
                 status: http::StatusCode::BAD_REQUEST,
                 body: format!(r#"{{"error":{{"message":"bad request: {SECRET}"}}}}"#),
+                headers: Box::default(),
             },
         };
 

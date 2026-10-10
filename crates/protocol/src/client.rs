@@ -97,6 +97,8 @@ pub enum LlmClientError {
         status: http::StatusCode,
         /// Raw upstream error body.
         body: String,
+        /// Safe retry and correlation headers from the final failed attempt.
+        headers: Box<http::HeaderMap>,
     },
 
     /// The upstream returned a response the client could not decode.

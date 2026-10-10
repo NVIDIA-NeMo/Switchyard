@@ -380,7 +380,7 @@ async fn call_one(
     result
 }
 
-// Preserve signed provider events while checking the complete routing response.
+/// Preserve signed provider events while checking the complete routing response.
 async fn buffer_routing_stream(
     mut chunks: LlmResponseStream,
 ) -> std::result::Result<LlmResponseStream, LlmClientError> {
@@ -395,6 +395,7 @@ async fn buffer_routing_stream(
                     return Err(LlmClientError::UpstreamHttp {
                         status: StatusCode::BAD_GATEWAY,
                         body: message.clone(),
+                        headers: Box::default(),
                     });
                 }
                 _ => {}
@@ -417,7 +418,7 @@ fn fallback_reason(error: &LibsyError) -> Option<RoutingFallbackReason> {
         }
         // A policy denial can be specific to one provider. Preserve its HTTP
         // error, but allow another candidate to serve the request.
-        LlmClientError::UpstreamHttp { status, body }
+        LlmClientError::UpstreamHttp { status, body, .. }
             if *status == StatusCode::BAD_REQUEST
                 && serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| {
                     value["error"]["code"].as_str() == Some("content_policy_violation")
@@ -1082,10 +1083,12 @@ mod tests {
                     FirstOutcome::ContentPolicy => Err(LlmClientError::UpstreamHttp {
                         status: StatusCode::BAD_REQUEST,
                         body: r#"{"error":{"code":"content_policy_violation","message":"request blocked by content policy","type":"invalid_request_error"},"metadata":{"documentation_section":"context window"}}"#.to_string(),
+                        headers: Box::default(),
                     }),
                     FirstOutcome::Unauthorized => Err(LlmClientError::UpstreamHttp {
                         status: StatusCode::UNAUTHORIZED,
                         body: "unauthorized".to_string(),
+                        headers: Box::default(),
                     }),
                     FirstOutcome::StreamSuccess => Ok(stream_response(vec![
                         LlmResponseChunk::TextDelta {
@@ -2224,6 +2227,7 @@ mod tests {
                 fallback_reason(&error(LlmClientError::UpstreamHttp {
                     status,
                     body: "failed".to_string(),
+                    headers: Box::default(),
                 })),
                 Some(RoutingFallbackReason::Unavailable)
             );
@@ -2244,6 +2248,7 @@ mod tests {
                 fallback_reason(&error(LlmClientError::UpstreamHttp {
                     status: StatusCode::BAD_REQUEST,
                     body: body.to_string(),
+                    headers: Box::default(),
                 })),
                 expected,
                 "{body}"
@@ -2261,6 +2266,7 @@ mod tests {
                 fallback_reason(&error(LlmClientError::UpstreamHttp {
                     status,
                     body: "failed".to_string(),
+                    headers: Box::default(),
                 })),
                 None
             );

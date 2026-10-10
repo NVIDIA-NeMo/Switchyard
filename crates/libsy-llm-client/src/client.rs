@@ -501,6 +501,7 @@ impl TranslatingLlmClient {
         }
 
         let retry_after = retry_after_delay(response.headers());
+        let headers = Box::new(safe_upstream_error_headers(response.headers()));
         let body = match response.text().await {
             Ok(body) => body,
             Err(error) => {
@@ -521,7 +522,11 @@ impl TranslatingLlmClient {
                     message: body,
                 }
             } else {
-                LlmClientError::UpstreamHttp { status, body }
+                LlmClientError::UpstreamHttp {
+                    status,
+                    body,
+                    headers,
+                }
             };
         Err(AttemptFailure {
             error,
@@ -610,6 +615,7 @@ impl TranslatingLlmClient {
                                         metadata.as_ref(),
                                         backend.is_forwarding_auth(),
                                     ),
+                                    headers: Box::default(),
                                 }
                             }
                             error => LlmClientError::ResponseTranslation(error.to_string()),
@@ -851,6 +857,21 @@ fn first_event_overflow(
             }
             _ => None,
         })
+}
+
+/// Retain end-to-end retry and correlation headers from a failed upstream response.
+fn safe_upstream_error_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut safe = HeaderMap::new();
+    for (name, value) in headers {
+        let name_str = name.as_str();
+        let allowed = matches!(name_str, "retry-after" | "request-id" | "x-request-id")
+            || name_str.starts_with("x-ratelimit-")
+            || name_str.starts_with("anthropic-ratelimit-");
+        if allowed && !is_non_forwardable_header(name_str, headers) {
+            safe.append(name.clone(), value.clone());
+        }
+    }
+    safe
 }
 
 // Uses Retry-After when supplied, capped so an upstream cannot stall a request indefinitely.
@@ -2434,7 +2455,8 @@ mod tests {
             error,
             LlmClientError::UpstreamHttp {
                 status: StatusCode::UNAUTHORIZED,
-                body
+                body,
+                ..
             } if body == "invalid key"
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -2497,6 +2519,8 @@ mod tests {
                 let attempt = observed_calls.fetch_add(1, Ordering::SeqCst) + 1;
                 ResponseTemplate::new(500)
                     .insert_header("retry-after", "0")
+                    .insert_header("x-request-id", format!("attempt-{attempt}").as_str())
+                    .insert_header("set-cookie", "session=secret")
                     .set_body_string(format!("attempt {attempt}"))
             })
             .mount(&server)
@@ -2511,15 +2535,49 @@ mod tests {
             panic!("expected retry exhaustion");
         };
 
-        assert!(matches!(
-            error,
-            LlmClientError::UpstreamHttp {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                body
-            } if body == "attempt 3"
-        ));
+        let LlmClientError::UpstreamHttp {
+            status,
+            body,
+            headers,
+        } = error
+        else {
+            panic!("expected final upstream error");
+        };
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body, "attempt 3");
+        assert_eq!(headers.get("x-request-id"), Some(&"attempt-3".parse()?));
+        assert!(!headers.contains_key("set-cookie"));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         Ok(())
+    }
+
+    /// Connection-nominated headers must not survive the upstream error allowlist.
+    #[test]
+    fn upstream_error_headers_exclude_connection_nominations() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "connection",
+            "x-request-id, x-ratelimit-reset-requests"
+                .parse()
+                .expect("header value"),
+        );
+        headers.append("connection", "retry-after".parse().expect("header value"));
+        headers.insert("x-request-id", "hop-id".parse().expect("header value"));
+        headers.insert(
+            "x-ratelimit-reset-requests",
+            "15s".parse().expect("header value"),
+        );
+        headers.insert("retry-after", "15".parse().expect("header value"));
+        headers.insert("request-id", "end-to-end-id".parse().expect("header value"));
+
+        let safe = safe_upstream_error_headers(&headers);
+        assert!(!safe.contains_key("x-request-id"));
+        assert!(!safe.contains_key("x-ratelimit-reset-requests"));
+        assert!(!safe.contains_key("retry-after"));
+        assert_eq!(
+            safe.get("request-id"),
+            Some(&"end-to-end-id".parse().expect("header value"))
+        );
     }
 
     #[tokio::test]
@@ -2625,6 +2683,7 @@ mod tests {
                 error: LlmClientError::UpstreamHttp {
                     status,
                     body: String::new(),
+                    headers: Box::default(),
                 },
                 status: Some(status),
                 retry_after: None,
@@ -2642,6 +2701,7 @@ mod tests {
                 error: LlmClientError::UpstreamHttp {
                     status,
                     body: String::new(),
+                    headers: Box::default(),
                 },
                 status: Some(status),
                 retry_after: None,
@@ -2769,6 +2829,7 @@ mod tests {
         let LlmClientError::UpstreamHttp {
             status,
             body: actual,
+            ..
         } = error
         else {
             panic!("expected the upstream HTTP error, got {error:?}");
