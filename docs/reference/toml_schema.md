@@ -363,7 +363,8 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 | `tool_semantics.mutate` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as state-changing production. |
 | `tool_semantics.plan` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as planning or task decomposition. |
 | `tool_semantics.new` | No | `[]` | Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier. |
-| `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
+| `classifier.classify_trigger` | No | `every_request` | When the judge runs on turns the signals leave undecided. `user_turn` keeps the judge's verdict across the tool calls in one user turn, and `new_session` keeps it for the session. Keeping a verdict needs a session ID, or `classifier.message_hash_fallback`. |
+| `classifier.message_hash_fallback` | No | `false` | Keeps the judge's verdict against a hash of the first user message when a request carries no session ID. Needs a retaining `classifier.classify_trigger`. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
