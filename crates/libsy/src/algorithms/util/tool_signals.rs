@@ -1139,13 +1139,18 @@ fn extract_tool_signals_with_window_and_semantics(
                             .filter(|value| {
                                 value["output"].is_string() && value.get("exit_code").is_some()
                             });
+                        // Codex reports the exit status in a header before `Output:`.
+                        // An exit line after it is part of what was read.
+                        let status = text
+                            .split_once("\nOutput:\n")
+                            .map_or(text.as_str(), |(header, _)| header);
                         let shell_failed = shell_result.as_ref().is_some_and(|value| {
                             value["exit_code"].as_i64().is_some_and(|code| code != 0)
                                 || value["success"].as_bool() == Some(false)
                                 || value["error"]
                                     .as_str()
                                     .is_some_and(|error| !error.trim().is_empty())
-                        }) || has_nonzero_exit_status(&text.to_lowercase());
+                        }) || has_nonzero_exit_status(&status.to_lowercase());
                         if is_missing_file(&text) || (!is_error && !shell_failed) {
                             // Keep the window slot after dropping retrieved content.
                             if !text.is_empty() {
@@ -2159,6 +2164,21 @@ mod tests {
             tr(r#"{"output":"No such file or directory","exit_code":1}"#),
         );
         assert_eq!(ToolSignals::from_request(&request, None).severity, 0.0);
+    }
+
+    #[test]
+    fn codex_read_status_comes_from_the_header() {
+        let read = |header: &str| {
+            let output = format!(
+                "{header}\nOutput:\nTraceback (most recent call last):\nMemoryError\nProcess exited with code 1\n"
+            );
+            let call = exec_command(json!({"cmd": "cat run.log"}));
+            ToolSignals::from_request(&call_with_result(call, tr(&output)), None).severity
+        };
+        // The exit line belongs to the log that was read.
+        assert_eq!(read("Chunk ID: abc\nProcess exited with code 0"), 0.0);
+        // The read itself failed, so its output counts.
+        assert_eq!(read("Chunk ID: abc\nProcess exited with code 1"), CRITICAL);
     }
 
     #[test]
