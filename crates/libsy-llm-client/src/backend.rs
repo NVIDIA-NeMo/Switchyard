@@ -11,6 +11,7 @@ use std::{
 
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderName, HeaderValue};
+use serde::Deserialize;
 use serde_json::Value;
 use switchyard_protocol::{Metadata, WireFormat};
 
@@ -42,6 +43,17 @@ const ANTHROPIC_OVERFLOW_PHRASES: &[&str] = &[
     "context length",
 ];
 
+/// Which caller Anthropic beta headers to forward when authentication is forwarded.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardBeta {
+    /// Forward only OAuth markers, filtering out provider feature betas.
+    #[default]
+    Oauth,
+    /// Forward all caller beta header values unchanged.
+    All,
+}
+
 /// Shared HTTP configuration for one upstream backend.
 #[derive(Clone)]
 pub struct HttpBackendConfig {
@@ -56,6 +68,8 @@ pub struct HttpBackendConfig {
     /// Anthropic) unless they all use the same scheme, host, and port, such as one LLM
     /// gateway. Backends that send a configured key are not restricted.
     pub forward_auth: bool,
+    /// Beta header policy for Anthropic backends with `forward_auth` enabled.
+    pub forward_beta: ForwardBeta,
     /// Custom headers added to every outbound call to this backend.
     ///
     /// Provider-owned headers are rejected so a static value cannot replace
@@ -87,6 +101,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("base_url", &self.base_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("forward_auth", &self.forward_auth)
+            .field("forward_beta", &self.forward_beta)
             .field("extra_header_names", &self.extra_headers.keys())
             .field("extra_body_keys", &self.extra_body.keys())
             .field("omit_body_fields", &self.omit_body_fields)
@@ -289,10 +304,19 @@ impl Backend {
                         builder = builder.header(name, sensitive_header(value));
                     }
                 }
-                if let Some(value) = headers.get("anthropic-beta")
-                    && let Some(value) = oauth_beta_header(value)
-                {
-                    builder = builder.header("anthropic-beta", value);
+                match self.config().forward_beta {
+                    ForwardBeta::Oauth => {
+                        if let Some(value) = headers.get("anthropic-beta")
+                            && let Some(value) = oauth_beta_header(value)
+                        {
+                            builder = builder.header("anthropic-beta", value);
+                        }
+                    }
+                    ForwardBeta::All => {
+                        for value in headers.get_all("anthropic-beta") {
+                            builder = builder.header("anthropic-beta", sensitive_header(value));
+                        }
+                    }
                 }
             }
         }
@@ -436,6 +460,7 @@ mod tests {
             base_url: base_url.to_string(),
             api_key: Some("secret".to_string()),
             forward_auth: false,
+            forward_beta: Default::default(),
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
             omit_body_fields: BTreeSet::new(),
@@ -443,6 +468,43 @@ mod tests {
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
             timeout: None,
+        }
+    }
+
+    #[test]
+    fn all_beta_forwarding_preserves_header_bytes_and_requires_forward_auth() {
+        let values = [
+            HeaderValue::from_static("oauth-2025-04-20,  adaptive-thinking-2026-01-01"),
+            HeaderValue::from_bytes(b"safeguards-2026-01-01,custom-\xff").expect("header bytes"),
+        ];
+        let mut headers = http::HeaderMap::new();
+        for value in &values {
+            headers.append("anthropic-beta", value.clone());
+        }
+        let metadata = Metadata {
+            http_headers: Some(headers),
+            ..Default::default()
+        };
+        let client = reqwest::Client::new();
+        for forward_auth in [true, false] {
+            let mut config = config("https://api.anthropic.com");
+            config.forward_auth = forward_auth;
+            config.forward_beta = ForwardBeta::All;
+            let backend = Backend::Anthropic(config);
+            for metadata in [Some(&metadata), None, Some(&Metadata::default())] {
+                let request = backend
+                    .apply_forwarded_auth(client.post(backend.url()), metadata)
+                    .build()
+                    .expect("request");
+                let forwarded: Vec<_> =
+                    request.headers().get_all("anthropic-beta").iter().collect();
+                if forward_auth && metadata.is_some_and(|m| m.http_headers.is_some()) {
+                    assert_eq!(forwarded, values.iter().collect::<Vec<_>>());
+                    assert!(forwarded.iter().all(|value| value.is_sensitive()));
+                } else {
+                    assert!(forwarded.is_empty());
+                }
+            }
         }
     }
 
