@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&real).expect("read"), "new");
     }
 
-    // The subprocess isolates PATH and makes Terminal reject the script without opening an app.
+    // The subprocess isolates PATH so the launcher fixture rejects the script without opening an app.
     #[test]
     fn a_rejected_terminal_launch_removes_the_kept_script() {
         if let Ok(record) = std::env::var("SWITCHYARD_TERMINAL_FIXTURE") {
@@ -545,7 +545,11 @@ mod tests {
         }
         let dir = tempfile::tempdir().expect("fixture");
         let record = dir.path().join("script-path");
-        let open = dir.path().join("open");
+        let open = dir.path().join(if cfg!(target_os = "linux") {
+            "xdg-open"
+        } else {
+            "open"
+        });
         std::fs::write(
             &open,
             "#!/bin/bash\nprintf '%s' \"$1\" > \"$SWITCHYARD_TERMINAL_FIXTURE\"\nexit 1\n",

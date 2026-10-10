@@ -623,7 +623,11 @@ mod tests {
             }
             let output = fixture.path().join("arguments");
             let captured = fixture.path().join("session.command");
-            let open = bin.join("open");
+            let open = bin.join(if cfg!(target_os = "linux") {
+                "xdg-open"
+            } else {
+                "open"
+            });
             let terminal_claude = if inherited_dir || named {
                 "export CLAUDE_CONFIG_DIR=wrong-terminal-login"
             } else {
