@@ -1,0 +1,49 @@
+name: Temporary Windows desktop validation
+
+on:
+  push:
+    branches: [emehtabuddin/switch-1633-menubar-route-picker]
+    paths:
+      - 'crates/**'
+      - 'Cargo.*'
+      - '.cargo/**'
+      - 'scripts/config/**'
+      - '.github/workflows/windows-desktop-temporary.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-windows-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99'
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Check Windows desktop and installer
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server --all-targets -- -D warnings
+          cargo test --locked -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server
+      - name: Build release app from this checkout
+        run: cargo build --locked --release -p switchyard-desktop -p switchyard-desktop-install -p switchyard-server
+      - name: Exercise real tasks, running updates, restart, and uninstall
+        env:
+          SWITCHYARD_WINDOWS_LOG_DIR: ${{ runner.temp }}/switchyard-windows-logs
+        run: cargo test --locked -p switchyard-desktop-install --test windows -- --ignored --nocapture
+      - name: Save validation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-validation
+          path: |
+            ${{ runner.temp }}/switchyard-windows-logs/*
+          if-no-files-found: ignore
