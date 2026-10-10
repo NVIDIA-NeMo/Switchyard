@@ -28,7 +28,8 @@ jobs:
           rustup toolchain install 1.99 --profile minimal --component clippy,rustfmt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup default 1.99
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
@@ -57,3 +58,12 @@ jobs:
           path: |
             ${{ runner.temp }}/switchyard-windows-logs/*
           if-no-files-found: ignore
+      - name: Save Rust build cache
+        if: always() && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
