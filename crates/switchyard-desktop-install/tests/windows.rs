@@ -211,9 +211,26 @@ fn fresh_install_running_update_restart_and_uninstall_preserve_user_data() {
     wait(|| desktop_running(&s.binary("switchyard-desktop")));
     for desktop in [false, true] {
         let xml = task_xml(&s, desktop);
-        assert!(xml.contains("InteractiveToken") && xml.contains("LeastPrivilege"));
-        assert!(xml.contains("LogonTrigger") && xml.contains("PT0S"));
-        assert!(!xml.contains("HighestAvailable"));
+        // The registered task's COM principal reports its effective privilege and logon settings.
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", r"$ErrorActionPreference='Stop'; $scheduler=New-Object -ComObject Schedule.Service; $scheduler.Connect(); $principal=$scheduler.GetFolder('\').GetTask($env:SWITCHYARD_TEST_TASK).Definition.Principal; @{run_level=[int]$principal.RunLevel; logon_type=[int]$principal.LogonType} | ConvertTo-Json -Compress"])
+            .env("SWITCHYARD_TEST_TASK", windows::task_name(&s, desktop))
+            .output()
+            .expect("task principal");
+        assert!(
+            output.status.success(),
+            "{}\n{xml}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let principal: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("principal JSON");
+        // Task Scheduler defines LUA privileges as 0 and an interactive-token logon as 3.
+        assert_eq!(principal["run_level"], 0, "{principal}\n{xml}");
+        assert_eq!(principal["logon_type"], 3, "{principal}\n{xml}");
+        assert!(
+            xml.contains("LogonTrigger") && xml.contains("PT0S"),
+            "{xml}"
+        );
     }
     assert!(s.service_dir.join("Switchyard.lnk").is_file());
     let settings = s.desktop_settings();
