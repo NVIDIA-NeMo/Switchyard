@@ -475,7 +475,13 @@ fn installation_plan(s: &Settings, action: &str) -> Result<String, String> {
     ));
     rows.push(format!(
         "{} binaries: {}",
-        if removing { "Preserve" } else { "Replace" },
+        if !removing {
+            "Replace"
+        } else if cfg!(windows) {
+            "Remove"
+        } else {
+            "Preserve"
+        },
         s.bin_dir().display()
     ));
     rows.push(format!(
@@ -1269,7 +1275,8 @@ fn uninstall(s: &Settings) -> Result<(), String> {
         )?;
     }
     println!(
-        "Removed services, app, and profile. Kept settings, accounts, binaries, and history at {}.",
+        "Removed services, app, and profile. Kept settings, accounts, {}and history at {}.",
+        if cfg!(windows) { "" } else { "binaries, " },
         s.sy_home.display()
     );
     let recorded = s.home.join(".switchyard-desktop-install.toml");
