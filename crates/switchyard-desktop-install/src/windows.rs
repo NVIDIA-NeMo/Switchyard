@@ -195,9 +195,11 @@ pub fn install(s: &Settings) -> Result<(), String> {
             .flat_map(u16::to_le_bytes)
             .collect();
         file.write_all(&data).map_err(|e| e.to_string())?;
+        // Closing the writer lets schtasks read the XML; TempPath keeps cleanup active during import.
+        let path = file.into_temp_path();
         run(scheduler()
             .args(["/Create", "/F", "/TN", &task_name(s, desktop), "/XML"])
-            .arg(file.path()))?;
+            .arg(&path))?;
     }
     let mut link =
         mslnk::ShellLink::new(s.binary("switchyard-desktop")).map_err(|e| e.to_string())?;
