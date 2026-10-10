@@ -198,9 +198,10 @@ impl DeploymentConfig {
                     if first.reasoning_effort != target.reasoning_effort
                         || first.extra_body != target.extra_body
                         || first.omit_body_fields != target.omit_body_fields
+                        || first.omit_input_items != target.omit_input_items
                     {
                         return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, omit_body_fields, or omit_input_items; one target per model id is kept, so give each its own model id or llm client",
                             target.id, target.llm_client
                         )));
                     }
@@ -323,6 +324,7 @@ impl DeploymentConfig {
                 client_config,
                 &BTreeMap::new(),
                 &BTreeSet::new(),
+                &BTreeSet::new(),
                 None,
             )?;
             let (Backend::OpenAiChat(config)
@@ -356,6 +358,22 @@ impl DeploymentConfig {
                     )));
                 }
             }
+            if !target.omit_input_items.is_empty() {
+                if !matches!(client_config.format, ClientFormat::OpenAiResponses) {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} omit_input_items is only supported on openai_responses clients"
+                    )));
+                }
+                if target
+                    .omit_input_items
+                    .iter()
+                    .any(|kind| kind.trim().is_empty())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} omit_input_items must not contain an empty item type"
+                    )));
+                }
+            }
             model_configs.push(ModelConfig::new(
                 target.id.clone(),
                 build_backend(
@@ -363,6 +381,7 @@ impl DeploymentConfig {
                     client_config,
                     &target.extra_body,
                     &target.omit_body_fields,
+                    &target.omit_input_items,
                     target.reasoning_effort.clone(),
                 )?,
                 None,
@@ -718,6 +737,10 @@ struct TargetConfig {
     /// For providers that reject an otherwise standard field.
     #[serde(default)]
     omit_body_fields: BTreeSet<String>,
+    /// Responses `input` item types dropped from the outbound body, for a compatible server
+    /// that cannot type an item only a hosted provider produces. `openai_responses` only.
+    #[serde(default)]
+    omit_input_items: BTreeSet<String>,
     system_prompt: Option<String>,
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     /// Only meaningful on `openai_chat` and `openai_responses` clients.
@@ -779,6 +802,7 @@ fn build_backend(
     config: &LlmClientConfig,
     extra_body: &BTreeMap<String, Value>,
     omit_body_fields: &BTreeSet<String>,
+    omit_input_items: &BTreeSet<String>,
     reasoning_effort: Option<String>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
@@ -808,6 +832,7 @@ fn build_backend(
         extra_headers: config.extra_headers.clone(),
         extra_body: extra_body.clone(),
         omit_body_fields: omit_body_fields.clone(),
+        omit_input_items: omit_input_items.clone(),
         reasoning_effort,
         max_retries: config.max_retries,
         failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
@@ -1378,8 +1403,9 @@ new = ["send_message"]
             ),
         );
         assert!(
-            error_message(&conflicting)
-                .contains("different reasoning_effort, extra_body, or omit_body_fields"),
+            error_message(&conflicting).contains(
+                "different reasoning_effort, extra_body, omit_body_fields, or omit_input_items"
+            ),
             "{}",
             error_message(&conflicting)
         );
@@ -1815,6 +1841,7 @@ confidence_threshold = 0.5
             client,
             &target.extra_body,
             &target.omit_body_fields,
+            &target.omit_input_items,
             None,
         )?;
 
@@ -1828,6 +1855,52 @@ confidence_threshold = 0.5
                 .get("chat_template_kwargs")
                 .and_then(|value| value.get("enable_thinking")),
             Some(&json!(false))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn target_omit_input_items_applies_on_responses_and_is_rejected_elsewhere() -> RunnerResult<()>
+    {
+        let on_responses = VALID_CONFIG.replacen(
+            "llm_client = \"responses\"",
+            "llm_client = \"responses\"\n\
+             omit_input_items = [\"web_search_call\"]",
+            1,
+        );
+        runner_from_toml(&on_responses)?;
+        let config: DeploymentConfig = toml::from_str(&on_responses).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse config: {error}"))
+        })?;
+        let (Some(target), Some(client)) = (
+            config.targets.get("strong"),
+            config.llm_clients.get("responses"),
+        ) else {
+            return Err(RunnerError::configuration("strong target is missing"));
+        };
+        let backend = build_backend(
+            "responses",
+            client,
+            &target.extra_body,
+            &target.omit_body_fields,
+            &target.omit_input_items,
+            None,
+        )?;
+        assert!(backend.omit_input_items().contains("web_search_call"));
+
+        let on_chat = VALID_CONFIG.replacen(
+            "llm_client = \"primary\"",
+            "llm_client = \"primary\"\n\
+             omit_input_items = [\"web_search_call\"]",
+            1,
+        );
+        let error = runner_from_toml(&on_chat)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            error.contains("omit_input_items is only supported on openai_responses clients"),
+            "{error}"
         );
         Ok(())
     }
@@ -1854,6 +1927,7 @@ confidence_threshold = 0.5
             client,
             &target.extra_body,
             &target.omit_body_fields,
+            &target.omit_input_items,
             None,
         )?;
 
@@ -1872,7 +1946,14 @@ confidence_threshold = 0.5
                 "format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\n{setting}"
             );
             let config: LlmClientConfig = toml::from_str(&source).expect("valid deadline config");
-            let backend = build_backend("test", &config, &BTreeMap::new(), &BTreeSet::new(), None);
+            let backend = build_backend(
+                "test",
+                &config,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                None,
+            );
             if expected == Some(0) {
                 assert!(backend.is_err());
             } else {
