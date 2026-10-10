@@ -1,0 +1,12 @@
+use std::{env, fs, path::Path, thread, time::Duration};
+
+fn main() {
+    let mut args = env::args_os().skip(1);
+    let metadata = args.next().expect("metadata");
+    let started = args.next().expect("marker");
+    switchyard_desktop_install::start_update(Path::new(&metadata)).expect("update");
+    fs::write(started, b"started").expect("marker");
+    // The helper stays alive until the updater stops the desktop task that owns this process.
+    thread::sleep(Duration::from_secs(180));
+    std::process::exit(1);
+}

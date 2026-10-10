@@ -11,7 +11,7 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
-use switchyard_desktop_install::{Settings, execute, start_update, update_status, windows};
+use switchyard_desktop_install::{Settings, execute, update_status, windows};
 
 fn wait(mut condition: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(180);
@@ -72,11 +72,93 @@ fn task_xml(s: &Settings, desktop: bool) -> String {
     }
 }
 fn desktop_running(binary: &Path) -> bool {
+    // Windows may report an 8.3 path; canonical paths still identify the exact installed executable.
+    let Ok(binary) = fs::canonicalize(binary) else {
+        return false;
+    };
     // PowerShell is used only to observe the test process; installation and launch stay in Rust.
     let output=Command::new("powershell.exe").args(["-NoProfile","-Command", "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); Get-Process switchyard-desktop -ErrorAction SilentlyContinue | ForEach-Object { $_.Path }"]).output().expect("query desktop");
     String::from_utf8_lossy(&output.stdout)
         .lines()
-        .any(|p| p.trim().eq_ignore_ascii_case(&binary.display().to_string()))
+        .any(|p| fs::canonicalize(p.trim()).is_ok_and(|actual| actual == binary))
+}
+// The helper starts the real updater from the desktop task, retaining its principal and logon settings.
+fn start_scheduled_update(s: &Settings, metadata: &Path, fixture: &Path) {
+    let source = fixture.join("update-context.rs");
+    let helper = fixture.join("update-context.exe");
+    let started = fixture.join("update-context-started");
+    fs::write(&source, include_str!("windows-update-fixture.txt")).expect("helper source");
+    let output = Command::new(s.cargo.parent().expect("toolchain").join("rustc.exe"))
+        .args(["--edition=2024", "-Cpanic=abort", "--extern"])
+        .arg(format!(
+            "switchyard_desktop_install={}",
+            s.source
+                .join("target/release/libswitchyard_desktop_install.rlib")
+                .display()
+        ))
+        .arg("-L")
+        .arg(format!(
+            "dependency={}",
+            s.source.join("target/release/deps").display()
+        ))
+        .arg(&source)
+        .arg("-o")
+        .arg(&helper)
+        .output()
+        .expect("compile update helper");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut xml = tempfile::NamedTempFile::new().expect("task XML");
+    xml.write_all(&[0xff, 0xfe]).expect("XML BOM");
+    for word in task_xml(s, true).encode_utf16() {
+        xml.write_all(&word.to_le_bytes()).expect("XML");
+    }
+    let xml = xml.into_temp_path();
+    let arguments = format!(
+        "{} {}",
+        windows::quote_arg(metadata.to_str().expect("metadata path")),
+        windows::quote_arg(started.to_str().expect("marker path"))
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-Command", "$ErrorActionPreference='Stop'; $xml=[xml](Get-Content -LiteralPath $env:SWITCHYARD_CONTEXT_XML -Raw); $xml.Task.Actions.Exec.Command=$env:SWITCHYARD_CONTEXT_HELPER; $xml.Task.Actions.Exec.Arguments=$env:SWITCHYARD_CONTEXT_ARGUMENTS; $xml.Save($env:SWITCHYARD_CONTEXT_XML)"])
+        .env("SWITCHYARD_CONTEXT_XML", &xml)
+        .env("SWITCHYARD_CONTEXT_HELPER", &helper)
+        .env("SWITCHYARD_CONTEXT_ARGUMENTS", arguments)
+        .output()
+        .expect("set task action");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let task = windows::task_name(s, true);
+    for args in [
+        vec!["/End", "/TN", &task],
+        vec![
+            "/Create",
+            "/F",
+            "/TN",
+            &task,
+            "/XML",
+            xml.to_str().expect("XML path"),
+        ],
+        vec!["/Run", "/TN", &task],
+    ] {
+        let output = Command::new("schtasks.exe")
+            .args(&args)
+            .output()
+            .expect("scheduled update");
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // This marker prevents a previous completed update from satisfying the next status check.
+    wait(|| started.is_file());
 }
 // Cleanup preserves logs and removes test tasks and executables even after an assertion fails.
 struct Cleanup<'a>(&'a Settings);
@@ -144,7 +226,7 @@ fn fresh_install_running_update_restart_and_uninstall_preserve_user_data() {
     fs::create_dir_all(&accounts).expect("account");
     fs::write(accounts.join("auth.json"), b"preserved-login-fixture").expect("login fixture");
     let metadata = s.sy_home.join("install.toml");
-    start_update(&metadata).expect("running update");
+    start_scheduled_update(&s, &metadata, root.path());
     wait(|| {
         let status = update_status(&metadata).expect("update status");
         assert_ne!(
