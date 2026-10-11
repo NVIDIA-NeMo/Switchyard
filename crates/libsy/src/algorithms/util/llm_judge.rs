@@ -142,24 +142,9 @@ impl<I, D> StructuredJudge<I, D> {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn contract(&self) -> &ClassifierContract {
-        &self.contract
-    }
-}
-
-impl<I, D> Judge for StructuredJudge<I, D>
-where
-    I: ClassifierInput,
-    D: VerdictDecoder,
-{
-    type Verdict = D::Verdict;
-
-    fn build_request(&self, state: &State, request: &Request) -> Request {
-        let messages = self.input.build_messages(state, request);
+    pub(crate) fn build_request_with_messages(&self, messages: Vec<Message>) -> Request {
         Request {
             llm_request: LlmRequest {
-                model: request.llm_request.model.clone(),
                 instructions: vec![InstructionBlock {
                     role: Role::System,
                     content: Message::text(Role::System, self.contract.system_prompt().to_string())
@@ -174,11 +159,38 @@ where
                 ..LlmRequest::default()
             },
             raw_request: None,
-            metadata: request.metadata.clone(),
+            metadata: None,
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn contract(&self) -> &ClassifierContract {
+        &self.contract
+    }
+}
+
+impl<I, D> Judge for StructuredJudge<I, D>
+where
+    I: ClassifierInput,
+    D: VerdictDecoder,
+{
+    type Verdict = D::Verdict;
+
+    fn build_request(&self, state: &State, request: &Request) -> Request {
+        let mut prepared =
+            self.build_request_with_messages(self.input.build_messages(state, request));
+        prepared.llm_request.model = request.llm_request.model.clone();
+        prepared.metadata = request.metadata.clone();
+        prepared
+    }
+
     fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
+        self.decode(response)
+    }
+}
+
+impl<I, D: VerdictDecoder> StructuredJudge<I, D> {
+    pub(crate) fn decode(&self, response: &AggLlmResponse) -> Result<D::Verdict> {
         self.decoder.decode(response, &self.contract)
     }
 }
