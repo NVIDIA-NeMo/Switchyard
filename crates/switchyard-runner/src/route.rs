@@ -226,6 +226,8 @@ impl Route {
             privacy.lane = decision.lane(),
             privacy.source = decision.source(),
             privacy.reason_code = decision.reason_code(),
+            privacy.clear_score = decision.clear_score(),
+            privacy.clear_threshold = decision.clear_threshold(),
             "privacy lane selected"
         );
         let lane = match decision.selected_lane() {
@@ -345,15 +347,20 @@ impl Route {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use libsy::{Driver, Passthrough};
     use reqwest::StatusCode;
-    use switchyard_protocol::{Category, LlmResponse, RoutedLlmClient, text_response};
+    use switchyard_protocol::{
+        Category, ContentBlock, DecisionAnswer, DecisionRequest, DecisionResponse, DecisionValue,
+        LlmResponse, Message, Probability, Role, RoutedDecisionClient, RoutedLlmClient, Usage,
+        text_response,
+    };
 
     use super::*;
-    use crate::privacy::mark_privacy_restricted;
+    use crate::privacy::{SemanticPrivacyClassifier, mark_privacy_restricted};
 
     struct CallThenRoute;
 
@@ -390,6 +397,10 @@ mod tests {
         calls: Arc<Mutex<Vec<ModelId>>>,
     }
 
+    struct VerdictClient {
+        calls: Arc<AtomicUsize>,
+    }
+
     #[async_trait::async_trait]
     impl RoutedLlmClient for RecordingClient {
         async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
@@ -409,6 +420,44 @@ mod tests {
                 llm_response: LlmResponse::Agg(text_response(Some(model.to_string()), "ok")),
                 metadata: None,
                 upstream_headers: Default::default(),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RoutedDecisionClient for VerdictClient {
+        async fn call(
+            &self,
+            _request: DecisionRequest,
+        ) -> Result<DecisionResponse, LlmClientError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let mut probabilities = [
+                "no_sensitive_content",
+                "personal_data",
+                "credentials",
+                "confidential_data",
+                "regulated_data",
+                "uncertain",
+            ]
+            .into_iter()
+            .map(|id| (id.into(), Probability(0.0)))
+            .collect::<BTreeMap<_, _>>();
+            probabilities.insert("no_sensitive_content".into(), Probability(0.95));
+            probabilities.insert("uncertain".into(), Probability(0.05));
+            Ok(DecisionResponse {
+                id: None,
+                model: None,
+                answers: BTreeMap::from([(
+                    "privacy".into(),
+                    DecisionAnswer {
+                        value: DecisionValue::Choice {
+                            selected: "no_sensitive_content".into(),
+                            probabilities: Some(probabilities),
+                        },
+                        provider_confidence: None,
+                    },
+                )]),
+                usage: Usage::default(),
             })
         }
     }
@@ -475,7 +524,7 @@ mod tests {
             "restricted-auxiliary",
         );
         let route = Route::from_lane(standard, None, ModelCapabilities::default())
-            .with_privacy(PrivacyPolicy::new(true), restricted);
+            .with_privacy(PrivacyPolicy::new(true, None), restricted);
 
         let output = route
             .execute(restricted_request(), None)
@@ -506,5 +555,79 @@ mod tests {
             error.to_string().contains("restricted-auxiliary"),
             "{error}"
         );
+    }
+    #[tokio::test]
+    async fn external_and_input_restrictions_skip_semantic_assessment() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(RecordingClient {
+            calls: Arc::clone(&calls),
+        });
+        let standard = lane(
+            Arc::new(Passthrough),
+            Arc::clone(&client),
+            RuntimeModels::new(HashMap::from([(
+                Category::Any,
+                vec!["standard-primary".into()],
+            )])),
+            "standard-auxiliary",
+        );
+        let restricted = lane(
+            Arc::new(Passthrough),
+            client,
+            RuntimeModels::new(HashMap::from([(
+                Category::Any,
+                vec!["restricted-primary".into()],
+            )])),
+            "restricted-auxiliary",
+        );
+        let classifier_calls = Arc::new(AtomicUsize::new(0));
+        let classifier = SemanticPrivacyClassifier::decision(
+            "privacy-judge".into(),
+            Arc::new(VerdictClient {
+                calls: Arc::clone(&classifier_calls),
+            }),
+            None,
+            0.9,
+        );
+        let route = Route::from_lane(standard, None, ModelCapabilities::default())
+            .with_privacy(PrivacyPolicy::new(true, Some(classifier)), restricted);
+
+        assert_eq!(
+            route
+                .decide(Request::default())
+                .await
+                .expect("classifier verdict should select a lane")
+                .selected_model_id()
+                .expect("selected model"),
+            "standard-primary"
+        );
+
+        assert_eq!(
+            route
+                .decide(restricted_request())
+                .await
+                .expect("external restriction")
+                .selected_model_id()
+                .expect("selected model"),
+            "restricted-primary"
+        );
+        let mut opaque = Request::default();
+        opaque.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Unknown {
+                provider: "custom".into(),
+                raw: Value::Null,
+            }],
+        });
+        assert_eq!(
+            route
+                .decide(opaque)
+                .await
+                .expect("opaque input restriction")
+                .selected_model_id()
+                .expect("selected model"),
+            "restricted-primary"
+        );
+        assert_eq!(classifier_calls.load(Ordering::Relaxed), 1);
     }
 }

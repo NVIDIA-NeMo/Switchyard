@@ -3,16 +3,22 @@
 
 //! Privacy policy used to select a route's execution lane.
 
+mod input;
+mod semantic;
+
 use serde_json::Value;
 use strum_macros::{EnumString, IntoStaticStr};
 use switchyard_protocol::{LlmClientError, Request, WireFormat};
 
 const EXTERNAL_RESTRICTION_KEY: &str = "switchyard.internal.external_privacy_restriction";
+use input::validate_input;
+pub(crate) use semantic::SemanticPrivacyClassifier;
 pub(crate) const SELECTED_LANE_KEY: &str = "switchyard.internal.privacy_lane";
 const RESPONSES_STATE_FIELDS: [&str; 2] = ["previous_response_id", "conversation"];
 
 pub(crate) struct PrivacyPolicy {
     accept_external_signal: bool,
+    classifier: Option<SemanticPrivacyClassifier>,
 }
 
 /// Target set allowed to serve one request.
@@ -54,6 +60,8 @@ pub(crate) struct PrivacyDecision {
     lane: PrivacyLane,
     source: PrivacySource,
     reason_code: &'static str,
+    clear_score: Option<f64>,
+    clear_threshold: Option<f64>,
 }
 
 #[derive(Clone, Copy, IntoStaticStr)]
@@ -61,6 +69,7 @@ pub(crate) struct PrivacyDecision {
 pub(crate) enum PrivacySource {
     Policy,
     ExternalSignal,
+    SemanticClassifier,
 }
 
 impl PrivacySource {
@@ -85,6 +94,16 @@ impl PrivacyDecision {
         self.reason_code
     }
 
+    /// Returns the classifier probability assigned to clear content, when available.
+    pub(crate) const fn clear_score(&self) -> Option<f64> {
+        self.clear_score
+    }
+
+    /// Returns the minimum clear score required for the standard lane, when applicable.
+    pub(crate) const fn clear_threshold(&self) -> Option<f64> {
+        self.clear_threshold
+    }
+
     pub(crate) const fn selected_lane(&self) -> PrivacyLane {
         self.lane
     }
@@ -94,6 +113,23 @@ impl PrivacyDecision {
             lane,
             source,
             reason_code,
+            clear_score: None,
+            clear_threshold: None,
+        }
+    }
+
+    const fn semantic(
+        lane: PrivacyLane,
+        reason_code: &'static str,
+        clear_score: Option<f64>,
+        clear_threshold: f64,
+    ) -> Self {
+        Self {
+            lane,
+            source: PrivacySource::SemanticClassifier,
+            reason_code,
+            clear_score,
+            clear_threshold: Some(clear_threshold),
         }
     }
 
@@ -129,9 +165,13 @@ pub(crate) fn external_signal_not_accepted() -> LlmClientError {
 }
 
 impl PrivacyPolicy {
-    pub(crate) const fn new(accept_external_signal: bool) -> Self {
+    pub(crate) fn new(
+        accept_external_signal: bool,
+        classifier: Option<SemanticPrivacyClassifier>,
+    ) -> Self {
         Self {
             accept_external_signal,
+            classifier,
         }
     }
 
@@ -139,17 +179,33 @@ impl PrivacyPolicy {
         &self,
         request: &Request,
     ) -> Result<PrivacyDecision, LlmClientError> {
+        if has_external_restriction(request) && !self.accept_external_signal {
+            return Err(external_signal_not_accepted());
+        }
+        self.assess(request).await
+    }
+
+    async fn assess(&self, request: &Request) -> Result<PrivacyDecision, LlmClientError> {
         if has_external_restriction(request) {
-            if !self.accept_external_signal {
-                return Err(external_signal_not_accepted());
-            }
             return Ok(PrivacyDecision::new(
                 PrivacyLane::Restricted,
                 PrivacySource::ExternalSignal,
                 "restricted",
             ));
         }
-        Ok(PrivacyDecision::all_clear())
+        Ok(match &self.classifier {
+            Some(classifier) => {
+                if let Err(reason_code) = validate_input(request) {
+                    return Ok(PrivacyDecision::new(
+                        PrivacyLane::Restricted,
+                        PrivacySource::Policy,
+                        reason_code,
+                    ));
+                }
+                classifier.assess(request).await
+            }
+            None => PrivacyDecision::all_clear(),
+        })
     }
 }
 
@@ -197,9 +253,14 @@ mod tests {
         let mut request = Request::default();
         mark_privacy_restricted(&mut request);
 
-        assert!(PrivacyPolicy::new(false).decide(&request).await.is_err());
+        assert!(
+            PrivacyPolicy::new(false, None)
+                .decide(&request)
+                .await
+                .is_err()
+        );
         assert!(matches!(
-            PrivacyPolicy::new(true).decide(&request).await,
+            PrivacyPolicy::new(true, None).decide(&request).await,
             Ok(PrivacyDecision {
                 lane: PrivacyLane::Restricted,
                 ..
@@ -214,7 +275,7 @@ mod tests {
                 raw: Value::Null,
             }],
         });
-        let decision = PrivacyPolicy::new(true)
+        let decision = PrivacyPolicy::new(true, None)
             .decide(&opaque)
             .await
             .expect("unmarked request should remain valid");
