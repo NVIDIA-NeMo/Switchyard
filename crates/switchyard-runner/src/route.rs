@@ -105,19 +105,44 @@ impl RunnerError {
     }
 }
 
-/// A configured algorithm and the per-target clients its calls resolve through.
-pub struct Route {
+// Configured algorithm and targets for one execution lane.
+pub(crate) struct ExecutionLane {
     algorithm: Arc<dyn Algorithm>,
     // Resolves each offloaded call to the client configured for the target the algorithm
     // selected. A route is a synthetic model with no upstream of its own, so this is a
     // per-target lookup, never one client serving the whole route.
     clients: ClientRouter,
-    caller_auth: Option<CallerAuthKind>,
-    capabilities: ModelCapabilities,
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
     models: Arc<RuntimeModels>,
+}
+
+impl ExecutionLane {
+    pub(crate) fn new(
+        algorithm: Arc<dyn Algorithm>,
+        clients: ClientRouter,
+        anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+        responses_auxiliary_target: Option<AuxiliaryTarget>,
+        decision_targets: Vec<DecisionTarget>,
+        models: RuntimeModels,
+    ) -> Self {
+        Self {
+            algorithm,
+            clients,
+            anthropic_auxiliary_target,
+            responses_auxiliary_target,
+            decision_targets,
+            models: Arc::new(models),
+        }
+    }
+}
+
+/// A configured algorithm and the per-target clients its calls resolve through.
+pub struct Route {
+    lane: ExecutionLane,
+    caller_auth: Option<CallerAuthKind>,
+    capabilities: ModelCapabilities,
 }
 
 /// The selected model and untouched response produced by a route execution.
@@ -139,21 +164,35 @@ impl Route {
         decision_targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
-        Self {
-            algorithm,
-            clients,
+        Self::from_lane(
+            ExecutionLane::new(
+                algorithm,
+                clients,
+                anthropic_auxiliary_target,
+                responses_auxiliary_target,
+                decision_targets,
+                models,
+            ),
             caller_auth,
             capabilities,
-            anthropic_auxiliary_target,
-            responses_auxiliary_target,
-            decision_targets,
-            models: Arc::new(models),
+        )
+    }
+
+    pub(crate) fn from_lane(
+        lane: ExecutionLane,
+        caller_auth: Option<CallerAuthKind>,
+        capabilities: ModelCapabilities,
+    ) -> Self {
+        Self {
+            lane,
+            caller_auth,
+            capabilities,
         }
     }
 
     /// Returns the configured libsy algorithm name.
     pub fn algorithm_name(&self) -> &str {
-        self.algorithm.name()
+        self.lane.algorithm.name()
     }
 
     /// Returns model-list capability metadata.
@@ -168,7 +207,8 @@ impl Route {
 
     /// Resolves a selected model to this route's non-secret target metadata.
     pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.decision_targets
+        self.lane
+            .decision_targets
             .iter()
             .find(|target| target.model == *model)
             .cloned()
@@ -176,7 +216,7 @@ impl Route {
 
     /// Returns the models grouped for one algorithm execution.
     pub fn models(&self) -> &RuntimeModels {
-        &self.models
+        &self.lane.models
     }
 
     /// Rejects a caller format incompatible with forwarded credentials.
@@ -196,10 +236,10 @@ impl Route {
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
         let (selected_model, response) = switchyard_llm_client::run(
-            Arc::clone(&self.algorithm),
-            self.clients.clone(),
+            Arc::clone(&self.lane.algorithm),
+            self.lane.clients.clone(),
             request,
-            Arc::clone(&self.models),
+            Arc::clone(&self.lane.models),
             observer,
         )
         .await?;
@@ -212,10 +252,10 @@ impl Route {
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
         switchyard_llm_client::decide(
-            Arc::clone(&self.algorithm),
-            self.clients.clone(),
+            Arc::clone(&self.lane.algorithm),
+            self.lane.clients.clone(),
             request,
-            Arc::clone(&self.models),
+            Arc::clone(&self.lane.models),
         )
         .await
         .map_err(Into::into)
@@ -228,9 +268,9 @@ impl Route {
         operation: AuxiliaryOperation,
     ) -> Result<Value, RunnerError> {
         let target = match operation {
-            AuxiliaryOperation::AnthropicCountTokens => &self.anthropic_auxiliary_target,
+            AuxiliaryOperation::AnthropicCountTokens => &self.lane.anthropic_auxiliary_target,
             AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
-                &self.responses_auxiliary_target
+                &self.lane.responses_auxiliary_target
             }
         }
         .as_ref()
