@@ -232,7 +232,14 @@ async fn serve(
     let algorithm = call.algorithm.clone();
     let candidates = call.models.len();
     call.respond(call_one(
-        &clients, &target, request, &algorithm, &observe, 0, candidates, true,
+        &clients,
+        &target,
+        request,
+        &algorithm,
+        &observe,
+        0,
+        candidates,
+        CallPhase::Routing,
     ))
     .await
 }
@@ -255,7 +262,7 @@ async fn call_first_available(
             observe,
             index,
             models.len(),
-            false,
+            CallPhase::Completion,
         )
         .await
         {
@@ -275,6 +282,33 @@ async fn call_first_available(
     Err(LibsyError::NoTargets)
 }
 
+/// The stage of the Switchyard run in which a model call was issued.
+///
+/// A routing-phase call may still supply the final answer. This is deliberately
+/// distinct from the `routing`/`answer` role assigned after the outcome is known.
+#[derive(Clone, Copy)]
+enum CallPhase {
+    Routing,
+    Completion,
+}
+
+impl CallPhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Routing => "routing",
+            Self::Completion => "completion",
+        }
+    }
+
+    const fn buffers_stream(self) -> bool {
+        matches!(self, Self::Routing)
+    }
+
+    const fn records_routed_request(self) -> bool {
+        matches!(self, Self::Completion)
+    }
+}
+
 /// Call one candidate model and record its observation and span.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
@@ -286,6 +320,7 @@ async fn call_first_available(
         switchyard.algorithm = algorithm,
         switchyard.candidate = index + 1,
         switchyard.candidate_count = count,
+        switchyard.call_phase = phase.as_str(),
         selected_model = %model_id,
         otel.kind = "client",
         otel.name = %format_args!("chat {model_id}"),
@@ -325,7 +360,7 @@ async fn call_one(
     index: usize,
     // count is for span log
     count: usize,
-    buffer: bool,
+    phase: CallPhase,
 ) -> Result<Response> {
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &request.llm_request);
@@ -342,7 +377,9 @@ async fn call_one(
     let started = Instant::now();
     let result = async {
         let mut response = client?.call(request).await?;
-        if buffer && let LlmResponse::Stream(chunks) = response.llm_response {
+        if phase.buffers_stream()
+            && let LlmResponse::Stream(chunks) = response.llm_response
+        {
             response.llm_response = LlmResponse::Stream(buffer_routing_stream(chunks).await?);
         }
         Ok(response)
@@ -356,7 +393,7 @@ async fn call_one(
         response
     });
     let result = observability::observe_client_call(result);
-    let result = if !buffer {
+    let result = if phase.records_routed_request() {
         metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
     } else {
         result

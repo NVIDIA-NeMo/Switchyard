@@ -142,7 +142,14 @@ async fn reflected_response(format: WireFormat, streaming: bool, fail: bool) {
         assert_eq!(events.iter().any(Result::is_err), fail);
         format!("{events:?}")
     } else {
-        let execution = runtime.execute_buffered(format, request).await;
+        let observed = Arc::clone(&captured);
+        let execution = runtime
+            .execute_buffered(
+                format,
+                request,
+                Arc::new(move |event| observed.lock().unwrap().push(event)),
+            )
+            .await;
         captured.lock().unwrap().extend(execution.events);
         assert_eq!(execution.result.is_err(), fail);
         format!("{:?}", execution.result)
@@ -155,7 +162,14 @@ async fn reflected_response(format: WireFormat, streaming: bool, fail: bool) {
         assert!(output.contains("ordinary diagnostics"), "{output}");
         assert!(output.contains("[REDACTED]"), "{output}");
     }
-    let telemetry = format!("{:?}", captured.lock().unwrap());
+    let captured = captured.lock().unwrap();
+    assert!(
+        captured
+            .iter()
+            .any(|event| matches!(event, RoutingEvent::Span(_))),
+        "client span was not emitted"
+    );
+    let telemetry = format!("{captured:?}");
     assert!(!telemetry.contains(KEY), "{telemetry}");
     assert!(telemetry.contains("[REDACTED]"), "{telemetry}");
 }

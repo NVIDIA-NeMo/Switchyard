@@ -3,6 +3,7 @@
 
 mod config;
 mod runtime;
+mod span_capture;
 mod translation;
 
 use std::sync::Arc;
@@ -76,7 +77,17 @@ fn register_buffered(
                     return next.call(request).await;
                 }
                 let decoded = runtime.decode_request(inbound, request, false)?;
-                let execution = runtime.execute_buffered(inbound, decoded).await;
+                let span_plugin_runtime = plugin_runtime.clone();
+                let span_runtime = Arc::clone(&runtime);
+                let execution = runtime
+                    .execute_buffered(
+                        inbound,
+                        decoded,
+                        Arc::new(move |event| {
+                            emit_event(&span_plugin_runtime, span_runtime.redactor(), event)
+                        }),
+                    )
+                    .await;
                 emit_events(&plugin_runtime, runtime.redactor(), execution.events);
                 execution.result
             }

@@ -24,7 +24,7 @@ Evaluate the complete agent, model pool, and routing configuration against your 
 | --- | --- | --- |
 | **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
 | **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
-| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.8.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
+| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when the plugin
 is enabled, even for models outside its routes. Review the
