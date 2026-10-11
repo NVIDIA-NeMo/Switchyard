@@ -1144,13 +1144,17 @@ fn extract_tool_signals_with_window_and_semantics(
                         let status = text
                             .split_once("\nOutput:\n")
                             .map_or(text.as_str(), |(header, _)| header);
-                        let shell_failed = shell_result.as_ref().is_some_and(|value| {
-                            value["exit_code"].as_i64().is_some_and(|code| code != 0)
-                                || value["success"].as_bool() == Some(false)
-                                || value["error"]
-                                    .as_str()
-                                    .is_some_and(|error| !error.trim().is_empty())
-                        }) || has_nonzero_exit_status(&status.to_lowercase());
+                        // Hermes reports it in fields, so its output is not scanned.
+                        let shell_failed = match &shell_result {
+                            Some(value) => {
+                                value["exit_code"].as_i64().is_some_and(|code| code != 0)
+                                    || value["success"].as_bool() == Some(false)
+                                    || value["error"]
+                                        .as_str()
+                                        .is_some_and(|error| !error.trim().is_empty())
+                            }
+                            None => has_nonzero_exit_status(&status.to_lowercase()),
+                        };
                         if is_missing_file(&text) || (!is_error && !shell_failed) {
                             // Keep the window slot after dropping retrieved content.
                             if !text.is_empty() {
@@ -2179,6 +2183,31 @@ mod tests {
         assert_eq!(read("Chunk ID: abc\nProcess exited with code 0"), 0.0);
         // The read itself failed, so its output counts.
         assert_eq!(read("Chunk ID: abc\nProcess exited with code 1"), CRITICAL);
+    }
+
+    #[test]
+    fn hermes_read_status_comes_from_exit_code() {
+        let read = |exit_code: i64| {
+            let output = json!({
+                "output": "Traceback (most recent call last):\nMemoryError\nProcess exited with code 1\n",
+                "exit_code": exit_code,
+                "error": null,
+            });
+            let call = Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: String::new(),
+                    name: "terminal".to_string(),
+                    arguments: json!({"command": "cat run.log"}),
+                })],
+            };
+            ToolSignals::from_request(&call_with_result(call, tr(&output.to_string())), None)
+                .severity
+        };
+        // The exit line belongs to the log that was read.
+        assert_eq!(read(0), 0.0);
+        // The read itself failed, so its output counts.
+        assert_eq!(read(1), CRITICAL);
     }
 
     #[test]
