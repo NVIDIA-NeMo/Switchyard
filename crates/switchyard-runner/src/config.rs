@@ -381,6 +381,12 @@ impl DeploymentConfig {
             .iter()
             .filter(|(_, target)| target.is_private)
             .map(|(name, _)| name.as_str())
+            .chain(
+                self.decision_targets
+                    .iter()
+                    .filter(|(_, target)| target.is_private)
+                    .map(|(name, _)| name.as_str()),
+            )
             .collect();
         let restricted_algorithm = route_config
             .algorithm
@@ -1174,6 +1180,46 @@ capable_target = "strong"
 efficient_target = "weak"
 "#;
 
+    fn decision_privacy_config() -> String {
+        let config = VALID_CONFIG
+            .replace(
+                "id = \"strong/model\"",
+                "id = \"strong/model\"\nprivate = true",
+            )
+            .replace("id = \"weak/model\"", "id = \"weak/model\"\nprivate = true");
+        format!(
+            r#"{config}
+
+[decision_clients.privacy]
+format = "system_one"
+endpoint = "https://example.test/v1/systemone"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.standard]
+id = "decision/standard"
+decision_client = "privacy"
+private = true
+
+[routes.typed]
+id = "switchyard/typed"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "standard"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.typed.decision]
+cutoff = 0.4
+candidates = {{ a = "strong", b = "weak" }}
+evidence = {{}}
+
+[routes.typed.privacy]
+accept_external_signal = true
+"#
+        )
+    }
+
     fn external_privacy_config() -> String {
         let config = VALID_CONFIG
             .replace("id = \"strong/model\"", "id = \"strong/model\"\nprivate = true")
@@ -1226,6 +1272,40 @@ accept_external_signal = true
             [ModelId::from("weak/model")]
         );
         assert!(runner.route("switchyard/passthrough").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn privacy_requires_approved_roles_and_decision_targets() -> RunnerResult<()> {
+        let configured = decision_privacy_config();
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/typed")
+            .expect("typed privacy route should exist");
+        assert_eq!(
+            route.models().models_for(&Category::Judge),
+            [ModelId::from("decision/standard")]
+        );
+
+        for (config, expected) in [
+            (
+                configured.replace(
+                    "decision_client = \"privacy\"\nprivate = true",
+                    "decision_client = \"privacy\"",
+                ),
+                "privacy requires target standard to be private",
+            ),
+            (
+                configured.replace("id = \"weak/model\"\nprivate = true", "id = \"weak/model\""),
+                "privacy decision candidate weak must be private",
+            ),
+        ] {
+            let message = error_message(&config);
+            assert!(
+                message.contains(expected),
+                "expected {expected:?}, got {message}"
+            );
+        }
         Ok(())
     }
 
