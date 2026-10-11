@@ -52,8 +52,25 @@ impl SemanticPrivacyClassifier {
         })
     }
 
-    pub(crate) async fn assess(&self, request: &Request) -> PrivacyDecision {
-        let assessment = self.preflight.assess(request, |call| self.call(call)).await;
+    pub(crate) async fn assess(
+        &self,
+        request: &Request,
+        route: &str,
+        algorithm: &str,
+    ) -> PrivacyDecision {
+        use tracing::Instrument;
+
+        let assessment = self
+            .preflight
+            .assess(request, |call| self.call(call))
+            .instrument(tracing::info_span!(
+                target: "switchyard_runner",
+                "switchyard.privacy_classifier_call",
+                switchyard.route = route,
+                switchyard.algorithm = algorithm,
+                openinference.span.kind = "CHAIN",
+            ))
+            .await;
         let reason = assessment.reason_code();
         let score = assessment.clear_score();
         let (lane, reason) = match reason {
@@ -248,7 +265,9 @@ mod tests {
             ("uncertain", 0.5, "restricted", "uncertain", false),
         ] {
             for classifier in classifiers(reason, score, false)? {
-                let decision = classifier.assess(&Request::default()).await;
+                let decision = classifier
+                    .assess(&Request::default(), "test", "stage")
+                    .await;
                 assert_eq!(decision.lane(), lane);
                 assert_eq!(decision.reason_code(), expected_reason);
                 assert_eq!(decision.clear_score(), Some(score));
@@ -261,7 +280,9 @@ mod tests {
     #[tokio::test]
     async fn failed_clients_restrict_only_the_current_request() -> libsy::Result<()> {
         for classifier in classifiers("no_sensitive_content", 0.95, true)? {
-            let decision = classifier.assess(&Request::default()).await;
+            let decision = classifier
+                .assess(&Request::default(), "test", "stage")
+                .await;
             assert_eq!(decision.lane(), "restricted");
             assert_eq!(decision.reason_code(), "classifier_failed");
             assert_eq!(decision.clear_score(), None);

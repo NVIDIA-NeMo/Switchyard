@@ -419,6 +419,8 @@ impl Driver {
             output_tokens = tracing::field::Empty,
             total_tokens = tracing::field::Empty,
             reasoning_tokens = tracing::field::Empty,
+            gen_ai.response.id = tracing::field::Empty,
+            gen_ai.response.model = tracing::field::Empty,
         )
     )]
     pub(crate) async fn call_model_with_error_recovery(

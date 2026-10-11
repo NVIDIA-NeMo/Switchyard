@@ -212,12 +212,14 @@ impl PrivacyPolicy {
     pub(crate) async fn decide(
         &self,
         request: &Request,
+        route: &str,
+        algorithm: &str,
     ) -> Result<PrivacyDecision, LlmClientError> {
         if has_external_restriction(request) && !self.accept_external_signal {
             return Err(external_signal_not_accepted());
         }
         let Some(tasks) = &self.task_restrictions else {
-            return self.assess(request).await;
+            return self.assess(request, route, algorithm).await;
         };
         let task_id = match task_id(request) {
             Ok(task_id) => task_id,
@@ -227,11 +229,16 @@ impl PrivacyPolicy {
             return Ok(decision);
         }
 
-        let decision = self.assess(request).await?;
+        let decision = self.assess(request, route, algorithm).await?;
         Ok(tasks.retain(task_id, decision))
     }
 
-    async fn assess(&self, request: &Request) -> Result<PrivacyDecision, LlmClientError> {
+    async fn assess(
+        &self,
+        request: &Request,
+        route: &str,
+        algorithm: &str,
+    ) -> Result<PrivacyDecision, LlmClientError> {
         if has_external_restriction(request) {
             return Ok(PrivacyDecision::new(
                 PrivacyLane::Restricted,
@@ -249,7 +256,7 @@ impl PrivacyPolicy {
                         reason_code,
                     ));
                 }
-                classifier.assess(request).await
+                classifier.assess(request, route, algorithm).await
             }
             None => PrivacyDecision::all_clear(),
         })
@@ -345,12 +352,14 @@ mod tests {
         assert!(
             PrivacyPolicy::new(false, None)
                 .with_task_retention()
-                .decide(&request)
+                .decide(&request, "test/route", "test_algorithm")
                 .await
                 .is_err()
         );
         assert!(matches!(
-            PrivacyPolicy::new(true, None).decide(&request).await,
+            PrivacyPolicy::new(true, None)
+                .decide(&request, "test/route", "test_algorithm")
+                .await,
             Ok(PrivacyDecision {
                 lane: PrivacyLane::Restricted,
                 ..
@@ -366,7 +375,7 @@ mod tests {
             }],
         });
         let decision = PrivacyPolicy::new(true, None)
-            .decide(&opaque)
+            .decide(&opaque, "test/route", "test_algorithm")
             .await
             .expect("unmarked request should remain valid");
         assert!(matches!(decision.lane, PrivacyLane::Standard));
