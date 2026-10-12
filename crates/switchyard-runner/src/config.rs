@@ -26,6 +26,39 @@ use crate::{
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
 
+/// This function returns a deployment's declared credential variable names without reading their values.
+/// It parses the deployment and checks its schema version before returning names from LLM and decision clients.
+pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|_| {
+        RunnerError::configuration(
+            "Could not parse the server config to read credential references.",
+        )
+    })?;
+    if config.schema_version != SUPPORTED_SCHEMA_VERSION {
+        return Err(RunnerError::configuration(
+            "Unsupported server config schema version.",
+        ));
+    }
+    let mut variables: BTreeSet<_> = config
+        .llm_clients
+        .values()
+        .filter_map(|client| client.api_key_env.clone())
+        .collect();
+    for client in config.decision_clients.values() {
+        let DecisionClientConfig::SystemOne { api_key_env, .. } = client;
+        variables.insert(api_key_env.clone());
+    }
+    if variables
+        .iter()
+        .any(|name| name.trim().is_empty() || name.contains(['\0', '=']))
+    {
+        return Err(RunnerError::configuration(
+            "Invalid credential environment variable name.",
+        ));
+    }
+    Ok(variables)
+}
+
 type RunnerResult<T> = Result<T, RunnerError>;
 
 pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
