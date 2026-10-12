@@ -195,70 +195,54 @@ impl MediaProcessor {
                     match config.video {
                         VideoMode::Passthrough => {}
                         VideoMode::Omit => item = text_part(format, "[video omitted]"),
-                        mode => {
-                            let keep = if mode == VideoMode::Frames {
-                                budget.keep_images(config.video_max_frames)
-                            } else {
-                                0
-                            };
-                            if mode == VideoMode::Frames && keep == 0 {
+                        VideoMode::VideoUrl | VideoMode::File => {
+                            budget.consume_block()?;
+                            let (url, mime) = video_source(&item)
+                                .ok_or(MediaError::Invalid("unrecognized video source"))?;
+                            if config.video == VideoMode::VideoUrl && item["type"] != "video_url" {
+                                item = json!({"type":"video_url", "video_url":{"url":url}});
+                            } else if config.video == VideoMode::File && item["type"] != "file" {
+                                let key = if url.starts_with("data:") {
+                                    "file_data"
+                                } else {
+                                    "file_id"
+                                };
+                                item = json!({"type":"file", "file":{key:url,"format":mime}});
+                            }
+                        }
+                        VideoMode::Frames => {
+                            let count = config.video_max_frames;
+                            let keep = budget.keep_images(count);
+                            if keep == 0 {
                                 output.push(text_part(format, "[video frames omitted]"));
                                 continue;
                             }
                             budget.consume_block()?;
-                            let (url, mime) = video_source(&item)
+                            let (url, _) = video_source(&item)
                                 .ok_or(MediaError::Invalid("unrecognized video source"))?;
-                            match mode {
-                                VideoMode::Frames => {
-                                    let count = config.video_max_frames;
-                                    let bytes =
-                                        fetch::load(&self.client, &url, config.max_input_bytes)
-                                            .await?;
-                                    let frames = decode::frames(
-                                        bytes,
-                                        count,
-                                        keep,
-                                        config.frame_max_edge,
-                                        self.slots.clone(),
-                                        budget.bytes,
-                                    )
-                                    .await?;
-                                    // This group is reversed with the surrounding content below.
-                                    for (time, jpeg) in frames.into_iter().rev() {
-                                        budget.consume_bytes(jpeg.len())?;
-                                        output.push(image_part(
-                                            format,
-                                            &data_uri("image/jpeg", &jpeg),
-                                        ));
-                                        output.push(text_part(
-                                            format,
-                                            &format!("[video sample {time:.3}s]"),
-                                        ));
-                                    }
-                                    output.push(text_part(
-                                        format,
-                                        "[video frames; times are sample positions in seconds]",
-                                    ));
-                                    continue;
-                                }
-                                VideoMode::VideoUrl => {
-                                    if item["type"] != "video_url" {
-                                        item = json!({"type":"video_url","video_url":{"url":url}});
-                                    }
-                                }
-                                VideoMode::File => {
-                                    let key = if url.starts_with("data:") {
-                                        "file_data"
-                                    } else {
-                                        "file_id"
-                                    };
-                                    if item["type"] != "file" {
-                                        item =
-                                            json!({"type":"file","file":{key:url,"format":mime}});
-                                    }
-                                }
-                                _ => unreachable!(),
+                            let bytes =
+                                fetch::load(&self.client, &url, config.max_input_bytes).await?;
+                            let frames = decode::frames(
+                                bytes,
+                                count,
+                                keep,
+                                config.frame_max_edge,
+                                self.slots.clone(),
+                                budget.bytes,
+                            )
+                            .await?;
+                            // This group is reversed with the surrounding content below.
+                            for (time, jpeg) in frames.into_iter().rev() {
+                                budget.consume_bytes(jpeg.len())?;
+                                output.push(image_part(format, &data_uri("image/jpeg", &jpeg)));
+                                output
+                                    .push(text_part(format, &format!("[video sample {time:.3}s]")));
                             }
+                            output.push(text_part(
+                                format,
+                                "[video frames; times are sample positions in seconds]",
+                            ));
+                            continue;
                         }
                     }
                 }
