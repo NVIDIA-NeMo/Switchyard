@@ -382,6 +382,10 @@ mod tests {
                 .all,
             usage.all
         );
+        assert_eq!(
+            crate::summary::tray_models(&usage.today),
+            ["answer — 77 tokens · calls: 2"]
+        );
     }
 
     #[test]

@@ -1,0 +1,34 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
+/* SPDX-License-Identifier: Apache-2.0 */
+:root {
+  --bg: var(--canvas); --selected: var(--selection); --amber: var(--status);
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --chrome: #142238; --chrome-text: #ECEEEB; --chrome-muted: #BBC5D0;
+  --chrome-line: #ffffff20; --copper: #A47D58;
+  --accent: #DDD95B; --accent-hover: #E9E677; --accent-text: #172235;
+}
+:root, :root[data-theme="canary"] {
+  color-scheme: dark;
+  --canvas: #171D28; --sidebar: #1C2532; --panel: #171D28;
+  --control: #222B39; --text: #ECEEEB; --muted: #ABB5C3;
+  --line: #394353; --control-border: #596478; --hover: #2B3545;
+  --selection: #DDD95B; --focus: #E8E375; --status: #F0CB85;
+  --success: #97D5AF; --danger: #FFB9C5; --danger-bg: #442630;
+  --danger-border: #A76D7B; --diff-add-bg: #233B30; --diff-remove-bg: #442630;
+  --model-1: #CCC775; --model-2: #94AAC8; --model-3: #C89467; --model-4: #B69CAB;
+  --model-5: #87B5C0; --model-6: #A8B388; --model-7: #ACA1CF; --model-8: #D29D88;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #F5F2E9; --sidebar: #EBE7DC; --panel: #F5F2E9;
+  --control: #FFFCF5; --text: #172235; --muted: #566173;
+  --line: #D4D0C5; --control-border: #AAAFAF; --hover: #EAE6DB;
+  --selection: #DDD95B; --focus: #6B6716; --status: #775518;
+  --success: #23613D; --danger: #A52D42; --danger-bg: #FAE8E9;
+  --danger-border: #BA6475; --diff-add-bg: #E2EFE3; --diff-remove-bg: #FAE8E9;
+  --model-1: #797514; --model-2: #49668D; --model-3: #98643D; --model-4: #8D5873;
+  --model-5: #357985; --model-6: #65733F; --model-7: #786098; --model-8: #A56148;
+}
+
+:root[data-reduce-motion="true"] *, :root[data-reduce-motion="true"] *::before, :root[data-reduce-motion="true"] *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
+:root[data-reduce-transparency="true"] .app-sidebar, :root[data-reduce-transparency="true"] .app-header, :root[data-reduce-transparency="true"] .window-drag-strip { background:var(--chrome); }
