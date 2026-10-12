@@ -190,6 +190,7 @@ fn client_call_error_type(error: &LibsyError) -> Cow<'static, str> {
         LibsyError::ClientCall { source, .. } => llm_client_error_type(source),
         LibsyError::TargetNotFound { .. } => Cow::Borrowed("target_not_found"),
         LibsyError::NoTargets => Cow::Borrowed("no_targets"),
+        LibsyError::InvalidRequest { .. } => Cow::Borrowed("invalid_request"),
         LibsyError::AlgorithmError { .. } => Cow::Borrowed("algorithm_error"),
         LibsyError::Driver(_) => Cow::Borrowed("driver_error"),
         LibsyError::MissingFinalResponse => Cow::Borrowed("missing_final_response"),

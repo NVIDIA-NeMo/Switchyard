@@ -32,6 +32,7 @@ pub(crate) fn safe_error_summary(error: &LibsyError) -> String {
         // `message` is a `String` with no constraint on its contents. Callers build it
         // from static text today, but nothing stops one embedding a response or an
         // upstream error, so only the class is reported.
+        LibsyError::InvalidRequest { .. } => "invalid request".to_string(),
         LibsyError::AlgorithmError { .. } => "algorithm error".to_string(),
         LibsyError::Driver(_) => "algorithm driver failed".to_string(),
         // The operation is a static label, but the boxed source comes from a user

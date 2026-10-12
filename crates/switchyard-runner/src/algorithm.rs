@@ -313,7 +313,7 @@ pub struct LlmClassifierRouteConfig {
     /// How many trailing turns the judge sees. Unset shows it the opening task
     /// and the latest user follow-up only.
     pub recent_turn_window: Option<usize>,
-    /// Maximum judge images; unset preserves all, zero omits images, otherwise keeps newest.
+    /// Judge image cap; unset is unlimited, zero omits images, positive limits reject excess.
     #[serde(default)]
     pub judge_max_images: Option<usize>,
     /// Replaces the packaged judge prompt. Required in custom mode.
@@ -560,7 +560,7 @@ pub struct StageClassifierConfig {
     /// and the latest user follow-up only.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
-    /// Maximum judge images; unset preserves all, zero omits images, otherwise keeps newest.
+    /// Judge image cap; unset is unlimited, zero omits images, positive limits reject excess.
     #[serde(default)]
     pub judge_max_images: Option<usize>,
     /// Replaces the packaged judge prompt.
