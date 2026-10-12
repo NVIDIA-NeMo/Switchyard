@@ -12,4 +12,5 @@ rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "force-frame-pointers=yes"]
 rustflags = ["-C", "target-cpu=neoverse-n1", "-C", "force-frame-pointers=yes"]
 
 [alias]
+desktop = "run --package switchyard-desktop --bin switchyard-desktop-install --"
 desktop-icons = "run --package switchyard-desktop --example desktop-icons --"
