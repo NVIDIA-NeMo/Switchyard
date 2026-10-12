@@ -1,4 +1,4 @@
-model = "switchyard"
+model = "composite-gpt-6-sol-gpt-6-luna"
 model_provider = "sy"
 
 [model_providers.sy]
