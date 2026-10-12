@@ -55,26 +55,40 @@ async fn resizing_retains_alpha_aspect_ratio_and_provider_fields() {
 #[tokio::test]
 async fn image_limit_is_shared_across_messages_and_nested_tool_results() {
     let processor = MediaProcessor::new().unwrap();
-    let mut body = json!({"messages":[
+    let original = json!({"messages":[
         {"role":"user","content":[{"type":"image_url","image_url":{"url":"https://invalid/old"}}]},
         {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image_url","image_url":{"url":"https://invalid/new"}}]}]}
     ]});
-    processor
-        .prepare(
-            &mut body,
-            WireFormat::OpenAiChat,
-            &MediaConfig {
-                max_images: Some(1),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(body["messages"][0]["content"][0]["text"], "[image omitted]");
-    assert_eq!(
-        body["messages"][1]["content"][0]["content"][0]["image_url"]["url"],
-        "https://invalid/new"
-    );
+    for limit in [None, Some(0), Some(1), Some(2)] {
+        let mut body = original.clone();
+        let result = processor
+            .prepare(
+                &mut body,
+                WireFormat::OpenAiChat,
+                &MediaConfig {
+                    max_images: limit,
+                    ..Default::default()
+                },
+            )
+            .await;
+        if limit == Some(1) {
+            assert!(
+                matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
+            );
+            assert_eq!(body, original);
+        } else {
+            result.unwrap();
+            if limit == Some(0) {
+                assert_eq!(body["messages"][0]["content"][0]["text"], "[image omitted]");
+                assert_eq!(
+                    body["messages"][1]["content"][0]["content"][0]["text"],
+                    "[image omitted]"
+                );
+            } else {
+                assert_eq!(body, original);
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -240,35 +254,47 @@ async fn video_frames_work_in_all_formats_and_preserve_original_request() {
 
 #[tokio::test]
 #[ignore = "requires ffmpeg and ffprobe on PATH"]
-async fn image_budget_skips_fetches_and_retains_latest_sample_without_resampling() {
+async fn image_cap_counts_all_frames_without_changing_samples() {
     let processor = MediaProcessor::new().unwrap();
-    let mut body = json!({"messages":[{"role":"user","content":[
-        {"type":"image_url","image_url":{"url":"https://127.0.0.1/never-fetch"}},
+    let original = json!({"messages":[{"role":"user","content":[
+        {"type":"image_url","image_url":{"url":still_image()}},
         {"type":"video_url","video_url":{"url":data_uri("video/mp4", include_bytes!("../tests/fixtures/colors.mp4"))}}
     ]}]});
-    processor
-        .prepare(
-            &mut body,
-            WireFormat::OpenAiChat,
-            &MediaConfig {
-                image_max_edge: Some(32),
-                max_images: Some(1),
-                video: VideoMode::Frames,
-                video_max_frames: 3,
-                frame_max_edge: 32,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    let content = body["messages"][0]["content"].as_array().unwrap();
-    assert_eq!(content.iter().filter_map(image_url).count(), 1);
-    assert_eq!(content[0]["text"], "[image omitted]");
-    assert!(content.iter().any(|item| {
-        item["text"]
-            .as_str()
-            .is_some_and(|text| text.contains("1.749s"))
-    }));
+    let mut unlimited = None;
+    for limit in [None, Some(0), Some(3), Some(4)] {
+        let mut body = original.clone();
+        let result = processor
+            .prepare(
+                &mut body,
+                WireFormat::OpenAiChat,
+                &MediaConfig {
+                    max_images: limit,
+                    video: VideoMode::Frames,
+                    video_max_frames: 3,
+                    frame_max_edge: 32,
+                    ..Default::default()
+                },
+            )
+            .await;
+        if limit == Some(3) {
+            assert!(
+                matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
+            );
+            assert_eq!(body, original);
+            continue;
+        }
+        result.unwrap();
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(
+            content.iter().filter_map(image_url).count(),
+            if limit == Some(0) { 0 } else { 4 }
+        );
+        if limit.is_none() {
+            unlimited = Some(body);
+        } else if limit == Some(4) {
+            assert_eq!(Some(body), unlimited);
+        }
+    }
 }
 
 #[tokio::test]

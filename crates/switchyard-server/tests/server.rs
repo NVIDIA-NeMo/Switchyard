@@ -2504,7 +2504,7 @@ async fn classifier_image_limits_preserve_answer_images() -> TestResult {
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,b2xk", "detail": "low"}},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,bmV3", "detail": "high"}}
     ]);
-    for custom in [false, true] {
+    for (custom, target_media) in [(false, false), (true, false), (false, true), (true, true)] {
         for limit in [None, Some(0), Some(1), Some(2)] {
             let mode = if custom {
                 r#"mode = "custom"
@@ -2515,9 +2515,19 @@ policy = { type = "target_selector", selector = "/decision/target" }"#
             } else {
                 "mode = \"capability\"\nclassifier_target = \"classifier\"\nstrong_target = \"premium\"\nweak_target = \"weak\"\nbase_threshold = 0.5"
             };
-            let limit_config = limit
-                .map(|n| format!("judge_max_images = {n}"))
+            let limit_field = if target_media {
+                "max_images"
+            } else {
+                "judge_max_images"
+            };
+            let setting = limit
+                .map(|n| format!("{limit_field} = {n}"))
                 .unwrap_or_default();
+            let (route_limit, target_limit) = if target_media {
+                (String::new(), format!(", media = {{ {setting} }}"))
+            } else {
+                (setting, String::new())
+            };
             let state = load_test_config(&format!(
                 r#"
 schema_version = 1
@@ -2525,7 +2535,7 @@ schema_version = 1
 format = "openai_chat"
 base_url = "{}"
 [targets]
-classifier = {{ id = "model/classifier", llm_client = "upstream" }}
+classifier = {{ id = "model/classifier", llm_client = "upstream"{target_limit} }}
 weak = {{ id = "model/weak", llm_client = "upstream" }}
 premium = {{ id = "model/premium", llm_client = "upstream" }}
 [routes.vision]
@@ -2533,7 +2543,7 @@ id = "vision"
 type = "llm_classifier"
 prompt = "route to premium"
 {mode}
-{limit_config}
+{route_limit}
 "#,
                 upstream.base_url
             ))?;
@@ -2554,7 +2564,7 @@ prompt = "route to premium"
                 assert!(
                     response.json()?["error"]["message"]
                         .to_string()
-                        .contains("exceeding judge_max_images = 1")
+                        .contains(limit_field)
                 );
                 assert!(calls.is_empty());
                 continue;
@@ -2564,10 +2574,22 @@ prompt = "route to premium"
             assert_eq!(calls[0]["model"], "model/classifier");
             let judge = &calls[0]["messages"][1]["content"];
             if limit == Some(0) {
-                assert_eq!(
-                    judge,
-                    "Compare these images.\n[Image omitted from judge input.]\n[Image omitted from judge input.]"
-                );
+                let omitted = if target_media {
+                    "[image omitted]"
+                } else {
+                    "[Image omitted from judge input.]"
+                };
+                if target_media {
+                    assert_eq!(
+                        judge,
+                        &json!([images[0], {"type":"text","text":omitted}, {"type":"text","text":omitted}])
+                    );
+                } else {
+                    assert_eq!(
+                        judge,
+                        &format!("Compare these images.\n{omitted}\n{omitted}")
+                    );
+                }
             } else {
                 assert_eq!(judge, &images);
             }

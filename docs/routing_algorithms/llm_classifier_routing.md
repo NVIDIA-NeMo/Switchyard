@@ -148,6 +148,11 @@ URLs/data and detail settings. With `0`, images become text markers without
 copying their payloads, so image-only messages remain valid. The answer request
 is unchanged. The cap applies when the judge runs; a retained route can skip it.
 
+For target-side resizing or video extraction, configure `[targets.NAME.media]`.
+Its `max_images` uses the same unlimited/zero/reject rules and also counts the
+frames requested by `video_max_frames`. Neither image cap chooses which images
+to keep. See the [media reference](../../crates/switchyard-media/README.md).
+
 Use `classify_trigger = "every_request"` for independent image requests. The
 optional message-hash affinity key uses only text, so identical questions about
 different images must not share that key. Escalation mode uses a text summary

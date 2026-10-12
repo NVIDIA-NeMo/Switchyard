@@ -209,7 +209,8 @@ fn emit_routing_observations(
 
 /// Serve one offloaded call and fulfill its promise.
 ///
-/// LLM failures stop the run unless the call enables recovery. Decision results,
+/// Invalid requests stop the run even when the call enables recovery. Other LLM
+/// failures can be returned to the algorithm for recovery. Decision results,
 /// including client failures, go back to the algorithm for its routing policy.
 async fn serve(
     clients: ClientRouter,

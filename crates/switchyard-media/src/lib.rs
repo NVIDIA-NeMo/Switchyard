@@ -39,7 +39,8 @@ pub enum VideoMode {
 pub struct MediaConfig {
     /// Downscale still images to fit this edge, preserving aspect ratio. Never upscale.
     pub image_max_edge: Option<u32>,
-    /// Keep the newest N image blocks (including extracted frames) in request order.
+    /// Maximum images and extracted frames per call; excess input is rejected.
+    /// Unset is unlimited; zero omits images and extracted frames.
     pub max_images: Option<usize>,
     /// Target video representation.
     pub video: VideoMode,
@@ -142,13 +143,24 @@ impl MediaProcessor {
         config: &MediaConfig,
     ) -> Result<()> {
         config.validate(format)?;
+        if let Some(limit) = config.max_images.filter(|limit| *limit > 0) {
+            let count: usize = ["input", "messages", "system"]
+                .iter()
+                .filter_map(|key| body.get(key).and_then(Value::as_array))
+                .flatten()
+                .map(|item| image_count(item, config))
+                .sum();
+            if count > limit {
+                return Err(MediaError::Invalid(
+                    "media exceeds max_images; select fewer images or reduce video_max_frames",
+                ));
+            }
+        }
         tokio::time::timeout(Duration::from_millis(config.timeout_ms), async {
             let mut budget = Budget {
                 blocks: 64,
                 bytes: config.max_output_bytes,
-                images: config.max_images,
             };
-            // Visit newest content first; retained blocks keep their original order.
             for key in ["input", "messages", "system"] {
                 if let Some(Value::Array(items)) = body.get_mut(key) {
                     self.prepare_items(items, format, config, &mut budget)
@@ -170,12 +182,12 @@ impl MediaProcessor {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let mut output = Vec::with_capacity(items.len());
-            for mut item in std::mem::take(items).into_iter().rev() {
+            for mut item in std::mem::take(items) {
                 if matches!(
                     item["type"].as_str(),
                     Some("image_url" | "input_image" | "image")
                 ) {
-                    if budget.keep_images(1) == 0 {
+                    if config.max_images == Some(0) {
                         output.push(text_part(format, "[image omitted]"));
                         continue;
                     }
@@ -212,8 +224,7 @@ impl MediaProcessor {
                         }
                         VideoMode::Frames => {
                             let count = config.video_max_frames;
-                            let keep = budget.keep_images(count);
-                            if keep == 0 {
+                            if config.max_images == Some(0) {
                                 output.push(text_part(format, "[video frames omitted]"));
                                 continue;
                             }
@@ -225,23 +236,21 @@ impl MediaProcessor {
                             let frames = decode::frames(
                                 bytes,
                                 count,
-                                keep,
                                 config.frame_max_edge,
                                 self.slots.clone(),
                                 budget.bytes,
                             )
                             .await?;
-                            // This group is reversed with the surrounding content below.
-                            for (time, jpeg) in frames.into_iter().rev() {
-                                budget.consume_bytes(jpeg.len())?;
-                                output.push(image_part(format, &data_uri("image/jpeg", &jpeg)));
-                                output
-                                    .push(text_part(format, &format!("[video sample {time:.3}s]")));
-                            }
                             output.push(text_part(
                                 format,
                                 "[video frames; times are sample positions in seconds]",
                             ));
+                            for (time, jpeg) in frames {
+                                budget.consume_bytes(jpeg.len())?;
+                                output
+                                    .push(text_part(format, &format!("[video sample {time:.3}s]")));
+                                output.push(image_part(format, &data_uri("image/jpeg", &jpeg)));
+                            }
                             continue;
                         }
                     }
@@ -253,7 +262,6 @@ impl MediaProcessor {
                 }
                 output.push(item);
             }
-            output.reverse();
             *items = output;
             Ok(())
         })
@@ -263,19 +271,8 @@ impl MediaProcessor {
 struct Budget {
     blocks: usize,
     bytes: usize,
-    images: Option<usize>,
 }
 impl Budget {
-    fn keep_images(&mut self, requested: usize) -> usize {
-        match &mut self.images {
-            Some(remaining) => {
-                let keep = requested.min(*remaining);
-                *remaining -= keep;
-                keep
-            }
-            None => requested,
-        }
-    }
     fn consume_block(&mut self) -> Result<()> {
         self.blocks = self.blocks.checked_sub(1).ok_or(MediaError::Invalid(
             "too many media sources; maximum 64 per call",
@@ -288,6 +285,23 @@ impl Budget {
         ))?;
         Ok(())
     }
+}
+
+fn image_count(item: &Value, config: &MediaConfig) -> usize {
+    if matches!(
+        item["type"].as_str(),
+        Some("image_url" | "input_image" | "image")
+    ) {
+        return 1;
+    }
+    if is_video(item) && config.video == VideoMode::Frames {
+        return config.video_max_frames;
+    }
+    child_content_key(item)
+        .and_then(|key| item.get(key).and_then(Value::as_array))
+        .map_or(0, |children| {
+            children.iter().map(|item| image_count(item, config)).sum()
+        })
 }
 
 fn child_content_key(item: &Value) -> Option<&'static str> {
