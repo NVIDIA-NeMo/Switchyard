@@ -26,8 +26,11 @@ extra_body = { store = false, stream = true }
 omit_body_fields = ["max_output_tokens"]
 
 [routes.switchyard]
-id = "switchyard"
+id = "composite-gpt-6-sol-gpt-6-luna"
 type = "composite"
+# Codex lists both gpt-6-sol and gpt-6-luna with a 272,000-token window. The installer
+# copies this value into the Codex profile so Codex compacts at the right size.
+context_window = 272000
 
 [routes.switchyard.classifier]
 target = "terra"
