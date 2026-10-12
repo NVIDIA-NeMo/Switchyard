@@ -11,11 +11,10 @@ use nemo_relay_plugin::{Json, PluginRuntime, ScopeType};
 use serde_json::{Map, Value};
 use switchyard_runner::ProviderKeyRedactor;
 use tracing::field::{Field, Visit};
-use tracing::metadata::LevelFilter;
 use tracing::span::{Attributes, Id, Record};
-use tracing::subscriber::Interest;
 use tracing::{Metadata, Subscriber};
 use tracing_subscriber::Layer;
+use tracing_subscriber::filter::{LevelFilter, filter_fn};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
@@ -50,22 +49,6 @@ impl<S> Layer<S> for CaptureLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
-    fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
-        if captures(metadata) {
-            Interest::always()
-        } else {
-            Interest::never()
-        }
-    }
-
-    fn enabled(&self, metadata: &Metadata<'_>, _ctx: Context<'_, S>) -> bool {
-        captures(metadata)
-    }
-
-    fn max_level_hint(&self) -> Option<LevelFilter> {
-        Some(LevelFilter::DEBUG)
-    }
-
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let name = attrs.metadata().name();
         let mut fields = Map::new();
@@ -172,7 +155,8 @@ impl SpanCapture {
     pub(crate) fn new(emit: impl Fn(CapturedSpan) + Send + Sync + 'static) -> Self {
         let layer = CaptureLayer {
             emit: Box::new(emit),
-        };
+        }
+        .with_filter(filter_fn(captures).with_max_level_hint(LevelFilter::DEBUG));
         Self {
             dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)),
         }
