@@ -29,7 +29,7 @@ An absent media table preserves existing behavior. Fields have these defaults:
 | Field | Default | Meaning |
 |---|---|---|
 | `image_max_edge` | unset | Downscale still images to fit this edge; JPEG output (PNG for alpha), no upscale |
-| `max_images` | unset | Keep newest N images/frames globally, in order; zero omits all |
+| `max_images` | unset | Reject calls exceeding N images and extracted frames; zero omits them; unset is unlimited |
 | `video` | `passthrough` | `frames`, `video_url`, `file`, `omit`, or unchanged |
 | `video_max_frames` | 4 | Uniform frames per video; one frame uses midpoint |
 | `frame_max_edge` | 640 | Extracted JPEG frame maximum edge; no upscale |
@@ -41,6 +41,18 @@ An absent media table preserves existing behavior. Fields have these defaults:
 by Gemini on Inference Hub; it is not a generic file upload API. Native modes
 forward existing URLs/inline data without downloading, transcoding, or resizing.
 Set `video = "omit"` and `max_images = 0` for a text-only judge.
+
+Positive `max_images` limits are checked before downloads or decoding, including
+images in nested tool results and every frame requested by `video_max_frames`.
+Excess input returns HTTP 400 through the server, including on a fail-open judge.
+The limit never selects or reorders images. Choose images before routing and use
+`video_max_frames` to choose the number of frames per video.
+
+`judge_max_images` uses the same unlimited/zero/reject contract on the judge's
+selected input images before target preparation. A target's `media.max_images`
+also counts frames that its video settings will extract. Native videos are not
+counted as images; use `video = "omit"` to remove them. Other targets still prepare
+their own copy of the original request.
 
 Video frame extraction requires `ffmpeg` and `ffprobe` on PATH, with MP4/MOV or
 Matroska/WebM demuxers and the input codec enabled. These are runtime dependencies;

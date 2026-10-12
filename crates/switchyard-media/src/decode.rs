@@ -121,7 +121,6 @@ async fn command_output(command: &mut Command, limit: usize) -> Result<Vec<u8>> 
 pub(crate) async fn frames(
     bytes: Vec<u8>,
     count: usize,
-    keep: usize,
     edge: u32,
     slots: Arc<Semaphore>,
     mut remaining_bytes: usize,
@@ -178,8 +177,8 @@ pub(crate) async fn frames(
         })
         .unwrap_or(0.0);
     let times = sample_times(count, duration, fps)?;
-    let mut frames = Vec::with_capacity(keep);
-    for time in times.into_iter().skip(count - keep) {
+    let mut frames = Vec::with_capacity(count);
+    for time in times {
         let seek = format!("{time:.6}");
         let scale = format!(
             "scale=w='min(iw,{edge})':h='min(ih,{edge})':force_original_aspect_ratio=decrease"
