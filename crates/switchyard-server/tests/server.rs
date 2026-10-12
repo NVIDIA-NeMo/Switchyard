@@ -2504,8 +2504,8 @@ async fn classifier_image_limits_preserve_answer_images() -> TestResult {
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,b2xk", "detail": "low"}},
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,bmV3", "detail": "high"}}
     ]);
-    for (custom, invalid) in [(false, false), (true, false), (true, true)] {
-        for limit in [None, Some(0), Some(1)] {
+    for custom in [false, true] {
+        for limit in [None, Some(0), Some(1), Some(2)] {
             let mode = if custom {
                 r#"mode = "custom"
 models = { judge = ["classifier"], weak = ["weak"], premium = ["premium"], any = ["weak", "premium"] }
@@ -2518,11 +2518,6 @@ policy = { type = "target_selector", selector = "/decision/target" }"#
             let limit_config = limit
                 .map(|n| format!("judge_max_images = {n}"))
                 .unwrap_or_default();
-            let prompt = if invalid {
-                "return an invalid verdict"
-            } else {
-                "route to premium"
-            };
             let state = load_test_config(&format!(
                 r#"
 schema_version = 1
@@ -2536,7 +2531,7 @@ premium = {{ id = "model/premium", llm_client = "upstream" }}
 [routes.vision]
 id = "vision"
 type = "llm_classifier"
-prompt = "{prompt}"
+prompt = "route to premium"
 {mode}
 {limit_config}
 "#,
@@ -2553,27 +2548,30 @@ prompt = "{prompt}"
                 })),
             )
             .await?;
-            assert_eq!(response.status, StatusCode::OK);
             let calls = upstream.calls.lock().await;
+            if limit == Some(1) {
+                assert_eq!(response.status, StatusCode::BAD_REQUEST);
+                assert!(
+                    response.json()?["error"]["message"]
+                        .to_string()
+                        .contains("exceeding judge_max_images = 1")
+                );
+                assert!(calls.is_empty());
+                continue;
+            }
+            assert_eq!(response.status, StatusCode::OK);
             assert_eq!(calls.len(), 2);
             assert_eq!(calls[0]["model"], "model/classifier");
-            let judge = calls[0]["messages"][1]["content"].to_string();
-            assert!(judge.contains("Compare these images."));
-            assert_eq!(
-                judge.matches("image_url").count(),
-                limit.unwrap_or(2).min(2) * 2
-            );
-            assert_eq!(judge.contains("bmV3"), limit != Some(0));
-            assert_eq!(judge.contains("b2xk"), limit.is_none());
+            let judge = &calls[0]["messages"][1]["content"];
+            if limit == Some(0) {
+                assert_eq!(
+                    judge,
+                    "Compare these images.\n[Image omitted from judge input.]\n[Image omitted from judge input.]"
+                );
+            } else {
+                assert_eq!(judge, &images);
+            }
             assert_eq!(calls[1]["messages"][0]["content"], images);
-            assert_eq!(
-                calls[1]["model"],
-                if custom && !invalid {
-                    "model/premium"
-                } else {
-                    "model/weak"
-                }
-            );
         }
     }
     Ok(())

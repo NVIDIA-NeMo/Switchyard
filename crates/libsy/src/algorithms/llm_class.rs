@@ -181,47 +181,68 @@ struct TaskInput {
 }
 
 impl TaskInput {
-    /// Selects conversation content without adding judge instructions.
-    fn messages(&self, request: &Request) -> Vec<Message> {
-        // The default preserves the whole-task anchor and latest user update. A
-        // configured window widens that to the surrounding conversation.
-        let selected = match self.recent_turn_window {
+    fn selected_messages<'a>(&self, request: &'a Request) -> Vec<&'a Message> {
+        match self.recent_turn_window {
             Some(window) => trim_messages(&request.llm_request.messages, window),
             None => task_messages(&request.llm_request.messages),
-        };
-        let mut remaining = self.judge_max_images;
-        // Apply the budget newest-first before cloning potentially large image payloads.
-        // Exclude provider-private reasoning and, by default, tool traffic as before.
-        let mut messages: Vec<_> = selected
+        }
+    }
+
+    fn includes(&self, block: &ContentBlock) -> bool {
+        if self.recent_turn_window.is_none() {
+            is_task_content(block)
+        } else {
+            !matches!(block, ContentBlock::Reasoning { .. })
+        }
+    }
+
+    /// Selects conversation content without adding judge instructions.
+    fn messages(&self, request: &Request) -> Vec<Message> {
+        self.selected_messages(request)
             .into_iter()
-            .rev()
             .filter_map(|message| {
-                let mut content: Vec<_> = message
+                let content: Vec<_> = message
                     .content
                     .iter()
-                    .rev()
-                    .filter(|block| {
-                        if self.recent_turn_window.is_none() {
-                            is_task_content(block)
+                    .filter(|block| self.includes(block))
+                    .map(|block| {
+                        if self.judge_max_images == Some(0) {
+                            without_judge_images(block)
                         } else {
-                            !matches!(block, ContentBlock::Reasoning { .. })
+                            block.clone()
                         }
                     })
-                    .map(|block| copy_judge_block(block, &mut remaining))
                     .collect();
-                content.reverse();
                 (!content.is_empty()).then_some(Message {
                     role: message.role,
                     content,
                 })
             })
-            .collect();
-        messages.reverse();
-        messages
+            .collect()
     }
 }
 
 impl ClassifierInput for TaskInput {
+    fn validate_request(&self, request: &Request) -> Result<()> {
+        if let Some(limit) = self.judge_max_images.filter(|limit| *limit > 0) {
+            let count: usize = self
+                .selected_messages(request)
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter(|block| self.includes(block))
+                .map(judge_image_count)
+                .sum();
+            if count > limit {
+                return Err(LibsyError::InvalidRequest {
+                    message: format!(
+                        "judge input contains {count} images, exceeding judge_max_images = {limit}; sample images before routing"
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
         let mut messages = self.messages(request);
         // Only the windowed path carries assistant turns and tool traffic for the judge
@@ -237,32 +258,25 @@ impl ClassifierInput for TaskInput {
     }
 }
 
-/// Copies only retained images, sharing the budget with nested tool results.
-fn copy_judge_block(block: &ContentBlock, remaining: &mut Option<usize>) -> ContentBlock {
+fn judge_image_count(block: &ContentBlock) -> usize {
     match block {
-        ContentBlock::Image { .. } if *remaining == Some(0) => ContentBlock::Text {
+        ContentBlock::Image { .. } => 1,
+        ContentBlock::ToolResult(result) => result.content.iter().map(judge_image_count).sum(),
+        _ => 0,
+    }
+}
+
+/// Omits images without copying their payloads, including within tool results.
+fn without_judge_images(block: &ContentBlock) -> ContentBlock {
+    match block {
+        ContentBlock::Image { .. } => ContentBlock::Text {
             text: "[Image omitted from judge input.]".to_string(),
         },
-        ContentBlock::Image { .. } => {
-            if let Some(count) = remaining {
-                *count -= 1;
-            }
-            block.clone()
-        }
-        ContentBlock::ToolResult(result) if remaining.is_some() => {
-            let mut content: Vec<_> = result
-                .content
-                .iter()
-                .rev()
-                .map(|block| copy_judge_block(block, remaining))
-                .collect();
-            content.reverse();
-            ContentBlock::ToolResult(ToolResult {
-                tool_call_id: result.tool_call_id.clone(),
-                content,
-                is_error: result.is_error,
-            })
-        }
+        ContentBlock::ToolResult(result) => ContentBlock::ToolResult(ToolResult {
+            tool_call_id: result.tool_call_id.clone(),
+            content: result.content.iter().map(without_judge_images).collect(),
+            is_error: result.is_error,
+        }),
         _ => block.clone(),
     }
 }
@@ -361,8 +375,8 @@ pub struct TaskClassifierConfig {
     /// `None` judges the opening task and latest user follow-up. `Some(n)` also
     /// includes the surrounding conversation using the last `n` turns.
     pub recent_turn_window: Option<usize>,
-    /// Maximum images in the judge's selected messages, keeping the newest first.
-    /// `None` preserves all images; `Some(0)` omits images. The answer request is unchanged.
+    /// Maximum images allowed in the judge's selected messages; excess images cause an error.
+    /// `None` is unlimited; `Some(0)` omits images. The answer request is unchanged.
     pub judge_max_images: Option<usize>,
 }
 
@@ -566,8 +580,8 @@ pub struct CustomClassifierConfig {
     pub message_hash_fallback: bool,
     /// Trailing conversation turns shown to the classifier judge.
     pub recent_turn_window: Option<usize>,
-    /// Maximum images in the judge's selected messages, keeping the newest first.
-    /// `None` preserves all images; `Some(0)` omits images. The answer request is unchanged.
+    /// Maximum images allowed in the judge's selected messages; excess images cause an error.
+    /// `None` is unlimited; `Some(0)` omits images. The answer request is unchanged.
     pub judge_max_images: Option<usize>,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
@@ -919,113 +933,47 @@ mod tests {
         }
     }
 
-    /// Image limits span messages and nested tool results without changing the answer input.
     #[test]
-    fn judge_image_budget_keeps_the_newest_images_and_original_order() -> Result<()> {
-        let image = |name: &str| ContentBlock::Image {
-            source: ImageSource::Url {
-                url: format!("https://example.test/{name}.png"),
-                detail: None,
-            },
-        };
-        let mut request = classify_request();
-        request.llm_request.messages = vec![
-            Message {
-                role: Role::User,
-                content: vec![image("old")],
-            },
-            Message {
-                role: Role::User,
-                content: vec![
-                    ContentBlock::Text {
-                        text: "Compare the screenshots.".into(),
-                    },
-                    image("recent"),
-                    ContentBlock::ToolResult(ToolResult {
-                        tool_call_id: "screenshot".into(),
-                        content: vec![image("newest")],
-                        is_error: Some(false),
-                    }),
-                ],
-            },
-        ];
-        let original = request.llm_request.messages.clone();
-        for (limit, expected) in [
-            (None, 3),
-            (Some(0), 0),
-            (Some(1), 1),
-            (Some(2), 2),
-            (Some(9), 3),
-        ] {
-            let messages = TaskInput {
-                recent_turn_window: Some(10),
-                judge_max_images: limit,
-            }
-            .build_messages(&State::default(), &request);
-            let serialized =
-                serde_json::to_string(&messages).map_err(|e| LibsyError::AlgorithmError {
-                    message: e.to_string(),
-                })?;
-            assert_eq!(
-                serialized.matches("https://example.test/").count(),
-                expected
-            );
-            assert_eq!(serialized.contains("/old.png"), expected == 3);
-            assert_eq!(serialized.contains("/recent.png"), expected >= 2);
-            assert_eq!(serialized.contains("/newest.png"), expected >= 1);
-            assert!(serialized.contains("Compare the screenshots."));
-            assert_eq!(messages[0].role, Role::User);
-            assert!(!messages[0].content.is_empty());
-            if expected == 3 {
-                assert_eq!(&messages[..original.len()], &original);
-            }
-            if expected == 2 {
-                assert_eq!(messages[1], original[1]);
-            }
-            assert_eq!(request.llm_request.messages, original);
-        }
-        Ok(())
-    }
-
-    /// Excluded tool images must not consume the task-only judge's image budget.
-    #[test]
-    fn task_only_image_budget_ignores_tool_images() {
+    fn judge_image_limit_counts_only_selected_tool_images() -> Result<()> {
         let image = ContentBlock::Image {
             source: ImageSource::Url {
-                url: "data:image/jpeg;base64,aW1hZ2U=".into(),
-                detail: Some("low".into()),
+                url: "https://example.test/image.png".into(),
+                detail: None,
             },
-        };
-        let text = ContentBlock::Text {
-            text: "Inspect this image.".into(),
         };
         let mut request = classify_request();
         request.llm_request.messages = vec![Message {
             role: Role::User,
             content: vec![
-                text.clone(),
                 image.clone(),
                 ContentBlock::ToolResult(ToolResult {
                     tool_call_id: "screenshot".into(),
-                    content: vec![image.clone()],
-                    is_error: Some(true),
+                    content: vec![image],
+                    is_error: None,
                 }),
             ],
         }];
-        let original = request.llm_request.messages.clone();
-        let messages = TaskInput {
+        let mut input = TaskInput {
             recent_turn_window: None,
             judge_max_images: Some(1),
-        }
-        .build_messages(&State::default(), &request);
-        assert_eq!(
-            messages,
-            vec![Message {
-                role: Role::User,
-                content: vec![text, image]
-            }]
-        );
-        assert_eq!(request.llm_request.messages, original);
+        };
+        input.validate_request(&request)?;
+        input.recent_turn_window = Some(10);
+        assert!(matches!(
+            input.validate_request(&request),
+            Err(LibsyError::InvalidRequest { .. })
+        ));
+        input.judge_max_images = Some(0);
+        let messages = input.messages(&request);
+        let omitted = ContentBlock::Text {
+            text: "[Image omitted from judge input.]".into(),
+        };
+        assert_eq!(messages[0].content[0], omitted);
+        let ContentBlock::ToolResult(result) = &messages[0].content[1] else {
+            panic!("expected tool result");
+        };
+        assert_eq!(result.content, vec![omitted]);
+        Ok(())
     }
 
     fn test_config(base_threshold: f64) -> TaskClassifierConfig {
@@ -1507,7 +1455,23 @@ mod tests {
             ("provider error", 0.0, false, None),
             ("dropped reply", 0.0, true, Some("capable")),
             ("missing candidate", 0.0, true, None),
+            ("image limit", 0.0, true, None),
         ] {
+            let mut request = request.clone();
+            if name == "image limit" {
+                request.llm_request.messages.push(Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentBlock::Image {
+                            source: ImageSource::Url {
+                                url: "https://example.test/frame.png".into(),
+                                detail: None,
+                            },
+                        };
+                        2
+                    ],
+                });
+            }
             let mut config = settings.clone();
             if name == "missing candidate" {
                 config.candidates.remove("a");
@@ -1524,6 +1488,7 @@ mod tests {
                         judge: CapabilityJudgeConfig::Decision(config),
                         fail_open,
                         recent_turn_window: Some(3),
+                        judge_max_images: Some(1),
                         classify_trigger: ClassifyTrigger::NewSession,
                         ..TaskClassifierConfig::default()
                     },
@@ -1619,11 +1584,13 @@ mod tests {
             let result = drive(router.clone(), request.clone(), models.clone(), &serve).await;
             assert_eq!(
                 calls.load(Ordering::SeqCst),
-                usize::from(name != "missing candidate"),
+                usize::from(!matches!(name, "missing candidate" | "image limit")),
                 "{name}"
             );
             let Some(expected) = expected else {
-                if name == "missing candidate" {
+                if name == "image limit" {
+                    assert!(matches!(result, Err(LibsyError::InvalidRequest { .. })));
+                } else if name == "missing candidate" {
                     assert!(
                         matches!(result, Err(LibsyError::AlgorithmError { message }) if message.contains("candidate is missing"))
                     );

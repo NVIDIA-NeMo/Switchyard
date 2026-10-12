@@ -1271,10 +1271,16 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
 }
 
 fn algorithm_error(error: LibsyError) -> Response {
-    let LibsyError::ClientCall { source, .. } = &error else {
-        return server_error(error.to_string());
-    };
-    client_error(source)
+    match &error {
+        LibsyError::InvalidRequest { message } => error_response(
+            StatusCode::BAD_REQUEST,
+            message,
+            "invalid_request_error",
+            "invalid_request_error",
+        ),
+        LibsyError::ClientCall { source, .. } => client_error(source),
+        _ => server_error(error.to_string()),
+    }
 }
 
 fn runner_error(error: RunnerError) -> Response {

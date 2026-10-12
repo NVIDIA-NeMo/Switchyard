@@ -13,7 +13,7 @@ use switchyard_protocol::{
 };
 
 use crate::algorithms::llm_class::TaskInput;
-use crate::algorithms::util::llm_judge::{libsy_error_reason, report_fail_open};
+use crate::algorithms::util::llm_judge::{ClassifierInput, libsy_error_reason, report_fail_open};
 use crate::algorithms::util::robustness::safe_error_summary;
 use crate::{Classification, Classifier, Driver, LibsyError, Result, Score, State};
 
@@ -117,6 +117,7 @@ impl Classifier<State> for DecisionClassifier {
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
+        self.input.validate_request(request)?;
         let judge = driver.first_model_for(&Category::Judge)?;
         let capable = driver.first_model_for(&Category::Capable)?;
         let efficient = driver.first_model_for(&Category::Efficient)?;
