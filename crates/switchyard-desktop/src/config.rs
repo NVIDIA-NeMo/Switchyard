@@ -77,6 +77,77 @@ impl Config {
     }
 }
 
+pub fn save_preferences(
+    path: &Path,
+    baseline: &str,
+    refresh: u64,
+    prices: &PriceTable,
+) -> Result<(), String> {
+    use std::io::Write;
+    if baseline.trim().is_empty() || baseline.contains(['\n', '\r']) {
+        return Err("Choose a nonempty baseline model ID without line breaks.".into());
+    }
+    if refresh == 0 {
+        return Err("Refresh interval must be at least one second.".into());
+    }
+    for (model, price) in prices {
+        price
+            .validate()
+            .map_err(|error| format!("Price for {model}: {error}"))?;
+    }
+    let original = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut doc = original
+        .as_deref()
+        .unwrap_or("")
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    doc["baseline_model"] = toml_edit::value(baseline.trim());
+    doc["refresh_seconds"] =
+        toml_edit::value(i64::try_from(refresh).map_err(|error| error.to_string())?);
+    let price_text = toml::to_string(&serde_json::json!({"prices":prices}))
+        .map_err(|error| error.to_string())?;
+    let price_doc = price_text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    doc["prices"] = price_doc["prices"].clone();
+    let text = doc.to_string();
+    let config: Config = toml::from_str(&text).map_err(|error| error.to_string())?;
+    crate::health::validate_url(&config.server_url)?;
+    let destination = if original.is_some() {
+        std::fs::canonicalize(path).map_err(|error| error.to_string())?
+    } else {
+        path.to_path_buf()
+    };
+    let parent = destination
+        .parent()
+        .ok_or("App settings need a parent folder.")?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    temp.write_all(text.as_bytes())
+        .and_then(|()| temp.as_file().sync_all())
+        .map_err(|error| error.to_string())?;
+    if let Ok(metadata) = std::fs::metadata(path) {
+        temp.as_file()
+            .set_permissions(metadata.permissions())
+            .map_err(|error| error.to_string())?;
+    }
+    let current = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.to_string()),
+    };
+    if current != original {
+        return Err("App settings changed while saving. Reload them and try again.".into());
+    }
+    temp.persist(destination)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub fn validate_toml_file(path: &Path) -> Result<(), String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("read {}: {error}", path.display()))?;
@@ -100,6 +171,35 @@ pub fn expand_home(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preference_edits_keep_unrelated_settings_and_reject_invalid_values() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let path = dir.path().join("desktop.toml");
+        let original =
+            "# user comment\nserver_url='http://[::1]:4123'\nrouting_log='/custom/log'\n";
+        std::fs::write(&path, original).expect("settings");
+        assert!(save_preferences(&path, "", 30, &PriceTable::new()).is_err());
+        assert!(save_preferences(&path, "baseline", 0, &PriceTable::new()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).expect("settings"), original);
+        let prices = PriceTable::from([(
+            "baseline".into(),
+            crate::pricing::ModelPrice {
+                input_per_mtok: 1.0,
+                cached_input_per_mtok: None,
+                output_per_mtok: 2.0,
+            },
+        )]);
+        save_preferences(&path, "baseline", 12, &prices).expect("save");
+        let saved = std::fs::read_to_string(&path).expect("saved");
+        assert!(saved.contains("# user comment"));
+        let config = Config::load(&path).expect("config");
+        assert_eq!(config.server_url, "http://[::1]:4123");
+        assert_eq!(config.routing_log, PathBuf::from("/custom/log"));
+        assert_eq!(config.baseline_model, "baseline");
+        assert_eq!(config.refresh_seconds, 12);
+        assert_eq!(config.prices, prices);
+    }
+
     #[test]
     fn invalid_price_input_forms_reject_settings() {
         let dir = tempfile::tempdir().expect("fixture");

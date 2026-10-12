@@ -1,17 +1,30 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The desktop app reports a local Switchyard server's recorded usage.
+//! The terminal app manages a local Switchyard server.
 //!
 //! It shows recorded traffic and compares list-price estimates with the
-//! configured baseline model.
+//! configured baseline model. Its Routes view edits the server config and
+//! restarts the server.
 
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+mod accounts;
 mod config;
+mod controller;
+mod harness;
 mod health;
 mod history;
+mod models;
 mod pricing;
 mod rollup;
+mod server;
+mod server_config;
+mod sessions;
 mod summary;
+mod tui;
+#[cfg(windows)]
+mod windows;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -19,24 +32,41 @@ use std::process::ExitCode;
 use config::Config;
 
 const USAGE: &str = "\
-Usage: switchyard-desktop [--print | --validate-toml] [FILE]
+Usage: switchyard-desktop [--tui | --print | --validate-toml] [FILE]
 
-This app prints the usage that a local Switchyard server recorded.
+This app manages routes, harness settings, and usage.
 
   FILE            The app reads settings from FILE [default: ~/.switchyard/desktop.toml].
-  --print         Print the current summary and exit. This is the default.
+  --tui           Run the terminal app.
+  --print         Print the current summary and exit.
   --validate-toml Parse FILE as TOML and exit.";
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    if let Some(result) = windows::terminal_job() {
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("switchyard-desktop: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    #[cfg(windows)]
+    windows::attach_console();
     let mut settings = None;
+    let mut print_only = false;
     let mut validate_toml = false;
+    let mut terminal = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return ExitCode::SUCCESS;
             }
-            "--print" => {}
+            "--print" => print_only = true,
+            "--tui" => terminal = true,
             "--validate-toml" => validate_toml = true,
             _ if arg.starts_with('-') => {
                 eprintln!("switchyard-desktop: unknown option {arg}\n\n{USAGE}");
@@ -44,6 +74,11 @@ fn main() -> ExitCode {
             }
             _ => settings = Some(PathBuf::from(arg)),
         }
+    }
+
+    if terminal && (print_only || validate_toml) {
+        eprintln!("{USAGE}");
+        return ExitCode::FAILURE;
     }
 
     if validate_toml {
@@ -69,23 +104,44 @@ fn main() -> ExitCode {
         Ok(config) => config,
         Err(error) => {
             eprintln!("switchyard-desktop: {error}");
-            return ExitCode::FAILURE;
+            if !terminal {
+                return ExitCode::FAILURE;
+            }
+            Config::default()
         }
     };
-    let usage = match rollup::Reader::default()
-        .read(&config.routing_log, chrono::Local::now().date_naive())
-    {
-        Ok(usage) => usage,
-        Err(error) => {
+    // The default mode prints a summary. The --tui option starts the terminal app.
+    if !terminal {
+        if !print_only {
             eprintln!(
-                "Usage unavailable. Could not read {}: {error}",
-                config.routing_log.display()
+                "Run switchyard-desktop --tui {} to open the terminal app.",
+                sessions::quote(&settings.display().to_string())
             );
-            return ExitCode::FAILURE;
         }
-    };
-    for row in summary::build(health::probe(&config.server_url), &usage, &config) {
-        println!("{row}");
+        let usage = match rollup::Reader::default()
+            .read(&config.routing_log, chrono::Local::now().date_naive())
+        {
+            Ok(usage) => usage,
+            Err(error) => {
+                eprintln!(
+                    "Usage unavailable. Could not read {}: {error}",
+                    config.routing_log.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        };
+        for row in summary::build(health::probe(&config.server_url), &usage, &config) {
+            println!("{row}");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let controller = controller::Controller::new(config, settings);
+    #[cfg(windows)]
+    windows::allocate_console();
+    if let Err(error) = tui::run(controller) {
+        eprintln!("switchyard-desktop: {error}");
+        return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
 }
