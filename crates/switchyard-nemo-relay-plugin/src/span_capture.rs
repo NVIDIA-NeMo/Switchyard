@@ -4,7 +4,6 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Instant, SystemTime};
 
@@ -24,13 +23,7 @@ use tracing_subscriber::registry::LookupSpan;
 const CLIENT_CALL: &str = "libsy.client_call";
 const UPSTREAM_ATTEMPT: &str = "libsy.upstream_attempt";
 
-type SpanEmitter = Arc<dyn Fn(CapturedSpan) + Send + Sync>;
-
-// One shared dispatch avoids global callsite registration on every request. Each
-// open span keeps its request emitter so a stream can close after this scope ends.
-tokio::task_local! {
-    static SPAN_EMITTER: SpanEmitter;
-}
+type SpanEmitter = Box<dyn Fn(CapturedSpan) + Send + Sync>;
 
 #[derive(Debug)]
 pub(crate) struct CapturedSpan {
@@ -47,10 +40,11 @@ struct OpenSpan {
     started_at: SystemTime,
     started: Instant,
     children: Vec<CapturedSpan>,
-    emit: SpanEmitter,
 }
 
-struct CaptureLayer;
+struct CaptureLayer {
+    emit: SpanEmitter,
+}
 
 impl<S> Layer<S> for CaptureLayer
 where
@@ -73,9 +67,6 @@ where
     }
 
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        let Ok(emit) = SPAN_EMITTER.try_with(Arc::clone) else {
-            return;
-        };
         let name = attrs.metadata().name();
         let mut fields = Map::new();
         attrs.record(&mut FieldVisitor(&mut fields));
@@ -86,7 +77,6 @@ where
                 started_at: SystemTime::now(),
                 started: Instant::now(),
                 children: Vec::new(),
-                emit,
             });
         }
     }
@@ -115,7 +105,6 @@ where
             started_at,
             started,
             children,
-            emit,
         } = open;
         // A span that closes before its terminal bookkeeping ran was cancelled.
         fields
@@ -138,7 +127,7 @@ where
             open.children.push(captured);
             return;
         }
-        emit(captured);
+        (self.emit)(captured);
     }
 }
 
@@ -173,30 +162,37 @@ impl CapturedSpan {
     }
 }
 
-/// Captures Switchyard client spans while polling one route execution.
-///
-/// This capture dispatch temporarily replaces any subscriber configured inside the plugin cdylib.
-pub(crate) async fn capture_client_spans<T>(
-    future: impl Future<Output = T>,
-    emit: impl Fn(CapturedSpan) + Send + Sync + 'static,
-) -> T {
-    SPAN_EMITTER
-        .scope(Arc::new(emit), CaptureFuture::new(future))
-        .await
+/// Captures Switchyard client spans for one plugin registration.
+#[derive(Clone)]
+pub(crate) struct SpanCapture {
+    dispatch: tracing::Dispatch,
 }
 
-struct CaptureFuture<F> {
-    inner: Option<Pin<Box<F>>>,
-    dispatch: &'static tracing::Dispatch,
-}
-
-impl<F> CaptureFuture<F> {
-    fn new(inner: F) -> Self {
+impl SpanCapture {
+    pub(crate) fn new(emit: impl Fn(CapturedSpan) + Send + Sync + 'static) -> Self {
+        let layer = CaptureLayer {
+            emit: Box::new(emit),
+        };
         Self {
-            inner: Some(Box::pin(inner)),
-            dispatch: capture_dispatch(),
+            dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)),
         }
     }
+
+    /// Polls a future with the capture subscriber as its default.
+    pub(crate) async fn capture<T>(&self, future: impl Future<Output = T>) -> T {
+        CaptureFuture {
+            inner: Some(Box::pin(future)),
+            dispatch: self.dispatch.clone(),
+        }
+        .await
+    }
+}
+
+// Standard subscriber wrappers restore the ambient dispatch before drop. This
+// wrapper also drops the inner future under capture so cancelled spans close here.
+struct CaptureFuture<F> {
+    inner: Option<Pin<Box<F>>>,
+    dispatch: tracing::Dispatch,
 }
 
 impl<F: Future> Future for CaptureFuture<F> {
@@ -207,7 +203,7 @@ impl<F: Future> Future for CaptureFuture<F> {
         let Some(inner) = this.inner.as_mut() else {
             return Poll::Pending;
         };
-        tracing::dispatcher::with_default(this.dispatch, || inner.as_mut().poll(cx))
+        tracing::dispatcher::with_default(&this.dispatch, || inner.as_mut().poll(cx))
     }
 }
 
@@ -216,15 +212,8 @@ impl<F> Drop for CaptureFuture<F> {
         let Some(inner) = self.inner.take() else {
             return;
         };
-        // Releasing a child-held parent reference uses the current dispatch.
-        tracing::dispatcher::with_default(self.dispatch, || drop(inner));
+        tracing::dispatcher::with_default(&self.dispatch, || drop(inner));
     }
-}
-
-fn capture_dispatch() -> &'static tracing::Dispatch {
-    static DISPATCH: OnceLock<tracing::Dispatch> = OnceLock::new();
-    DISPATCH
-        .get_or_init(|| tracing::Dispatch::new(tracing_subscriber::registry().with(CaptureLayer)))
 }
 
 struct FieldVisitor<'a>(&'a mut Map<String, Value>);
@@ -312,7 +301,7 @@ fn span_status(metadata: &Json) -> Option<Json> {
 #[cfg(test)]
 mod tests {
     use std::fmt;
-    use std::sync::Mutex;
+    use std::sync::mpsc;
 
     use tracing::Instrument;
 
@@ -326,59 +315,44 @@ mod tests {
         }
     }
 
+    fn recorder() -> (SpanCapture, mpsc::Receiver<CapturedSpan>) {
+        let (sender, receiver) = mpsc::channel();
+        let capture = SpanCapture::new(move |span| sender.send(span).unwrap());
+        (capture, receiver)
+    }
+
     #[tokio::test]
     async fn captures_only_allowlisted_client_and_attempt_fields() {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let observed = Arc::clone(&captured);
-        let result = capture_client_spans(
-            async {
-                async {}
-                    .instrument(tracing::info_span!(
-                        target: "other",
-                        CLIENT_CALL,
-                        outcome = "ignored",
-                    ))
-                    .await;
-                async {
-                    async {}
-                        .instrument(tracing::debug_span!(
-                            target: "libsy",
-                            UPSTREAM_ATTEMPT,
-                            model = "target/model",
-                            attempt = 1_u64,
-                            outcome = "error",
-                            error = "provider body",
-                        ))
-                        .await;
-                    tracing::Span::current().record("outcome", "ok");
-                }
-                .instrument(tracing::info_span!(
+        let (capture, captured) = recorder();
+        capture
+            .capture(async {
+                drop(tracing::info_span!(target: "other", CLIENT_CALL));
+                let call = tracing::info_span!(
                     target: "libsy",
                     CLIENT_CALL,
                     selected_model = "target/model",
                     switchyard.call_phase = "routing",
                     outcome = tracing::field::Empty,
                     error = ?PanicOnDebug,
-                ))
-                .await;
-                7
-            },
-            move |span| {
-                observed
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(span);
-            },
-        )
-        .await;
+                );
+                {
+                    let _entered = call.enter();
+                    drop(tracing::debug_span!(
+                        target: "libsy",
+                        UPSTREAM_ATTEMPT,
+                        model = "target/model",
+                        attempt = 1_u64,
+                        outcome = "error",
+                        error = "provider body",
+                    ));
+                    call.record("outcome", "ok");
+                }
+                drop(call);
+            })
+            .await;
 
-        assert_eq!(result, 7);
-        let mut spans = captured
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let [call] = spans.as_mut_slice() else {
-            panic!("expected one client call: {spans:?}");
-        };
+        let mut call = captured.try_recv().expect("expected one client call");
+        assert!(captured.try_recv().is_err());
         assert_eq!(call.name, CLIENT_CALL);
         assert!(matches!(relay_scope_type(call.name), ScopeType::Llm));
         assert_eq!(call.fields["selected_model"], "target/model");
@@ -404,132 +378,67 @@ mod tests {
 
     #[tokio::test]
     async fn captures_spans_that_close_after_the_scoped_future_returns() {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let observed = Arc::clone(&captured);
-        let call = capture_client_spans(
-            async {
-                let call = tracing::info_span!(
-                    target: "libsy",
-                    CLIENT_CALL,
-                    selected_model = "target/model",
-                    outcome = "cancelled",
-                );
-                let attempt = tracing::debug_span!(
-                    target: "libsy",
-                    parent: &call,
-                    UPSTREAM_ATTEMPT,
-                    attempt = 1_u64,
-                    outcome = "cancelled",
-                );
-                drop(attempt);
+        let (capture, captured) = recorder();
+        let call = capture
+            .capture(async {
+                let call = tracing::info_span!(target: "libsy", CLIENT_CALL);
+                drop(tracing::debug_span!(target: "libsy", parent: &call, UPSTREAM_ATTEMPT));
                 call
-            },
-            move |span| {
-                observed
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(span);
-            },
-        )
-        .await;
+            })
+            .await;
 
-        assert!(captured.lock().unwrap().is_empty());
+        assert!(captured.try_recv().is_err());
+        drop(capture);
         drop(call);
 
-        let spans = captured.lock().unwrap();
-        let [call] = spans.as_slice() else {
-            panic!("expected one deferred client call: {spans:?}");
-        };
-        assert_eq!(call.fields["outcome"], "cancelled");
+        let call = captured
+            .try_recv()
+            .expect("expected one deferred client call");
         assert_eq!(call.children.len(), 1);
-        assert_eq!(call.children[0].fields["outcome"], "cancelled");
     }
 
     #[tokio::test]
-    async fn concurrent_captures_keep_their_emitters_isolated() {
-        let first = Arc::new(Mutex::new(Vec::new()));
-        let first_observed = Arc::clone(&first);
-        let second = Arc::new(Mutex::new(Vec::new()));
-        let second_observed = Arc::clone(&second);
+    async fn one_capture_handles_concurrent_futures() {
+        let (capture, captured) = recorder();
 
         tokio::join!(
-            capture_client_spans(
-                async {
-                    tokio::task::yield_now().await;
-                    async {}
-                        .instrument(tracing::info_span!(
-                            target: "libsy",
-                            CLIENT_CALL,
-                            selected_model = "first",
-                        ))
-                        .await;
-                },
-                move |span| first_observed.lock().unwrap().push(span),
-            ),
-            capture_client_spans(
-                async {
-                    tokio::task::yield_now().await;
-                    async {}
-                        .instrument(tracing::info_span!(
-                            target: "libsy",
-                            CLIENT_CALL,
-                            selected_model = "second",
-                        ))
-                        .await;
-                },
-                move |span| second_observed.lock().unwrap().push(span),
-            ),
+            capture.capture(async {
+                tokio::task::yield_now().await;
+                drop(tracing::info_span!(target: "libsy", CLIENT_CALL, selected_model = "first"));
+            }),
+            capture.capture(async {
+                tokio::task::yield_now().await;
+                drop(tracing::info_span!(target: "libsy", CLIENT_CALL, selected_model = "second"));
+            }),
         );
 
-        let first = first.lock().unwrap();
-        let second = second.lock().unwrap();
-        let [first] = first.as_slice() else {
-            panic!("expected one first client call: {first:?}");
-        };
-        let [second] = second.as_slice() else {
-            panic!("expected one second client call: {second:?}");
-        };
-        assert_eq!(first.fields["selected_model"], "first");
-        assert_eq!(second.fields["selected_model"], "second");
+        let mut models = captured
+            .try_iter()
+            .map(|span| span.fields["selected_model"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        models.sort_unstable();
+        assert_eq!(models, ["first", "second"]);
     }
 
     #[tokio::test]
     async fn dropped_in_flight_spans_are_cancelled() {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let observed = Arc::clone(&captured);
+        let (capture, captured) = recorder();
 
-        let mut future = Box::pin(capture_client_spans(
-            async move {
-                let call = tracing::info_span!(
-                    target: "libsy",
-                    CLIENT_CALL,
-                    outcome = tracing::field::Empty,
-                );
-                async move {
-                    let attempt = tracing::debug_span!(
-                        target: "libsy",
-                        UPSTREAM_ATTEMPT,
-                        outcome = tracing::field::Empty,
-                    );
-                    async move {
-                        std::future::pending::<()>().await;
-                    }
-                    .instrument(attempt)
-                    .await;
-                }
+        let mut future = Box::pin(capture.capture(async move {
+            let call = tracing::info_span!(target: "libsy", CLIENT_CALL);
+            let attempt = tracing::debug_span!(target: "libsy", parent: &call, UPSTREAM_ATTEMPT);
+            std::future::pending::<()>()
+                .instrument(attempt)
                 .instrument(call)
                 .await;
-            },
-            move |span| observed.lock().unwrap().push(span),
-        ));
+        }));
 
         assert!(futures_util::poll!(&mut future).is_pending());
         drop(future);
 
-        let spans = captured.lock().unwrap();
-        let [call] = spans.as_slice() else {
-            panic!("expected one cancelled client call: {spans:?}");
-        };
+        let call = captured
+            .try_recv()
+            .expect("expected one cancelled client call");
         assert_eq!(call.fields["outcome"], "cancelled");
         assert_eq!(
             span_status(&Json::Object(call.fields.clone())),

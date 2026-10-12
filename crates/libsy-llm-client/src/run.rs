@@ -299,14 +299,6 @@ impl CallPhase {
             Self::Completion => "completion",
         }
     }
-
-    const fn buffers_stream(self) -> bool {
-        matches!(self, Self::Routing)
-    }
-
-    const fn records_routed_request(self) -> bool {
-        matches!(self, Self::Completion)
-    }
 }
 
 /// Call one candidate model and record its observation and span.
@@ -362,6 +354,7 @@ async fn call_one(
     count: usize,
     phase: CallPhase,
 ) -> Result<Response> {
+    let is_routing = matches!(phase, CallPhase::Routing);
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &request.llm_request);
     if let Some(session_id) = request
@@ -377,9 +370,7 @@ async fn call_one(
     let started = Instant::now();
     let result = async {
         let mut response = client?.call(request).await?;
-        if phase.buffers_stream()
-            && let LlmResponse::Stream(chunks) = response.llm_response
-        {
+        if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
             response.llm_response = LlmResponse::Stream(buffer_routing_stream(chunks).await?);
         }
         Ok(response)
@@ -393,10 +384,10 @@ async fn call_one(
         response
     });
     let result = observability::observe_client_call(result);
-    let result = if phase.records_routed_request() {
-        metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
-    } else {
+    let result = if is_routing {
         result
+    } else {
+        metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
     };
     observe(ModelCallObservation {
         selected_model: model_id.clone(),

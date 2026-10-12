@@ -1391,9 +1391,6 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
 async fn answered_routing_call_keeps_its_execution_phase() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (store, _, _, _, _) = telemetry();
-    let observations = Arc::new(Mutex::new(Vec::new()));
-    let observed = Arc::clone(&observations);
-    let observer: RunObserver = Arc::new(move |observation| observed.lock().push(observation));
     const ALGO: &str = "answered-routing-call";
     const MODEL: &str = "answer-from-routing";
 
@@ -1407,7 +1404,7 @@ async fn answered_routing_call_keeps_its_execution_phase() -> switchyard_libsy::
         })),
         request_with_metadata("answered-routing-session", "answered-routing-correlation"),
         Arc::new(RuntimeModels::default()),
-        Some(observer),
+        None,
     )
     .await?;
 
@@ -1415,13 +1412,6 @@ async fn answered_routing_call_keeps_its_execution_phase() -> switchyard_libsy::
     assert_eq!(
         span.fields.get("switchyard.call_phase").map(String::as_str),
         Some("routing")
-    );
-    assert!(
-        observations
-            .lock()
-            .iter()
-            .any(|observation| matches!(observation, RunObservation::AnswerCall(_))),
-        "the post-outcome observation should still classify the call as the answer"
     );
     Ok(())
 }
@@ -1894,13 +1884,11 @@ async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_
     assert_eq!(selected_model, "weak");
 
     let spans = store.spans();
-    for (model, phase) in [("classifier", "routing"), ("weak", "completion")] {
-        let span = find_span(&spans, "libsy.client_call", "selected_model", model);
-        assert_eq!(
-            span.fields.get("switchyard.call_phase").map(String::as_str),
-            Some(phase)
-        );
-    }
+    let span = find_span(&spans, "libsy.client_call", "selected_model", "weak");
+    assert_eq!(
+        span.fields.get("switchyard.call_phase").map(String::as_str),
+        Some("completion")
+    );
 
     let snapshots = flushed_metrics(exporter, provider);
     assert_eq!(

@@ -22,7 +22,7 @@ use switchyard_runner::{
 use switchyard_translation::{TranslationEngine, encode_stream_with_extensions};
 
 use crate::config::SwitchyardConfig;
-use crate::span_capture::{CapturedSpan, capture_client_spans};
+use crate::span_capture::CapturedSpan;
 use crate::translation;
 
 #[cfg(test)]
@@ -141,11 +141,9 @@ impl SwitchyardRuntime {
         &self,
         inbound: WireFormat,
         request: Request,
-        emit_event: RoutingEventEmitter,
     ) -> Execution<Json> {
         let request_extensions = request.llm_request.extensions.clone();
-        let emit_event = self.sanitized_emitter(emit_event);
-        let Execution { result, mut events } = self.execute(inbound, request, emit_event).await;
+        let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
             Ok(routed) => {
                 let result = finalize_buffered_response(
@@ -176,17 +174,10 @@ impl SwitchyardRuntime {
     ) -> Execution<ReturnedEventStream> {
         let emit_event = self.sanitized_emitter(emit_event);
         let request_extensions = request.llm_request.extensions.clone();
-        let Execution { result, mut events } =
-            self.execute(inbound, request, emit_event.clone()).await;
+        let Execution { result, mut events } = self.execute(inbound, request).await;
         let (result, finalization_failed) = match result {
             Ok(routed) => {
-                let metadata = events
-                    .iter()
-                    .find_map(|event| match event {
-                        RoutingEvent::Mark(mark) => Some(mark.metadata.clone()),
-                        RoutingEvent::Metric(_) | RoutingEvent::Span(_) => None,
-                    })
-                    .unwrap_or_else(|| Json::Object(Map::new()));
+                let metadata = event_metadata(&events).unwrap_or_else(|| Json::Object(Map::new()));
                 let result = returned_events(
                     routed.response,
                     inbound,
@@ -231,12 +222,7 @@ impl SwitchyardRuntime {
         Arc::new(move |event| emit_event(sanitize_event(&redactor, event)))
     }
 
-    async fn execute(
-        &self,
-        inbound: WireFormat,
-        request: Request,
-        emit_event: RoutingEventEmitter,
-    ) -> Execution<RoutedResponse> {
+    async fn execute(&self, inbound: WireFormat, request: Request) -> Execution<RoutedResponse> {
         let Some(route) = self.route(&request) else {
             return Execution {
                 result: Err("Switchyard has no route for this request model".into()),
@@ -266,11 +252,7 @@ impl SwitchyardRuntime {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(observation);
         });
-        match capture_client_spans(route.execute(request, Some(observer)), move |span| {
-            emit_event(RoutingEvent::Span(span));
-        })
-        .await
-        {
+        match route.execute(request, Some(observer)).await {
             Ok(output) => {
                 let outcome_fields = self.emit_observations(
                     &mut events,
@@ -481,13 +463,9 @@ fn evidence_for_mark(evidence: Option<Json>) -> Option<Json> {
     (!evidence.is_empty()).then_some(Json::Object(evidence))
 }
 
-pub(crate) fn emit_events(
-    runtime: &PluginRuntime,
-    redactor: &ProviderKeyRedactor,
-    events: Vec<RoutingEvent>,
-) {
+pub(crate) fn emit_events(emit_event: &RoutingEventEmitter, events: Vec<RoutingEvent>) {
     for event in events {
-        emit_event(runtime, redactor, event);
+        emit_event(event);
     }
 }
 
@@ -710,7 +688,7 @@ fn route_execution_error_events(
 fn event_metadata(events: &[RoutingEvent]) -> Option<Json> {
     events.iter().find_map(|event| match event {
         RoutingEvent::Mark(mark) => Some(mark.metadata.clone()),
-        RoutingEvent::Metric(_) | RoutingEvent::Span(_) => None,
+        _ => None,
     })
 }
 
@@ -1068,7 +1046,7 @@ mod tests {
             );
 
             let execution = runtime
-                .execute_buffered(WireFormat::OpenAiResponses, decoded, Arc::new(|_| {}))
+                .execute_buffered(WireFormat::OpenAiResponses, decoded)
                 .await;
             let decision = execution
                 .events
@@ -1077,7 +1055,7 @@ mod tests {
                     RoutingEvent::Mark(mark) if mark.name == "switchyard.routing.decision" => {
                         Some(&mark.data)
                     }
-                    RoutingEvent::Mark(_) | RoutingEvent::Metric(_) | RoutingEvent::Span(_) => None,
+                    _ => None,
                 })
                 .expect("decision mark should be emitted");
             assert_eq!(decision["selected_model"], "target/model");
@@ -1150,7 +1128,7 @@ mod tests {
             .expect("request should decode");
 
         let execution = runtime
-            .execute_buffered(WireFormat::OpenAiChat, request, Arc::new(|_| {}))
+            .execute_buffered(WireFormat::OpenAiChat, request)
             .await;
 
         assert!(execution.result.is_err());
@@ -1161,7 +1139,7 @@ mod tests {
                 RoutingEvent::Mark(mark) if mark.name == "switchyard.routing.error" => {
                     Some(&mark.data)
                 }
-                RoutingEvent::Mark(_) | RoutingEvent::Metric(_) | RoutingEvent::Span(_) => None,
+                _ => None,
             })
             .expect("error mark should be emitted");
         assert!(error["outcome_id"].is_string());
@@ -1209,7 +1187,7 @@ mod tests {
             .expect("namespaced Responses request should decode");
 
         let response = runtime
-            .execute_buffered(WireFormat::OpenAiResponses, request, Arc::new(|_| {}))
+            .execute_buffered(WireFormat::OpenAiResponses, request)
             .await
             .result
             .expect("buffered target call should succeed");
