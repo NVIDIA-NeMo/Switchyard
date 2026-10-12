@@ -4,7 +4,7 @@
 //! [`TranslatingLlmClient`]: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::ready;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -276,6 +276,9 @@ impl TranslatingLlmClient {
         set_json_model(&mut body, model);
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_provider_body(&mut body);
+        }
+        if matches!(endpoint, UpstreamEndpoint::Completion) {
+            define_tools_for_replayed_calls(&mut body, wire_format);
         }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
@@ -1072,6 +1075,115 @@ fn ensure_responses_function_tool_description(object: &mut Map<String, Value>) {
     {
         object.insert("description".to_string(), Value::String(String::new()));
     }
+}
+
+/// Description of a tool definition that Switchyard adds only so that earlier calls to the
+/// tool stay valid. The same request sets `tool_choice` to `none`.
+const REPLAYED_TOOL_DESCRIPTION: &str =
+    "Earlier calls to this tool appear in the conversation. It is not available in this request.";
+
+// Adds a definition for each tool that the conversation history calls when the request
+// defines no tools, and sets `tool_choice` to `none`.
+//
+// Codex compacts a long conversation by sending the whole history, including its tool calls
+// and results, with an empty `tools` list. OpenAI accepts that. LiteLLM in front of Bedrock
+// Claude rejects it on both OpenAI APIs ("Bedrock doesn't support tool calling without
+// `tools=` param specified"), so compaction could never finish on such a target. A
+// same-format request is replayed verbatim, so the fix has to apply to the outbound body.
+//
+// Bedrock has no `tool_choice` of `none`, and LiteLLM drops it. A Bedrock model can therefore
+// still call one of these tools if the prompt asks it to.
+fn define_tools_for_replayed_calls(body: &mut Value, wire_format: WireFormat) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if object
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty())
+    {
+        return;
+    }
+    let tools = match wire_format {
+        WireFormat::OpenAiResponses => replayed_responses_tools(object.get("input")),
+        WireFormat::OpenAiChat => replayed_chat_tools(object.get("messages")),
+        WireFormat::AnthropicMessages => return,
+    };
+    if tools.is_empty() {
+        return;
+    }
+    object.insert("tools".to_string(), Value::Array(tools));
+    object.insert("tool_choice".to_string(), json!("none"));
+}
+
+// One definition per tool name called in Responses `input`, in first-call order. A freeform
+// `custom_tool_call` gets a `custom` definition and a `function_call` gets a `function` one.
+fn replayed_responses_tools(input: Option<&Value>) -> Vec<Value> {
+    let Some(Value::Array(items)) = input else {
+        return Vec::new();
+    };
+    // A Responses-lite request defines its tools inside `input`.
+    if items
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str) == Some("additional_tools"))
+    {
+        return Vec::new();
+    }
+    let mut names = HashSet::new();
+    let mut tools = Vec::new();
+    for item in items {
+        let kind = match item.get("type").and_then(Value::as_str) {
+            Some("function_call") => "function",
+            Some("custom_tool_call") => "custom",
+            _ => continue,
+        };
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if !names.insert(name) {
+            continue;
+        }
+        tools.push(if kind == "function" {
+            json!({
+                "type": "function",
+                "name": name,
+                "description": REPLAYED_TOOL_DESCRIPTION,
+                "parameters": {"type": "object"},
+            })
+        } else {
+            json!({"type": "custom", "name": name, "description": REPLAYED_TOOL_DESCRIPTION})
+        });
+    }
+    tools
+}
+
+// One function definition per tool name called by assistant messages, in first-call order.
+fn replayed_chat_tools(messages: Option<&Value>) -> Vec<Value> {
+    let Some(Value::Array(messages)) = messages else {
+        return Vec::new();
+    };
+    let mut names = HashSet::new();
+    let mut tools = Vec::new();
+    let calls = messages
+        .iter()
+        .filter_map(|message| message.get("tool_calls").and_then(Value::as_array))
+        .flatten();
+    for call in calls {
+        let Some(name) = call.pointer("/function/name").and_then(Value::as_str) else {
+            continue;
+        };
+        if names.insert(name) {
+            tools.push(json!({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": REPLAYED_TOOL_DESCRIPTION,
+                    "parameters": {"type": "object"},
+                },
+            }));
+        }
+    }
+    tools
 }
 
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
