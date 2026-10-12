@@ -4136,6 +4136,7 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
         .uri("/v1/chat/completions")
         .header("content-type", "application/json")
         .header("x-switchyard-session-id", "canonical-session")
+        .header("x-switchyard-turn-id", "canonical-turn")
         .header("proxy_x_session_id", "legacy-session")
         .header("x-switchyard-origin", r#"custom-agent/"quoted"\path"#)
         .body(Body::from(serde_json::to_vec(&json!({
@@ -4195,8 +4196,10 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     let first: Value =
         serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
     assert_eq!(first["session_id"], "canonical-session");
+    assert_eq!(first["turn_id"], "canonical-turn");
     assert_eq!(first["origin"], r#"custom-agent/"quoted"\path"#);
     let second: Value = serde_json::from_str(records.lines().nth(1).ok_or("missing record")?)?;
+    assert_eq!(second["turn_id"], Value::Null);
     assert_eq!(second.get("origin"), Some(&Value::Null));
     assert!(
         first["ts"]
@@ -4304,6 +4307,7 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
         })),
         &[
             ("x-switchyard-session-id", "streaming-session"),
+            ("x-switchyard-turn-id", "streaming-turn"),
             ("x-switchyard-origin", "codex-cli"),
         ],
     )
@@ -4328,6 +4332,7 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
 
     let record: Value = serde_json::from_str(&std::fs::read_to_string(log_path)?)?;
     assert_eq!(record["route_id"], ROUTE_MODEL);
+    assert_eq!(record["turn_id"], "streaming-turn");
     assert_eq!(record["algorithm"], "random");
     assert_eq!(record["origin"], "codex-cli");
     Ok(())
