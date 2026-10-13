@@ -46,6 +46,9 @@ const SIGNAL_UNIT: f64 = 0.10;
 /// Signal units for full production. Above one so that production in a clean
 /// window can reach the efficient side of the band.
 const PRODUCTION_WEIGHT: f64 = 1.5;
+/// Signal units for any production in a clean window. Above the `1.1` units a
+/// `0.5` threshold needs, so a single write among many reads still resolves.
+const CLEAN_PRODUCTION_WEIGHT: f64 = 1.2;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
 /// Session-state key for the remaining capable-tier recovery turns.
@@ -344,7 +347,7 @@ fn record_score_metrics(signal: &ToolSignals, outcome: &PickOutcome) {
 pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
     let d = dimensions_from_signal(signal);
     let clean_production = if d.production_intensity > 0.0 && d.severity == 0.0 {
-        1.0
+        CLEAN_PRODUCTION_WEIGHT
     } else {
         0.0
     };
@@ -909,6 +912,24 @@ mod tests {
             turn_depth: STALL_MIN_TURN_DEPTH,
             recent_write_count: 2,
             recent_read_count: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::CapableFirst, 0.5),
+            PickOutcome::Resolved {
+                tier: Tier::Efficient,
+                source: DecisionSource::Dimensions,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn one_clean_write_among_many_reads_resolves_to_efficient() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_write_count: 1,
+            recent_read_count: 15,
             ..Default::default()
         };
         assert!(matches!(
