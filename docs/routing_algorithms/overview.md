@@ -26,13 +26,17 @@ can optionally call an LLM judge. The TOML configuration keys are unchanged.
 
 ### Auto
 
-Auto is a preset, not a separate routing algorithm. It currently uses Execution
-with `picker = "efficient_first"`, `confidence_threshold = 0.5`, and no LLM
-judge. It does not compare strategies at runtime. Use `stage_router` directly
-to tune these settings.
+Auto uses composite routing. Its required classifier picks a default tier on
+user turns, and the stage router responds to tool progress and failures with a
+confidence threshold of `0.5`. The classifier can use an LLM judge or a System One
+decision model. Use `composite` directly to tune stage settings.
+
+Existing auto configurations must add a classifier. To keep local tool-signal
+routing without a judge, use `stage_router` with `picker = "efficient_first"`
+and `confidence_threshold = 0.5`.
 
 See the [Auto configuration reference](../reference/toml_schema.md#auto) for
-the required targets.
+the classifier and session settings.
 
 ## More options
 

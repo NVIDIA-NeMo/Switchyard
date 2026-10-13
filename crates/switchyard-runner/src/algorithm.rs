@@ -435,15 +435,14 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
-    /// Picks a routing strategy automatically, preset with recommended knobs.
-    /// Currently a `stage_router` with `picker = "efficient_first"` and
-    /// `confidence_threshold = 0.5`; change `build_algorithm`'s `Auto` arm to
-    /// repoint it at a different algorithm or preset.
+    /// A composite preset with a required classifier and default stage settings.
     Auto {
         /// The capable tier.
         capable_target: String,
         /// The efficient tier.
         efficient_target: String,
+        /// Judge that supplies the default tier between tool signals.
+        classifier: StageClassifierConfig,
     },
     /// A judge picks the tier at each user turn; a stage router runs the turns within it.
     Composite {
@@ -543,9 +542,9 @@ pub struct StageClassifierConfig {
     /// for an uncertain verdict and twice for unsupported.
     #[serde(default)]
     pub threshold_step: Option<f64>,
-    /// How often the judge runs. `new_session` has no effect here.
+    /// How often the judge runs. Auto defaults to `user_turn`.
     #[serde(default)]
-    pub classify_trigger: ClassifyTrigger,
+    pub classify_trigger: Option<ClassifyTrigger>,
     /// Reuses the session's target by hashing the first user message when no
     /// session ID is available.
     #[serde(default)]
@@ -608,7 +607,7 @@ impl StageClassifierConfig {
             threshold_step: self.threshold_step,
             fail_open: self.fail_open,
             decision: self.decision.clone(),
-            classify_trigger: self.classify_trigger,
+            classify_trigger: self.classify_trigger.unwrap_or_default(),
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
             prompt: self.prompt.clone(),
@@ -626,13 +625,13 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
-    /// Whether this configuration only selects a model, with state owned by the caller.
+    /// Whether this route selects a model without producing a completion.
     pub(crate) fn supports_model_selection(&self) -> bool {
         match self {
             Self::Passthrough {
                 subagents: None, ..
-            }
-            | Self::Auto { .. } => true,
+            } => true,
+            Self::Auto { classifier, .. } => classifier.message_hash_fallback,
             Self::LlmClassifier { config } => {
                 matches!(config.classifier_mode(), ClassifierMode::Capability)
                     && config.classify_trigger == ClassifyTrigger::EveryRequest
@@ -648,6 +647,7 @@ impl AlgorithmSpec {
                 .as_ref()
                 .map(|decision| (config.classifier_target.as_str(), decision)),
             Self::Composite { classifier, .. }
+            | Self::Auto { classifier, .. }
             | Self::StageRouter {
                 classifier: Some(classifier),
                 ..
@@ -712,6 +712,7 @@ impl AlgorithmSpec {
             Self::Auto {
                 capable_target,
                 efficient_target,
+                ..
             } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::Composite {
                 stage, subagents, ..
@@ -762,7 +763,7 @@ impl AlgorithmSpec {
                 classifier: Some(classifier),
                 ..
             } => names.push(&classifier.target),
-            Self::Composite { classifier, .. } => {
+            Self::Composite { classifier, .. } | Self::Auto { classifier, .. } => {
                 names.push(&classifier.target);
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
@@ -831,7 +832,9 @@ impl AlgorithmSpec {
             Self::Auto {
                 capable_target,
                 efficient_target,
+                classifier,
             } => category_models([
+                (Category::Judge, vec![classifier.target.clone()]),
                 (Category::Capable, vec![capable_target.clone()]),
                 (Category::Efficient, vec![efficient_target.clone()]),
                 (
@@ -1493,15 +1496,29 @@ fn build_algorithm(
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
-        AlgorithmSpec::Auto { .. } => {
-            let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
-            let algorithm = StageRouter::new(config).map_err(|error| {
-                AlgorithmConfigError::with_source(
-                    format!("auto route {route_name}: {error}"),
-                    error,
-                )
-            })?;
-            Ok(Arc::new(algorithm))
+        AlgorithmSpec::Auto {
+            capable_target,
+            efficient_target,
+            classifier,
+        } => {
+            let mut classifier = classifier.clone();
+            classifier
+                .classify_trigger
+                .get_or_insert(ClassifyTrigger::UserTurn);
+            let preset = AlgorithmSpec::Composite {
+                classifier,
+                stage: StageTierConfig {
+                    capable_target: capable_target.clone(),
+                    efficient_target: efficient_target.clone(),
+                    confidence_threshold: 0.5,
+                    recent_turn_window: None,
+                    tool_semantics: ToolSemantics::default(),
+                    capable_hold_turns: None,
+                    handoff_notes: None,
+                },
+                subagents: None,
+            };
+            build_algorithm(route_name, &preset, targets)
         }
         AlgorithmSpec::Composite {
             classifier,

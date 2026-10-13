@@ -369,18 +369,21 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 
 ### `auto`
 
-Uses Switchyard's recommended default routing strategy instead of one you pick
-yourself: a `stage_router` preset with `picker = "efficient_first"` and
-`confidence_threshold = 0.5`, no classifier. See
-[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for a
-deeper dive on the current default, or the
-[strategy table](../routing_algorithms/overview.md#choose-a-strategy) to pick
-one manually.
+Uses composite routing with a required classifier, `user_turn` classification
+and a stage confidence threshold of `0.5`. Use `composite` to tune stage settings.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `capable_target` | Yes | — | Capable tier. |
-| `efficient_target` | Yes | — | Efficient tier. |
+| `capable_target` | Yes | unset | Capable completion target. |
+| `efficient_target` | Yes | unset | Efficient completion target. |
+| `classifier` | Yes | unset | Same LLM or System One decision settings as `composite`. |
+| `classifier.classify_trigger` | No | `user_turn` | Also accepts `new_session`. Rejects `every_request`. |
+
+Existing auto routes must add a classifier. Missing configuration reports
+``missing field `classifier` ``. To keep local signal-only routing, use
+`stage_router` with `picker = "efficient_first"` and `confidence_threshold = 0.5`.
+See [composite sessions](../routing_algorithms/composite_routing.md#sessions)
+for session identity and tier retention.
 
 ### `composite`
 

@@ -58,9 +58,9 @@ impl Runner {
 
     /// Loads routes whose only completion-side effect is model selection.
     ///
-    /// Accepts auto, passthrough, and capability classifiers with per-request decisions.
-    /// Completion request overrides and forwarded authentication are rejected;
-    /// the caller owns completion dispatch and session state.
+    /// Accepts auto with message-hash retention, passthrough, and per-request classifiers.
+    /// Completion request overrides and forwarded authentication are rejected.
+    /// the caller owns completion dispatch.
     pub fn from_toml_for_model_selection(source: &str) -> Result<Self, RunnerError> {
         config::model_selection_from_toml(source)
     }

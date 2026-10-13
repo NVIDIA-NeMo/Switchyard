@@ -7,25 +7,19 @@ every request:
 - **Capable:** Sol (`openai-codex/gpt-6.1-sol`).
 - **Thinking:** always `medium`.
 
-`auto` currently uses Switchyard's stage router with an efficient-first default
-and a confidence threshold of 0.5. It reads tool activity and results to choose a
-model. It can escalate to Sol during recovery and return to Luna as work proceeds.
-The same routing applies to user requests, continuations, retries, and direct
-requests such as compaction summaries.
+`auto` uses composite routing. A decision model classifies user turns, and
+local tool signals handle escalation and recovery between them.
 
 ## Configuration
 
-`switchyard.toml` contains just the algorithm settings:
-
-```toml
-type = "auto"
-efficient_target = "openai-codex/gpt-6-luna"
-capable_target = "openai-codex/gpt-6.1-sol"
-```
+`switchyard.toml` contains the algorithm, classifier and decision-client settings.
+The example uses OpenRouter's Mercury Decide endpoint. Set `OPENROUTER_API_KEY`
+in the environment before launching Pi and replace the example comparison
+evidence with evaluations for your tasks and models.
 
 Set either target to a `provider/model` reference available in Pi's catalog, such
 as `openai-codex/gpt-6-astra`. The first slash separates the provider from the model
-ID; `openrouter/vendor/model` keeps `vendor/model` as the ID. Both providers and
+ID. `openrouter/vendor/model` keeps `vendor/model` as the ID. Both providers and
 models come from this file. Thinking remains `medium`.
 
 The extension generates the runner's target entries, route ID, and credential-free
@@ -58,8 +52,8 @@ are in your catalog. Then:
 pi -e ./examples/pi/switchyard-router.ts --model switchyard/auto
 ```
 
-Completion calls can incur provider charges. The auto routing decision runs
-locally; Pi owns completion credentials and connections.
+The classifier calls its configured endpoint on user turns. Pi owns completion
+credentials and connections. Provider calls can incur charges.
 
 ## Conversation handling
 
@@ -68,10 +62,10 @@ failure flags to Switchyard. Pi keeps the original images and reasoning for the
 chosen completion model. Each decision uses the current branch's transcript,
 including the history available after compaction or resume.
 
-The binding uses fresh routing state for each request. Auto's cross-request
-capable hold requires session identity; this extension relies on the recent tool
-history for recovery signals instead. It keeps its routing decisions independent
-across branches.
+The classifier retains its tier by hashing the first user message. Conversations
+or branches with identical opening text can share that tier. Recovery signals
+come from recent tool history. Cross-request capable holds require session
+identity and are not retained by this extension.
 
 Routing errors and cancellation propagate to Pi. The extension checks target
 identities and resolves the selected model through Pi's catalog.
