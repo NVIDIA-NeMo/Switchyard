@@ -4,15 +4,16 @@ Prepares media in an outgoing provider JSON body. `libsy-llm-client` invokes thi
 crate after translation and endpoint overrides, before retries. Core `libsy` has
 no dependency on this crate. The caller's original routing request is unchanged.
 
-RGB images use Dynamo's Lanczos resize function, pinned to
-[`frontend-crates` main at `926d133a`](https://github.com/ai-dynamo/frontend-crates/tree/926d133af0702ea33a601da7e0ddc5d51235bff9/multimodal).
-This changes RGB downscaling from Triangle to Lanczos. Bounded decoding, EXIF
-rotation, PNG output for transparency, URL fetching and FFmpeg frame extraction
-remain here. The client continues to use `MediaProcessor` and `MediaConfig`.
+Media fetching, EXIF-aware JPEG decoding and RGB resizing use `dynamo-multimodal`, pinned to
+[`frontend-crates` main at `e979fc76`](https://github.com/ai-dynamo/frontend-crates/tree/e979fc762366b3580fdc4185874cee51217bd637/multimodal).
+RGB downscaling uses Lanczos. Other image formats retain the bounded `image`
+decoder, including transparency and higher bit depths. PNG output for transparency,
+FFmpeg frame extraction and provider formatting remain here. The client continues
+to use `MediaProcessor` and `MediaConfig`.
 Dynamo's optional Rayon pool is disabled; the existing bounded workers run decoding.
 Building from source requires CMake and a C/C++ toolchain for libjpeg-turbo.
 Source builds use the pinned Git revision. Cargo packages use the compatible
-registry version `0.1.0`, which provides the same RGB resize API.
+registry version `0.1.1`, which provides the same APIs.
 
 Supported content: Chat `image_url` / `video_url`, Responses `input_image` /
 `input_video`, Anthropic image/video source blocks, and Gemini-on-Hub video
@@ -71,9 +72,12 @@ decode returns an error instead of silently dropping media. Samples include text
 labels with requested seek times, not exact decoded frame timestamps. Uniform
 sampling can miss brief events; benchmark temporal accuracy must be evaluated separately.
 
-Locally processed media can be base64 data URIs or public HTTPS URLs. Downloads
-use no inference credentials, no environment proxy, validated DNS/redirect targets,
-and bounded bodies. Local paths, private network URLs and provider-managed file IDs
+Locally processed media can be base64 data URIs or public HTTP(S) URLs. Dynamo's
+`MediaFetcher` validates DNS and redirects and limits downloaded bytes. It receives
+no inference credentials or environment proxy. Fetchers are reused across requests
+with the same input limit. Inline limits count decoded bytes; Dynamo also bounds
+the encoded payload before decoding. The preparation deadline covers fetching.
+Local paths, private network URLs and provider-managed file IDs
 are not fetched. Use inline data for local files. At most 64 sources are processed
 per call; two decode jobs run at once per client. PNG/JPEG/WebP still images are
 supported. All other provider fields, including image detail/cache hints, are retained.
@@ -83,8 +87,6 @@ supported. All other provider fields, including image detail/cache hints, are re
 Adapted from [ai-dynamo/dynamo](https://github.com/ai-dynamo/dynamo) revision
 `c3deae7507717409d4d1ff0d6f7e575180bd03d7`, Apache-2.0:
 
-- `lib/llm/src/preprocessor/media/loader.rs`: blocked IP ranges and DNS/redirect
-  validation approach, reduced to an unauthenticated public-media fetcher.
 - `lib/llm/src/preprocessor/media/decoders/image/backends/image_reader.rs`:
   bounded `ImageReader` setup. Tensor conversion is replaced with image resizing.
 - `lib/llm/src/preprocessor/media/decoders/video.rs`: `get_target_times` sampling

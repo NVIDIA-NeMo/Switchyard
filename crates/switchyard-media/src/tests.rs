@@ -39,9 +39,7 @@ async fn resizing_retains_alpha_aspect_ratio_and_provider_fields() {
             .unwrap();
         let item = &body["messages"][0]["content"][0];
         let url = image_url(item).unwrap();
-        let bytes = fetch::load(&processor.client, &url, 1024 * 1024)
-            .await
-            .unwrap();
+        let bytes = processor.fetchers.load(url, 1024 * 1024).await.unwrap();
         let resized = image::load_from_memory(&bytes).unwrap();
         assert_eq!((resized.width(), resized.height()), (20, 10));
         assert_eq!(resized.to_rgba8().get_pixel(0, 0)[3], 128);
@@ -232,12 +230,9 @@ async fn video_frames_work_in_all_formats_and_preserve_original_request() {
         let frames: Vec<_> = content.iter().filter_map(image_url).collect();
         assert_eq!(frames.len(), 3);
         for url in frames {
-            let image = image::load_from_memory(
-                &fetch::load(&processor.client, &url, 1_000_000)
-                    .await
-                    .unwrap(),
-            )
-            .unwrap();
+            let image =
+                image::load_from_memory(&processor.fetchers.load(url, 1_000_000).await.unwrap())
+                    .unwrap();
             assert!(image.width() <= 32 && image.height() <= 32);
         }
         assert_eq!(
@@ -310,7 +305,9 @@ async fn image_resize_applies_exif_and_avoids_reencoding_small_images() {
     let rotated = image::load_from_memory(&bytes).unwrap();
     assert_eq!((rotated.width(), rotated.height()), (20, 40));
     let processor = MediaProcessor::new().unwrap();
-    let original = fetch::load(&processor.client, &still_image(), 100_000)
+    let original = processor
+        .fetchers
+        .load(still_image(), 100_000)
         .await
         .unwrap();
     let (_, retained) = decode::resize(original.clone(), 200, slots).await.unwrap();

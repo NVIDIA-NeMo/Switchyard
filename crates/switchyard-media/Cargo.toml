@@ -13,14 +13,14 @@ rust-version.workspace = true
 
 [dependencies]
 base64.workspace = true
-dynamo-multimodal = { version = "0.1.0", git = "https://github.com/ai-dynamo/frontend-crates.git", rev = "926d133af0702ea33a601da7e0ddc5d51235bff9", default-features = false }
+dynamo-multimodal = { version = "0.1.1", git = "https://github.com/ai-dynamo/frontend-crates.git", rev = "e979fc762366b3580fdc4185874cee51217bd637", default-features = false, features = ["fetch"] }
 futures-util.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-ipnet = "2"
-reqwest.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 switchyard-protocol.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tokio.workspace = true
+url = "2"

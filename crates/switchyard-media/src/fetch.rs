@@ -1,193 +1,77 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bounded media loading without forwarding inference credentials.
+//! Reuse Dynamo download pools with each target's input size limit.
 
-use std::net::IpAddr;
-use std::sync::{Arc, LazyLock};
+use std::collections::{HashMap, hash_map::Entry};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures_util::StreamExt;
-use ipnet::IpNet;
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use reqwest::{Client, Url};
+use dynamo_multimodal::fetch::{FetchPolicy, MediaFetcher};
+use parking_lot::Mutex;
 
 use crate::{MediaError, Result};
 
-// Adapted from Dynamo's media/loader.rs; see README.md for source and revision.
-static BLOCKED_NETWORKS: LazyLock<Vec<IpNet>> = LazyLock::new(|| {
-    [
-        "0.0.0.0/8",
-        "10.0.0.0/8",
-        "100.64.0.0/10",
-        "127.0.0.0/8",
-        "169.254.0.0/16",
-        "172.16.0.0/12",
-        "192.0.0.0/24",
-        "192.0.2.0/24",
-        "192.168.0.0/16",
-        "198.18.0.0/15",
-        "198.51.100.0/24",
-        "203.0.113.0/24",
-        "224.0.0.0/4",
-        "240.0.0.0/4",
-        "::/128",
-        "::1/128",
-        "::ffff:0:0/96",
-        "fc00::/7",
-        "fe80::/10",
-        "ff00::/8",
-    ]
-    .iter()
-    .map(|cidr| cidr.parse().expect("constant CIDR"))
-    .collect()
-});
+#[derive(Default)]
+pub(crate) struct Fetchers(Mutex<HashMap<usize, MediaFetcher>>);
 
-fn blocked(ip: IpAddr) -> bool {
-    BLOCKED_NETWORKS.iter().any(|network| network.contains(&ip))
-}
-
-fn validate_url(url: &Url) -> Result<()> {
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-        return Err(MediaError::Invalid(
-            "media downloads require HTTPS without credentials",
-        ));
-    }
-    let host = url
-        .host_str()
-        .ok_or(MediaError::Invalid("missing media host"))?;
-    if matches!(
-        host.trim_end_matches('.'),
-        "localhost"
-            | "localhost.localdomain"
-            | "metadata"
-            | "metadata.google.internal"
-            | "metadata.goog"
-            | "kubernetes.default"
-            | "kubernetes.default.svc"
-    ) || host
-        .trim_matches(['[', ']'])
-        .parse::<IpAddr>()
-        .is_ok_and(blocked)
-    {
-        return Err(MediaError::Invalid("media URL must use a public address"));
-    }
-    Ok(())
-}
-
-struct PublicResolver;
-
-impl Resolve for PublicResolver {
-    fn resolve(&self, name: Name) -> Resolving {
-        Box::pin(async move {
-            let addresses: Vec<_> = tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
-            if addresses.is_empty() || addresses.iter().any(|address| blocked(address.ip())) {
-                return Err(
-                    std::io::Error::other("media DNS must resolve to public addresses").into(),
-                );
+impl Fetchers {
+    pub(crate) async fn load(&self, source: String, max_bytes: usize) -> Result<Vec<u8>> {
+        // Policies are immutable; targets with the same limit share a connection pool.
+        let fetcher = {
+            let mut fetchers = self.0.lock();
+            if let Entry::Vacant(entry) = fetchers.entry(max_bytes) {
+                let mut policy = FetchPolicy::default();
+                policy.allow_direct_ip = true;
+                policy.allow_direct_port = true;
+                policy.max_bytes = max_bytes as u64;
+                // Dynamo caps the encoded payload; our setting counts decoded bytes.
+                policy.max_data_url_bytes = max_bytes.div_ceil(3) * 4;
+                // MediaProcessor bounds the whole call, including queueing and decoding.
+                policy.timeout = None;
+                let fetcher = MediaFetcher::new(policy)
+                    .map_err(|_| MediaError::Invalid("cannot create media fetcher"))?;
+                entry.insert(fetcher);
             }
-            Ok(Box::new(addresses.into_iter()) as Addrs)
-        })
-    }
-}
-
-pub(crate) fn client() -> Result<Client> {
-    Client::builder()
-        // An environment proxy could bypass destination validation.
-        .no_proxy()
-        .dns_resolver(Arc::new(PublicResolver))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 5 || validate_url(attempt.url()).is_err() {
-                attempt.error("media redirect rejected")
-            } else {
-                attempt.follow()
-            }
-        }))
-        .build()
-        .map_err(|_| MediaError::Invalid("cannot create media HTTP client"))
-}
-
-pub(crate) async fn load(client: &Client, source: &str, max_bytes: usize) -> Result<Vec<u8>> {
-    if let Some(data) = source.strip_prefix("data:") {
-        let (header, encoded) = data
-            .split_once(',')
-            .ok_or(MediaError::Invalid("invalid media data URI"))?;
-        if !header.ends_with(";base64") {
-            return Err(MediaError::Invalid("media data URI must be base64 encoded"));
-        }
-        if encoded.len() > max_bytes.saturating_add(2) / 3 * 4 {
-            return Err(MediaError::Invalid("media exceeds max_input_bytes"));
-        }
-        let bytes = STANDARD
-            .decode(encoded)
-            .map_err(|_| MediaError::Invalid("invalid media base64"))?;
+            fetchers[&max_bytes].clone()
+        };
+        // Dynamo errors may contain URLs or hostnames. Keep request data out of errors.
+        let bytes = fetcher
+            .fetch(source)
+            .await
+            .map_err(|_| MediaError::Invalid("media fetch failed or exceeds max_input_bytes"))?;
         if bytes.len() > max_bytes {
             return Err(MediaError::Invalid("media exceeds max_input_bytes"));
         }
-        return Ok(bytes);
+        Ok(bytes)
     }
-    let url = Url::parse(source).map_err(|_| MediaError::Invalid("invalid media URL"))?;
-    validate_url(&url)?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| MediaError::Invalid("media download failed"))?
-        .error_for_status()
-        .map_err(|_| MediaError::Invalid("media download returned an error status"))?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > max_bytes as u64)
-    {
-        return Err(MediaError::Invalid("media exceeds max_input_bytes"));
-    }
-    let mut bytes = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| MediaError::Invalid("media download interrupted"))?;
-        if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
-            return Err(MediaError::Invalid("media exceeds max_input_bytes"));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn rejects_local_and_credential_urls() {
-        for url in [
-            "http://example.com/a",
-            "file:///tmp/a",
-            "https://127.0.0.1/a",
-            "https://[::1]/a",
-            "https://[::ffff:127.0.0.1]/a",
-            "https://169.254.169.254/a",
-            "https://user:secret@example.com/a",
-            "https://metadata.google.internal./a",
-        ] {
-            assert!(validate_url(&Url::parse(url).unwrap()).is_err(), "{url}");
-        }
-        assert!(validate_url(&Url::parse("https://huggingface.co/example").unwrap()).is_ok());
-    }
-
     #[tokio::test]
-    async fn bounds_inline_media_without_leaking_source() {
-        let client = client().unwrap();
-        assert_eq!(
-            load(&client, "data:image/png;base64,AQID", 3)
-                .await
-                .unwrap(),
-            [1, 2, 3]
-        );
-        assert!(
-            load(&client, "data:image/png;base64,AQID", 2)
-                .await
-                .is_err()
-        );
-        assert!(load(&client, "data:image/png,secret", 100).await.is_err());
+    async fn enforces_target_limits_and_redacts_errors() {
+        let fetchers = Fetchers::default();
+        let source = "data:image/png;base64,AQID";
+        assert_eq!(fetchers.load(source.into(), 3).await.unwrap(), [1, 2, 3]);
+        for limit in [1, 2] {
+            assert!(fetchers.load(source.into(), limit).await.is_err());
+        }
+        assert_eq!(fetchers.load(source.into(), 3).await.unwrap(), [1, 2, 3]);
+        for source in [
+            "file:///tmp/secret",
+            "https://127.0.0.1/secret",
+            "https://[::1]/secret",
+            "https://169.254.169.254/secret",
+            "https://user:secret@example.com/a",
+            "https://metadata.google.internal./secret",
+            "data:image/png,secret",
+        ] {
+            let error = fetchers.load(source.into(), 100).await.unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "media fetch failed or exceeds max_input_bytes"
+            );
+        }
     }
 }

@@ -7,7 +7,10 @@ use std::io::Cursor;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use dynamo_multimodal::image::resize::resize_lanczos_rgb;
+use dynamo_multimodal::image::{
+    decode::{DecodeLimits, decode_rgb_exif_transposed},
+    resize::resize_lanczos_rgb,
+};
 use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbImage, metadata::Orientation,
 };
@@ -48,14 +51,33 @@ pub(crate) async fn resize(
             return Err(MediaError::Invalid("image exceeds decode allocation limit"));
         }
         let orientation = decoder.orientation()?;
-        let mut decoded = DynamicImage::from_decoder(decoder)?;
+        let decoded = if format == ImageFormat::Jpeg {
+            drop(decoder);
+            let (rgb, height, width) = decode_rgb_exif_transposed(
+                &bytes,
+                &DecodeLimits {
+                    max_width: Some(MAX_DIMENSION as usize),
+                    max_height: Some(MAX_DIMENSION as usize),
+                    max_pixels: Some(MAX_ALLOC as usize / 3),
+                },
+            )
+            .map_err(|_| MediaError::Invalid("image decoding failed"))?;
+            DynamicImage::ImageRgb8(
+                RgbImage::from_raw(width as u32, height as u32, rgb)
+                    .ok_or(MediaError::Invalid("invalid decoded image dimensions"))?,
+            )
+        } else {
+            // Retain transparency and higher bit depths supported by the image crate.
+            let mut decoded = DynamicImage::from_decoder(decoder)?;
+            decoded.apply_orientation(orientation);
+            decoded
+        };
         if decoded.width() <= edge
             && decoded.height() <= edge
             && orientation == Orientation::NoTransforms
         {
             return Ok((format.to_mime_type(), bytes));
         }
-        decoded.apply_orientation(orientation);
         let resized = if decoded.width() > edge || decoded.height() > edge {
             if decoded.color().has_alpha() {
                 // Dynamo's RGB resampler cannot preserve transparency.
@@ -261,10 +283,17 @@ mod tests {
     #[tokio::test]
     async fn rgb_resize_keeps_thin_images_nonempty_and_does_not_upscale() {
         let slots = Arc::new(Semaphore::new(1));
-        for (width, height, expected) in [(80, 1, (20, 1)), (1, 80, (1, 20)), (8, 4, (8, 4))] {
+        for (format, width, height, expected) in [ImageFormat::Png, ImageFormat::Jpeg]
+            .into_iter()
+            .flat_map(|format| {
+                [(80, 1, (20, 1)), (1, 80, (1, 20)), (8, 4, (8, 4))]
+                    .into_iter()
+                    .map(move |(w, h, expected)| (format, w, h, expected))
+            })
+        {
             let image = RgbImage::from_pixel(width, height, image::Rgb([210, 40, 20]));
             let mut input = Cursor::new(Vec::new());
-            image.write_to(&mut input, ImageFormat::Png).unwrap();
+            image.write_to(&mut input, format).unwrap();
             let original = input.into_inner();
             let (_, output) = resize(original.clone(), 20, slots.clone()).await.unwrap();
             let resized = image::load_from_memory(&output).unwrap();

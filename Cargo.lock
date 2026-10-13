@@ -674,15 +674,21 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dynamo-multimodal"
-version = "0.1.0"
-source = "git+https://github.com/ai-dynamo/frontend-crates.git?rev=926d133af0702ea33a601da7e0ddc5d51235bff9#926d133af0702ea33a601da7e0ddc5d51235bff9"
+version = "0.1.1"
+source = "git+https://github.com/ai-dynamo/frontend-crates.git?rev=e979fc762366b3580fdc4185874cee51217bd637#e979fc762366b3580fdc4185874cee51217bd637"
 dependencies = [
+ "base64",
  "blake3",
  "gif",
  "image",
+ "ipnet",
+ "png",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tokio",
  "turbojpeg",
+ "url",
  "xxhash-rust",
 ]
 
@@ -1318,6 +1324,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -2220,7 +2227,7 @@ dependencies = [
  "bytes",
  "http",
  "opentelemetry",
- "reqwest",
+ "reqwest 0.13.4",
 ]
 
 [[package]]
@@ -2235,7 +2242,7 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost 0.14.4",
- "reqwest",
+ "reqwest 0.13.4",
  "thiserror 2.0.18",
 ]
 
@@ -2887,6 +2894,44 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reqwest"
+version = "0.12.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "quinn",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "sync_wrapper",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "webpki-roots",
+]
+
+[[package]]
+name = "reqwest"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
@@ -2976,6 +3021,7 @@ checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -3350,7 +3396,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
- "reqwest",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "switchyard-libsy",
@@ -3373,14 +3419,14 @@ dependencies = [
  "dynamo-multimodal",
  "futures-util",
  "image",
- "ipnet",
- "reqwest",
+ "parking_lot",
  "serde",
  "serde_json",
  "switchyard-protocol",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -3475,7 +3521,7 @@ dependencies = [
  "async-trait",
  "futures-util",
  "prefill-router",
- "reqwest",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "strum_macros",
@@ -3507,7 +3553,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "prometheus",
- "reqwest",
+ "reqwest 0.13.4",
  "rustls",
  "serde",
  "serde_json",
@@ -3544,7 +3590,7 @@ dependencies = [
  "humantime",
  "parking_lot",
  "rand 0.10.2",
- "reqwest",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -4342,6 +4388,15 @@ name = "webpki-root-certs"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7dcd9d09a39985f5344844e66b0c530a33843579125f23e21e9f0f220850f22a"
 dependencies = [
  "rustls-pki-types",
 ]

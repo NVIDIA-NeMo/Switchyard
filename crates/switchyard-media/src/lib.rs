@@ -119,17 +119,17 @@ pub enum MediaError {
 /// Result of media preparation.
 pub type Result<T> = std::result::Result<T, MediaError>;
 
-/// Shared download client and bounded CPU/subprocess concurrency for one LLM client.
+/// Shared download pools and bounded CPU/subprocess concurrency for one LLM client.
 pub struct MediaProcessor {
-    client: reqwest::Client,
+    fetchers: fetch::Fetchers,
     slots: Arc<Semaphore>,
 }
 
 impl MediaProcessor {
-    /// Construct a processor with a separate unauthenticated HTTP client.
+    /// Construct a processor; unauthenticated download pools are created on first use.
     pub fn new() -> Result<Self> {
         Ok(Self {
-            client: fetch::client()?,
+            fetchers: fetch::Fetchers::default(),
             slots: Arc::new(Semaphore::new(2)),
         })
     }
@@ -195,8 +195,7 @@ impl MediaProcessor {
                         let source = image_url(&item)
                             .ok_or(MediaError::Invalid("image source cannot be resized"))?;
                         budget.consume_block()?;
-                        let bytes =
-                            fetch::load(&self.client, &source, config.max_input_bytes).await?;
+                        let bytes = self.fetchers.load(source, config.max_input_bytes).await?;
                         let (mime, encoded) =
                             decode::resize(bytes, edge, self.slots.clone()).await?;
                         budget.consume_bytes(encoded.len())?;
@@ -231,8 +230,7 @@ impl MediaProcessor {
                             budget.consume_block()?;
                             let (url, _) = video_source(&item)
                                 .ok_or(MediaError::Invalid("unrecognized video source"))?;
-                            let bytes =
-                                fetch::load(&self.client, &url, config.max_input_bytes).await?;
+                            let bytes = self.fetchers.load(url, config.max_input_bytes).await?;
                             let frames = decode::frames(
                                 bytes,
                                 count,
@@ -374,7 +372,7 @@ fn video_source(item: &Value) -> Option<(String, String)> {
         {
             mime.to_owned()
         } else {
-            let parsed = reqwest::Url::parse(url).ok();
+            let parsed = url::Url::parse(url).ok();
             match parsed
                 .as_ref()
                 .map(|url| url.path().to_ascii_lowercase())
