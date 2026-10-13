@@ -1559,7 +1559,7 @@ its own signals are not confident. The stage router's <code>picker</code> mode i
 and so is how it scores signals, escalates, and de-escalates. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.</p>
-<p>The classifier can use an LLM judge or a System One decision model. A decision
+<p>The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
 capable and efficient completion targets.</p>
 <p>The general form, where any algorithm can target another and set its
@@ -1594,7 +1594,7 @@ nor a second <code>classifier</code>. The outer classifier supplies the default 
 Custom <code>tool_semantics</code> remain stage-local and have the same additive behavior as
 on a standalone stage route.</p>
 <h2 id="decision-model-classifier">Decision model classifier<a class="headerlink" href="#decision-model-classifier" title="Permanent link">&para;</a></h2>
-<p>Use a System One decision target as the classifier. Keep the stage block above
+<p>Use a decision target as the classifier. Keep the stage block above
 and replace its LLM classifier settings with:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[decision_clients.decisions]</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;system_one&quot;</span>
