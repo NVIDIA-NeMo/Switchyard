@@ -6,29 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **Cancel one call and keep routing** - custom algorithms can race models,
-  time out a judge, or stop a pending call once another answer is accepted.
-  Dropping the waiting model- or decision-call future stops that call's local
-  work while other calls continue. The standard HTTP host drops the abandoned
-  request work, and a late reply no longer fails the entire run. Python waits
-  for the cancelled task's cleanup before `respond` returns. A delivered
-  response stream remains under its consumer's control. Providers may still
-  generate and bill after disconnect, so this does not guarantee cost savings.
-  ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
-
-### Changed
-
-- **Async replies for custom library hosts** *(source-breaking)* - Rust
-  `CallModel::respond` and `CallDecision::respond` now accept the work future:
-  `call.respond(work).await?`. Python hosts use `await call.respond(work)`, and
-  Python `call.fail(error)` must also be awaited. Pass the future or awaitable
-  itself, rather than awaiting the provider first, so libsy can stop that work.
-  Custom `run_stream` consumers must run handlers concurrently and clean up
-  outstanding handlers when the run ends. The standard HTTP host handles this
-  automatically; `Algorithm`, `Driver`, and `run_stream` signatures are unchanged.
-  See the [host integration guide](docs/getting_started.md#drive-the-algorithm).
+- **Speculative workflows** - algorithms can run model and decision calls in
+  parallel, stop one call, and let another continue. This includes decision
+  models used as speculative tool callers. The same controls support general
+  speculative and parallel workflows built on libsy. Cancellation stops local work;
+  provider generation and billing may continue after disconnect.
+  **Host API change (source-breaking):** Rust uses `call.respond(work).await?`;
+  Python uses `await call.respond(work)` and `await call.fail(error)`. Pass work
+  before awaiting it. See the
+  [host integration guide](docs/getting_started.md#drive-the-algorithm).
   ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
 
 ## [0.3.0]
