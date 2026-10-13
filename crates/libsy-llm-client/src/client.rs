@@ -1775,6 +1775,69 @@ mod tests {
         );
     }
 
+    // A gateway in front of Bedrock rejects tool-call history in a request with no tools, so
+    // the client defines each called tool. Requests with their own tool definitions, with no
+    // tool calls, or bound for an Anthropic backend keep their bodies.
+    #[test]
+    fn replayed_tool_calls_get_definitions_only_when_the_request_has_none() {
+        let custom =
+            json!({"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": "ls"});
+        let function =
+            json!({"type": "function_call", "call_id": "c2", "name": "shell", "arguments": "{}"});
+        let mut responses =
+            json!({"tools": [], "tool_choice": "auto", "input": [custom, function, function]});
+        define_tools_for_replayed_calls(&mut responses, WireFormat::OpenAiResponses);
+        let defined: Vec<_> = responses["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|tool| (&tool["type"], &tool["name"]))
+            .collect();
+        assert_eq!(
+            defined,
+            [
+                (&json!("custom"), &json!("exec")),
+                (&json!("function"), &json!("shell"))
+            ]
+        );
+        assert_eq!(responses["tool_choice"], "none");
+
+        let shell = json!({"type": "function", "function": {"name": "shell", "arguments": "{}"}});
+        let mut chat = json!({"messages": [{"role": "assistant", "tool_calls": [shell, shell]}]});
+        define_tools_for_replayed_calls(&mut chat, WireFormat::OpenAiChat);
+        assert_eq!(chat["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(chat["tools"][0]["function"]["name"], "shell");
+        assert_eq!(chat["tool_choice"], "none");
+
+        let anthropic_history = json!([
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}
+        ]);
+        for (body, format) in [
+            (
+                json!({"tools": [{"type": "function", "name": "own"}], "tool_choice": "auto", "input": [function]}),
+                WireFormat::OpenAiResponses,
+            ),
+            // A Responses-lite request defines its tools inside `input`.
+            (
+                json!({"input": [{"type": "additional_tools", "tools": []}, function]}),
+                WireFormat::OpenAiResponses,
+            ),
+            (
+                json!({"tools": [], "input": [{"type": "message", "role": "user", "content": "hi"}]}),
+                WireFormat::OpenAiResponses,
+            ),
+            (
+                json!({"messages": anthropic_history}),
+                WireFormat::AnthropicMessages,
+            ),
+        ] {
+            let mut edited = body.clone();
+            define_tools_for_replayed_calls(&mut edited, format);
+            assert_eq!(edited, body, "{format}");
+        }
+    }
+
     // A request that pins `format` in its metadata, so the client resolves that
     // wire format instead of the model's default backend.
     fn request_with_wire_format(model: &str, format: WireFormat) -> Request {
