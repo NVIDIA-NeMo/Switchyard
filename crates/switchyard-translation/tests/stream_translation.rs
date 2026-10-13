@@ -203,6 +203,39 @@ fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
     Ok(())
 }
 
+// A finished item that contradicts text that was already streamed reaches a same-format client
+// as an error event in its place. Before, the contradicting event was replayed and the stream
+// ended with no error event.
+#[test]
+fn preserved_same_format_snapshot_conflict_replays_as_an_error() -> TestResult {
+    let format = WireFormat::OpenAiResponses;
+    let events = [
+        json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "Hello"}),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message",
+            "role": "assistant", "content": [{"type": "output_text", "text": "Goodbye"}]}}),
+    ];
+    let engine = TranslationEngine::default();
+    let mut decode_state = StreamTranslationState::new(format, format);
+    let mut encode_state = StreamTranslationState::new(format, format);
+    let mut replayed = Vec::new();
+    for event in events {
+        let preserved = engine.decode_stream_event(&mut decode_state, format, event)?;
+        replayed.extend(engine.encode_stream_event(&mut encode_state, format, preserved)?);
+    }
+
+    let types: Vec<_> = replayed.iter().map(|event| &event["type"]).collect();
+    assert_eq!(
+        types,
+        [&json!("response.output_text.delta"), &json!("error")],
+        "{replayed:?}"
+    );
+    assert_eq!(
+        replayed[1]["message"],
+        "Responses snapshot conflicts with streamed content"
+    );
+    Ok(())
+}
+
 #[test]
 fn anthropic_errors_include_type_and_terminate_stream() -> TestResult {
     let engine = TranslationEngine::default();

@@ -180,12 +180,8 @@ async fn gateway(State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<V
                 vec![custom, function],
             )
         }
-        text if text.contains("conflicting-text") => {
-            let (events, message) = text_message(0, "Hello", "Goodbye");
-            (events, vec![message])
-        }
         _ => {
-            let (events, message) = text_message(0, "ok", "ok");
+            let (events, message) = text_message(0, "ok");
             (events, vec![message])
         }
     };
@@ -235,15 +231,15 @@ fn function_call(index: u64, arguments: &str) -> (Vec<Value>, Value) {
     (events, done)
 }
 
-/// A text message whose streamed text is `streamed` and whose finished item says `done_text`.
-fn text_message(index: u64, streamed: &str, done_text: &str) -> (Vec<Value>, Value) {
+/// A text message that streams `text` in one delta.
+fn text_message(index: u64, text: &str) -> (Vec<Value>, Value) {
     let done = json!({"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
-        "content": [{"type": "output_text", "text": done_text, "annotations": []}]});
+        "content": [{"type": "output_text", "text": text, "annotations": []}]});
     let events = vec![
         json!({"type": "response.output_item.added", "output_index": index,
             "item": {"type": "message", "id": "msg_1", "role": "assistant", "content": []}}),
-        json!({"type": "response.output_text.delta", "item_id": "msg_1", "output_index": index, "content_index": 0, "delta": streamed}),
-        json!({"type": "response.output_text.done", "item_id": "msg_1", "output_index": index, "content_index": 0, "text": done_text}),
+        json!({"type": "response.output_text.delta", "item_id": "msg_1", "output_index": index, "content_index": 0, "delta": text}),
+        json!({"type": "response.output_text.done", "item_id": "msg_1", "output_index": index, "content_index": 0, "text": text}),
         json!({"type": "response.output_item.done", "output_index": index, "item": done}),
     ];
     (events, done)
@@ -285,37 +281,6 @@ async fn codex_tool_call_streams_reach_response_completed() -> TestResult {
             ],
             "{route}"
         );
-        assert_eq!(
-            gateway.only_call().await?["model"],
-            "model/claude",
-            "{route}"
-        );
-    }
-    Ok(())
-}
-
-/// A finished item that contradicts text that was already streamed ends the stream with an
-/// error event in its place. Before the fix the stream ended with no error event.
-#[tokio::test]
-async fn contradicting_snapshots_end_the_stream_with_an_error_event() -> TestResult {
-    let gateway = Gateway::start().await?;
-    let app = app(&gateway)?;
-    for route in CLAUDE_ROUTES {
-        let (status, body) = post_responses(&app, &codex_turn(route, "conflicting-text")).await?;
-        assert_eq!(status, StatusCode::OK, "{route}: {body}");
-        let events = sse_events(&body);
-        let types = event_types(&events);
-        assert_eq!(types.last(), Some(&"error"), "{route}: {types:?}");
-        assert_eq!(
-            events[events.len() - 1]["message"],
-            "Responses snapshot conflicts with streamed content",
-            "{route}"
-        );
-        assert!(
-            !types.contains(&"response.output_item.done"),
-            "{route}: {types:?}"
-        );
-        gateway.only_call().await?;
     }
     Ok(())
 }

@@ -4,7 +4,7 @@
 //! [`TranslatingLlmClient`]: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::ready;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -1099,7 +1099,7 @@ fn define_tools_for_replayed_calls(body: &mut Value, wire_format: WireFormat) {
     {
         return;
     }
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     let tools: Vec<Value> = match wire_format {
         WireFormat::OpenAiResponses => {
             let items = object
