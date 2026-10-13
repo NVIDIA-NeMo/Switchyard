@@ -2723,30 +2723,6 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td>Use a System One decision judge instead of an LLM judge. The classifier target must be in <code>decision_targets</code>.</td>
 </tr>
 <tr>
-<td><code>classifier.decision.cutoff</code></td>
-<td style="text-align: center;">With decision</td>
-<td>unset</td>
-<td>Route capable when its relative-advantage score is strictly above this value in <code>[0, 1]</code>.</td>
-</tr>
-<tr>
-<td><code>classifier.decision.candidates</code></td>
-<td style="text-align: center;">With decision</td>
-<td>unset</td>
-<td>Map opaque labels to completion target names. Must include both stage tiers.</td>
-</tr>
-<tr>
-<td><code>classifier.decision.instructions</code></td>
-<td style="text-align: center;">No</td>
-<td>packaged question</td>
-<td>Replace the relative-advantage question.</td>
-</tr>
-<tr>
-<td><code>classifier.decision.evidence</code></td>
-<td style="text-align: center;">With decision</td>
-<td>unset</td>
-<td>Task-relevant evidence comparing the candidates.</td>
-</tr>
-<tr>
 <td><code>classifier.fail_open</code></td>
 <td style="text-align: center;">No</td>
 <td><code>true</code></td>
@@ -2850,7 +2826,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 </tr>
 </tbody>
 </table>
-<p>For a complete decision client and target example, see
+<p>For decision classifier configuration, see
 <a href="../../routing_algorithms/composite_routing/#decision-model-classifier">Decision model classifier</a>.
 The same decision settings are accepted by the optional <code>stage_router</code> classifier.</p>
 <p>The tier is retained per session. A deployment that sends no session ID needs

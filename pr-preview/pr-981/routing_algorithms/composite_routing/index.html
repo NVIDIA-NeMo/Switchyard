@@ -1594,10 +1594,8 @@ nor a second <code>classifier</code>. The outer classifier supplies the default 
 Custom <code>tool_semantics</code> remain stage-local and have the same additive behavior as
 on a standalone stage route.</p>
 <h2 id="decision-model-classifier">Decision model classifier<a class="headerlink" href="#decision-model-classifier" title="Permanent link">&para;</a></h2>
-<p>To use a decision model, replace the classifier's LLM settings with a <code>decision</code>
-table. Keep the stage configuration above. This example uses OpenRouter's
-Decisions endpoint with a System One model. The endpoint, model ID and credential
-environment variable can be changed for another compatible provider.</p>
+<p>Use a System One decision target as the classifier. Keep the stage block above
+and replace its LLM classifier settings with:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[decision_clients.decisions]</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;system_one&quot;</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/alpha/decisions&quot;</span>
@@ -1611,29 +1609,18 @@ environment variable can be changed for another compatible provider.</p>
 </span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="k">[routes.switchyard.classifier]</span>
 </span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;judge&quot;</span>
 </span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;user_turn&quot;</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="n">fail_open</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="k">[routes.switchyard.classifier.decision]</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="n">cutoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.4</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="n">candidates</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="k">[routes.switchyard.classifier.decision.evidence]</span>
-</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="n">description</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Add task-relevant evidence comparing candidates a and b.&quot;</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="k">[routes.switchyard.classifier.decision]</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="n">cutoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.4</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="n">candidates</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="n">evidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">description</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Add task-relevant evidence comparing a and b.&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
-<p>The candidates map opaque labels to completion target names. It must include
-both stage tiers. The decision target belongs in <code>decision_targets</code>, while the
-two completion targets belong in <code>targets</code>.</p>
-<p>The classifier selects capable when <code>probabilities.advantage</code> is strictly above
-<code>cutoff</code>. That event means capable succeeds and efficient fails. The separate
-provider confidence field does not select the tier. Choose the cutoff using
-evaluations for your tasks and models. The value above is an example.</p>
-<p>Do not combine <code>decision</code> with <code>base_threshold</code>, <code>threshold_step</code>, <code>prompt</code>, or
-non-default LLM output settings. Use <code>decision.instructions</code> to replace the
-decision question, and <code>decision.evidence</code> to supply comparison evidence.</p>
-<p><code>fail_open</code> defaults to <code>true</code>. On a judge failure, composite retains the last
-classified tier when one is available. A new session defaults to efficient.
-Set <code>fail_open = false</code> to return the judge error. Stage signals can still
-override the default tier on tool turns.</p>
+<p>Both candidates must be completion targets. The judge must be a decision target.
+The classifier selects capable when <code>probabilities.advantage</code> exceeds <code>cutoff</code>.
+Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
+<code>base_threshold</code>, <code>threshold_step</code> and <code>prompt</code> when using a decision model.
+On judge failure, the default is to retain the last classified tier or use
+efficient for a new session. Set <code>classifier.fail_open = false</code> to return the error.</p>
 <h2 id="sessions">Sessions<a class="headerlink" href="#sessions" title="Permanent link">&para;</a></h2>
 <p>The tier is retained per session, so send <code>x-switchyard-session-id</code> and each
 conversation keeps its own. A client that sends no session ID can set
