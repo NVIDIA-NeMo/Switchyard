@@ -48,8 +48,8 @@ pub(crate) fn safe_error_summary(error: &LibsyError) -> String {
 /// The client half of [`safe_error_summary`].
 ///
 /// `UpstreamHttp` is the sharp edge: its `Display` interpolates the raw upstream
-/// body, which routinely quotes the request back. Boxed transport, decode, host, and
-/// FFI sources are reduced for the same reason.
+/// body, which routinely quotes the request back. Boxed error sources are reduced
+/// for the same reason.
 pub(crate) fn safe_client_error(error: &LlmClientError) -> String {
     match error {
         LlmClientError::UpstreamHttp { status, .. } => format!("upstream HTTP {status}"),

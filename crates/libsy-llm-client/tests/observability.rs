@@ -1565,7 +1565,7 @@ async fn typed_client_failure_records_semantic_error_type() {
     );
 }
 
-/// Opaque host errors retain their source for the caller, not for telemetry.
+// Host error text must not appear in the client span.
 #[tokio::test]
 async fn host_error_source_is_redacted_from_the_client_call_span() {
     let _guard = serialize_test().lock().await;

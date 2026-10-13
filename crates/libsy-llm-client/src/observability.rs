@@ -334,7 +334,7 @@ impl Drop for ClientStreamObserver {
     }
 }
 
-// Host sources are opaque and may contain caller-owned request data.
+// Host error messages may contain private request data.
 fn record_host_error(span: &Span) {
     record_client_error(span, "host", &format_args!("host client error"));
 }
