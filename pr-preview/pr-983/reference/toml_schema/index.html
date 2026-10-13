@@ -2675,7 +2675,7 @@ and a stage confidence threshold of <code>0.5</code>. Use <code>composite</code>
 <td><code>classifier</code></td>
 <td style="text-align: center;">Yes</td>
 <td>unset</td>
-<td>Same LLM or System One decision settings as <code>composite</code>.</td>
+<td>Same LLM or decision model settings as <code>composite</code>.</td>
 </tr>
 <tr>
 <td><code>classifier.classify_trigger</code></td>
@@ -2732,7 +2732,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td><code>classifier.decision</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Use a System One decision judge instead of an LLM judge. The classifier target must be in <code>decision_targets</code>.</td>
+<td>Use a decision model instead of an LLM judge. The classifier target must be in <code>decision_targets</code>.</td>
 </tr>
 <tr>
 <td><code>classifier.fail_open</code></td>
