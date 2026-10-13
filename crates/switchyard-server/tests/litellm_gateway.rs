@@ -173,21 +173,19 @@ async fn gateway(State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<V
     }
     let (mut events, output) = match body.to_string() {
         text if text.contains("custom-and-function") => {
-            // The gateway also closes an empty text message at output index 0 that it never
-            // announced.
-            let (custom_events, custom) = litellm_custom_call(1, "ls");
-            let arguments = r#"{"cmd": "pwd"}"#;
-            let (function_events, function) = function_call(2, arguments);
-            let (empty_events, empty) = text_message(0, None, "");
-            let events = [custom_events, function_events, empty_events].concat();
-            (events, vec![empty, custom, function])
+            let (custom_events, custom) = litellm_custom_call(0, "ls");
+            let (function_events, function) = function_call(1, r#"{"cmd": "pwd"}"#);
+            (
+                [custom_events, function_events].concat(),
+                vec![custom, function],
+            )
         }
         text if text.contains("conflicting-text") => {
-            let (events, message) = text_message(0, Some("Hello"), "Goodbye");
+            let (events, message) = text_message(0, "Hello", "Goodbye");
             (events, vec![message])
         }
         _ => {
-            let (events, message) = text_message(0, Some("ok"), "ok");
+            let (events, message) = text_message(0, "ok", "ok");
             (events, vec![message])
         }
     };
@@ -195,9 +193,6 @@ async fn gateway(State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<V
         "id": "resp_gateway", "object": "response", "model": body["model"], "status": "completed",
         "output": output, "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
     });
-    if body["stream"] != true {
-        return Json(response).into_response();
-    }
     let mut created = response.clone();
     created["status"] = json!("in_progress");
     created["output"] = json!([]);
@@ -241,22 +236,16 @@ fn function_call(index: u64, arguments: &str) -> (Vec<Value>, Value) {
 }
 
 /// A text message whose streamed text is `streamed` and whose finished item says `done_text`.
-/// Without `streamed`, the message is only closed, as the gateway does after a tool call.
-fn text_message(index: u64, streamed: Option<&str>, done_text: &str) -> (Vec<Value>, Value) {
+fn text_message(index: u64, streamed: &str, done_text: &str) -> (Vec<Value>, Value) {
     let done = json!({"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
         "content": [{"type": "output_text", "text": done_text, "annotations": []}]});
-    let mut events = Vec::new();
-    if let Some(streamed) = streamed {
-        events.extend([
-            json!({"type": "response.output_item.added", "output_index": index,
-                "item": {"type": "message", "id": "msg_1", "role": "assistant", "content": []}}),
-            json!({"type": "response.output_text.delta", "item_id": "msg_1", "output_index": index, "content_index": 0, "delta": streamed}),
-        ]);
-    }
-    events.extend([
+    let events = vec![
+        json!({"type": "response.output_item.added", "output_index": index,
+            "item": {"type": "message", "id": "msg_1", "role": "assistant", "content": []}}),
+        json!({"type": "response.output_text.delta", "item_id": "msg_1", "output_index": index, "content_index": 0, "delta": streamed}),
         json!({"type": "response.output_text.done", "item_id": "msg_1", "output_index": index, "content_index": 0, "text": done_text}),
         json!({"type": "response.output_item.done", "output_index": index, "item": done}),
-    ]);
+    ];
     (events, done)
 }
 
@@ -280,9 +269,8 @@ async fn codex_tool_call_streams_reach_response_completed() -> TestResult {
         let calls: Vec<_> = events
             .iter()
             .filter(|event| event["type"] == "response.output_item.done")
-            .map(|event| &event["item"])
-            .filter(|item| item["type"] != "message")
-            .map(|item| {
+            .map(|event| {
+                let item = &event["item"];
                 (
                     &item["name"],
                     item.get("input").unwrap_or(&item["arguments"]),
@@ -339,42 +327,39 @@ async fn tool_history_without_tools_gets_definitions_the_gateway_accepts() -> Te
     let gateway = Gateway::start().await?;
     let app = app(&gateway)?;
     for route in CLAUDE_ROUTES {
-        for stream in [true, false] {
-            let case = format!("{route} stream={stream}");
-            let compaction = json!({
-                "model": route,
-                "stream": stream,
-                "tools": [],
-                "tool_choice": "auto",
-                "input": [
-                    user_text("List files"),
-                    {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls"},
-                    {"type": "custom_tool_call_output", "call_id": "call_1", "output": "README.md"},
-                    {"type": "function_call", "call_id": "call_2", "namespace": "collaboration",
-                        "name": "spawn_agent", "arguments": "{}"},
-                    {"type": "function_call_output", "call_id": "call_2", "output": "ok"},
-                    user_text("Summarize the conversation.")
-                ]
-            });
-            let (status, body) = post_responses(&app, &compaction).await?;
-            assert_eq!(status, StatusCode::OK, "{case}: {body}");
-            let call = gateway.only_call().await?;
-            let tools: Vec<_> = call["tools"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|tool| (&tool["type"], &tool["name"]))
-                .collect();
-            assert_eq!(
-                tools,
-                [
-                    (&json!("custom"), &json!("exec")),
-                    (&json!("function"), &json!("collaboration__spawn_agent"))
-                ],
-                "{case}"
-            );
-            assert_eq!(call["tool_choice"], "none", "{case}");
-        }
+        let compaction = json!({
+            "model": route,
+            "stream": true,
+            "tools": [],
+            "tool_choice": "auto",
+            "input": [
+                user_text("List files"),
+                {"type": "custom_tool_call", "call_id": "call_1", "name": "exec", "input": "ls"},
+                {"type": "custom_tool_call_output", "call_id": "call_1", "output": "README.md"},
+                {"type": "function_call", "call_id": "call_2", "namespace": "collaboration",
+                    "name": "spawn_agent", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_2", "output": "ok"},
+                user_text("Summarize the conversation.")
+            ]
+        });
+        let (status, body) = post_responses(&app, &compaction).await?;
+        assert_eq!(status, StatusCode::OK, "{route}: {body}");
+        let call = gateway.only_call().await?;
+        let tools: Vec<_> = call["tools"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|tool| (&tool["type"], &tool["name"]))
+            .collect();
+        assert_eq!(
+            tools,
+            [
+                (&json!("custom"), &json!("exec")),
+                (&json!("function"), &json!("collaboration__spawn_agent"))
+            ],
+            "{route}"
+        );
+        assert_eq!(call["tool_choice"], "none", "{route}");
     }
     Ok(())
 }

@@ -39,8 +39,7 @@ pub(crate) fn frame_stream(
                 // Preserve the upstream error's fields, apart from credential redaction,
                 // rather than replacing it with a synthesized error.
                 Err(LlmStreamError::Upstream(value)) => {
-                    // The error message can quote request content, so the log records only
-                    // the event type.
+                    // Log only the event type; the error message can quote request content.
                     let event_type = value.get("type").and_then(Value::as_str).unwrap_or("error");
                     tracing::warn!(event_type, "stream ended with an in-band error event");
                     failed = true;
