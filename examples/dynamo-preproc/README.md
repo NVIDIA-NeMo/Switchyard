@@ -107,6 +107,8 @@ Predicted GPU, CPU-inclusive and disk-inclusive hit rates appear in PreProc logs
 model, candidate worker and request/session IDs. EPP logs actual reuse from response
 usage with the same IDs and the selected worker. Predictions remain separate from
 observations; missing signals are unknown. Request/session IDs never become metric labels.
+The same log includes the complete JSON in `probe_response` and HTTP duration in
+`probe_elapsed_ms`, so additional EPP signals are retained without changing SDK routing inputs.
 
 On gateways with configurable ExtProc phases, use `FullDuplexStreamed` for the request
 body. PreProc waits for the body before choosing the route. Response phases may be

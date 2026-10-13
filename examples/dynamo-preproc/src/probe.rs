@@ -157,6 +157,7 @@ impl Client {
                 request = request.header(name, value);
             }
         }
+        let started = Instant::now();
         let response = request.send().await?.error_for_status()?;
         let mut bytes = Vec::new();
         let mut chunks = response.bytes_stream();
@@ -168,6 +169,7 @@ impl Client {
             );
             bytes.extend_from_slice(&chunk);
         }
+        let probe_elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         let result: ProbeResponse = serde_json::from_slice(&bytes)?;
         ensure!(
             result.model == model.as_str(),
@@ -180,6 +182,8 @@ impl Client {
         };
         tracing::info!(
             model = %model,
+            probe_response = %std::str::from_utf8(&bytes)?,
+            probe_elapsed_ms,
             candidate_worker_id = %result.candidate.worker_id,
             request_id = headers.get("x-request-id").and_then(|v| v.to_str().ok()),
             session_id = headers.get("x-switchyard-session-id").and_then(|v| v.to_str().ok()),
