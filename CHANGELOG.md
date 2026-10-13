@@ -4,6 +4,33 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Cancel one call and keep routing** - custom algorithms can race models,
+  time out a judge, or stop a pending call once another answer is accepted.
+  Dropping the waiting model- or decision-call future stops that call's local
+  work while other calls continue. The standard HTTP host drops the abandoned
+  request work, and a late reply no longer fails the entire run. Python waits
+  for the cancelled task's cleanup before `respond` returns. A delivered
+  response stream remains under its consumer's control. Providers may still
+  generate and bill after disconnect, so this does not guarantee cost savings.
+  ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
+
+### Changed
+
+- **Async replies for custom library hosts** *(source-breaking)* - Rust
+  `CallModel::respond` and `CallDecision::respond` now accept the work future:
+  `call.respond(work).await?`. Python hosts use `await call.respond(work)`, and
+  Python `call.fail(error)` must also be awaited. Pass the future or awaitable
+  itself, rather than awaiting the provider first, so libsy can stop that work.
+  Custom `run_stream` consumers must run handlers concurrently and clean up
+  outstanding handlers when the run ends. The standard HTTP host handles this
+  automatically; `Algorithm`, `Driver`, and `run_stream` signatures are unchanged.
+  See the [host integration guide](docs/getting_started.md#drive-the-algorithm).
+  ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
+
 ## [0.3.0]
 
 Switchyard 0.3.0 builds on the native server and Rust library introduced in
