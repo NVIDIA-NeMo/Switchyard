@@ -89,6 +89,7 @@ pub(super) fn build_classifier(
     contract_config: ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
 ) -> Result<Arc<dyn Classifier<State>>> {
     let confirmations = config.confirmations;
     let deescalation = match config.deescalation {
@@ -99,6 +100,7 @@ pub(super) fn build_classifier(
                 config.clone(),
                 Some(EvaluationPhase::Strong),
                 max_output_tokens,
+                judge_deadline_ms,
             )?,
         }),
         None => None,
@@ -110,6 +112,7 @@ pub(super) fn build_classifier(
             config,
             is_phase_aware.then_some(EvaluationPhase::Efficient),
             max_output_tokens,
+            judge_deadline_ms,
         )?,
         confirmations,
         deescalation,
@@ -361,7 +364,7 @@ impl Classifier<State> for EscalationClassifier {
         let verdict = self
             .escalation_judge
             .verdict(state, &judge_request, driver, judge_models)
-            .await;
+            .await?;
 
         let held = count(state, STREAK_KEY);
         let held_category = category(state).map(str::to_string);
@@ -539,6 +542,7 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                judge_deadline_ms: None,
             },
         )?))
     }
@@ -553,6 +557,7 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                judge_deadline_ms: None,
             },
         )?))
     }
@@ -681,6 +686,7 @@ mod tests {
                 ..EscalationJudgeConfig::default()
             },
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            judge_deadline_ms: None,
         })?);
 
         test_drive_with_models(router, classify_request(), runtime_models(), serve).await?;

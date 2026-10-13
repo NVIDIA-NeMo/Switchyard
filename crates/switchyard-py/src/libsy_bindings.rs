@@ -149,6 +149,7 @@ struct PyEscalationClassifierConfig {
     contract: ClassifierContractConfig,
     judge: EscalationJudgeConfig,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
 }
 
 #[pymethods]
@@ -161,6 +162,7 @@ impl PyEscalationClassifierConfig {
         window_message_chars=500,
         deescalation=None,
         max_output_tokens=4096,
+        judge_deadline_ms=None,
         prompt=None,
         response_format_type="json_schema"
     ))]
@@ -172,6 +174,7 @@ impl PyEscalationClassifierConfig {
         window_message_chars: usize,
         deescalation: Option<Py<PyDeescalationConfig>>,
         max_output_tokens: u64,
+        judge_deadline_ms: Option<u64>,
         prompt: Option<String>,
         response_format_type: &str,
     ) -> PyResult<Self> {
@@ -186,6 +189,7 @@ impl PyEscalationClassifierConfig {
                     .transpose()?,
             },
             max_output_tokens,
+            judge_deadline_ms,
         })
     }
 }
@@ -219,7 +223,8 @@ impl PyCustomClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
-        max_output_tokens=4096
+        max_output_tokens=4096,
+        judge_deadline_ms=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -230,6 +235,7 @@ impl PyCustomClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
+        judge_deadline_ms: Option<u64>,
     ) -> PyResult<Self> {
         // Convert the Python schema into serde JSON and pair it with the target-selector policy;
         // conversion failures propagate to Python through `PyResult`.
@@ -242,6 +248,7 @@ impl PyCustomClassifierConfig {
         inner.message_hash_fallback = message_hash_fallback;
         inner.recent_turn_window = recent_turn_window;
         inner.max_output_tokens = max_output_tokens;
+        inner.judge_deadline_ms = judge_deadline_ms;
         Ok(Self { inner })
     }
 }
@@ -280,6 +287,7 @@ impl PyLlmClassifierConfig {
                 contract: config.contract.clone(),
                 config: config.judge.clone(),
                 max_output_tokens: config.max_output_tokens,
+                judge_deadline_ms: config.judge_deadline_ms,
             },
         })
     }
@@ -338,6 +346,7 @@ impl PyTaskClassifierConfig {
         message_hash_fallback=false,
         recent_turn_window=None,
         max_output_tokens=4096,
+        judge_deadline_ms=None,
         prompt=None,
         response_format_type="json_schema"
     ))]
@@ -349,6 +358,7 @@ impl PyTaskClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
+        judge_deadline_ms: Option<u64>,
         prompt: Option<String>,
         response_format_type: &str,
     ) -> PyResult<Self> {
@@ -359,6 +369,7 @@ impl PyTaskClassifierConfig {
                     threshold_step,
                     contract: classifier_contract(prompt, response_format_type)?,
                     max_output_tokens,
+                    judge_deadline_ms,
                 }),
                 fail_open: true,
                 classify_trigger: classify_trigger(session_affinity),

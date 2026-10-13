@@ -352,6 +352,10 @@ pub struct LlmCapabilityConfig {
     pub contract: ClassifierContractConfig,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+    /// Whole-consultation bound on the judge call, in milliseconds. Covers the model
+    /// call and the response drain; on expiry the judge is treated as unavailable and
+    /// follows the route's `fail_open` setting. `None` is unbounded.
+    pub judge_deadline_ms: Option<u64>,
 }
 
 impl Default for LlmCapabilityConfig {
@@ -361,6 +365,7 @@ impl Default for LlmCapabilityConfig {
             threshold_step: 0.0,
             contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            judge_deadline_ms: None,
         }
     }
 }
@@ -386,6 +391,8 @@ struct TaskClassifierConfigWire {
     response_format_type: ClassifierResponseFormat,
     #[serde(default = "default_judge_max_output_tokens")]
     max_output_tokens: u64,
+    #[serde(default)]
+    judge_deadline_ms: Option<u64>,
 }
 
 impl<'de> Deserialize<'de> for TaskClassifierConfig {
@@ -405,6 +412,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
                 threshold_step: wire.threshold_step,
                 contract,
                 max_output_tokens: wire.max_output_tokens,
+                judge_deadline_ms: wire.judge_deadline_ms,
             }),
             fail_open: wire.fail_open,
             classify_trigger: wire.classify_trigger,
@@ -523,6 +531,8 @@ pub struct CustomClassifierConfig {
     pub recent_turn_window: Option<usize>,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+    /// Whole-consultation bound on the judge call, in milliseconds. `None` is unbounded.
+    pub judge_deadline_ms: Option<u64>,
 }
 
 impl CustomClassifierConfig {
@@ -540,6 +550,7 @@ impl CustomClassifierConfig {
             message_hash_fallback: false,
             recent_turn_window: None,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            judge_deadline_ms: None,
         }
     }
 
@@ -652,6 +663,8 @@ pub enum LlmClassifierConfig {
         config: EscalationJudgeConfig,
         /// Maximum completion tokens available to the escalation verdict.
         max_output_tokens: u64,
+        /// Whole-consultation bound on the escalation judge call, in milliseconds.
+        judge_deadline_ms: Option<u64>,
     },
     /// Routes among model categories using a user-supplied schema and policy.
     Custom {
@@ -676,7 +689,8 @@ impl LlmTaskClassifier {
                 contract,
                 config,
                 max_output_tokens,
-            } => Self::build_escalation(contract, config, max_output_tokens),
+                judge_deadline_ms,
+            } => Self::build_escalation(contract, config, max_output_tokens, judge_deadline_ms),
             LlmClassifierConfig::Custom {
                 default_target,
                 config,
@@ -698,7 +712,8 @@ impl LlmTaskClassifier {
                         input,
                         Self::load_capability_contract(&judge.contract)?,
                         SerdeDecoder::new(),
-                        JudgeRuntimeConfig::new(judge.max_output_tokens)?,
+                        JudgeRuntimeConfig::new(judge.max_output_tokens)?
+                            .with_deadline_ms(judge.judge_deadline_ms)?,
                     ),
                     TaskClassifierPolicy::new(&judge),
                 )
@@ -729,6 +744,7 @@ impl LlmTaskClassifier {
             message_hash_fallback,
             recent_turn_window,
             max_output_tokens,
+            judge_deadline_ms,
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
         let policy = match policy {
@@ -741,7 +757,7 @@ impl LlmTaskClassifier {
                 TaskInput { recent_turn_window },
                 contract,
                 JsonSchemaDecoder::new(),
-                JudgeRuntimeConfig::new(max_output_tokens)?,
+                JudgeRuntimeConfig::new(max_output_tokens)?.with_deadline_ms(judge_deadline_ms)?,
             ),
             policy,
         ));
@@ -760,8 +776,14 @@ impl LlmTaskClassifier {
         contract_config: ClassifierContractConfig,
         config: EscalationJudgeConfig,
         max_output_tokens: u64,
+        judge_deadline_ms: Option<u64>,
     ) -> Result<Self> {
-        let inner = escalation::build_classifier(contract_config, config, max_output_tokens)?;
+        let inner = escalation::build_classifier(
+            contract_config,
+            config,
+            max_output_tokens,
+            judge_deadline_ms,
+        )?;
         Ok(Self {
             route: FallThrough::<State>::new_with_state()
                 .with_name(ALGORITHM_NAME)
@@ -1008,6 +1030,60 @@ mod tests {
         }
     }
 
+    /// The judge stalls before answering; every other target answers normally.
+    fn slow_judge(delay: std::time::Duration) -> impl Serve {
+        move |model: ModelId, request: Request| {
+            let model = model.to_string();
+            let slow = model == "judge";
+            async move {
+                if slow {
+                    tokio::time::sleep(delay).await;
+                }
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(text_response(
+                        None,
+                        format!("answer from {model}"),
+                    )),
+                    metadata: request.metadata,
+                    upstream_headers: http::HeaderMap::new(),
+                })
+            }
+        }
+    }
+
+    /// The judge accepts the call but its stream never carries a chunk.
+    fn stalled_judge_stream() -> impl Serve {
+        use futures::StreamExt;
+        |model: ModelId, request: Request| async move {
+            let model = model.to_string();
+            let llm_response = if model == "judge" {
+                LlmResponse::Stream(futures::stream::pending().boxed())
+            } else {
+                LlmResponse::Agg(text_response(None, format!("answer from {model}")))
+            };
+            Ok(Response {
+                llm_response,
+                metadata: request.metadata,
+                upstream_headers: http::HeaderMap::new(),
+            })
+        }
+    }
+
+    fn deadline_router(fail_open: bool) -> Result<Arc<LlmTaskClassifier>> {
+        Ok(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Capability {
+                config: TaskClassifierConfig {
+                    judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                        judge_deadline_ms: Some(10),
+                        ..llm_config(TEST_THRESHOLD)
+                    }),
+                    fail_open,
+                    ..TaskClassifierConfig::default()
+                },
+            },
+        )?))
+    }
+
     fn router() -> Result<Arc<LlmTaskClassifier>> {
         Ok(Arc::new(LlmTaskClassifier::new(
             LlmClassifierConfig::Capability {
@@ -1065,6 +1141,131 @@ mod tests {
             Some("answer from capable".to_string())
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_judge_past_its_deadline_routes_capable() -> Result<()> {
+        let (selected_model, response) = test_drive_with_models(
+            deadline_router(true)?,
+            classify_request(),
+            runtime_models(),
+            slow_judge(std::time::Duration::from_millis(500)),
+        )
+        .await?;
+
+        assert_eq!(selected_model, "capable");
+        assert_eq!(
+            response.llm_response.as_agg().map(completion_text),
+            Some("answer from capable".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_stalled_judge_stream_is_cut_by_the_deadline() -> Result<()> {
+        // The judge returned headers promptly, so only a bound on the whole
+        // consultation — the drain included — can end this turn.
+        let (selected_model, _) = test_drive_with_models(
+            deadline_router(true)?,
+            classify_request(),
+            runtime_models(),
+            stalled_judge_stream(),
+        )
+        .await?;
+
+        assert_eq!(selected_model, "capable");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_judge_past_its_deadline_stops_when_not_failing_open() -> Result<()> {
+        let outcome = test_drive_with_models(
+            deadline_router(false)?,
+            classify_request(),
+            runtime_models(),
+            slow_judge(std::time::Duration::from_millis(500)),
+        )
+        .await;
+        let error = outcome
+            .err()
+            .expect("a deadline expiry with fail_open = false must stop the request");
+
+        assert!(
+            matches!(
+                error,
+                LibsyError::ClientCall {
+                    source: LlmClientError::Timeout { .. },
+                    ..
+                }
+            ),
+            "expected a client timeout, got {error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_zero_judge_deadline_is_rejected_in_every_mode() {
+        let capability = LlmClassifierConfig::Capability {
+            config: TaskClassifierConfig {
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    judge_deadline_ms: Some(0),
+                    ..llm_config(TEST_THRESHOLD)
+                }),
+                ..TaskClassifierConfig::default()
+            },
+        };
+        assert!(
+            LlmTaskClassifier::new(capability).is_err(),
+            "capability mode must reject judge_deadline_ms = 0"
+        );
+
+        let mut custom = CustomClassifierConfig::new(
+            "Route by topic.",
+            serde_json::json!({"type": "object"}),
+            CustomClassifierPolicy::target_selector("/target"),
+        );
+        custom.judge_deadline_ms = Some(0);
+        assert!(
+            LlmTaskClassifier::new(LlmClassifierConfig::Custom {
+                default_target: Category::Capable,
+                config: custom,
+            })
+            .is_err(),
+            "custom mode must reject judge_deadline_ms = 0"
+        );
+
+        let escalation = LlmClassifierConfig::Escalation {
+            contract: ClassifierContractConfig::default(),
+            config: EscalationJudgeConfig::default(),
+            max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            judge_deadline_ms: Some(0),
+        };
+        assert!(
+            LlmTaskClassifier::new(escalation).is_err(),
+            "escalation mode must reject judge_deadline_ms = 0"
+        );
+    }
+
+    #[test]
+    fn classifier_config_parses_a_judge_deadline() {
+        let config: TaskClassifierConfig = serde_json::from_value(serde_json::json!({
+            "base_threshold": 0.5,
+            "judge_deadline_ms": 250,
+        }))
+        .expect("a configured judge deadline should parse");
+        let CapabilityJudgeConfig::Llm(judge) = config.judge else {
+            panic!("expected the LLM judge variant");
+        };
+        assert_eq!(judge.judge_deadline_ms, Some(250));
+
+        let config: TaskClassifierConfig = serde_json::from_value(serde_json::json!({
+            "base_threshold": 0.5,
+        }))
+        .expect("an unset judge deadline should parse");
+        let CapabilityJudgeConfig::Llm(judge) = config.judge else {
+            panic!("expected the LLM judge variant");
+        };
+        assert_eq!(judge.judge_deadline_ms, None);
     }
 
     #[tokio::test]

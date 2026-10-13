@@ -774,6 +774,7 @@ async fn stateful_escalation_warns_once_without_a_session_id() -> switchyard_lib
         contract: ClassifierContractConfig::default(),
         config: EscalationJudgeConfig::default(),
         max_output_tokens: 64,
+        judge_deadline_ms: None,
     })?) as Arc<dyn Algorithm>;
     let client = Arc::new(JudgeClient {
         judge_model: "warning-judge".into(),
@@ -824,6 +825,7 @@ async fn deescalation_evidence_stays_pending_until_confirmed() -> switchyard_lib
             ..EscalationJudgeConfig::default()
         },
         max_output_tokens: 64,
+        judge_deadline_ms: None,
     })?) as Arc<dyn Algorithm>;
     let client = |verdict| {
         Arc::new(JudgeClient {

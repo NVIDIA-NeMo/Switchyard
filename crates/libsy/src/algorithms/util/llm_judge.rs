@@ -8,6 +8,7 @@
 //! the route.
 
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -106,6 +107,8 @@ impl VerdictDecoder for JsonSchemaDecoder {
 /// Runtime limits shared by structured classifier judges.
 pub(crate) struct JudgeRuntimeConfig {
     max_output_tokens: u64,
+    /// Whole-consultation bound the route places on its judge.
+    deadline_ms: Option<u64>,
 }
 
 impl JudgeRuntimeConfig {
@@ -115,7 +118,25 @@ impl JudgeRuntimeConfig {
                 message: "max_output_tokens must be at least 1".to_string(),
             });
         }
-        Ok(Self { max_output_tokens })
+        Ok(Self {
+            max_output_tokens,
+            deadline_ms: None,
+        })
+    }
+
+    /// Bounds the whole judge consultation — the model call and the response drain — not
+    /// only the HTTP call. A `0` deadline is a configuration error, not "unbounded".
+    pub(crate) fn with_deadline_ms(mut self, deadline_ms: Option<u64>) -> Result<Self> {
+        match deadline_ms {
+            None => {}
+            Some(0) => {
+                return Err(LibsyError::AlgorithmError {
+                    message: "judge_deadline_ms must be at least 1".to_string(),
+                });
+            }
+            Some(deadline_ms) => self.deadline_ms = Some(deadline_ms),
+        }
+        Ok(self)
     }
 }
 
@@ -178,6 +199,10 @@ where
         }
     }
 
+    fn deadline_ms(&self) -> Option<u64> {
+        self.runtime.deadline_ms
+    }
+
     fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
         self.decoder.decode(response, &self.contract)
     }
@@ -188,6 +213,12 @@ pub trait Judge: Send + Sync {
     type Verdict: DeserializeOwned + Send + Sync;
 
     fn build_request(&self, state: &State, request: &Request) -> Request;
+
+    /// Whole-consultation bound in milliseconds the classifier enforces around the judge
+    /// call and its response drain. `None` leaves the consultation unbounded.
+    fn deadline_ms(&self) -> Option<u64> {
+        None
+    }
 
     fn parse(&self, response: &AggLlmResponse) -> Result<Self::Verdict> {
         parse_json_verdict(response)
@@ -263,46 +294,86 @@ where
         }
     }
 
-    /// Consults the judge, yielding `None` when it is unavailable or unintelligible.
+    /// Consults the judge, yielding `None` when it is unavailable, unintelligible, or
+    /// over its route deadline.
     ///
     /// Errors delivered by the host and invalid verdicts are logged and folded into `None`
     /// for the policy's fallback branch. The HTTP driver delivers client errors here when
-    /// error recovery is enabled; otherwise it stops the run.
+    /// error recovery is enabled; otherwise it stops the run. A route deadline covers the
+    /// whole consultation — the model call and the response drain — so a judge that
+    /// answers headers promptly and then stalls mid-stream cannot hold the turn past
+    /// `judge_deadline_ms` either. On expiry it follows the same recovery split: folded
+    /// into `None` when recovering, surfaced as a client timeout when not.
     pub(crate) async fn verdict(
         &self,
         state: &mut State,
         request: &Request,
         driver: &Driver,
         judge_models: &[ModelId],
-    ) -> Option<J::Verdict> {
-        let judge_model = judge_models.first()?.as_str();
+    ) -> Result<Option<J::Verdict>> {
+        let judge_model = judge_models.first().ok_or(LibsyError::NoTargets)?.as_str();
 
         tracing::info!(target = judge_model, "consulting llm judge");
-        let response = driver
-            .call_model_with_error_recovery(
-                self.judge.build_request(state, request),
-                judge_models.to_vec(),
-                self.recover_errors,
-            )
-            .await
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_error_summary(error), libsy_error_reason(error));
-            })
-            .ok()?;
-        let aggregate = response
-            .llm_response
-            .into_agg()
-            .await
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_client_error(error), client_error_reason(error));
-            })
-            .ok()?;
-        self.judge
-            .parse(&aggregate)
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_error_summary(error), "parse_error");
-            })
-            .ok()
+        let judge_request = self.judge.build_request(state, request);
+        let consult = async {
+            let response = driver
+                .call_model_with_error_recovery(
+                    judge_request,
+                    judge_models.to_vec(),
+                    self.recover_errors,
+                )
+                .await
+                .inspect_err(|error| {
+                    self.report_fail_open(
+                        driver,
+                        safe_error_summary(error),
+                        libsy_error_reason(error),
+                    );
+                })
+                .ok()?;
+            let aggregate = response
+                .llm_response
+                .into_agg()
+                .await
+                .inspect_err(|error| {
+                    self.report_fail_open(
+                        driver,
+                        safe_client_error(error),
+                        client_error_reason(error),
+                    );
+                })
+                .ok()?;
+            self.judge
+                .parse(&aggregate)
+                .inspect_err(|error| {
+                    self.report_fail_open(driver, safe_error_summary(error), "parse_error");
+                })
+                .ok()
+        };
+        let verdict = match self.judge.deadline_ms() {
+            None => consult.await,
+            Some(deadline_ms) => {
+                match tokio::time::timeout(Duration::from_millis(deadline_ms), consult).await {
+                    Ok(verdict) => verdict,
+                    Err(_) => {
+                        let error = format!(
+                            "judge consultation exceeded judge_deadline_ms of {deadline_ms}ms"
+                        );
+                        self.report_fail_open(driver, error.clone(), "deadline");
+                        if !self.recover_errors {
+                            return Err(LibsyError::client_call(
+                                ModelId::from(judge_model),
+                                LlmClientError::Timeout {
+                                    source: Box::new(std::io::Error::other(error)),
+                                },
+                            ));
+                        }
+                        None
+                    }
+                }
+            }
+        };
+        Ok(verdict)
     }
 }
 
@@ -361,7 +432,7 @@ where
                 message: "no models available for category Judge".to_string(),
             });
         }
-        let verdict = self.verdict(state, request, driver, judge_models).await;
+        let verdict = self.verdict(state, request, driver, judge_models).await?;
         let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
         if let Some(evidence) = self
             .evidence
@@ -721,6 +792,29 @@ mod tests {
         for reply in ["```json\n{\"ok\":true}\n```", "```\n{\"ok\":true}\n```"] {
             assert!(judge.parse(&text_response(None, reply))?.ok);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_zero_judge_deadline_is_a_configuration_error() -> Result<()> {
+        assert!(
+            JudgeRuntimeConfig::new(16)?
+                .with_deadline_ms(Some(0))
+                .is_err(),
+            "judge_deadline_ms = 0 must be rejected, not read as unbounded"
+        );
+        assert_eq!(
+            JudgeRuntimeConfig::new(16)?
+                .with_deadline_ms(None)?
+                .deadline_ms,
+            None
+        );
+        assert_eq!(
+            JudgeRuntimeConfig::new(16)?
+                .with_deadline_ms(Some(250))?
+                .deadline_ms,
+            Some(250)
+        );
         Ok(())
     }
 }

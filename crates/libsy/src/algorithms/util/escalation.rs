@@ -283,6 +283,7 @@ pub(crate) fn build_judge(
     config: EscalationJudgeConfig,
     phase: Option<EvaluationPhase>,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
 ) -> Result<JudgeClassifier<EscalationJudge, EscalationPolicy>> {
     config.validate()?;
     let contract = build_contract(contract_config, phase.is_some())?;
@@ -291,7 +292,7 @@ pub(crate) fn build_judge(
             EscalationInput { config, phase },
             contract,
             SerdeDecoder::new(),
-            JudgeRuntimeConfig::new(max_output_tokens)?,
+            JudgeRuntimeConfig::new(max_output_tokens)?.with_deadline_ms(judge_deadline_ms)?,
         ),
         EscalationPolicy { phase },
     )

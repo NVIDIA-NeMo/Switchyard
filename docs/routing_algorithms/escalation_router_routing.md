@@ -186,7 +186,9 @@ next request.
 
 Anchor and transcript caps remain fixed. Set the route-level
 `max_output_tokens` key to change the judge's reply budget. Any decline or
-verdict without new evidence resets the streak to zero.
+verdict without new evidence resets the streak to zero. Set `judge_deadline_ms`
+to bound the whole judge consultation in milliseconds; on expiry the judge is
+treated as unavailable and the session stays where it is.
 
 ## Run the route
 
