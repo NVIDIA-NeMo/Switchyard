@@ -9,7 +9,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use libsy::RuntimeModels;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -17,7 +16,7 @@ use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     SystemOneClient, TranslatingLlmClient,
 };
-use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
+use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
@@ -49,6 +48,27 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
+    config.build()
+}
+
+pub(crate) fn model_selection_from_toml(source: &str) -> RunnerResult<Runner> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|error: toml::de::Error| {
+        // Report the location while keeping document excerpts in the source error.
+        let mut message = "failed to parse TOML".to_string();
+        if let Some(prefix) = error.span().and_then(|span| source.get(..span.start)) {
+            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = prefix
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .count()
+                + 1;
+            message = format!("{message} at line {line}, column {column}");
+        }
+        RunnerError::configuration_source(message, error)
+    })?;
+    config.validate_model_selection()?;
     config.build()
 }
 
@@ -146,6 +166,36 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
+    fn validate_model_selection(&self) -> RunnerResult<()> {
+        for (name, client) in &self.llm_clients {
+            if client.forward_auth {
+                return Err(RunnerError::configuration(format!(
+                    "llm client {name}: model selection requires configured classifier credentials"
+                )));
+            }
+        }
+        for (name, route) in &self.routes {
+            if !route.algorithm.supports_model_selection() {
+                return Err(RunnerError::configuration(format!(
+                    "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
+                )));
+            }
+            for target_name in route.routing_target_names() {
+                if let Some(target) = self.targets.get(target_name)
+                    && (target.system_prompt.is_some()
+                        || target.reasoning_effort.is_some()
+                        || !target.extra_body.is_empty()
+                        || !target.omit_body_fields.is_empty())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name}: model selection requires completion settings to be owned by the caller"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn decision_target(&self, name: &str) -> Option<DecisionTarget> {
         let target = self.targets.get(name)?;
         let client = self.llm_clients.get(&target.llm_client)?;
@@ -265,9 +315,9 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let algorithm = config
+            let (algorithm, models) = config
                 .algorithm
-                .build(route_name, &targets)
+                .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients, &decision_clients)?;
@@ -280,14 +330,6 @@ impl DeploymentConfig {
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
-            let names = config
-                .algorithm
-                .runtime_model_names(route_name)
-                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            let mut models = RuntimeModels::new(resolve_category_models(names.parent, &targets)?);
-            if let Some(subagent) = names.subagent {
-                models = models.with_subagent(resolve_category_models(subagent, &targets)?);
-            }
             let route = Route::new(
                 algorithm,
                 route_clients,
@@ -751,29 +793,6 @@ impl ClientFormat {
     }
 }
 
-/// Resolves one scope's configured target names to the models the driver serves.
-fn resolve_category_models(
-    names: HashMap<Category, Vec<String>>,
-    targets: &BTreeMap<String, ModelId>,
-) -> RunnerResult<HashMap<Category, Vec<ModelId>>> {
-    names
-        .into_iter()
-        .map(|(category, names)| {
-            let models = names
-                .into_iter()
-                .map(|name| {
-                    targets.get(&name).cloned().ok_or_else(|| {
-                        RunnerError::configuration(format!(
-                            "route references unknown target {name}"
-                        ))
-                    })
-                })
-                .collect::<RunnerResult<Vec<_>>>()?;
-            Ok((category, models))
-        })
-        .collect()
-}
-
 fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
@@ -917,6 +936,7 @@ bogus = true
 mod deployment_tests {
     use super::*;
     use serde_json::json;
+    use switchyard_protocol::Category;
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -1169,6 +1189,39 @@ capable_hold_turns = 2
 new = ["send_message"]
 "#
         )
+    }
+
+    #[test]
+    fn composite_decision_judge_reuses_capability_validation() {
+        let source = composite_config().replace(
+            "[routes.composed.classifier]\ntarget = \"tier_judge\"\nbase_threshold = 0.5",
+            "[routes.composed.classifier]\ntarget = \"tier_judge\"",
+        ) + r#"
+[routes.composed.classifier.decision]
+cutoff = 0.4
+candidates = { a = "strong", b = "weak" }
+evidence = { description = "candidate comparison" }
+"#;
+        for (source, valid) in [
+            (source.clone(), true),
+            (
+                source.replace(
+                    "target = \"tier_judge\"",
+                    "target = \"tier_judge\"\nbase_threshold = 0.5",
+                ),
+                false,
+            ),
+            (source.replace("b = \"weak\"", "b = \"strong\""), false),
+        ] {
+            let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
+            let spec = &deployment.routes["composed"].algorithm;
+            assert_eq!(spec.decision_judge().unwrap().0, "tier_judge");
+            assert_eq!(
+                spec.build_with_runtime_models("composed", &deployment.build_targets())
+                    .is_ok(),
+                valid
+            );
+        }
     }
 
     #[test]

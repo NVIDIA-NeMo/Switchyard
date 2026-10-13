@@ -634,7 +634,7 @@ mod tests {
                         .serve(target.clone(), request)
                         .await
                         .map_err(|source| LibsyError::client_call(target, source));
-                    call.respond(response)
+                    call.respond(std::future::ready(response)).await
                 }
             },
         )

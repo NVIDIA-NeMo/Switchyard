@@ -163,21 +163,25 @@ async fn serve_decision(
     observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
 ) -> Result<()> {
     let client = clients.route_decision(&call.model);
-    let started = Instant::now();
-    let result = async { client?.call(call.request.clone()).await }.await;
-    tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
-    if let Some(observations) = observations {
-        observations
-            .lock()
-            .push(RunObservation::DecisionCall(ModelCallObservation {
-                selected_model: call.model.clone(),
-                is_success: result.is_ok(),
-                duration: started.elapsed(),
-                usage: result.as_ref().ok().map(|response| response.usage.clone()),
-            }));
-    }
-    let result = result.map_err(|error| LibsyError::client_call(call.model.clone(), error));
-    call.respond(result)
+    let model = call.model.clone();
+    let request = call.request.clone();
+    call.respond(async {
+        let started = Instant::now();
+        let result = async { client?.call(request).await }.await;
+        tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
+        if let Some(observations) = observations {
+            observations
+                .lock()
+                .push(RunObservation::DecisionCall(ModelCallObservation {
+                    selected_model: model.clone(),
+                    is_success: result.is_ok(),
+                    duration: started.elapsed(),
+                    usage: result.as_ref().ok().map(|response| response.usage.clone()),
+                }));
+        }
+        result.map_err(|error| LibsyError::client_call(model, error))
+    })
+    .await
 }
 
 /// Emits completed routing calls after the outcome reveals whether one response became the answer.
@@ -223,24 +227,14 @@ async fn serve(
                 .push(RunObservation::LlmCall(observation));
         }
     };
-    let target = call.models.first().ok_or(LibsyError::NoTargets)?;
-    let request = clients.prepare_routing_request(call.request.clone(), target);
-    match call_one(
-        &clients,
-        target,
-        request,
-        &call.algorithm,
-        &observe,
-        0,
-        call.models.len(),
-        true,
-    )
+    let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+    let request = clients.prepare_routing_request(call.request.clone(), &target);
+    let algorithm = call.algorithm.clone();
+    let candidates = call.models.len();
+    call.respond(call_one(
+        &clients, &target, request, &algorithm, &observe, 0, candidates, true,
+    ))
     .await
-    {
-        Ok(response) => call.respond(Ok(response)),
-        Err(error) if call.recover_errors => call.respond(Err(error)),
-        Err(error) => call.fail(error),
-    }
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.

@@ -4,6 +4,21 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Speculative workflows** - algorithms can run model and decision calls in
+  parallel, stop one call, and let another continue. This includes decision
+  models used as speculative tool callers. The same controls support general
+  speculative and parallel workflows built on libsy. Cancellation stops local work;
+  provider generation and billing may continue after disconnect.
+  **Host API change (source-breaking):** Rust uses `call.respond(work).await?`;
+  Python uses `await call.respond(work)` and `await call.fail(error)`. Pass work
+  before awaiting it. See the
+  [host integration guide](docs/getting_started.md#drive-the-algorithm).
+  ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
+
 ## [0.3.0]
 
 Switchyard 0.3.0 builds on the native server and Rust library introduced in

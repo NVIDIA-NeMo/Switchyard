@@ -4,6 +4,11 @@
 import os
 import shutil
 import subprocess
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -74,21 +79,30 @@ def test_install_escapes_switchyard_path_in_launch_agent(setup):
     assert values["StandardOutPath"].text == str(switchyard_home / "logs" / "server.log")
     assert values["StandardErrorPath"].text == str(switchyard_home / "logs" / "server.err.log")
 
+    menubar = home / "Library" / "LaunchAgents" / "com.nvidia.switchyard.menubar.plist"
+    menubar_root = ET.parse(menubar).getroot()
+    menubar_entries = list(menubar_root.find("dict"))
+    menubar_values = {
+        menubar_entries[index].text: menubar_entries[index + 1]
+        for index in range(0, len(menubar_entries), 2)
+    }
+    menubar_arguments = [element.text for element in menubar_values["ProgramArguments"]]
+    assert menubar_arguments == [
+        str(switchyard_home / "bin" / "switchyard-menubar"),
+        str(switchyard_home / "menubar.toml"),
+    ]
+
 
 def test_missing_codex_config_creates_only_standalone_profile(setup):
-    _, _, switchyard_home, env = setup
-    env["SY_PORT"] = "5123"
+    _, home, _, _ = setup
     result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
-    codex = Path(env["CODEX_HOME"])
-    assert sorted(path.name for path in codex.iterdir()) == ["sy.config.toml"]
+    codex = home / ".codex"
     expected = read_config(REPO / "scripts" / "config" / "codex.sy.toml").replace(
-        "@SY_PORT@", "5123"
+        "@SY_PORT@", "4123"
     )
     assert read_config(codex / "sy.config.toml") == expected
-    assert read_config(switchyard_home / "composite.toml") == read_config(
-        REPO / "scripts" / "config" / "composite.toml"
-    )
+    assert {path.name for path in codex.iterdir()} == {"sy.config.toml"}
 
 
 def test_install_prints_profile_usage_without_editing_shell_files(setup):
@@ -106,62 +120,112 @@ def test_install_prints_profile_usage_without_editing_shell_files(setup):
     assert bashrc.read_text() == "bash settings\n"
 
 
-@pytest.mark.parametrize("script", ["install.sh", "uninstall.sh"])
+def test_menu_bar_settings_escape_sy_home_as_toml_strings(setup):
+    _, home, _, env = setup
+    switchyard_home = home / 'Switchyard "quoted" \\ folder'
+    env["SY_HOME"] = str(switchyard_home)
+
+    result = run(setup, "install.sh")
+
+    assert result.returncode == 0, result.stderr
+    settings = tomllib.loads((switchyard_home / "menubar.toml").read_text())
+    assert settings["routing_log"] == str(switchyard_home / "routing.jsonl")
+    assert settings["config_file"] == str(switchyard_home / "composite.toml")
+
+
+def test_reinstall_backs_up_profile_and_keeps_user_settings(setup):
+    _, _, switchyard_home, env = setup
+    result = run(setup, "install.sh")
+    assert result.returncode == 0, result.stderr
+    profile = Path(env["CODEX_HOME"]) / "sy.config.toml"
+    original = profile.read_text()
+    server_config = switchyard_home / "composite.toml"
+    menu_settings = switchyard_home / "menubar.toml"
+    server_config.write_text("user server settings\n")
+    menu_settings.write_text("user menu settings\n")
+    env["SY_PORT"] = "5000"
+
+    result = run(setup, "install.sh")
+
+    assert result.returncode == 0, result.stderr
+    assert "127.0.0.1:5000/v1" in profile.read_text()
+    backups = list(profile.parent.glob("sy.config.toml.switchyard-backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == original
+    assert server_config.read_text() == "user server settings\n"
+    assert menu_settings.read_text() == "user menu settings\n"
+
+
 @pytest.mark.parametrize(
-    "original",
+    "provider_header",
     [
-        'model_provider = "sy"\n[model_providers."sy"]\nname = "Old"\n',
-        'developer_instructions = """\nmodel = "example"\n'
-        "# >>> switchyard sy profile >>>\n[model_providers.sy]\n"
-        '# <<< switchyard sy profile <<<\n"""\n'
-        '# >>> switchyard sy profile >>>\n[profiles.sy]\nmodel_provider = "sy"\n'
-        "# <<< switchyard sy profile <<<\n",
-        "invalid TOML that must be left alone\n",
+        "[model_providers.\"sy\"]",
+        "[model_providers . 'sy']",
+        '[ "model_providers" . "sy" ]',
     ],
 )
-def test_scripts_leave_main_config_and_legacy_files_untouched(setup, script, original):
-    _, _, _, env = setup
+def test_existing_codex_config_is_preserved_and_shared_templates_are_used(
+    setup, provider_header
+):
+    _, home, switchyard_home, env = setup
     codex = Path(env["CODEX_HOME"])
     codex.mkdir()
-    files = {
-        "config.toml": original,
-        "config.toml.direct": 'model = "direct"\n',
-        "config.sy.toml": 'model = "previous routed config"\n',
-    }
-    for name, content in files.items():
-        (codex / name).write_text(content)
-    (codex / "sy.config.toml").write_text('model = "old profile"\n')
+    config = codex / "config.toml"
+    original = f'''theme = "dark"
 
-    result = run(setup, script)
+{provider_header} # old provider
+name = "Old"
+base_url = "http://old"
 
+[other]
+model_provider = "sy"
+'''
+    config.write_text(original)
+    result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
-    for name, content in files.items():
-        assert (codex / name).read_text() == content
-    assert not list(codex.glob("config.toml.switchyard-*"))
-    if script == "uninstall.sh":
-        assert not (codex / "sy.config.toml").exists()
-    else:
-        assert (codex / "sy.config.toml").read_text() == read_config(
-            REPO / "scripts" / "config" / "codex.sy.toml"
-        ).replace("@SY_PORT@", env.get("SY_PORT", "4123"))
-        backups = list(codex.glob("sy.config.toml.switchyard-backup.*"))
-        assert len(backups) == 1
-        assert backups[0].read_text() == 'model = "old profile"\n'
-
-
-@pytest.mark.parametrize("script", ["install.sh", "uninstall.sh"])
-def test_scripts_dry_run_does_not_create_files(setup, script):
-    scripts, home, _, env = setup
-    result = subprocess.run(
-        ["bash", str(scripts / script), "--dry-run"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
+    assert read_config(config) == original
+    profile = read_config(codex / "sy.config.toml")
+    expected = read_config(REPO / "scripts" / "config" / "codex.sy.toml").replace(
+        "@SY_PORT@", "4123"
     )
+    assert profile == expected
+    assert tomllib.loads(profile)["model_providers"]["sy"]["name"] == "Switchyard"
+    assert not (codex / "config.sy.toml").exists()
+    assert read_config(switchyard_home / "composite.toml") == read_config(
+        REPO / "scripts" / "config" / "composite.toml"
+    )
+    assert not (codex / "config.toml.direct").exists()
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quoted_top_level_provider_keeps_existing_snapshot(setup, quote):
+    _, home, _, env = setup
+    codex = Path(env["CODEX_HOME"])
+    codex.mkdir()
+    (codex / "config.toml").write_text(f"model_provider = {quote}sy{quote} # routed\n")
+    snapshot = codex / "config.toml.direct"
+    snapshot.write_text("original direct config\n")
+    result = run(setup, "install.sh")
     assert result.returncode == 0, result.stderr
-    assert "would" in result.stdout
-    assert list(home.iterdir()) == []
+    assert snapshot.read_text() == "original direct config\n"
+    assert (codex / "config.toml").read_text() == f"model_provider = {quote}sy{quote} # routed\n"
+    assert not (codex / "config.sy.toml").exists()
+    assert (codex / "sy.config.toml").is_file()
+
+
+def test_uninstall_preserves_routed_config_before_restoring_snapshot(setup):
+    _, home, _, env = setup
+    codex = Path(env["CODEX_HOME"])
+    codex.mkdir()
+    current = "model_provider = 'sy' # routed\nuser_setting = \"keep me\"\n"
+    (codex / "config.toml").write_text(current)
+    (codex / "config.toml.direct").write_text("model = \"original\"\n")
+    result = run(setup, "uninstall.sh")
+    assert result.returncode == 0, result.stderr
+    assert (codex / "config.toml").read_text() == 'model = "original"\n'
+    backups = list(codex.glob("config.toml.switchyard-current.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == current
 
 
 @pytest.mark.parametrize("script", ["install.sh", "uninstall.sh"])

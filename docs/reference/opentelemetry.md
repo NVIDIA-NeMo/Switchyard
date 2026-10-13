@@ -173,7 +173,7 @@ Advisor Gate instruments use the prefix `switchyard.advisor_gate.`:
 ### Timing and streaming
 
 - `libsy.run` may finish before the answer call. Nested algorithms have separate run spans.
-- Decision calls record `error` when failed or dropped without a reply, including cancellation. A returned response records its outcome even if the waiting algorithm has already gone away. These metrics work with any host and do not require a client observer.
+- Decision calls record `error` when failed or dropped without a reply, including cancellation. Cancelled calls do not poll further host work. A response completed during a cancellation race may still record its result. These metrics work with any host and do not require a client observer.
 - `libsy.llm_call` and routing-time call metrics end when the host fulfills the offloaded call. They include host queueing. The LLM client driver buffers routing streams before fulfilling the call. The span's `input_tokens`, `output_tokens`, `total_tokens`, and `reasoning_tokens` fields are buffered-response only.
 - For terminal answer candidates, `switchyard.llm_calls` and `switchyard.llm_call_duration_ms` record when the response stream ends or is dropped. Duration includes that candidate's retries and stream consumption. Stream errors and unfinished drops record `outcome=error`; a terminal message permits a successful drop.
 - `libsy.client_call` remains open while its stream is consumed. IDs, usage, and finish reasons update from normalized events. An unfinished stream dropped by its consumer records `cancelled`; a stream error records `error`.
