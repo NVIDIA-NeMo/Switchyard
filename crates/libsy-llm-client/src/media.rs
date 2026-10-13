@@ -73,7 +73,7 @@ impl Default for MediaConfig {
 
 impl MediaConfig {
     /// Validate bounds and native video compatibility at client construction time.
-    pub fn validate(&self, format: WireFormat) -> Result<()> {
+    pub(crate) fn validate(&self, format: WireFormat) -> Result<()> {
         if self
             .image_max_edge
             .is_some_and(|edge| !(1..=4096).contains(&edge))
@@ -101,7 +101,7 @@ impl MediaConfig {
 
 /// Media failures contain no input URLs, credentials, or encoded media.
 #[derive(Debug, thiserror::Error)]
-pub enum MediaError {
+pub(crate) enum MediaError {
     /// The complete preparation deadline expired.
     #[error("media preparation timed out")]
     Timeout,
@@ -117,17 +117,17 @@ pub enum MediaError {
 }
 
 /// Result of media preparation.
-pub type Result<T> = std::result::Result<T, MediaError>;
+type Result<T> = std::result::Result<T, MediaError>;
 
 /// Shared download pools and bounded CPU/subprocess concurrency for one LLM client.
-pub struct MediaProcessor {
+pub(crate) struct MediaProcessor {
     fetchers: fetch::Fetchers,
     slots: Arc<Semaphore>,
 }
 
 impl MediaProcessor {
     /// Construct a processor; unauthenticated download pools are created on first use.
-    pub fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         Ok(Self {
             fetchers: fetch::Fetchers::default(),
             slots: Arc::new(Semaphore::new(2)),
@@ -136,7 +136,7 @@ impl MediaProcessor {
 
     /// Prepare an outgoing body. On error discard the body; changes may be partial.
     /// Only message content is traversed. Tools, JSON arguments, and other controls are retained.
-    pub async fn prepare(
+    pub(crate) async fn prepare(
         &self,
         body: &mut Value,
         format: WireFormat,

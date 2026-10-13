@@ -1,8 +1,9 @@
-# switchyard-media
+# Media preparation
 
-Prepares media in an outgoing provider JSON body. `libsy-llm-client` invokes this
-crate after translation and endpoint overrides, before retries. Core `libsy` has
-no dependency on this crate. The caller's original routing request is unchanged.
+`libsy-llm-client` prepares media in an outgoing provider JSON body after
+translation and endpoint overrides, before retries. Processing lives in its
+private `media` module; core `libsy` has no media-processing dependencies.
+The caller's original routing request is unchanged.
 
 Media fetching, EXIF-aware JPEG decoding and RGB resizing use `dynamo-multimodal`, pinned to
 [`frontend-crates` main at `e979fc76`](https://github.com/ai-dynamo/frontend-crates/tree/e979fc762366b3580fdc4185874cee51217bd637/multimodal).
@@ -114,6 +115,5 @@ fn judge_endpoint(backend: Backend) -> ModelConfig {
 }
 ```
 
-`MediaProcessor` can also prepare an owned provider JSON body directly. Discard the
-body if preparation fails; it may be partially modified. The LLM client follows
-this rule and never modifies the routing driver's original request.
+The private processor modifies only the outgoing provider body. The client
+discards that body if preparation fails and preserves the original routing request.

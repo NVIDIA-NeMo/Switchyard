@@ -19,7 +19,7 @@ In another terminal, send the small video fixture. This calls the live judge
 and answer endpoints:
 
 ```bash
-video=$(base64 -w0 crates/switchyard-media/tests/fixtures/colors.mp4)
+video=$(base64 -w0 crates/libsy-llm-client/tests/fixtures/media/colors.mp4)
 curl --fail-with-body http://localhost:8080/v1/chat/completions \
   -H 'Content-Type: application/json' --data-binary @- <<EOF
 {"model":"media/vision-judge","messages":[{"role":"user","content":[
@@ -33,7 +33,7 @@ For a still image, use an `image_url` block containing a public HTTPS URL or a
 base64 data URI. To make the judge text-only, set its media `max_images = 0`
 and `video = "omit"`.
 
-See the [media reference](../../crates/switchyard-media/README.md) for formats,
+See the [media reference](../../crates/libsy-llm-client/MEDIA.md) for formats,
 limits, and embedded Rust use. Preparation runs in the LLM client, independently
 for each target. Frame sampling can miss brief events; this example demonstrates
 request handling and does not measure routing accuracy.

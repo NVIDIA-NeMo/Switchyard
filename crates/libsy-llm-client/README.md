@@ -19,6 +19,9 @@ retries plus ordered candidate fallback.
 It depends on `switchyard-libsy`, `switchyard-protocol`, and
 `switchyard-translation`; no server, no provider SDK.
 
+Per-target [media settings](MEDIA.md) use `dynamo-multimodal` for fetching and image
+processing. Video extraction and provider formatting live in a private client module.
+
 ## Concepts
 
 - **Model configs.** A client is built from [`ModelConfig`] values, each keyed by a

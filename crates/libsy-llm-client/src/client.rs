@@ -15,7 +15,6 @@ use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value, json};
-use switchyard_media::{MediaConfig, MediaError, MediaProcessor};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
     ModelId, Request, Response, RoutedLlmClient,
@@ -29,6 +28,7 @@ use tracing::Instrument;
 
 use crate::backend::{Backend, openai_url};
 use crate::error::{LlmClientError, Result};
+use crate::media::{MediaConfig, MediaError, MediaProcessor};
 use crate::metrics;
 use crate::raw::RawResponse;
 
@@ -1404,7 +1404,7 @@ mod tests {
     #[tokio::test]
     async fn target_media_prepares_preserved_body_without_mutating_answer_or_controls()
     -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
-        use switchyard_media::VideoMode;
+        use crate::VideoMode;
         let server = MockServer::start().await;
         Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id":"r", "object":"chat.completion", "model":"answer",

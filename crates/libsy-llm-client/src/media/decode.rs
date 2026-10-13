@@ -19,7 +19,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 
-use crate::{MediaError, Result};
+use super::{MediaError, Result};
 
 const MAX_DIMENSION: u32 = 16_384;
 const MAX_ALLOC: u64 = 128 * 1024 * 1024;

@@ -3389,10 +3389,13 @@ name = "switchyard-llm-client"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "base64",
+ "dynamo-multimodal",
  "futures",
  "futures-util",
  "http",
  "httpdate",
+ "image",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
@@ -3400,33 +3403,16 @@ dependencies = [
  "serde",
  "serde_json",
  "switchyard-libsy",
- "switchyard-media",
  "switchyard-protocol",
  "switchyard-translation",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "wiremock",
-]
-
-[[package]]
-name = "switchyard-media"
-version = "0.3.0"
-dependencies = [
- "base64",
- "dynamo-multimodal",
- "futures-util",
- "image",
- "parking_lot",
- "serde",
- "serde_json",
- "switchyard-protocol",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
  "url",
+ "wiremock",
 ]
 
 [[package]]

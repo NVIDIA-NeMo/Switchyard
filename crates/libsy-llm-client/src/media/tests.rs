@@ -204,7 +204,7 @@ async fn disabled_processing_is_exact_passthrough_and_limits_fail_closed() {
 #[ignore = "requires ffmpeg and ffprobe on PATH"]
 async fn video_frames_work_in_all_formats_and_preserve_original_request() {
     let processor = MediaProcessor::new().unwrap();
-    let bytes = include_bytes!("../tests/fixtures/colors.mp4");
+    let bytes = include_bytes!("../../tests/fixtures/media/colors.mp4");
     let source = data_uri("video/mp4", bytes);
     for format in [
         WireFormat::OpenAiChat,
@@ -253,7 +253,7 @@ async fn image_cap_counts_all_frames_without_changing_samples() {
     let processor = MediaProcessor::new().unwrap();
     let original = json!({"messages":[{"role":"user","content":[
         {"type":"image_url","image_url":{"url":still_image()}},
-        {"type":"video_url","video_url":{"url":data_uri("video/mp4", include_bytes!("../tests/fixtures/colors.mp4"))}}
+        {"type":"video_url","video_url":{"url":data_uri("video/mp4", include_bytes!("../../tests/fixtures/media/colors.mp4"))}}
     ]}]});
     let mut unlimited = None;
     for limit in [None, Some(0), Some(3), Some(4)] {
@@ -296,7 +296,7 @@ async fn image_cap_counts_all_frames_without_changing_samples() {
 async fn image_resize_applies_exif_and_avoids_reencoding_small_images() {
     let slots = Arc::new(Semaphore::new(1));
     let (_, bytes) = decode::resize(
-        include_bytes!("../tests/fixtures/oriented.jpg").to_vec(),
+        include_bytes!("../../tests/fixtures/media/oriented.jpg").to_vec(),
         40,
         slots.clone(),
     )

@@ -8,7 +8,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use dynamo_multimodal::fetch::{FetchPolicy, MediaFetcher};
 use parking_lot::Mutex;
 
-use crate::{MediaError, Result};
+use super::{MediaError, Result};
 
 #[derive(Default)]
 pub(crate) struct Fetchers(Mutex<HashMap<usize, MediaFetcher>>);
