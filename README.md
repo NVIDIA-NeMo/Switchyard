@@ -55,9 +55,11 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 | **[Execution](docs/routing_algorithms/stage_router_routing.md)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. | `type = "stage_router"` |
 | **[Composite](docs/routing_algorithms/composite_routing.md)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. | `type = "composite"` |
 
-Auto is a composite preset in the TOML runner. Configure its classifier with an LLM judge or a System One decision model. Existing auto configurations must add a classifier. Use `stage_router` explicitly to keep routing based only on local tool signals.
+Auto is a composite preset in the TOML runner. Configure its classifier with an LLM judge or a decision model. Existing auto configurations must add a classifier. Use `stage_router` explicitly to keep routing based only on local tool signals.
 
 The [routing overview](docs/routing_algorithms/overview.md) retains the full catalogue, including [Plan/Execute](docs/routing_algorithms/plan_execute_routing.md), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md) strategies. Integration support varies: check the gateway guide before choosing an algorithm.
+
+[Prefill routing](docs/routing_algorithms/prefill_routing.md) is designed for fast, efficient model selection using a model's prefill activations and a classifier trained on your own evaluation data.
 
 ## Evaluation and reference
 

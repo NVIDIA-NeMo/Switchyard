@@ -91,7 +91,7 @@ Provider failures use safe summaries.
 Use `auto`, `passthrough` with its subagent policy unset, or `llm_classifier` in
 capability mode. Auto uses composite routing and requires a classifier with
 `message_hash_fallback = true`. It defaults to user-turn classification.
-Both auto and capability mode support LLM and System One decision judges.
+Both auto and capability mode support LLM and decision models.
 Standalone capability classifiers require `classify_trigger = "every_request"`
 and `message_hash_fallback = false` (their defaults).
 

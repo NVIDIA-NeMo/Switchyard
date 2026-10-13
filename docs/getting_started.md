@@ -109,7 +109,7 @@ base_threshold = 0.5
 Auto uses composite routing. The classifier runs on user turns, and stage
 signals handle tool progress and failures between them. This example uses the
 strong target as an LLM judge. You can also configure a separate
-[System One decision model](routing_algorithms/composite_routing.md#decision-model-classifier).
+[decision model](routing_algorithms/composite_routing.md#decision-model-classifier).
 Send `x-switchyard-session-id` with a stable conversation ID to retain the tier
 and recovery holds. A missing classifier is a configuration error.
 
