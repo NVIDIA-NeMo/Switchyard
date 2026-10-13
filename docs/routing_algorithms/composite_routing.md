@@ -13,7 +13,7 @@ and so is how it scores signals, escalates, and de-escalates. Both algorithms an
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
 
-The classifier can use an LLM judge or a System One decision model. A decision
+The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
 capable and efficient completion targets.
 
@@ -55,7 +55,7 @@ on a standalone stage route.
 
 ## Decision model classifier
 
-Use a System One decision target as the classifier. Keep the stage block above
+Use a decision target as the classifier. Keep the stage block above
 and replace its LLM classifier settings with:
 
 ```toml
