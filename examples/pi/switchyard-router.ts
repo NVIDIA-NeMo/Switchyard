@@ -16,7 +16,7 @@ function modelIdentity(reference: unknown) {
 }
 
 function loadRunner(): Runner {
-  const { decision_clients, decision_targets, ...algorithm } = parse(readFileSync(process.env.SWITCHYARD_CONFIG ?? new URL("./switchyard.toml", import.meta.url), "utf8"));
+  const { decision_clients, decision_targets, ...algorithm } = parse(readFileSync(process.env.SWITCHYARD_CONFIG ?? new URL("./switchyard.toml", import.meta.url), "utf8"))
   const targets = Object.fromEntries([algorithm.efficient_target, algorithm.capable_target].map((value) => {
     const { reference } = modelIdentity(value);
     return [reference, { id: reference, llm_client: "pi" }];

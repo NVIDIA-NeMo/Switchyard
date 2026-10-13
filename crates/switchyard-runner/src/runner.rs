@@ -60,7 +60,7 @@ impl Runner {
     ///
     /// Accepts auto with message-hash retention, passthrough, and per-request classifiers.
     /// Completion request overrides and forwarded authentication are rejected.
-    /// the caller owns completion dispatch.
+    /// The caller owns completion dispatch.
     pub fn from_toml_for_model_selection(source: &str) -> Result<Self, RunnerError> {
         config::model_selection_from_toml(source)
     }
