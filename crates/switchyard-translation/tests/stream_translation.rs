@@ -3430,3 +3430,47 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
     }
     Ok(())
 }
+
+/// The final output-only delta must not erase the charge or cache duration from message_start.
+#[test]
+fn streamed_usage_keeps_charge_and_duration_after_output_only_delta() -> TestResult {
+    let engine = TranslationEngine::default();
+    for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let mut state = StreamTranslationState::new(WireFormat::AnthropicMessages, target);
+        let mut events = Vec::new();
+        for event in [
+            json!({"type":"message_start","message":{"id":"msg_cost","type":"message","role":"assistant","model":"claude","content":[],"usage":{"input_tokens":50,"output_tokens":0,"cache_read_input_tokens":20,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_1h_input_tokens":10},"cost":0.25}}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":10}}),
+            json!({"type":"message_stop"}),
+        ] {
+            events.extend(engine.translate_event(
+                &mut state,
+                WireFormat::AnthropicMessages,
+                target,
+                &event,
+            )?);
+        }
+        events.extend(engine.finish_stream(&mut state, target)?);
+        let usage = events
+            .iter()
+            .rev()
+            .find_map(|event| {
+                if target == WireFormat::OpenAiResponses {
+                    event.get("response")?.get("usage")
+                } else {
+                    event.get("usage")
+                }
+            })
+            .ok_or("missing final usage")?;
+        assert_eq!(usage["cost"], 0.25);
+        assert_eq!(usage["cache_creation"]["ephemeral_1h_input_tokens"], 10);
+        let detail = if target == WireFormat::OpenAiChat {
+            "prompt_tokens_details"
+        } else {
+            "input_tokens_details"
+        };
+        assert_eq!(usage[detail]["cache_write_tokens"], 30);
+        assert_eq!(state.usage.output_tokens, Some(10));
+    }
+    Ok(())
+}

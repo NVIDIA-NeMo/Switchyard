@@ -1240,8 +1240,13 @@ fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
         .and_then(Value::as_u64);
     let output_tokens = value.get("output_tokens").and_then(Value::as_u64);
     Usage {
+        provider_cost: crate::codecs::common::provider_cost(value),
         input_tokens,
-        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
+        cache: crate::codecs::common::cache_usage_details(
+            value,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        ),
         output_tokens,
         total_tokens: input_tokens.zip(output_tokens).map(|(input, output)| {
             input
@@ -1273,7 +1278,7 @@ fn encode_anthropic_usage(usage: &Usage) -> Value {
     if let Some(thinking_tokens) = usage.reasoning_tokens {
         value["output_tokens_details"] = json!({"thinking_tokens": thinking_tokens});
     }
-    value
+    crate::codecs::common::encode_usage_metadata(value, usage)
 }
 
 // Maps Anthropic stop reasons to normalized stop reasons.

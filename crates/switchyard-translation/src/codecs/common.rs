@@ -223,6 +223,51 @@ pub(crate) fn provider_extensions(
     extensions
 }
 
+/// Invalid charges remain unknown so accounting can use configured token rates.
+pub(crate) fn provider_cost(value: &Map<String, Value>) -> Option<f64> {
+    value
+        .get("cost")
+        .and_then(Value::as_f64)
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+}
+
+/// Cache duration must survive decoding because one-hour writes can have a different rate.
+pub(crate) fn cache_usage_details(
+    value: &Map<String, Value>,
+    cached: Option<u64>,
+    created: Option<u64>,
+) -> Option<Box<crate::llm::InputCacheUsage>> {
+    let one_hour = value
+        .get("cache_creation")
+        .and_then(|details| details.get("ephemeral_1h_input_tokens"))
+        .and_then(Value::as_u64);
+    let mut cache = crate::llm::Usage::cache_details(cached, created);
+    if let Some(tokens) = one_hour {
+        cache
+            .get_or_insert_with(Default::default)
+            .cache_creation_1h_input_tokens = Some(tokens);
+    }
+    cache
+}
+
+/// These fields preserve provider charges and cache duration across response formats.
+pub(crate) fn encode_usage_metadata(mut value: Value, usage: &crate::llm::Usage) -> Value {
+    if let Some(cost) = usage
+        .provider_cost
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+    {
+        value["cost"] = serde_json::json!(cost);
+    }
+    if let Some(tokens) = usage
+        .cache
+        .as_ref()
+        .and_then(|cache| cache.cache_creation_1h_input_tokens)
+    {
+        value["cache_creation"] = serde_json::json!({"ephemeral_1h_input_tokens": tokens});
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

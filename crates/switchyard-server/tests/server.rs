@@ -2728,6 +2728,11 @@ recent_turn_window = 1
 async fn accepted_escalation_response_is_logged_once_as_the_final_answer() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
+    let prices = temp_dir.path().join("prices.json");
+    std::fs::write(
+        &prices,
+        r#"{"model/strong":{"input":10,"output":20,"cache_read":0.2,"cache_write":3},"model/weak":{"input":1,"output":5,"cache_read":0.1,"cache_write":2}}"#,
+    )?;
     let state = load_test_config(&format!(
         r#"
 schema_version = 1
@@ -2761,7 +2766,8 @@ escalation = {{ confirmations = 1 }}
 "#,
         base_url = upstream.base_url
     ))?
-    .with_routing_log(temp_dir.path().join("routing.jsonl"))?;
+    .with_routing_log(temp_dir.path().join("routing.jsonl"))?
+    .with_pricing_file(prices)?;
     let app = build_switchyard_router(state);
 
     let response = send_with_headers(
@@ -2792,6 +2798,16 @@ escalation = {{ confirmations = 1 }}
     assert_eq!(stats.status, StatusCode::OK);
     let stats = stats.json()?;
     assert_eq!(stats["total_calls"], 2);
+    let answer_cost = stats["answer_cost"]["total_usd"]
+        .as_f64()
+        .ok_or("missing answer cost")?;
+    let routing_cost = stats["routing_cost"]["total_usd"]
+        .as_f64()
+        .ok_or("missing routing cost")?;
+    assert!((answer_cost - 0.0000137).abs() < 1e-12);
+    assert!((routing_cost - 0.0000714).abs() < 1e-12);
+    assert_eq!(stats["cost"]["estimated_calls"], 2);
+
     assert_eq!(stats["total_prompt_tokens"], 20);
     assert_eq!(stats["total_completion_tokens"], 4);
     assert_eq!(stats["models"]["model/weak"]["calls"], 1);
@@ -4294,9 +4310,15 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
     let log_path = temp_dir.path().join("routing.jsonl");
+    let prices = temp_dir.path().join("prices.json");
+    std::fs::write(
+        &prices,
+        r#"{"model/strong":{"input":10,"output":20,"cache_read":0.2,"cache_write":3}}"#,
+    )?;
     // The fixed seed selects `first` for these requests while keeping `second` enabled.
-    let state =
-        weighted_random_state(&upstream.base_url, [1000, 1])?.with_routing_log(&log_path)?;
+    let state = weighted_random_state(&upstream.base_url, [1000, 1])?
+        .with_routing_log(&log_path)?
+        .with_pricing_file(&prices)?;
     let app = build_switchyard_router(state);
     let cases = [
         (
@@ -4322,7 +4344,14 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
 
     for (path, body) in cases {
         let previous_call_count = upstream.calls.lock().await.len();
-        let response = send(&app, "POST", path, Some(body)).await?;
+        let response = send_with_headers(
+            &app,
+            "POST",
+            path,
+            Some(body),
+            &[("x-switchyard-session-id", "cost-fallback")],
+        )
+        .await?;
         assert_eq!(response.status, StatusCode::OK);
         assert_eq!(
             response
@@ -4364,10 +4393,40 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .lines()
         .map(serde_json::from_str::<Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(records.len(), 3);
-    assert!(records.iter().all(|record| {
-        record["model"] == "model/strong" && record.get("fallback_reason").is_none()
-    }));
+    assert_eq!(records.len(), 6);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["model"] == "model/strong")
+            .count(),
+        3
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| record["model"] == "model/weak" && record["cost"].is_null())
+            .count(),
+        3
+    );
+    let session = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=cost-fallback",
+        None,
+    )
+    .await?
+    .json()?;
+    assert_eq!(session["cost"]["unknown_calls"], 3);
+    assert_eq!(session["cost"]["estimated_calls"], 3);
+    assert!(session["cost"]["total_usd"].is_null());
+    assert!(
+        (session["cost"]["known_usd"]
+            .as_f64()
+            .ok_or("missing subtotal")?
+            - 0.0002142)
+            .abs()
+            < 1e-12
+    );
 
     let previous_call_count = upstream.calls.lock().await.len();
     let response = send(
@@ -4935,7 +4994,7 @@ async fn advisor_route_streaming_approval_replays_provider_events() -> TestResul
     assert_eq!(events[1]["choices"][0]["delta"]["content"], "hello");
     assert_eq!(events[2]["choices"][0]["delta"]["content"], "-partial");
     assert_eq!(events[3]["choices"][0]["delta"]["content"], "-final");
-    // Provider-specific usage detail rides through untouched.
+    // The response keeps the provider's usage fields unchanged.
     assert_eq!(
         events[3]["usage"]["prompt_tokens_details"]["cache_creation_tokens"],
         2
@@ -5347,5 +5406,70 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some("model/a")
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_cost_uses_served_model_rates_for_every_endpoint() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let directory = tempfile::tempdir()?;
+    let prices = directory.path().join("prices.json");
+    std::fs::write(
+        &prices,
+        r#"{"model/a":{"input":1,"output":5,"cache_read":0.1,"cache_write":2},"model/b":{"input":10,"output":20,"cache_read":0.2,"cache_write":3}}"#,
+    )?;
+    let state = random_state(
+        &upstream.base_url,
+        &[("route-a", &["model/a"]), ("route-b", &["model/b"])],
+    )?
+    .with_routing_log(directory.path().join("routing.jsonl"))?
+    .with_pricing_file(&prices)?;
+    let app = build_switchyard_router(state);
+    for (endpoint, stream, model, expected) in [
+        ("/v1/chat/completions", false, "route-a", 0.0000137),
+        ("/v1/messages", false, "route-a", 0.0000137),
+        ("/v1/responses", false, "route-a", 0.0000137),
+        ("/v1/chat/completions", true, "route-a", 0.0000327),
+        ("/v1/messages", true, "route-a", 0.0000327),
+        ("/v1/responses", true, "route-b", 0.0001374),
+    ] {
+        let session = format!("cost-{model}-{endpoint}-{stream}");
+        let mut body =
+            json!({"model":model,"stream":stream,"messages":[{"role":"user","content":"hello"}]});
+        if endpoint == "/v1/responses" {
+            body = json!({"model":model,"stream":stream,"input":"hello"});
+        }
+        if endpoint == "/v1/messages" {
+            body["max_tokens"] = json!(100);
+        }
+        let response = send_with_headers(
+            &app,
+            "POST",
+            endpoint,
+            Some(body),
+            &[("x-switchyard-session-id", &session)],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        let stats = send(
+            &app,
+            "GET",
+            &format!("/v1/routing/session-stats?session_id={session}"),
+            None,
+        )
+        .await?
+        .json()?;
+        assert_eq!(stats["total_calls"], 1);
+        assert_eq!(stats["cost"]["estimated_calls"], 1);
+        let actual = stats["cost"]["total_usd"]
+            .as_f64()
+            .ok_or("missing session cost")?;
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "{endpoint}: {actual} != {expected}"
+        );
+        assert_eq!(stats["routing_cost"]["total_usd"], 0.0);
+    }
+    assert_eq!(upstream.calls.lock().await.len(), 6);
     Ok(())
 }

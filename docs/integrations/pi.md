@@ -95,7 +95,10 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id `switchyard` instead.
 
-Set `cost` on the model entry if you want pi to show a non-zero cost.
+Set `cost` on the model entry for pi's native estimate. One rate table under a
+router alias is an approximation when targets have different prices. For a
+separate total that uses each served model and includes routing calls, see
+[Display Switchyard session costs](costs.md).
 [`benchmark/run-baseline.sh`](../../benchmark/README.md) runs Terminal-Bench tasks with
 pi through Switchyard when you pass `--agent pi`.
 
