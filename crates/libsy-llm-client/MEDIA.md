@@ -11,7 +11,9 @@ Media fetching, EXIF-aware JPEG decoding and RGB resizing use `dynamo-multimodal
 [`frontend-crates` main at `e979fc76`](https://github.com/ai-dynamo/frontend-crates/tree/e979fc762366b3580fdc4185874cee51217bd637/multimodal).
 RGB downscaling uses Lanczos. Other image formats retain the bounded `image`
 decoder, including transparency and higher bit depths. PNG output for transparency,
-FFmpeg frame extraction and provider formatting remain here. The client continues
+FFmpeg frame extraction and provider formatting remain here. Frame sampling uses
+the selected video stream duration, or its packet timestamps when duration is
+unavailable, so longer audio tracks do not extend the sampling range. The client continues
 to use `MediaProcessor` and `MediaConfig`.
 Dynamo's optional Rayon pool is disabled; the existing bounded workers run decoding.
 Building from source requires CMake and a C/C++ toolchain for libjpeg-turbo.

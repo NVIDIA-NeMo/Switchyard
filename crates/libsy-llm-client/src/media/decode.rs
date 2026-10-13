@@ -189,7 +189,7 @@ pub(crate) async fn frames(
                 "-select_streams",
                 "v:0",
                 "-show_entries",
-                "stream=width,height,avg_frame_rate:format=duration",
+                "stream=width,height,avg_frame_rate,duration",
                 "-of",
                 "json",
             ])
@@ -210,10 +210,6 @@ pub(crate) async fn frames(
     {
         return Err(MediaError::Invalid("video dimensions exceed decode limits"));
     }
-    let duration = probe["format"]["duration"]
-        .as_str()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0.0);
     let fps = stream["avg_frame_rate"]
         .as_str()
         .and_then(|rate| rate.split_once('/'))
@@ -221,6 +217,45 @@ pub(crate) async fn frames(
             Some(numerator.parse::<f64>().ok()? / denominator.parse::<f64>().ok()?)
         })
         .unwrap_or(0.0);
+    let duration = match stream["duration"]
+        .as_str()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|duration| duration.is_finite() && *duration > 0.0)
+    {
+        Some(duration) => duration,
+        None => {
+            // WebM/Matroska often omit stream duration. Container duration can
+            // include longer audio, so derive the video span from its packets.
+            let packets = command_output(
+                Command::new("ffprobe")
+                    .args([
+                        "-v",
+                        "error",
+                        "-protocol_whitelist",
+                        "file",
+                        "-format_whitelist",
+                        "mov,matroska,webm",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "packet=pts_time",
+                        "-of",
+                        "csv=p=0",
+                    ])
+                    .arg(&input),
+                8 * 1024 * 1024,
+            )
+            .await?;
+            let (first, last) = String::from_utf8_lossy(&packets)
+                .lines()
+                .filter_map(|line| line.split(',').next()?.parse::<f64>().ok())
+                .filter(|time| time.is_finite())
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(first, last), time| {
+                    (first.min(time), last.max(time))
+                });
+            last - first + 1.0 / fps
+        }
+    };
     let times = sample_times(count, duration, fps)?;
     let mut frames = Vec::with_capacity(count);
     for time in times {
@@ -302,6 +337,57 @@ mod tests {
             assert!(pixel[0] > 190 && pixel[1] < 60 && pixel[2] < 40);
             if width <= 20 && height <= 20 {
                 assert_eq!(output, original);
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ffmpeg and ffprobe on PATH"]
+    async fn video_samples_ignore_longer_audio_tracks() {
+        let directory = tempfile::tempdir().unwrap();
+        // Matroska omits stream.duration, exercising the packet-timestamp fallback.
+        for extension in ["mp4", "mkv"] {
+            let path = directory.path().join(format!("long-audio.{extension}"));
+            let status = Command::new("ffmpeg")
+                .args([
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=red:s=32x32:r=10:d=1",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=8000:cl=mono:d=3",
+                    "-c:v",
+                    "mpeg4",
+                    "-c:a",
+                    "aac",
+                ])
+                .arg(&path)
+                .status()
+                .await
+                .unwrap();
+            assert!(status.success());
+            let bytes = tokio::fs::read(path).await.unwrap();
+            for count in [1, 4] {
+                let samples = frames(
+                    bytes.clone(),
+                    count,
+                    32,
+                    Arc::new(Semaphore::new(1)),
+                    1024 * 1024,
+                )
+                .await
+                .unwrap();
+                assert_eq!(samples.len(), count);
+                for (time, jpeg) in samples {
+                    assert!(time < 1.0, "{extension} sample outside video: {time}");
+                    let image = image::load_from_memory(&jpeg).unwrap();
+                    assert_eq!((image.width(), image.height()), (32, 32));
+                }
             }
         }
     }
