@@ -1784,7 +1784,10 @@ conversation's <strong>tool-result history</strong>, scoring signals in two dire
   producing) push toward the capable tier.</li>
 <li><strong>PROGRESS → efficient</strong>: <code>production_intensity</code> (the share of recent
   recognized operations that are writes or edits) pushes toward the efficient
-  tier.</li>
+  tier with 1.5 times the weight of one signal. Production with no error in the
+  recent window adds 1.2 more signals toward efficient, so clean production
+  resolves a turn to the efficient tier on its own, even when writes are a small
+  share of recent operations.</li>
 </ul>
 <p>The axes are <strong>corroborative</strong>: the signed score is <code>tanh</code>-squashed to a
 confidence in <code>[0, 1]</code>. One maxed scoring dimension produces about <code>0.46</code>;
