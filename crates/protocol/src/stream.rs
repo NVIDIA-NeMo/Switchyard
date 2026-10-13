@@ -214,7 +214,7 @@ impl AggLlmResponse {
     ///
     /// This conversion is lossy: only text, reasoning, and tool-call content has
     /// a synthetic chunk representation. Refusals, tool results, media, files,
-    /// unknown blocks, response extensions, and preservation metadata are omitted.
+    /// MCP activity, unknown blocks, response extensions, and preservation metadata are omitted.
     pub fn into_stream(self) -> LlmResponseStream {
         let mut chunks: Vec<LlmResponseChunk> = Vec::new();
         chunks.push(LlmResponseChunk::MessageStart {
@@ -255,8 +255,7 @@ impl AggLlmResponse {
                         });
                         tool_call_index += 1;
                     }
-                    // Other variants (Image, ToolResult, Refusal, etc.) don't have
-                    // a streaming chunk representation and don't appear in assistant outputs.
+                    // Other variants, including backend MCP activity, have no synthetic chunks.
                     _ => {}
                 }
             }
