@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn code_mode_patch_hands_off_but_patch_text_does_not() {
+    async fn wrapped_patch_handoff() {
         for (input, expected) in [
             (
                 r#"text(await tools.apply_patch("*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch"))"#,
