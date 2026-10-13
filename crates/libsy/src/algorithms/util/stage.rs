@@ -43,6 +43,9 @@ const HARD_SEVERITY: f64 = 0.7;
 /// Weight one maxed signal contributes. Small enough that no single axis pegs
 /// the decision; corroboration across the two axes is what raises confidence.
 const SIGNAL_UNIT: f64 = 0.10;
+/// Signal units for full production. Above one so that production in a clean
+/// window can reach the efficient side of the band.
+const PRODUCTION_WEIGHT: f64 = 1.5;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
 /// Session-state key for the remaining capable-tier recovery turns.
@@ -332,13 +335,26 @@ fn record_score_metrics(signal: &ToolSignals, outcome: &PickOutcome) {
 /// signals `±0.20`. `tanh(gain·raw)` spreads that into a usable range, so the
 /// `confidence_threshold` reads roughly: `~0.3` escalates on one signal, `~0.5`
 /// needs about one-and-a-half, `~0.7` needs two to corroborate.
+///
+/// Production with no error in the window is its own signal toward efficient,
+/// so clean production corroborates itself. Both efficient terms need
+/// production, which turns off the stall signals and leaves at most one unit
+/// toward capable. At a `0.5` threshold that unit stays inside the band, so
+/// these terms do not remove an escalation there.
 pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
     let d = dimensions_from_signal(signal);
+    let clean_production = if d.production_intensity > 0.0 && d.severity == 0.0 {
+        1.0
+    } else {
+        0.0
+    };
     // Error axis (severity, spinning, exploring → +capable) minus the production
     // axis (→ −efficient). Each maxed signal is one SIGNAL_UNIT; severity is
     // normalised by its hard cap so it lands there too.
     let raw = SIGNAL_UNIT
-        * (d.severity / HARD_SEVERITY + d.spinning + d.exploring - d.production_intensity);
+        * (d.severity / HARD_SEVERITY + d.spinning + d.exploring
+            - PRODUCTION_WEIGHT * d.production_intensity
+            - clean_production);
     let score = (SCORE_GAIN * raw).tanh();
     ScoreResult {
         score,
@@ -887,6 +903,63 @@ mod tests {
         assert_eq!(score_signal(&with_new), score_signal(&baseline));
     }
 
+    #[test]
+    fn clean_production_resolves_to_efficient() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            recent_write_count: 2,
+            recent_read_count: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::CapableFirst, 0.5),
+            PickOutcome::Resolved {
+                tier: Tier::Efficient,
+                source: DecisionSource::Dimensions,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn production_after_a_recent_error_stays_undecided() {
+        let signal = ToolSignals {
+            turn_depth: STALL_MIN_TURN_DEPTH,
+            severity: 0.3,
+            recent_write_count: 1,
+            ..Default::default()
+        };
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::CapableFirst, 0.5),
+            PickOutcome::ConsultClassifier {
+                default_tier: Tier::Capable,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn production_never_escalates() {
+        for severity in [0.0, 0.3, HARD_SEVERITY as f32] {
+            for writes in 1..=3 {
+                for reads in 0..=3 {
+                    let signal = ToolSignals {
+                        turn_depth: STALL_MIN_TURN_DEPTH,
+                        severity,
+                        recent_write_count: writes,
+                        recent_read_count: reads,
+                        ..Default::default()
+                    };
+                    let scored = score_signal(&signal);
+                    assert!(
+                        scored.score < 0.5,
+                        "severity {severity}, {writes} writes, {reads} reads: {scored:?}"
+                    );
+                }
+            }
+        }
+    }
+
     // ─── StageClassifier ─────────────────────────────────────────────────
 
     /// A `State` carrying `signal` as its tool signals.
@@ -943,7 +1016,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passing_tests_do_not_force_the_efficient_tier() -> Result<()> {
+    async fn clean_production_resolves_to_the_efficient_tier() -> Result<()> {
         let signal = ToolSignals {
             tests_passed: true,
             no_error_streak: 1,
@@ -956,7 +1029,14 @@ mod tests {
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), &driver)
             .await?;
-        assert!(matches!(classification.0, Classification::Ambiguous(_)));
+        match classification.0 {
+            Classification::Scores(scores) => assert_eq!(scores[0].target, "weak"),
+            _ => panic!("expected a definite classification"),
+        }
+        assert!(matches!(
+            state.extra.get(DECISION_SOURCE_KEY),
+            Some(StateValue::String(source)) if source == "dimensions"
+        ));
         Ok(())
     }
 
@@ -1195,7 +1275,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_passing_test_does_not_force_a_deescalation_note() -> Result<()> {
+    async fn clean_production_hands_back_with_the_deescalation_note() -> Result<()> {
         let signal = ToolSignals {
             tests_passed: true,
             no_error_streak: 1,
@@ -1210,7 +1290,7 @@ mod tests {
             .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some("hi".to_string()));
+        assert_eq!(trailing_text(&request), Some(format!("hi|{DEESCALATION}")));
         Ok(())
     }
 
