@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use dynamo_multimodal::fetch::MediaFetcher;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -119,29 +120,18 @@ pub(crate) enum MediaError {
 /// Result of media preparation.
 type Result<T> = std::result::Result<T, MediaError>;
 
-/// Shared download pools and bounded CPU/subprocess concurrency for one LLM client.
+/// Per-target media preparation with a client-wide CPU/subprocess limit.
 pub(crate) struct MediaProcessor {
-    fetchers: fetch::Fetchers,
+    config: MediaConfig,
+    fetcher: MediaFetcher,
     slots: Arc<Semaphore>,
 }
 
 impl MediaProcessor {
-    /// Construct a processor; unauthenticated download pools are created on first use.
-    pub(crate) fn new() -> Result<Self> {
-        Ok(Self {
-            fetchers: fetch::Fetchers::default(),
-            slots: Arc::new(Semaphore::new(2)),
-        })
-    }
-
     /// Prepare an outgoing body. On error discard the body; changes may be partial.
     /// Only message content is traversed. Tools, JSON arguments, and other controls are retained.
-    pub(crate) async fn prepare(
-        &self,
-        body: &mut Value,
-        format: WireFormat,
-        config: &MediaConfig,
-    ) -> Result<()> {
+    pub(crate) async fn prepare(&self, body: &mut Value, format: WireFormat) -> Result<()> {
+        let config = &self.config;
         config.validate(format)?;
         if let Some(limit) = config.max_images.filter(|limit| *limit > 0) {
             let count: usize = ["input", "messages", "system"]
@@ -195,7 +185,7 @@ impl MediaProcessor {
                         let source = image_url(&item)
                             .ok_or(MediaError::Invalid("image source cannot be resized"))?;
                         budget.consume_block()?;
-                        let bytes = self.fetchers.load(source, config.max_input_bytes).await?;
+                        let bytes = self.load(source).await?;
                         let (mime, encoded) =
                             decode::resize(bytes, edge, self.slots.clone()).await?;
                         budget.consume_bytes(encoded.len())?;
@@ -230,7 +220,7 @@ impl MediaProcessor {
                             budget.consume_block()?;
                             let (url, _) = video_source(&item)
                                 .ok_or(MediaError::Invalid("unrecognized video source"))?;
-                            let bytes = self.fetchers.load(url, config.max_input_bytes).await?;
+                            let bytes = self.load(url).await?;
                             let frames = decode::frames(
                                 bytes,
                                 count,
@@ -436,6 +426,10 @@ mod tests {
 
     use super::*;
 
+    fn processor(config: MediaConfig) -> MediaProcessor {
+        MediaProcessor::new(config, Arc::new(Semaphore::new(2))).unwrap()
+    }
+
     fn still_image() -> String {
         let image = RgbaImage::from_pixel(80, 40, Rgba([255, 0, 0, 128]));
         let mut png = Cursor::new(Vec::new());
@@ -445,7 +439,6 @@ mod tests {
 
     #[tokio::test]
     async fn resizing_retains_alpha_aspect_ratio_and_provider_fields() {
-        let processor = MediaProcessor::new().unwrap();
         for format in [
             WireFormat::OpenAiChat,
             WireFormat::OpenAiResponses,
@@ -455,20 +448,16 @@ mod tests {
             let mut body = json!({"messages":[{"role":"user","content":[image]}],"tools":[{"input_schema":{"example":{"type":"image_url","image_url":{"url":"https://private.invalid"}}}}],"temperature":0.3,"custom_provider_control":true});
             body["messages"][0]["content"][0]["cache_control"] = json!({"type":"ephemeral"});
             let original = body.clone();
-            processor
-                .prepare(
-                    &mut body,
-                    format,
-                    &MediaConfig {
-                        image_max_edge: Some(20),
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
+            processor(MediaConfig {
+                image_max_edge: Some(20),
+                ..Default::default()
+            })
+            .prepare(&mut body, format)
+            .await
+            .unwrap();
             let item = &body["messages"][0]["content"][0];
             let url = image_url(item).unwrap();
-            let bytes = processor.fetchers.load(url, 1024 * 1024).await.unwrap();
+            let bytes = processor(MediaConfig::default()).load(url).await.unwrap();
             let resized = image::load_from_memory(&bytes).unwrap();
             assert_eq!((resized.width(), resized.height()), (20, 10));
             assert_eq!(resized.to_rgba8().get_pixel(0, 0)[3], 128);
@@ -481,23 +470,18 @@ mod tests {
 
     #[tokio::test]
     async fn image_limit_is_shared_across_messages_and_nested_tool_results() {
-        let processor = MediaProcessor::new().unwrap();
         let original = json!({"messages":[
             {"role":"user","content":[{"type":"image_url","image_url":{"url":"https://invalid/old"}}]},
             {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image_url","image_url":{"url":"https://invalid/new"}}]}]}
         ]});
         for limit in [None, Some(0), Some(1), Some(2)] {
             let mut body = original.clone();
-            let result = processor
-                .prepare(
-                    &mut body,
-                    WireFormat::OpenAiChat,
-                    &MediaConfig {
-                        max_images: limit,
-                        ..Default::default()
-                    },
-                )
-                .await;
+            let result = processor(MediaConfig {
+                max_images: limit,
+                ..Default::default()
+            })
+            .prepare(&mut body, WireFormat::OpenAiChat)
+            .await;
             if limit == Some(1) {
                 assert!(
                     matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
@@ -520,25 +504,20 @@ mod tests {
 
     #[tokio::test]
     async fn text_only_judge_never_fetches_images_or_videos() {
-        let processor = MediaProcessor::new().unwrap();
         let mut body = json!({"messages":[{"role":"user","content":[
             {"type":"text","text":"question"},
             {"type":"image_url","image_url":{"url":"https://127.0.0.1/private"}},
             {"type":"video_url","video_url":{"url":"https://127.0.0.1/private"}}
         ]}]});
-        processor
-            .prepare(
-                &mut body,
-                WireFormat::OpenAiChat,
-                &MediaConfig {
-                    max_images: Some(0),
-                    video: VideoMode::Omit,
-                    image_max_edge: Some(384),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        processor(MediaConfig {
+            max_images: Some(0),
+            video: VideoMode::Omit,
+            image_max_edge: Some(384),
+            ..Default::default()
+        })
+        .prepare(&mut body, WireFormat::OpenAiChat)
+        .await
+        .unwrap();
         assert_eq!(body["messages"][0]["content"][0]["text"], "question");
         assert_eq!(body["messages"][0]["content"][1]["text"], "[image omitted]");
         assert_eq!(body["messages"][0]["content"][2]["text"], "[video omitted]");
@@ -546,20 +525,15 @@ mod tests {
 
     #[tokio::test]
     async fn native_video_formats_need_no_download_or_decoder() {
-        let processor = MediaProcessor::new().unwrap();
         for url in ["https://example.com/clip.mp4", "data:video/mp4;base64,AQID"] {
             let mut body = json!({"messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":url}}]}]});
-            processor
-                .prepare(
-                    &mut body,
-                    WireFormat::OpenAiChat,
-                    &MediaConfig {
-                        video: VideoMode::File,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
+            processor(MediaConfig {
+                video: VideoMode::File,
+                ..Default::default()
+            })
+            .prepare(&mut body, WireFormat::OpenAiChat)
+            .await
+            .unwrap();
             let file = &body["messages"][0]["content"][0]["file"];
             assert_eq!(file["format"], "video/mp4");
             assert_eq!(
@@ -570,46 +544,33 @@ mod tests {
                 }],
                 url
             );
-            processor
-                .prepare(
-                    &mut body,
-                    WireFormat::OpenAiChat,
-                    &MediaConfig {
-                        video: VideoMode::VideoUrl,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
+            processor(MediaConfig {
+                video: VideoMode::VideoUrl,
+                ..Default::default()
+            })
+            .prepare(&mut body, WireFormat::OpenAiChat)
+            .await
+            .unwrap();
             assert_eq!(body["messages"][0]["content"][0]["video_url"]["url"], url);
         }
     }
 
     #[tokio::test]
     async fn disabled_processing_is_exact_passthrough_and_limits_fail_closed() {
-        let processor = MediaProcessor::new().unwrap();
         let original = json!({"input":[{"role":"user","content":[image_part(WireFormat::OpenAiResponses, &still_image())]}]});
         let mut body = original.clone();
-        processor
-            .prepare(
-                &mut body,
-                WireFormat::OpenAiResponses,
-                &MediaConfig::default(),
-            )
+        processor(MediaConfig::default())
+            .prepare(&mut body, WireFormat::OpenAiResponses)
             .await
             .unwrap();
         assert_eq!(body, original);
-        let result = processor
-            .prepare(
-                &mut body,
-                WireFormat::OpenAiResponses,
-                &MediaConfig {
-                    image_max_edge: Some(20),
-                    max_output_bytes: 1,
-                    ..Default::default()
-                },
-            )
-            .await;
+        let result = processor(MediaConfig {
+            image_max_edge: Some(20),
+            max_output_bytes: 1,
+            ..Default::default()
+        })
+        .prepare(&mut body, WireFormat::OpenAiResponses)
+        .await;
         assert!(result.unwrap_err().to_string().contains("max_output_bytes"));
         assert!(
             MediaConfig {
@@ -632,7 +593,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires ffmpeg and ffprobe on PATH"]
     async fn video_frames_work_in_all_formats_and_preserve_original_request() {
-        let processor = MediaProcessor::new().unwrap();
         let bytes = include_bytes!("../tests/fixtures/media/colors.mp4");
         let source = data_uri("video/mp4", bytes);
         for format in [
@@ -642,25 +602,21 @@ mod tests {
         ] {
             let original = json!({"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"video_url","video_url":{"url":source}}]}]});
             let mut body = original.clone();
-            processor
-                .prepare(
-                    &mut body,
-                    format,
-                    &MediaConfig {
-                        video: VideoMode::Frames,
-                        video_max_frames: 3,
-                        frame_max_edge: 32,
-                        ..Default::default()
-                    },
-                )
-                .await
-                .unwrap();
+            processor(MediaConfig {
+                video: VideoMode::Frames,
+                video_max_frames: 3,
+                frame_max_edge: 32,
+                ..Default::default()
+            })
+            .prepare(&mut body, format)
+            .await
+            .unwrap();
             let content = body["messages"][0]["content"].as_array().unwrap();
             let frames: Vec<_> = content.iter().filter_map(image_url).collect();
             assert_eq!(frames.len(), 3);
             for url in frames {
                 let image = image::load_from_memory(
-                    &processor.fetchers.load(url, 1_000_000).await.unwrap(),
+                    &processor(MediaConfig::default()).load(url).await.unwrap(),
                 )
                 .unwrap();
                 assert!(image.width() <= 32 && image.height() <= 32);
@@ -680,7 +636,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires ffmpeg and ffprobe on PATH"]
     async fn image_cap_counts_all_frames_without_changing_samples() {
-        let processor = MediaProcessor::new().unwrap();
         let original = json!({"messages":[{"role":"user","content":[
             {"type":"image_url","image_url":{"url":still_image()}},
             {"type":"video_url","video_url":{"url":data_uri("video/mp4", include_bytes!("../tests/fixtures/media/colors.mp4"))}}
@@ -688,19 +643,15 @@ mod tests {
         let mut unlimited = None;
         for limit in [None, Some(0), Some(3), Some(4)] {
             let mut body = original.clone();
-            let result = processor
-                .prepare(
-                    &mut body,
-                    WireFormat::OpenAiChat,
-                    &MediaConfig {
-                        max_images: limit,
-                        video: VideoMode::Frames,
-                        video_max_frames: 3,
-                        frame_max_edge: 32,
-                        ..Default::default()
-                    },
-                )
-                .await;
+            let result = processor(MediaConfig {
+                max_images: limit,
+                video: VideoMode::Frames,
+                video_max_frames: 3,
+                frame_max_edge: 32,
+                ..Default::default()
+            })
+            .prepare(&mut body, WireFormat::OpenAiChat)
+            .await;
             if limit == Some(3) {
                 assert!(
                     matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
@@ -734,10 +685,8 @@ mod tests {
         .unwrap();
         let rotated = image::load_from_memory(&bytes).unwrap();
         assert_eq!((rotated.width(), rotated.height()), (20, 40));
-        let processor = MediaProcessor::new().unwrap();
-        let original = processor
-            .fetchers
-            .load(still_image(), 100_000)
+        let original = processor(MediaConfig::default())
+            .load(still_image())
             .await
             .unwrap();
         let (_, retained) = decode::resize(original.clone(), 200, slots).await.unwrap();
@@ -746,53 +695,51 @@ mod tests {
 
     #[tokio::test]
     async fn preparation_deadline_includes_worker_queueing() {
-        let processor = MediaProcessor::new().unwrap();
-        let _permits = processor.slots.clone().acquire_many_owned(2).await.unwrap();
+        let slots = Arc::new(Semaphore::new(2));
+        let busy_target = MediaProcessor::new(MediaConfig::default(), slots.clone()).unwrap();
+        let _permits = busy_target
+            .slots
+            .clone()
+            .acquire_many_owned(2)
+            .await
+            .unwrap();
+        let waiting_target = MediaProcessor::new(
+            MediaConfig {
+                image_max_edge: Some(20),
+                timeout_ms: 5,
+                ..Default::default()
+            },
+            slots,
+        )
+        .unwrap();
         let mut body = json!({"input":[{"role":"user","content":[image_part(WireFormat::OpenAiResponses, &still_image())]}]});
-        let result = processor
-            .prepare(
-                &mut body,
-                WireFormat::OpenAiResponses,
-                &MediaConfig {
-                    image_max_edge: Some(20),
-                    timeout_ms: 5,
-                    ..Default::default()
-                },
-            )
+        let result = waiting_target
+            .prepare(&mut body, WireFormat::OpenAiResponses)
             .await;
         assert!(matches!(result, Err(MediaError::Timeout)));
     }
 
     #[tokio::test]
     async fn native_video_conversion_keeps_mime_and_same_format_options() {
-        let processor = MediaProcessor::new().unwrap();
         let mut body = json!({"messages":[{"role":"user","content":[
             {"type":"video_url","video_url":{"url":"https://example.com/a.webm","fps":2}}
         ]}]});
         let original = body.clone();
-        processor
-            .prepare(
-                &mut body,
-                WireFormat::OpenAiChat,
-                &MediaConfig {
-                    video: VideoMode::VideoUrl,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        processor(MediaConfig {
+            video: VideoMode::VideoUrl,
+            ..Default::default()
+        })
+        .prepare(&mut body, WireFormat::OpenAiChat)
+        .await
+        .unwrap();
         assert_eq!(body, original);
-        processor
-            .prepare(
-                &mut body,
-                WireFormat::OpenAiChat,
-                &MediaConfig {
-                    video: VideoMode::File,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        processor(MediaConfig {
+            video: VideoMode::File,
+            ..Default::default()
+        })
+        .prepare(&mut body, WireFormat::OpenAiChat)
+        .await
+        .unwrap();
         assert_eq!(
             body["messages"][0]["content"][0]["file"]["format"],
             "video/webm"
@@ -801,22 +748,17 @@ mod tests {
 
     #[tokio::test]
     async fn zero_image_budget_skips_video_sources_before_validation() {
-        let processor = MediaProcessor::new().unwrap();
         let mut body = json!({"messages":[{"role":"user","content":[
             {"type":"video_url","video_url":{"unsupported_id":"unused"}}
         ]}]});
-        processor
-            .prepare(
-                &mut body,
-                WireFormat::OpenAiChat,
-                &MediaConfig {
-                    max_images: Some(0),
-                    video: VideoMode::Frames,
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
+        processor(MediaConfig {
+            max_images: Some(0),
+            video: VideoMode::Frames,
+            ..Default::default()
+        })
+        .prepare(&mut body, WireFormat::OpenAiChat)
+        .await
+        .unwrap();
         assert_eq!(
             body["messages"][0]["content"][0]["text"],
             "[video frames omitted]"

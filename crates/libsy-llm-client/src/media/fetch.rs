@@ -1,44 +1,41 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Reuse Dynamo download pools with each target's input size limit.
+//! Initialize and reuse one Dynamo download pool per target.
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::sync::Arc;
 
 use dynamo_multimodal::fetch::{FetchPolicy, MediaFetcher};
-use parking_lot::Mutex;
+use tokio::sync::Semaphore;
 
-use super::{MediaError, Result};
+use super::{MediaConfig, MediaError, MediaProcessor, Result};
 
-#[derive(Default)]
-pub(crate) struct Fetchers(Mutex<HashMap<usize, MediaFetcher>>);
+impl MediaProcessor {
+    pub(crate) fn new(config: MediaConfig, slots: Arc<Semaphore>) -> Result<Self> {
+        let mut policy = FetchPolicy::default();
+        policy.allow_direct_ip = true;
+        policy.allow_direct_port = true;
+        policy.max_bytes = config.max_input_bytes as u64;
+        // Dynamo caps the encoded payload; our setting counts decoded bytes.
+        policy.max_data_url_bytes = config.max_input_bytes.div_ceil(3) * 4;
+        // Preparation bounds the whole call, including queueing and decoding.
+        policy.timeout = None;
+        let fetcher = MediaFetcher::new(policy)
+            .map_err(|_| MediaError::Invalid("cannot create media fetcher"))?;
+        Ok(Self {
+            config,
+            fetcher,
+            slots,
+        })
+    }
 
-impl Fetchers {
-    pub(crate) async fn load(&self, source: String, max_bytes: usize) -> Result<Vec<u8>> {
-        // Policies are immutable; targets with the same limit share a connection pool.
-        let fetcher = {
-            let mut fetchers = self.0.lock();
-            if let Entry::Vacant(entry) = fetchers.entry(max_bytes) {
-                let mut policy = FetchPolicy::default();
-                policy.allow_direct_ip = true;
-                policy.allow_direct_port = true;
-                policy.max_bytes = max_bytes as u64;
-                // Dynamo caps the encoded payload; our setting counts decoded bytes.
-                policy.max_data_url_bytes = max_bytes.div_ceil(3) * 4;
-                // MediaProcessor bounds the whole call, including queueing and decoding.
-                policy.timeout = None;
-                let fetcher = MediaFetcher::new(policy)
-                    .map_err(|_| MediaError::Invalid("cannot create media fetcher"))?;
-                entry.insert(fetcher);
-            }
-            fetchers[&max_bytes].clone()
-        };
+    pub(super) async fn load(&self, source: String) -> Result<Vec<u8>> {
         // Dynamo errors may contain URLs or hostnames. Keep request data out of errors.
-        let bytes = fetcher
-            .fetch(source)
-            .await
-            .map_err(|_| MediaError::Invalid("media fetch failed or exceeds max_input_bytes"))?;
-        if bytes.len() > max_bytes {
+        let bytes =
+            self.fetcher.fetch(source).await.map_err(|_| {
+                MediaError::Invalid("media fetch failed or exceeds max_input_bytes")
+            })?;
+        if bytes.len() > self.config.max_input_bytes {
             return Err(MediaError::Invalid("media exceeds max_input_bytes"));
         }
         Ok(bytes)
@@ -51,13 +48,25 @@ mod tests {
 
     #[tokio::test]
     async fn enforces_target_limits_and_redacts_errors() {
-        let fetchers = Fetchers::default();
+        let slots = Arc::new(Semaphore::new(2));
+        let target = |max_input_bytes| {
+            MediaProcessor::new(
+                MediaConfig {
+                    max_input_bytes,
+                    ..Default::default()
+                },
+                slots.clone(),
+            )
+            .unwrap()
+        };
+        let fetcher = target(3);
         let source = "data:image/png;base64,AQID";
-        assert_eq!(fetchers.load(source.into(), 3).await.unwrap(), [1, 2, 3]);
+        assert_eq!(fetcher.load(source.into()).await.unwrap(), [1, 2, 3]);
         for limit in [1, 2] {
-            assert!(fetchers.load(source.into(), limit).await.is_err());
+            assert!(target(limit).load(source.into()).await.is_err());
         }
-        assert_eq!(fetchers.load(source.into(), 3).await.unwrap(), [1, 2, 3]);
+        assert_eq!(fetcher.load(source.into()).await.unwrap(), [1, 2, 3]);
+        let fetcher = target(100);
         for source in [
             "file:///tmp/secret",
             "https://127.0.0.1/secret",
@@ -67,7 +76,7 @@ mod tests {
             "https://metadata.google.internal./secret",
             "data:image/png,secret",
         ] {
-            let error = fetchers.load(source.into(), 100).await.unwrap_err();
+            let error = fetcher.load(source.into()).await.unwrap_err();
             assert_eq!(
                 error.to_string(),
                 "media fetch failed or exceeds max_input_bytes"

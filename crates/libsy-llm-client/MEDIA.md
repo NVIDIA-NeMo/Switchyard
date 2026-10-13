@@ -4,6 +4,8 @@
 translation and endpoint overrides, before retries. Processing lives in its
 private `media` module; core `libsy` has no media-processing dependencies.
 The caller's original routing request is unchanged.
+Each target with media settings gets a reusable Dynamo fetcher at client setup,
+with its own input size limit. All targets share the client's two decoding slots.
 
 Media fetching, EXIF-aware JPEG decoding and RGB resizing use `dynamo-multimodal`, pinned to
 [`frontend-crates` main at `e979fc76`](https://github.com/ai-dynamo/frontend-crates/tree/e979fc762366b3580fdc4185874cee51217bd637/multimodal).
