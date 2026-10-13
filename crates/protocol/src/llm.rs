@@ -4,6 +4,7 @@
 //! Provider-neutral conversation types shared by routing, clients, and translation.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -229,7 +230,7 @@ pub struct ToolDefinition {
 }
 
 /// A tool available to the model, in catalog order.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Tool {
     /// A remote MCP server and the tools it exposes.
@@ -244,6 +245,20 @@ pub enum Tool {
     /// An agent-executed function. Its JSON retains the existing flat definition shape.
     #[serde(untagged)]
     Function(ToolDefinition),
+}
+
+impl fmt::Debug for Tool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Function(definition) => f.debug_tuple("Function").field(definition).finish(),
+            Self::Mcp(mcp) => f.debug_tuple("Mcp").field(mcp).finish(),
+            // Raw provider definitions can contain credentials without normalized fields.
+            Self::Provider { provider, .. } => f
+                .debug_struct("Provider")
+                .field("provider", provider)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl From<ToolDefinition> for Tool {
@@ -263,7 +278,7 @@ impl Tool {
 }
 
 /// Configuration for a URL-based remote MCP toolset.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolset {
     /// Server identity used by MCP calls.
     pub name: String,
@@ -285,6 +300,23 @@ pub struct McpToolset {
     /// Absence retains provider defaults; conditional approval rules remain provider-specific.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_approval: Option<bool>,
+}
+
+impl fmt::Debug for McpToolset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("McpToolset")
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field(
+                "authorization_token",
+                &self.authorization_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("enabled", &self.enabled)
+            .field("allowed_tools", &self.allowed_tools)
+            .field("tool_enabled", &self.tool_enabled)
+            .field("require_approval", &self.require_approval)
+            .finish()
+    }
 }
 
 /// Backend-executed MCP history. Results reference the matching call's server identity.
@@ -355,7 +387,7 @@ pub struct ReasoningParams {
 }
 
 /// Provider-specific fields that do not have first-class conversation fields.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderExtensions {
     /// Provider fields keyed by their original wire names.
@@ -365,19 +397,38 @@ pub struct ProviderExtensions {
     pub fields: Map<String, Value>,
 }
 
+// Extension values can include credentials or embedded original request bodies.
+impl fmt::Debug for ProviderExtensions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderExtensions")
+            .field("field_count", &self.fields.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Exact source payloads retained for lossless same-format round trips.
 ///
 /// Translation's default preservation policy prefers a stored same-format body
 /// over reconstructing one from normalized fields. A caller that mutates the IR
 /// must clear the corresponding entry or use a policy with preservation disabled
 /// when those mutations must be encoded.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PreservationMetadata {
     /// Original request bodies keyed by source format.
     pub requests: BTreeMap<FormatId, Value>,
     /// Original response bodies keyed by source format.
     pub responses: BTreeMap<FormatId, Value>,
+}
+
+// Original payloads can contain credentials even when normalized fields redact them.
+impl fmt::Debug for PreservationMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreservationMetadata")
+            .field("request_formats", &self.requests.keys())
+            .field("response_formats", &self.responses.keys())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Normalized request representation shared by Switchyard components.
@@ -624,6 +675,47 @@ mod tests {
             serde_json::from_value::<Vec<ContentBlock>>(serde_json::to_value(&history)?)?,
             history
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_credentials_are_omitted_from_debug() -> Result<(), serde_json::Error> {
+        let token = "synthetic-mcp-debug-secret";
+        let mcp: McpToolset = serde_json::from_value(json!({
+            "name": "inventory", "url": "https://example.invalid/mcp",
+            "authorization_token": token
+        }))?;
+        let raw = json!({"mcp_servers": [{"authorization_token": token}]});
+        let mut request = LlmRequest {
+            tools: vec![
+                Tool::Mcp(mcp.clone()),
+                Tool::Provider {
+                    provider: "openai_responses".into(),
+                    raw: json!({"type": "mcp", "authorization": token}),
+                },
+            ],
+            ..LlmRequest::default()
+        };
+        request
+            .preservation
+            .requests
+            .insert("anthropic_messages".into(), raw.clone());
+        request.extensions.fields.insert("metadata".into(), raw);
+        let serialized = serde_json::to_value(&request)?;
+        for debug in [
+            format!("{mcp:?}"),
+            format!("{mcp:#?}"),
+            format!("{:?}", request.tools),
+            format!("{:?}", request.extensions),
+            format!("{:?}", request.preservation),
+            format!("{request:?}"),
+            format!("{request:#?}"),
+        ] {
+            assert!(!debug.contains(token), "Debug exposed an MCP credential");
+        }
+        assert_eq!(serde_json::to_value(&request)?, serialized);
+        assert_eq!(serialized["tools"][0]["authorization_token"], token);
+        assert_eq!(serialized["tools"][1]["raw"]["authorization"], token);
         Ok(())
     }
 }
