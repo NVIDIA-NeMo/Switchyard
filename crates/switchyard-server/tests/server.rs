@@ -1340,6 +1340,64 @@ async fn accepts_requests_larger_than_the_axum_default_body_limit() -> TestResul
     Ok(())
 }
 
+#[tokio::test]
+async fn request_body_limit_is_configurable_and_local_to_each_server() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?;
+    assert!(state.clone().with_max_request_body_bytes(0).is_err());
+    let body = serde_json::to_vec(&json!({
+        "model": ROUTE_MODEL, "messages": [{"role":"user", "content":"hello"}]
+    }))?;
+    for router in [build_llm_router, build_switchyard_router] {
+        for (limit, expected) in [
+            (body.len() - 1, StatusCode::PAYLOAD_TOO_LARGE),
+            (body.len(), StatusCode::OK),
+        ] {
+            let app = router(state.clone().with_max_request_body_bytes(limit)?);
+            let response = send_raw_json(
+                &app,
+                "/v1/chat/completions",
+                body.clone(),
+                Some("application/json"),
+            )
+            .await?;
+            assert_eq!(response.status, expected);
+        }
+    }
+    // Padding crosses the ingress limit without making the mock provider handle large media.
+    let mut large_body = body;
+    large_body.resize(DEFAULT_MAX_REQUEST_BODY_BYTES + 1, b' ');
+    let raised = build_switchyard_router(
+        state
+            .clone()
+            .with_max_request_body_bytes(128 * 1024 * 1024)?,
+    );
+    assert_eq!(
+        send_raw_json(
+            &raised,
+            "/v1/chat/completions",
+            large_body.clone(),
+            Some("application/json")
+        )
+        .await?
+        .status,
+        StatusCode::OK
+    );
+    let default = build_switchyard_router(state);
+    assert_eq!(
+        send_raw_json(
+            &default,
+            "/v1/chat/completions",
+            large_body,
+            Some("application/json")
+        )
+        .await?
+        .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    Ok(())
+}
+
 fn load_test_config(toml: &str) -> TestResult<ServerState> {
     let mut config = tempfile::Builder::new()
         .prefix("switchyard-server-config-")
