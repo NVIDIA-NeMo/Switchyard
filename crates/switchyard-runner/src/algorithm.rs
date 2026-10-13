@@ -533,10 +533,8 @@ pub enum AdvisorTriggerConfig {
 pub struct StageClassifierConfig {
     /// Target the judge is called through. Not a routing destination.
     pub target: String,
-    /// Relative-advantage decision judge configuration.
     #[serde(default)]
     pub decision: Option<DecisionJudgeRouteConfig>,
-    /// Whether judge failures retain the available default tier.
     #[serde(default)]
     pub fail_open: Option<bool>,
     /// Lowest solve probability that still routes to the efficient tier, from 0 to 1.

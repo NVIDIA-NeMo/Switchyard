@@ -55,10 +55,8 @@ on a standalone stage route.
 
 ## Decision model classifier
 
-To use a decision model, replace the classifier's LLM settings with a `decision`
-table. Keep the stage configuration above. This example uses OpenRouter's
-Decisions endpoint with a System One model. The endpoint, model ID and credential
-environment variable can be changed for another compatible provider.
+Use a System One decision target as the classifier. Keep the stage block above
+and replace its LLM classifier settings with:
 
 ```toml
 [decision_clients.decisions]
@@ -74,33 +72,19 @@ decision_client = "decisions"
 [routes.switchyard.classifier]
 target = "judge"
 classify_trigger = "user_turn"
-fail_open = false
 
 [routes.switchyard.classifier.decision]
 cutoff = 0.4
 candidates = { a = "strong", b = "weak" }
-
-[routes.switchyard.classifier.decision.evidence]
-description = "Add task-relevant evidence comparing candidates a and b."
+evidence = { description = "Add task-relevant evidence comparing a and b." }
 ```
 
-The candidates map opaque labels to completion target names. It must include
-both stage tiers. The decision target belongs in `decision_targets`, while the
-two completion targets belong in `targets`.
-
-The classifier selects capable when `probabilities.advantage` is strictly above
-`cutoff`. That event means capable succeeds and efficient fails. The separate
-provider confidence field does not select the tier. Choose the cutoff using
-evaluations for your tasks and models. The value above is an example.
-
-Do not combine `decision` with `base_threshold`, `threshold_step`, `prompt`, or
-non-default LLM output settings. Use `decision.instructions` to replace the
-decision question, and `decision.evidence` to supply comparison evidence.
-
-`fail_open` defaults to `true`. On a judge failure, composite retains the last
-classified tier when one is available. A new session defaults to efficient.
-Set `fail_open = false` to return the judge error. Stage signals can still
-override the default tier on tool turns.
+Both candidates must be completion targets. The judge must be a decision target.
+The classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
+Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
+`base_threshold`, `threshold_step` and `prompt` when using a decision model.
+On judge failure, the default is to retain the last classified tier or use
+efficient for a new session. Set `classifier.fail_open = false` to return the error.
 
 ## Sessions
 

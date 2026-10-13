@@ -395,10 +395,6 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
 | `classifier.decision` | No | unset | Use a System One decision judge instead of an LLM judge. The classifier target must be in `decision_targets`. |
-| `classifier.decision.cutoff` | With decision | unset | Route capable when its relative-advantage score is strictly above this value in `[0, 1]`. |
-| `classifier.decision.candidates` | With decision | unset | Map opaque labels to completion target names. Must include both stage tiers. |
-| `classifier.decision.instructions` | No | packaged question | Replace the relative-advantage question. |
-| `classifier.decision.evidence` | With decision | unset | Task-relevant evidence comparing the candidates. |
 | `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
 | `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
@@ -417,7 +413,7 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `stage.handoff_notes` | No | unset | Optional guidance appended to forwarded requests. Uses the same fields and behavior as [stage-router handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes). |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
 
-For a complete decision client and target example, see
+For decision classifier configuration, see
 [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier).
 The same decision settings are accepted by the optional `stage_router` classifier.
 
