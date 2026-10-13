@@ -288,6 +288,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn code_mode_patch_hands_off_but_patch_text_does_not() {
+        for (input, expected) in [
+            (
+                r#"text(await tools.apply_patch("*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch"))"#,
+                EFFICIENT,
+            ),
+            (
+                r#"const patch = "patch contents"; text(await tools.apply_patch(patch));"#,
+                EFFICIENT,
+            ),
+            ("const patch = 'example only'; text(patch)", CAPABLE),
+            ("// await tools.apply_patch('contents')", CAPABLE),
+            (
+                "if (false) { await tools.apply_patch('contents'); }",
+                CAPABLE,
+            ),
+        ] {
+            let request = request(vec![tool_call("exec", json!({"input": input}))], None);
+            let signals = ToolSignals::from_request(&request, None);
+            let dimensions = crate::algorithms::util::stage::dimensions_from_signal(&signals);
+            assert_eq!(dimensions.production_intensity > 0.0, expected == EFFICIENT);
+            let (selected, _) =
+                route_and_capture(algorithm(PlanExecuteConfig::default()), request).await;
+            assert_eq!(selected, expected, "{input}");
+        }
+    }
+
+    #[tokio::test]
     async fn plans_then_hands_off_and_latches_execution() {
         const HANDOFF: &str = "Continue from the plan and repository evidence.";
         let algorithm = algorithm(PlanExecuteConfig {
