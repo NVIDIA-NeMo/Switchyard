@@ -39,7 +39,8 @@ pub(crate) async fn resize(
     tokio::task::spawn_blocking(move || {
         // Keep the permit in the worker even if the caller cancels its wait.
         let _permit = permit;
-        // Adapted from Dynamo's ImageReaderBackend; see MEDIA.md for provenance.
+        // ImageReader limits adapted from Dynamo (Apache-2.0):
+        // https://github.com/ai-dynamo/dynamo/blob/c3deae7507717409d4d1ff0d6f7e575180bd03d7/lib/llm/src/preprocessor/media/decoders/image/backends/image_reader.rs
         let mut reader = ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
             .map_err(image::ImageError::IoError)?;
@@ -241,6 +242,26 @@ mod tests {
                 assert_eq!(output, original);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn image_resize_applies_exif() {
+        let slots = Arc::new(Semaphore::new(1));
+        let image = image::RgbImage::from_pixel(80, 40, image::Rgb([255, 0, 0]));
+        let mut jpeg = Cursor::new(Vec::new());
+        image.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
+        let mut jpeg = jpeg.into_inner();
+        // EXIF orientation 6: rotate 90 degrees clockwise.
+        jpeg.splice(
+            2..2,
+            [
+                0xff, 0xe1, 0, 34, b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0, 1,
+                0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        let (_, bytes) = resize(jpeg, 40, slots).await.unwrap();
+        let rotated = image::load_from_memory(&bytes).unwrap();
+        assert_eq!((rotated.width(), rotated.height()), (20, 40));
     }
 
     #[test]

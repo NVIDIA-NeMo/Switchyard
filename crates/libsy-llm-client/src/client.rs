@@ -1537,6 +1537,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::VideoMode;
     use crate::backend::HttpBackendConfig;
 
     /// Decodes a wire body into a request, as a server endpoint does before calling the client.
@@ -1582,7 +1583,6 @@ mod tests {
     #[tokio::test]
     async fn target_media_prepares_preserved_body_without_mutating_answer_or_controls()
     -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
-        use crate::VideoMode;
         let server = MockServer::start().await;
         Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id":"r", "object":"chat.completion", "model":"answer",
