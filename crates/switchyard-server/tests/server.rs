@@ -2123,6 +2123,134 @@ reasoning = true
 }
 
 #[tokio::test]
+async fn adaptive_reasoning_raises_effort_only_on_recovery_turns() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+adaptive_reasoning = true
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.model]
+id = "model/gpt"
+llm_client = "upstream"
+
+[routes.passthrough]
+id = "switchyard/passthrough"
+type = "passthrough"
+target = "model"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+    let tool_turn = |result: &str| {
+        json!([
+            {"role": "user", "content": "fix the build"},
+            {"role": "assistant", "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}
+            }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": result},
+        ])
+    };
+    for messages in [
+        json!([{"role": "user", "content": "hello"}]),
+        tool_turn("test result: ok. 3 passed"),
+        tool_turn("Traceback (most recent call last):\n  File \"x.py\"\nValueError"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/passthrough",
+                "messages": messages,
+                "reasoning_effort": "max"
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+    }
+
+    let calls = upstream.calls.lock().await;
+    let efforts = calls
+        .iter()
+        .map(|call| call["reasoning_effort"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(efforts, ["medium", "medium", "max"]);
+    Ok(())
+}
+
+// Responses to Responses replays the caller's body, so the effort is set inside it.
+#[tokio::test]
+async fn adaptive_reasoning_sets_effort_in_a_replayed_responses_body() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+adaptive_reasoning = true
+
+[llm_clients.upstream]
+format = "openai_responses"
+base_url = "{root}/silo/A"
+
+[targets.model]
+id = "model/gpt"
+llm_client = "upstream"
+
+[routes.passthrough]
+id = "switchyard/passthrough"
+type = "passthrough"
+target = "model"
+"#,
+        root = upstream.base_url.trim_end_matches("/v1")
+    ))?;
+    let app = build_switchyard_router(state);
+    let shell = |output: &str| {
+        json!([
+            {"type": "message", "role": "user", "content": "fix the build"},
+            {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{\"command\": \"pytest\"}"},
+            {"type": "function_call_output", "call_id": "c1", "output": output},
+        ])
+    };
+    for input in [
+        shell("3 passed"),
+        shell("Traceback (most recent call last):\nValueError"),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({
+                "model": "switchyard/passthrough",
+                "input": input,
+                "reasoning": {"effort": "max", "summary": "auto"}
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+    }
+
+    let calls = upstream.calls.lock().await;
+    let reasoning = calls
+        .iter()
+        .map(|call| call["reasoning"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reasoning,
+        [
+            json!({"effort": "medium", "summary": "auto"}),
+            json!({"effort": "max", "summary": "auto"})
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn targets_sharing_a_model_keep_their_own_settings() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(

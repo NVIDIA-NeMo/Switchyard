@@ -39,6 +39,15 @@ target. Only its `base_url` is used: caller end-to-end headers are forwarded, ho
 removed, and configured API keys, extra headers, format, and retries are not applied. When omitted,
 unmatched paths return `404`.
 
+The optional top-level `adaptive_reasoning` (default `false`) sets the reasoning effort of each
+routed request from its tool results, on every route. The route still picks the target.
+
+- A turn runs at `medium`, or at the caller's effort when that is lower.
+- A recovery turn runs at the caller's effort, or `high` when the caller sent none. A recovery
+  turn follows a failed tool result, until two clean results have followed it, or follows the
+  same hard failure twice.
+- A turn never runs above the caller's effort. A target's own `reasoning_effort` still wins.
+
 `schema_version`, `[targets]`, and `[routes]` must all be present, even when a
 route reaches no upstream. A file without a `[targets]` table is rejected with
 `missing field targets`; an empty `[targets]` table satisfies it.
