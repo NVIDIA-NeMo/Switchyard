@@ -9,7 +9,7 @@ with its own input size limit. All targets share the client's two decoding slots
 
 Media fetching, EXIF-aware JPEG decoding, RGB resizing, video decoding and frame
 JPEG encoding use `dynamo-multimodal`, pinned to
-[frontend-crates PR #378 at `4448b929`](https://github.com/ai-dynamo/frontend-crates/tree/4448b929bb2187645e83d1195dc9a85819dd5145/multimodal).
+[frontend-crates PR #378 at `3954d9b`](https://github.com/ai-dynamo/frontend-crates/tree/3954d9bcd481b4077bd4711528166eef9c4f977a/multimodal).
 RGB downscaling uses Lanczos. Other still-image formats retain the bounded `image`
 decoder, including transparency and higher bit depths. PNG output for transparency,
 and provider formatting remain in the client.
@@ -45,7 +45,7 @@ An absent media table preserves existing behavior. Fields have these defaults:
 | `image_max_edge` | unset | Downscale still images to fit this edge; JPEG output (PNG for alpha), no upscale |
 | `max_images` | unset | Reject calls exceeding N images and extracted frames; zero omits them; unset is unlimited |
 | `video` | `passthrough` | `frames`, `video_url`, `file`, `omit`, or unchanged |
-| `video_max_frames` | 4 | Uniform frames per video; one frame uses midpoint |
+| `video_max_frames` | 4 | Maximum uniform samples per video; one sample uses the first frame |
 | `frame_max_edge` | 640 | Extracted JPEG frame maximum edge; no upscale |
 | `max_input_bytes` | 33554432 | Limit per source fetched/decoded for local processing |
 | `max_output_bytes` | 33554432 | Combined prepared image bytes before base64 encoding |
@@ -74,13 +74,18 @@ also decode on the CPU through system libvpx. The server image includes libvpx;
 GPU decoding requires matching CUDA/NVDEC driver libraries in the runtime.
 Unsupported codecs, formats, platforms or missing decoders return an error.
 
-Dynamo selects uniformly spaced frame indices and returns real presentation times.
+Switchyard supplies uniformly spaced frame indices and a Lanczos resize target to
+Dynamo's `decode_frames`. Dynamo resizes each selected frame during decoding and
+skips keyframe groups that contain no selected frames when the stream supports it.
+Returned timestamps are real presentation times.
 One sample selects the first frame; requests above the source frame count return
 all available frames. Sampling uses the video timeline, so longer audio does not
 extend it. Uniform sampling can miss brief events.
 
-Dynamo's selected RGB frames are capped at 128 MiB before resizing. JPEG outputs
-also obey `max_output_bytes`. The preparation deadline covers the request's wait;
+Dynamo's selected RGB frames are capped at 128 MiB after resizing; the full-size
+frames are not accumulated. Each source frame's RGB scratch buffer is also
+limited to 128 MiB. JPEG outputs also obey `max_output_bytes`.
+The preparation deadline covers the request's wait;
 a running native blocking decoder completes in the background after cancellation,
 holding its shared worker permit until it finishes.
 

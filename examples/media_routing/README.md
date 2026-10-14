@@ -17,15 +17,15 @@ cargo run -p switchyard-server --locked -- \
   --config examples/media_routing/routes.toml --port 8080
 ```
 
-In another terminal, send the small video fixture. This calls the live judge
-and answer endpoints:
+In another terminal, replace `/path/to/clip.mp4` with a local H.264 video and send
+the request. This calls the live judge and answer endpoints:
 
 ```bash
-video=$(base64 -w0 crates/libsy-llm-client/tests/fixtures/media/colors.mp4)
+video=$(base64 -w0 /path/to/clip.mp4)
 curl --fail-with-body http://localhost:8080/v1/chat/completions \
   -H 'Content-Type: application/json' --data-binary @- <<EOF
 {"model":"media/vision-judge","messages":[{"role":"user","content":[
-  {"type":"text","text":"Describe the sequence of colors."},
+  {"type":"text","text":"Describe what happens in the video."},
   {"type":"video_url","video_url":{"url":"data:video/mp4;base64,$video"}}
 ]}]}
 EOF

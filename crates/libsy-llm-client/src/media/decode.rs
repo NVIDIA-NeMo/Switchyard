@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use dynamo_multimodal::image::{
     decode::{DecodeLimits, decode_rgb_exif_transposed},
-    resize::resize_lanczos_rgb,
+    resize::{Filter, Resample, resize_lanczos_rgb},
 };
 use dynamo_multimodal::{
     MmError,
-    frames::{VideoFrames, VideoTiming, encode_jpeg_frames},
-    video_decode::{VideoDecodeLimits, decode_sampled, probe},
+    frames::encode_jpeg_frames,
+    video_decode::{FrameResize, VideoDecodeLimits, decode_frames, probe},
 };
 use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbImage, metadata::Orientation,
@@ -39,7 +39,7 @@ pub(crate) async fn resize(
     tokio::task::spawn_blocking(move || {
         // Keep the permit in the worker even if the caller cancels its wait.
         let _permit = permit;
-        // Adapted from Dynamo's ImageReaderBackend; see README.md for provenance.
+        // Adapted from Dynamo's ImageReaderBackend; see MEDIA.md for provenance.
         let mut reader = ImageReader::new(Cursor::new(&bytes))
             .with_guessed_format()
             .map_err(image::ImageError::IoError)?;
@@ -114,7 +114,7 @@ pub(crate) async fn resize(
             "image/png"
         } else {
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 85)
-                .encode_image(&resized.to_rgb8())?;
+                .encode_image(&resized.into_rgb8())?;
             "image/jpeg"
         };
         Ok((mime, output.into_inner()))
@@ -153,9 +153,22 @@ fn dynamo_frames(
     limits.max_width = MAX_DIMENSION;
     limits.max_height = MAX_DIMENSION;
     limits.max_output_bytes = MAX_ALLOC as usize;
-    let decoded = match probe(bytes)
-        .and_then(|info| decode_sampled(bytes, (count as u64).min(info.frame_count), &limits))
-    {
+    let decoded = match probe(bytes).and_then(|info| {
+        // Dynamo's output limit applies after resizing; bound its full-size RGB scratch too.
+        if u64::from(info.width) * u64::from(info.height) > MAX_ALLOC / 3 {
+            return Err(MmError::limit_exceeded(
+                "video frame exceeds decode allocation limit",
+            ));
+        }
+        let indices = sample_indices(info.frame_count, count);
+        let scale = (f64::from(edge) / f64::from(info.width.max(info.height))).min(1.0);
+        let fit = FrameResize {
+            width: (f64::from(info.width) * scale).round().max(1.0) as u32,
+            height: (f64::from(info.height) * scale).round().max(1.0) as u32,
+            filter: Resample::Pil(Filter::Lanczos),
+        };
+        decode_frames(bytes, &indices, Some(&fit), &limits)
+    }) {
         Ok(frames) => frames,
         Err(MmError::Unsupported { .. }) => {
             return Err(MediaError::Invalid(
@@ -167,32 +180,7 @@ fn dynamo_frames(
         }
         Err(_) => return Err(MediaError::Invalid("video decoding failed")),
     };
-    let (width, height) = (decoded.width(), decoded.height());
-    let prepared = if width.max(height) > edge as usize {
-        let scale = f64::from(edge) / width.max(height) as f64;
-        let out_width = (width as f64 * scale).round().max(1.0) as usize;
-        let out_height = (height as f64 * scale).round().max(1.0) as usize;
-        let rgb = decoded
-            .rgb()
-            .chunks_exact(width * height * 3)
-            .flat_map(|pixels| resize_lanczos_rgb(pixels, height, width, out_height, out_width))
-            .collect();
-        VideoFrames::new(
-            out_width,
-            out_height,
-            rgb,
-            VideoTiming {
-                timestamps: decoded.timestamps().to_vec(),
-                source_fps: decoded.source_fps(),
-                source_start: decoded.source_start(),
-                source_duration: decoded.source_duration(),
-            },
-        )
-        .map_err(|_| MediaError::Invalid("video frame resizing failed"))?
-    } else {
-        decoded
-    };
-    let frames = encode_jpeg_frames(&prepared, 85)
+    let frames = encode_jpeg_frames(&decoded, 85)
         .map_err(|_| MediaError::Invalid("video frame encoding failed"))?;
     frames
         .into_iter()
@@ -208,9 +196,26 @@ fn dynamo_frames(
         .collect::<Result<Vec<_>>>()
 }
 
+fn sample_indices(total: u64, count: usize) -> Vec<u64> {
+    let count = (count as u64).min(total);
+    (0..count)
+        .map(|i| {
+            ((total - 1) as f64 * i as f64 / count.saturating_sub(1).max(1) as f64)
+                .round_ties_even() as u64
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uniform_samples_preserve_endpoints_and_clamp_to_available_frames() {
+        assert_eq!(sample_indices(10, 1), [0]);
+        assert_eq!(sample_indices(10, 3), [0, 4, 9]);
+        assert_eq!(sample_indices(2, 4), [0, 1]);
+    }
 
     #[tokio::test]
     async fn rgb_resize_keeps_thin_images_nonempty_and_does_not_upscale() {

@@ -675,7 +675,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 [[package]]
 name = "dynamo-multimodal"
 version = "0.1.1"
-source = "git+https://github.com/ai-dynamo/frontend-crates.git?rev=4448b929bb2187645e83d1195dc9a85819dd5145#4448b929bb2187645e83d1195dc9a85819dd5145"
+source = "git+https://github.com/ai-dynamo/frontend-crates.git?rev=3954d9bcd481b4077bd4711528166eef9c4f977a#3954d9bcd481b4077bd4711528166eef9c4f977a"
 dependencies = [
  "base64",
  "blake3",
