@@ -127,3 +127,46 @@ fn dry_run_rejects_unsendable_configured_headers() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn request_body_limit_accepts_positive_bytes_and_rejects_invalid_values() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let config = directory.path().join("routes.toml");
+    let deployment = r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "http://127.0.0.1:1/v1"
+[targets.answer]
+id = "answer"
+llm_client = "mock"
+[routes.demo]
+id = "demo"
+type = "passthrough"
+target = "answer"
+"#;
+    fs::write(&config, deployment)?;
+    for (limit, expected_error) in [
+        (None, None),
+        (Some("134217728"), None),
+        (Some("0"), Some("must be greater than zero")),
+        (Some("-1"), Some("--max-request-body-bytes")),
+    ] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_switchyard-server"));
+        command.arg("--config").arg(&config).arg("--dry-run");
+        if let Some(limit) = limit {
+            command.arg(format!("--max-request-body-bytes={limit}"));
+        }
+        let output = command.output()?;
+        let stderr = String::from_utf8(output.stderr)?;
+        assert_eq!(
+            output.status.success(),
+            expected_error.is_none(),
+            "{stderr}"
+        );
+        if let Some(expected) = expected_error {
+            assert!(stderr.contains(expected), "{stderr}");
+        }
+    }
+    Ok(())
+}
