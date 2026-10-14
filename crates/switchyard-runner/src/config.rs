@@ -1841,7 +1841,8 @@ classify_trigger"#,
             "{valid}\n[targets.duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"\nmedia = {{ video = \"frames\", video_max_frames = 1 }}\n"
         );
         assert!(
-            error_message(&conflict).contains("different reasoning_effort, extra_body, or media")
+            error_message(&conflict)
+                .contains("different reasoning_effort, extra_body, omit_body_fields, or media")
         );
     }
 
