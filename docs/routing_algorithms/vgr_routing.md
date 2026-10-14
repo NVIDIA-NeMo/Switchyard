@@ -42,17 +42,14 @@ These settings are off by default:
 
 ```toml
 agentic_handoff = true
-compact_handoff = true
 local_turn_budget_seconds = 600
 ```
 
 `agentic_handoff` tells the cloud tier, once per user turn, that it is taking
 over unverified tool-using work, including the local tier's unchecked final
-message. `compact_handoff` also condenses the local tier's history into a
-digest and reapplies that same digest to every later request of the user turn,
-which keeps the cloud tier's prompt cache warm. `local_turn_budget_seconds`
-escalates a user turn once the local tier has spent that much wall-clock time
-on it.
+message. The handoff adds a notice while preserving the conversation's existing
+messages and content. `local_turn_budget_seconds` escalates a user turn once
+the local tier has spent that much wall-clock time on it.
 
 ## Serving modes
 

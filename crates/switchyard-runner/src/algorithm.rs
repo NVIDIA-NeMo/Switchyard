@@ -548,10 +548,6 @@ pub struct VgrRouteConfig {
     /// Tells the capable tier it inherits unverified tool-using work.
     #[serde(default)]
     pub agentic_handoff: bool,
-    /// Condenses the local tier's work into a digest at handoff. Requires
-    /// `agentic_handoff`.
-    #[serde(default)]
-    pub compact_handoff: bool,
     /// Wall-clock budget for the local tier within one user turn.
     #[serde(default)]
     pub local_turn_budget_seconds: Option<f64>,
@@ -1732,13 +1728,7 @@ fn build_vgr(
     runtime.deadline = duration(route_name, "deadline_seconds", config.deadline_seconds)?;
     runtime.task_typing = config.task_typing;
     runtime.confirmed_recovery_min_clean_tail = config.confirmed_recovery_min_clean_tail;
-    if config.compact_handoff && !config.agentic_handoff {
-        return Err(AlgorithmConfigError::new(format!(
-            "vgr route {route_name}: compact_handoff requires agentic_handoff"
-        )));
-    }
     runtime.agentic_handoff = config.agentic_handoff;
-    runtime.compact_handoff = config.compact_handoff;
     runtime.local_turn_budget = config
         .local_turn_budget_seconds
         .map(|seconds| duration(route_name, "local_turn_budget_seconds", seconds))

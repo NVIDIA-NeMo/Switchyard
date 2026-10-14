@@ -19,7 +19,6 @@ use crate::algorithms::fall_through::FallThrough;
 use crate::algorithms::util::affinity::AffinityRouter;
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
 
-mod compaction;
 mod config;
 mod decide;
 mod readout;
@@ -52,12 +51,7 @@ impl Vgr {
                 .with_release_on_user_turn()
                 .with_latch_only([cloud.clone()]),
         );
-        let mut route = FallThrough::new_with_state().with_name("vgr");
-        if config.compact_handoff {
-            // First, so every later classifier and the served call see the
-            // condensed history.
-            route = route.with_classifier(Arc::new(compaction::Compactor));
-        }
+        let route = FallThrough::new_with_state().with_name("vgr");
         let classifier = Arc::new(runtime::VgrClassifier {
             breaker: safety::CircuitBreaker::new(config.breaker),
             config,

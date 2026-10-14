@@ -35,7 +35,6 @@ pub(super) struct VgrState {
     pub(super) turn_latched: bool,
     pub(super) turn_started: Option<u32>,
     pub(super) handoff_sent: bool,
-    pub(super) compaction: Option<super::compaction::Recorded>,
 }
 
 struct RequestContext<'a> {
@@ -231,9 +230,7 @@ impl VgrClassifier {
         }
         state.handoff_sent = true;
         let note = handoff_note(unverified_final);
-        if !(self.config.compact_handoff && super::compaction::compact(request, state, &note)) {
-            append_note(request, &note);
-        }
+        append_note(request, &note);
     }
 
     /// Judges one proposed tool call; `true` escalates the rest of the session.

@@ -1113,6 +1113,9 @@ task_typing = false
         let runner = runner_from_toml(&vgr_config())?;
         assert!(runner.route("switchyard/vgr").is_some());
 
+        let compact = format!("{}\ncompact_handoff = true\n", vgr_config());
+        assert!(error_message(&compact).contains("unknown field `compact_handoff`"));
+
         let identical_ids =
             vgr_config().replace("local_target = \"weak\"", "local_target = \"strong\"");
         assert!(error_message(&identical_ids).contains("distinct local and cloud model IDs"));

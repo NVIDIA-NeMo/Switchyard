@@ -361,7 +361,7 @@ async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Resu
 #[tokio::test]
 async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> Result<()> {
     let route = route(|config| config.agentic_handoff = true)?;
-    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let task = || {
         session(vec![
             Message::text(Role::User, "fix the build"),
@@ -384,7 +384,7 @@ async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> 
                         "cloud" => {
                             let text = serde_json::to_string(&request.llm_request.messages)
                                 .unwrap_or_default();
-                            sent.lock().map(|mut sent| sent.push(text)).ok();
+                            sent.lock().push(text);
                             reply("cloud answer")
                         }
                         _ => reply("no"),
@@ -394,7 +394,7 @@ async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> 
         )
         .await?;
     }
-    let sent = sent.lock().map(|sent| sent.clone()).unwrap_or_default();
+    let sent = sent.lock();
     assert_eq!(sent.len(), 2);
     assert!(sent[0].contains("Routing notice") && sent[0].contains("the build passes"));
     assert!(
@@ -415,4 +415,55 @@ async fn a_spent_local_turn_budget_skips_the_local_attempt() -> Result<()> {
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 0);
     Ok(())
+}
+
+#[test]
+fn handoff_preserves_existing_messages_and_non_text_content() {
+    use switchyard_protocol::ImageSource;
+
+    let mut classifier = recovering_classifier();
+    classifier.config.agentic_handoff = true;
+    let mut task = request(vec![
+        Message::text(Role::User, "finish the task"),
+        Message::text(Role::User, "keep the original files"),
+        call("c1"),
+        result("c1", "the command failed"),
+        Message::text(Role::User, "preserve this requirement"),
+        Message::text(Role::User, "continue"),
+        Message::text(Role::User, "then report the result"),
+    ]);
+    if let ContentBlock::ToolResult(result) = &mut task.llm_request.messages[3].content[0] {
+        result.content.push(ContentBlock::Image {
+            source: ImageSource::Url {
+                url: "https://example.test/result.png".into(),
+                detail: None,
+            },
+        });
+    }
+    let original = task.llm_request.messages.clone();
+    let mut state = super::VgrState::default();
+    classifier.hand_off(&mut task, &mut state, Some("unchecked result"));
+    // A notice may be appended, but all original content stays unchanged.
+    let messages = &task.llm_request.messages;
+    assert_eq!(messages.len(), original.len());
+    assert_eq!(
+        &messages[..original.len() - 1],
+        &original[..original.len() - 1]
+    );
+    let last = messages.last().expect("last user message");
+    assert_eq!(
+        &last.content[..original
+            .last()
+            .expect("original last message")
+            .content
+            .len()],
+        &original.last().expect("original last message").content
+    );
+    assert!(
+        last.text_content("")
+            .is_some_and(|text| text.contains("unchecked result"))
+    );
+    let after_first = task.llm_request.messages.clone();
+    classifier.hand_off(&mut task, &mut state, Some("duplicate notice"));
+    assert_eq!(task.llm_request.messages, after_first);
 }
