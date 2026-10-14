@@ -1109,6 +1109,16 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     if let Value::Object(object) = body {
         object.remove("reasoning_effort");
         object.remove("context_management");
+        // `strict: false` is the default, and Bedrock rejects the field outright.
+        if let Some(Value::Array(tools)) = object.get_mut("tools") {
+            for tool in tools {
+                if let Value::Object(tool) = tool
+                    && tool.get("strict") == Some(&Value::Bool(false))
+                {
+                    tool.remove("strict");
+                }
+            }
+        }
     }
 }
 
@@ -2088,6 +2098,69 @@ mod tests {
                 WireFormat::OpenAiResponses,
             )
             .await?;
+        Ok(())
+    }
+
+    // Covers both a translated request and an Anthropic caller's body sent as is.
+    #[tokio::test]
+    async fn anthropic_requests_drop_tool_strict_false()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(config(&server.uri())),
+            None,
+        )])?;
+        let schema = json!({"type": "object"});
+        let requests = [
+            (
+                WireFormat::OpenAiChat,
+                json!({
+                    "model": "client-facing",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [
+                        {"type": "function", "function": {"name": "loose", "parameters": schema, "strict": false}},
+                        {"type": "function", "function": {"name": "exact", "parameters": schema, "strict": true}}
+                    ]
+                }),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({
+                    "model": "client-facing",
+                    "max_tokens": 8,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [
+                        {"name": "loose", "input_schema": schema, "strict": false},
+                        {"name": "exact", "input_schema": schema, "strict": true}
+                    ]
+                }),
+            ),
+        ];
+        for (format, request) in requests {
+            client
+                .call_rewrite_model_raw(request, None, Some(&ModelId::from("claude")), format)
+                .await?;
+        }
+        for received in server.received_requests().await.unwrap_or_default() {
+            let body: Value = serde_json::from_slice(&received.body)?;
+            assert!(body["tools"][0].get("strict").is_none(), "{body}");
+            assert_eq!(body["tools"][1]["strict"], true, "{body}");
+        }
         Ok(())
     }
 
