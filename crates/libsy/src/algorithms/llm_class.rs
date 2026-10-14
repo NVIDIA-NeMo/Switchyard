@@ -167,9 +167,9 @@ fn is_task_content(block: &ContentBlock) -> bool {
 
 /// Keeps references to the opening task and latest user follow-up when they differ.
 fn task_messages(messages: &[Message]) -> Vec<&Message> {
-    let mut user_messages = messages.iter().filter(|message| {
-        is_user_turn(message) && message.content.iter().any(is_task_content)
-    });
+    let mut user_messages = messages
+        .iter()
+        .filter(|message| is_user_turn(message) && message.content.iter().any(is_task_content));
     let Some(opening_task) = user_messages.next() else {
         return Vec::new();
     };

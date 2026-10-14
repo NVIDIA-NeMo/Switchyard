@@ -25,8 +25,8 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{
-    AggLlmResponse, Category, ContentBlock, DecisionRequest, DecisionResponse, LlmClientError, ModelId, Request,
-    Response, StopReason,
+    AggLlmResponse, Category, ContentBlock, DecisionRequest, DecisionResponse, LlmClientError,
+    ModelId, Request, Response, StopReason,
 };
 
 use crate::{DriverError, LibsyError, Result, State, observability};

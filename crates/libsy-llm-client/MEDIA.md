@@ -90,6 +90,9 @@ base64 overhead. Raise it with `--max-request-body-bytes`; see the
 
 ## Runtime requirements
 
+Media processing uses the published `dynamo-multimodal` 0.2 release with the
+`fetch` and `video-decode` features.
+
 Building from source requires CMake and a C/C++ toolchain.
 Video decoding requires 64-bit Linux. H.264, HEVC, VP9, and AV1 use NVDEC when
 supported by the GPU and matching NVIDIA driver libraries. VP8 and VP9 also have

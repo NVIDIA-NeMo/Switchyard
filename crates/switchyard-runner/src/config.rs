@@ -13,8 +13,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig, ModelConfig,
-    OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig,
+    ModelConfig, OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -533,7 +534,8 @@ impl DeploymentConfig {
                     target.reasoning_effort.clone(),
                 )?,
                 None,
-            ).with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default());
+            )
+            .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default());
             if let Some(media) = &target.media {
                 model_config = model_config.with_media(media.clone());
             }

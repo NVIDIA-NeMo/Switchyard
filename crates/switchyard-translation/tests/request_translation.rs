@@ -8,9 +8,9 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, ImageSource, LlmRequest, LossyConversionPolicy, Message, Role,
-    TranslationEngine, TranslationError, TranslationPolicy, WireFormat, decode_request,
-    encode_request, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationError,
+    TranslationPolicy, WireFormat, decode_request, encode_request, prepare_request_for_target,
+    sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};

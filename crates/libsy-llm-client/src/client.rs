@@ -1572,6 +1572,7 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request};
+    use switchyard_translation::{decode_request, encode_request};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
