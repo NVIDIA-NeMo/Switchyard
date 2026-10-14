@@ -17,7 +17,7 @@ serde_json = "1"
 | Area | Types |
 |---|---|
 | Conversation | [`LlmRequest`], [`Message`], [`InstructionBlock`], [`ContentBlock`] |
-| Tools | [`Tool`], [`ToolDefinition`], [`McpToolset`], [`McpContent`], [`ToolChoice`], [`ToolCall`], [`ToolResult`] |
+| Tools | [`Tool`], [`ToolDefinition`], [`McpToolset`], [`McpToolConfig`], [`McpContent`], [`ToolChoice`], [`ToolCall`], [`ToolResult`] |
 | Response | [`AggLlmResponse`], [`ResponseOutput`], [`Usage`], [`StopReason`] |
 | Streaming | [`LlmResponse`], [`LlmResponseStream`], [`LlmResponseStreamEvent`], [`LlmResponseChunk`], [`ProviderStreamEvent`] |
 | Envelope | [`Request`], [`Response`], [`Metadata`] |
