@@ -1192,6 +1192,39 @@ new = ["send_message"]
     }
 
     #[test]
+    fn composite_decision_judge_reuses_capability_validation() {
+        let source = composite_config().replace(
+            "[routes.composed.classifier]\ntarget = \"tier_judge\"\nbase_threshold = 0.5",
+            "[routes.composed.classifier]\ntarget = \"tier_judge\"",
+        ) + r#"
+[routes.composed.classifier.decision]
+cutoff = 0.4
+candidates = { a = "strong", b = "weak" }
+evidence = { description = "candidate comparison" }
+"#;
+        for (source, valid) in [
+            (source.clone(), true),
+            (
+                source.replace(
+                    "target = \"tier_judge\"",
+                    "target = \"tier_judge\"\nbase_threshold = 0.5",
+                ),
+                false,
+            ),
+            (source.replace("b = \"weak\"", "b = \"strong\""), false),
+        ] {
+            let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
+            let spec = &deployment.routes["composed"].algorithm;
+            assert_eq!(spec.decision_judge().unwrap().0, "tier_judge");
+            assert_eq!(
+                spec.build_with_runtime_models("composed", &deployment.build_targets())
+                    .is_ok(),
+                valid
+            );
+        }
+    }
+
+    #[test]
     fn composite_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
         let runner = runner_from_toml(&composite_config())?;
         assert!(

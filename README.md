@@ -59,6 +59,8 @@ Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The
 
 The [routing overview](docs/routing_algorithms/overview.md) retains the full catalogue, including [Plan/Execute](docs/routing_algorithms/plan_execute_routing.md), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md) strategies. Integration support varies: check the gateway guide before choosing an algorithm.
 
+[Prefill routing](docs/routing_algorithms/prefill_routing.md) is designed for fast, efficient model selection using a model's prefill activations and a classifier trained on your own evaluation data.
+
 ## Evaluation and reference
 
 ![Task completion versus cost for Switchyard classification, stage, and escalation routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.png)

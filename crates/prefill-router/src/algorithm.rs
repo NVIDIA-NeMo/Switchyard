@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use libsy::{
     AffinityRouter, Algorithm, Classifier, Driver, Event, LibsyError, Processor, RoutingOutcome,
 };
-use switchyard_protocol::{ModelId, Request, Role};
+use switchyard_protocol::{ContentBlock, Message, ModelId, Request, Role};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -106,6 +106,37 @@ impl PrefillRouterAlgo {
     }
 }
 
+/// The prompt to score: the newest user message that has text of its own.
+/// A user message with no text (whitespace only, or an attachment with no
+/// caption) is skipped, but once one has been skipped the search stops at the
+/// first assistant message, so an earlier exchange's prompt is never scored as
+/// the current request. A user message carrying tool results is tool activity
+/// inside the current exchange, not a skipped turn, and is walked past as
+/// before. `None` leaves the choice to the default target.
+fn latest_user_prompt(messages: &[Message]) -> Option<String> {
+    let mut skipped = false;
+    for message in messages.iter().rev() {
+        if message.role == Role::User {
+            if let Some(text) = message
+                .text_content("\n")
+                .filter(|text| !text.trim().is_empty())
+            {
+                return Some(text);
+            }
+            if !message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult(_)))
+            {
+                skipped = true;
+            }
+        } else if message.role == Role::Assistant && skipped {
+            return None;
+        }
+    }
+    None
+}
+
 #[async_trait]
 impl Algorithm for PrefillRouterAlgo {
     fn name(&self) -> &str {
@@ -138,15 +169,7 @@ impl Algorithm for PrefillRouterAlgo {
             ));
         }
 
-        let target = match request
-            .llm_request
-            .messages
-            .iter()
-            .rev()
-            .filter(|message| message.role == Role::User)
-            .filter_map(|message| message.text_content("\n"))
-            .find(|text| !text.trim().is_empty())
-        {
+        let target = match latest_user_prompt(&request.llm_request.messages) {
             Some(prompt) => {
                 // Wait asynchronously before occupying a blocking worker with model inference.
                 let mut router = Arc::clone(&self.router).lock_owned().await;

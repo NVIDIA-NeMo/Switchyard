@@ -7,11 +7,15 @@ fit the same route type.
 
 ## What exists today
 
-One pairing: an LLM classifier sets the tier a stage router falls open to when
+One pairing: a classifier sets the tier a stage router falls open to when
 its own signals are not confident. The stage router's `picker` mode is unchanged,
 and so is how it scores signals, escalates, and de-escalates. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
+
+The classifier can use an LLM judge or a decision model. A decision
+model is configured through a decision client and target, separately from the
+capable and efficient completion targets.
 
 The general form, where any algorithm can target another and set its
 configuration, is the direction rather than the current behaviour. Expect this
@@ -48,6 +52,39 @@ whenever the user speaks, `new_session` picks once and holds it.
 nor a second `classifier`. The outer classifier supplies the default tier.
 Custom `tool_semantics` remain stage-local and have the same additive behavior as
 on a standalone stage route.
+
+## Decision model classifier
+
+Use a decision target as the classifier. Keep the stage block above
+and replace its LLM classifier settings with:
+
+```toml
+[decision_clients.decisions]
+format = "system_one"
+endpoint = "https://openrouter.ai/api/alpha/decisions"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_ms = 5000
+
+[decision_targets.judge]
+id = "inception/mercury-decide:free"
+decision_client = "decisions"
+
+[routes.switchyard.classifier]
+target = "judge"
+classify_trigger = "user_turn"
+
+[routes.switchyard.classifier.decision]
+cutoff = 0.4
+candidates = { a = "strong", b = "weak" }
+evidence = { description = "Add task-relevant evidence comparing a and b." }
+```
+
+Both candidates must be completion targets. The judge must be a decision target.
+The classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
+Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
+`base_threshold`, `threshold_step` and `prompt` when using a decision model.
+On judge failure, the default is to retain the last classified tier or use
+efficient for a new session. Set `classifier.fail_open = false` to return the error.
 
 ## Sessions
 
