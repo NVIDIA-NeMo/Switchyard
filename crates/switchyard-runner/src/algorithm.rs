@@ -17,7 +17,6 @@ use libsy::{
     LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
     PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter, StageRouterConfig,
     SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
-    VgrTargets,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -1704,22 +1703,14 @@ fn build_vgr(
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     let local = resolve_target_model_id(route_name, &config.local_target, targets)?;
     let cloud = resolve_target_model_id(route_name, &config.cloud_target, targets)?;
-    if local == cloud {
-        return Err(AlgorithmConfigError::new(format!(
-            "vgr route {route_name} requires distinct local and cloud model IDs"
-        )));
-    }
     let optional = |name: &Option<String>| {
         name.as_deref()
             .map(|name| resolve_target_model_id(route_name, name, targets))
             .transpose()
     };
     let mut runtime = VgrConfig::new(local, cloud);
-    runtime.targets = VgrTargets {
-        judge: optional(&config.judge_target)?,
-        cloud_judge: optional(&config.cloud_judge_target)?,
-        ..runtime.targets
-    };
+    runtime.targets.judge = optional(&config.judge_target)?;
+    runtime.targets.cloud_judge = optional(&config.cloud_judge_target)?;
     runtime.mode = match config.mode {
         VgrModeConfig::Off => libsy::ServingMode::Off,
         VgrModeConfig::Evaluate => libsy::ServingMode::Evaluate,

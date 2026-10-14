@@ -30,9 +30,9 @@ confirmed_recovery_min_clean_tail = 1
 ```
 
 `judge_target` defaults to `local_target`. `cloud_judge_target` is optional.
-The local and cloud targets must resolve to distinct model IDs. When the local
-backend reports its live context capacity, VGR republishes it through
-`/v1/models`. `confirmed_recovery_min_clean_tail`, when set, lets an agentic
+The local and cloud targets must resolve to distinct model IDs. When the
+route sets `context_window`, `/v1/models` advertises that configured limit.
+`confirmed_recovery_min_clean_tail`, when set, lets an agentic
 run that recovered from tool errors commit locally once that many trailing tool
 results are clean and the cloud judge confirms the evidence.
 

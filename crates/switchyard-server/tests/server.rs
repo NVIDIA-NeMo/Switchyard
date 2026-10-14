@@ -119,7 +119,8 @@ fn has_system_prompt(call: &Value, expected: &str) -> bool {
     })
 }
 
-async fn upstream_props() -> Json<Value> {
+async fn upstream_props(State(calls): State<Arc<Mutex<Vec<Value>>>>) -> Json<Value> {
+    calls.lock().await.push(json!({"path": "/props"}));
     Json(json!({"default_generation_settings": {"n_ctx": 98_304}}))
 }
 
@@ -1492,6 +1493,7 @@ llm_client = "primary"
 [routes.vgr]
 id = "switchyard/vgr"
 type = "vgr"
+context_window = 32768
 local_target = "local"
 cloud_target = "cloud"
 judge_target = "judge"
@@ -1517,7 +1519,15 @@ task_typing = false
             Some(&HeaderValue::from_str(served)?)
         );
         let models = send(&app, "GET", "/v1/models", None).await?.json()?;
-        assert_eq!(models["data"][0]["context_length"], 98_304);
+        assert_eq!(models["data"][0]["context_length"], 32_768);
+        assert!(
+            upstream
+                .calls
+                .lock()
+                .await
+                .iter()
+                .all(|call| call["path"] != "/props")
+        );
     }
     Ok(())
 }

@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **VGR routing (planned for 0.4.0)** — adds `type = "vgr"` deployment routes
+  and the `AlgorithmSpec::Vgr` variant. **Rust source-breaking change:** callers
+  that match exhaustively on `AlgorithmSpec` must handle the new variant.
+
 - **Speculative workflows** - algorithms can run model and decision calls in
   parallel, stop one call, and let another continue. This includes decision
   models used as speculative tool callers. The same controls support general
