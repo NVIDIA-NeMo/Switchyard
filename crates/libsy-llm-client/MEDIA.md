@@ -12,7 +12,7 @@ JPEG encoding use `dynamo-multimodal`, pinned to
 [frontend-crates PR #378 at `4448b929`](https://github.com/ai-dynamo/frontend-crates/tree/4448b929bb2187645e83d1195dc9a85819dd5145/multimodal).
 RGB downscaling uses Lanczos. Other still-image formats retain the bounded `image`
 decoder, including transparency and higher bit depths. PNG output for transparency,
-provider formatting, and an FFmpeg video fallback remain in the client.
+and provider formatting remain in the client.
 Dynamo's optional Rayon pool is disabled; decoding uses the client's bounded workers.
 Building from source requires CMake and a C/C++ toolchain for libjpeg-turbo.
 This pin uses the unreleased `video-decode` feature. Registry publication requires
@@ -68,19 +68,16 @@ also counts frames that its video settings will extract. Native videos are not
 counted as images; use `video = "omit"` to remove them. Other targets still prepare
 their own copy of the original request.
 
-Video decoding tries Dynamo first. On 64-bit Linux, it uses NVDEC when a usable
-NVIDIA driver and compatible GPU are available, or system libvpx for CPU VP8/VP9.
-FFmpeg/FFprobe are used only when Dynamo reports an unsupported codec, format, or
-platform, preserving CPU-only H.264 and other existing inputs. Invalid media,
-allocation-limit failures, and internal decoder errors are returned directly.
-The server image retains FFmpeg, which also supplies libvpx.
+Video decoding uses Dynamo exclusively. On 64-bit Linux, NVDEC supports H.264,
+HEVC, VP9 and AV1 when the GPU and NVIDIA driver support the codec. VP8 and VP9
+also decode on the CPU through system libvpx. The server image includes libvpx;
+GPU decoding requires matching CUDA/NVDEC driver libraries in the runtime.
+Unsupported codecs, formats, platforms or missing decoders return an error.
 
 Dynamo selects uniformly spaced frame indices and returns real presentation times.
 One sample selects the first frame; requests above the source frame count return
-all available frames. The FFmpeg fallback samples timestamps across the video
-stream's duration, or packet timestamps when duration is unavailable, and also
-starts a single sample at the first frame. Its labels identify requested seek times.
-Longer audio does not extend the sampling range. Uniform sampling can miss brief events.
+all available frames. Sampling uses the video timeline, so longer audio does not
+extend it. Uniform sampling can miss brief events.
 
 Dynamo's selected RGB frames are capped at 128 MiB before resizing. JPEG outputs
 also obey `max_output_bytes`. The preparation deadline covers the request's wait;
@@ -103,8 +100,6 @@ Adapted from [ai-dynamo/dynamo](https://github.com/ai-dynamo/dynamo) revision
 
 - `lib/llm/src/preprocessor/media/decoders/image/backends/image_reader.rs`:
   bounded `ImageReader` setup. Tensor conversion is replaced with image resizing.
-- `lib/llm/src/preprocessor/media/decoders/video.rs`: `get_target_times` sampling
-  calculation. FFmpeg subprocesses replace Dynamo's linked video/tensor stack.
 
 Original NVIDIA copyright and Apache-2.0 headers are retained. No SGLang or
 private GitLab code is copied; Dynamo supplied the small reusable pieces needed.

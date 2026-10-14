@@ -20,7 +20,6 @@ publish = ["crates-io"]
 base64.workspace = true
 dynamo-multimodal = { version = "0.1.1", git = "https://github.com/ai-dynamo/frontend-crates.git", rev = "4448b929bb2187645e83d1195dc9a85819dd5145", default-features = false, features = ["fetch", "video-decode"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-tempfile = "3"
 thiserror.workspace = true
 url = "2"
 switchyard-libsy.workspace = true

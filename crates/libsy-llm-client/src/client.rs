@@ -1372,7 +1372,7 @@ fn redact_forwarded_headers(
 mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
-    use std::io::{Read, Write};
+    use std::io::{Cursor, Read, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread::JoinHandle;
@@ -1478,7 +1478,10 @@ mod tests {
             })))
             .expect(1)
             .mount(&server).await;
-        let bytes = include_bytes!("../tests/fixtures/media/oriented.jpg");
+        let image = image::RgbImage::from_pixel(40, 20, image::Rgb([255, 0, 0]));
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Jpeg)?;
+        let bytes = bytes.into_inner();
         let backend = Backend::OpenAiChat(config(&format!("{}/v1", server.uri())));
         let models: Vec<_> = [("judge", bytes.len() - 1), ("answer", bytes.len())]
             .into_iter()

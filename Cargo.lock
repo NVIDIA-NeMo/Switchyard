@@ -3412,7 +3412,6 @@ dependencies = [
  "switchyard-libsy",
  "switchyard-protocol",
  "switchyard-translation",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

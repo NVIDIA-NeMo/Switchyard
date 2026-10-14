@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! CPU image preparation and bounded FFmpeg frame extraction.
+//! Bounded image preparation and Dynamo video frame decoding.
 
 use std::io::Cursor;
-use std::process::Stdio;
 use std::sync::Arc;
 
 use dynamo_multimodal::image::{
@@ -19,9 +18,6 @@ use dynamo_multimodal::{
 use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbImage, metadata::Orientation,
 };
-use serde_json::Value;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 use tokio::sync::Semaphore;
 
 use super::{MediaError, Result};
@@ -44,7 +40,9 @@ pub(crate) async fn resize(
         // Keep the permit in the worker even if the caller cancels its wait.
         let _permit = permit;
         // Adapted from Dynamo's ImageReaderBackend; see README.md for provenance.
-        let mut reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
+        let mut reader = ImageReader::new(Cursor::new(&bytes))
+            .with_guessed_format()
+            .map_err(image::ImageError::IoError)?;
         let mut limits = image::Limits::default();
         limits.max_image_width = Some(MAX_DIMENSION);
         limits.max_image_height = Some(MAX_DIMENSION);
@@ -125,51 +123,6 @@ pub(crate) async fn resize(
     .map_err(|_| MediaError::Invalid("image worker failed"))?
 }
 
-// Adapted from Dynamo's get_target_times. Avoid seeking past the last frame.
-fn sample_times(count: usize, duration: f64, fps: f64) -> Result<Vec<f64>> {
-    if count == 0 || !duration.is_finite() || duration <= 0.0 || !fps.is_finite() || fps <= 0.0 {
-        return Err(MediaError::Invalid(
-            "video has invalid duration or frame rate",
-        ));
-    }
-    let last = (duration - 1.0 / fps - 0.001).max(0.0);
-    Ok(if count == 1 {
-        vec![0.0]
-    } else {
-        (0..count)
-            .map(|index| index as f64 * last / (count - 1) as f64)
-            .collect()
-    })
-}
-
-// Limit stdout while reading, and kill the child on timeout, error or cancellation.
-async fn command_output(command: &mut Command, limit: usize) -> Result<Vec<u8>> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| {
-            MediaError::Invalid("cannot start FFmpeg/FFprobe; install both executables on PATH")
-        })?;
-    let mut output = Vec::new();
-    child
-        .stdout
-        .take()
-        .ok_or(MediaError::Invalid("missing media process output"))?
-        .take(limit as u64 + 1)
-        .read_to_end(&mut output)
-        .await?;
-    if output.len() > limit {
-        return Err(MediaError::Invalid("media process output exceeds limit"));
-    }
-    if !child.wait().await?.success() {
-        return Err(MediaError::Invalid("FFmpeg/FFprobe rejected the video"));
-    }
-    Ok(output)
-}
-
 pub(crate) async fn frames(
     bytes: Vec<u8>,
     count: usize,
@@ -181,28 +134,21 @@ pub(crate) async fn frames(
         .acquire_owned()
         .await
         .map_err(|_| MediaError::Invalid("media worker closed"))?;
-    let (bytes, permit, result) = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         // Retain the worker permit even if the request deadline cancels the wait.
-        let result = dynamo_frames(&bytes, count, edge, remaining_bytes);
-        (bytes, permit, result)
+        let _permit = permit;
+        dynamo_frames(&bytes, count, edge, remaining_bytes)
     })
     .await
-    .map_err(|_| MediaError::Invalid("video worker failed"))?;
-    let _permit = permit;
-    match result? {
-        Some(frames) => Ok(frames),
-        None => ffmpeg_frames(bytes, count, edge, remaining_bytes).await,
-    }
+    .map_err(|_| MediaError::Invalid("video worker failed"))?
 }
 
-// Unsupported codecs/platforms retain the FFmpeg path. Invalid input and
-// resource-limit failures must not trigger another decoder attempt.
 fn dynamo_frames(
     bytes: &[u8],
     count: usize,
     edge: u32,
     mut remaining_bytes: usize,
-) -> Result<Option<EncodedFrames>> {
+) -> Result<EncodedFrames> {
     let mut limits = VideoDecodeLimits::default();
     limits.max_width = MAX_DIMENSION;
     limits.max_height = MAX_DIMENSION;
@@ -211,7 +157,11 @@ fn dynamo_frames(
         .and_then(|info| decode_sampled(bytes, (count as u64).min(info.frame_count), &limits))
     {
         Ok(frames) => frames,
-        Err(MmError::Unsupported { .. }) => return Ok(None),
+        Err(MmError::Unsupported { .. }) => {
+            return Err(MediaError::Invalid(
+                "video codec, format, or decoder is unsupported",
+            ));
+        }
         Err(MmError::LimitExceeded { .. }) => {
             return Err(MediaError::Invalid("video exceeds decode allocation limit"));
         }
@@ -256,150 +206,6 @@ fn dynamo_frames(
             Ok((frame.timestamp_secs, frame.bytes))
         })
         .collect::<Result<Vec<_>>>()
-        .map(Some)
-}
-
-async fn ffmpeg_frames(
-    bytes: Vec<u8>,
-    count: usize,
-    edge: u32,
-    mut remaining_bytes: usize,
-) -> Result<EncodedFrames> {
-    let directory = tempfile::tempdir()?;
-    let input = directory.path().join("input.video");
-    tokio::fs::write(&input, bytes).await?;
-    let probe = command_output(
-        Command::new("ffprobe")
-            .args([
-                "-v",
-                "error",
-                "-protocol_whitelist",
-                "file",
-                "-format_whitelist",
-                "mov,matroska,webm",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height,avg_frame_rate,duration",
-                "-of",
-                "json",
-            ])
-            .arg(&input),
-        16 * 1024,
-    )
-    .await?;
-    let probe: Value = serde_json::from_slice(&probe)
-        .map_err(|_| MediaError::Invalid("invalid FFprobe output"))?;
-    let stream = &probe["streams"][0];
-    let width = stream["width"].as_u64().unwrap_or(0);
-    let height = stream["height"].as_u64().unwrap_or(0);
-    if width == 0
-        || height == 0
-        || width > MAX_DIMENSION as u64
-        || height > MAX_DIMENSION as u64
-        || width * height > MAX_ALLOC / 4
-    {
-        return Err(MediaError::Invalid("video dimensions exceed decode limits"));
-    }
-    let fps = stream["avg_frame_rate"]
-        .as_str()
-        .and_then(|rate| rate.split_once('/'))
-        .and_then(|(numerator, denominator)| {
-            Some(numerator.parse::<f64>().ok()? / denominator.parse::<f64>().ok()?)
-        })
-        .unwrap_or(0.0);
-    let duration = match stream["duration"]
-        .as_str()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|duration| duration.is_finite() && *duration > 0.0)
-    {
-        Some(duration) => duration,
-        None => {
-            // WebM/Matroska often omit stream duration. Container duration can
-            // include longer audio, so derive the video span from its packets.
-            let packets = command_output(
-                Command::new("ffprobe")
-                    .args([
-                        "-v",
-                        "error",
-                        "-protocol_whitelist",
-                        "file",
-                        "-format_whitelist",
-                        "mov,matroska,webm",
-                        "-select_streams",
-                        "v:0",
-                        "-show_entries",
-                        "packet=pts_time",
-                        "-of",
-                        "csv=p=0",
-                    ])
-                    .arg(&input),
-                8 * 1024 * 1024,
-            )
-            .await?;
-            let (first, last) = String::from_utf8_lossy(&packets)
-                .lines()
-                .filter_map(|line| line.split(',').next()?.parse::<f64>().ok())
-                .filter(|time| time.is_finite())
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(first, last), time| {
-                    (first.min(time), last.max(time))
-                });
-            last - first + 1.0 / fps
-        }
-    };
-    let times = sample_times(count, duration, fps)?;
-    let mut frames = Vec::with_capacity(count);
-    for time in times {
-        let seek = format!("{time:.6}");
-        let scale = format!(
-            "scale=w='min(iw,{edge})':h='min(ih,{edge})':force_original_aspect_ratio=decrease"
-        );
-        let mut command = Command::new("ffmpeg");
-        command
-            .args([
-                "-nostdin",
-                "-v",
-                "error",
-                "-threads",
-                "1",
-                "-protocol_whitelist",
-                "file",
-                "-format_whitelist",
-                "mov,matroska,webm",
-                "-ss",
-                &seek,
-                "-i",
-            ])
-            .arg(&input)
-            .args([
-                "-map",
-                "0:v:0",
-                "-frames:v",
-                "1",
-                "-vf",
-                &scale,
-                "-threads",
-                "1",
-                "-f",
-                "image2pipe",
-                "-c:v",
-                "mjpeg",
-                "-q:v",
-                "3",
-                "pipe:1",
-            ]);
-        let jpeg = command_output(&mut command, remaining_bytes.min(8 * 1024 * 1024)).await?;
-        if jpeg.is_empty() {
-            return Err(MediaError::Invalid("video sample could not be decoded"));
-        }
-        remaining_bytes = remaining_bytes
-            .checked_sub(jpeg.len())
-            .ok_or(MediaError::Invalid(
-                "prepared media exceeds max_output_bytes",
-            ))?;
-        frames.push((time, jpeg));
-    }
-    Ok(frames)
 }
 
 #[cfg(test)]
@@ -432,98 +238,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    #[ignore = "requires ffmpeg and ffprobe on PATH"]
-    async fn video_samples_ignore_longer_audio_tracks() {
-        let directory = tempfile::tempdir().unwrap();
-        // Matroska omits stream.duration, exercising the packet-timestamp fallback.
-        for extension in ["mp4", "mkv"] {
-            let path = directory.path().join(format!("long-audio.{extension}"));
-            let status = Command::new("ffmpeg")
-                .args([
-                    "-nostdin",
-                    "-v",
-                    "error",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "color=c=red:s=32x32:r=10:d=1",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "anullsrc=r=8000:cl=mono:d=3",
-                    "-c:v",
-                    "mpeg4",
-                    "-c:a",
-                    "aac",
-                ])
-                .arg(&path)
-                .status()
-                .await
-                .unwrap();
-            assert!(status.success());
-            let bytes = tokio::fs::read(path).await.unwrap();
-            for count in [1, 4] {
-                let samples = frames(
-                    bytes.clone(),
-                    count,
-                    32,
-                    Arc::new(Semaphore::new(1)),
-                    1024 * 1024,
-                )
-                .await
-                .unwrap();
-                assert_eq!(samples.len(), count);
-                for (time, jpeg) in samples {
-                    assert!(time < 1.0, "{extension} sample outside video: {time}");
-                    let image = image::load_from_memory(&jpeg).unwrap();
-                    assert_eq!((image.width(), image.height()), (32, 32));
-                }
-            }
-        }
-    }
-
     #[test]
-    #[ignore = "requires libvpx or a compatible NVIDIA decoder"]
-    fn dynamo_decodes_video_with_resize_timestamps_and_output_limits() {
+    fn malformed_videos_are_rejected() {
         for bytes in [
-            include_bytes!("../../tests/fixtures/media/vp8.webm").as_slice(),
-            include_bytes!("../../tests/fixtures/media/vp9.webm").as_slice(),
+            b"not a video".as_slice(),
+            b"\0\0\0\x18ftypisom\0\0\0\0isom".as_slice(),
         ] {
-            for count in [1, 3, 64] {
-                let frames = dynamo_frames(bytes, count, 32, 1024 * 1024)
-                    .unwrap()
-                    .unwrap();
-                let info = probe(bytes).unwrap();
-                assert_eq!(frames.len(), count.min(info.frame_count as usize));
-                assert_eq!(frames[0].0, info.start_time);
-                assert!(frames.windows(2).all(|pair| pair[0].0 <= pair[1].0));
-                for (time, jpeg) in frames {
-                    assert!(time < info.start_time + info.duration);
-                    let image = image::load_from_memory(&jpeg).unwrap();
-                    assert_eq!((image.width(), image.height()), (32, 32));
-                }
-            }
+            let result = dynamo_frames(bytes, 1, 32, 1024);
             assert!(
-                matches!(dynamo_frames(bytes, 3, 32, 1), Err(MediaError::Invalid(message)) if message.contains("max_output_bytes"))
+                matches!(&result, Err(MediaError::Invalid("video decoding failed"))),
+                "{result:?}"
             );
-        }
-    }
-
-    #[test]
-    fn corrupt_video_is_rejected_before_fallback() {
-        let bytes = include_bytes!("../../tests/fixtures/media/colors.mp4");
-        assert!(dynamo_frames(&bytes[..36], 1, 32, 1024).is_err());
-    }
-
-    #[test]
-    fn sampling_covers_clip_and_starts_one_frame() {
-        let times = sample_times(3, 7.0, 29.0).unwrap();
-        assert_eq!(times[0], 0.0);
-        assert!(times[2] > 6.9 && times[2] < 7.0);
-        assert_eq!(sample_times(1, 7.0, 29.0).unwrap()[0], 0.0);
-        for duration in [0.0, f64::NAN, f64::INFINITY] {
-            assert!(sample_times(1, duration, 29.0).is_err());
         }
     }
 }

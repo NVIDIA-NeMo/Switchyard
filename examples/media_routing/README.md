@@ -7,7 +7,9 @@ video `file` block. Answer still images stay unchanged.
 
 ## Run
 
-Install FFmpeg and FFprobe, and set `NVIDIA_API_KEY` for Inference Hub. From the
+Install libvpx for CPU VP8/VP9 decoding, or use a compatible NVIDIA GPU with
+matching CUDA/NVDEC driver libraries for H.264, HEVC and AV1. Set `NVIDIA_API_KEY`
+for Inference Hub. From the
 repository root, start the server:
 
 ```bash

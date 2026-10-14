@@ -53,7 +53,7 @@ pub struct MediaConfig {
     pub max_input_bytes: usize,
     /// Maximum combined bytes of locally prepared images before base64 encoding.
     pub max_output_bytes: usize,
-    /// Deadline for all preparation, including downloads, queueing, and video subprocesses.
+    /// Deadline for all preparation, including downloads, queueing, and decoding.
     pub timeout_ms: u64,
 }
 
@@ -112,15 +112,12 @@ pub(crate) enum MediaError {
     /// Image decode or encode failure.
     #[error("image decoding or encoding failed")]
     Image(#[from] image::ImageError),
-    /// Temporary-file or child-process I/O failure.
-    #[error("media I/O failed")]
-    Io(#[from] std::io::Error),
 }
 
 /// Result of media preparation.
 type Result<T> = std::result::Result<T, MediaError>;
 
-/// Per-target media preparation with a client-wide CPU/subprocess limit.
+/// Per-target media preparation with a client-wide decoding limit.
 pub(crate) struct MediaProcessor {
     config: MediaConfig,
     fetcher: MediaFetcher,
@@ -503,55 +500,96 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn text_only_judge_never_fetches_images_or_videos() {
-        let mut body = json!({"messages":[{"role":"user","content":[
-            {"type":"text","text":"question"},
-            {"type":"image_url","image_url":{"url":"https://127.0.0.1/private"}},
-            {"type":"video_url","video_url":{"url":"https://127.0.0.1/private"}}
-        ]}]});
-        processor(MediaConfig {
-            max_images: Some(0),
-            video: VideoMode::Omit,
-            image_max_edge: Some(384),
-            ..Default::default()
-        })
-        .prepare(&mut body, WireFormat::OpenAiChat)
-        .await
-        .unwrap();
-        assert_eq!(body["messages"][0]["content"][0]["text"], "question");
-        assert_eq!(body["messages"][0]["content"][1]["text"], "[image omitted]");
-        assert_eq!(body["messages"][0]["content"][2]["text"], "[video omitted]");
+    async fn zero_image_limit_omits_media_before_fetching_or_source_validation() {
+        for video in [VideoMode::Omit, VideoMode::Frames] {
+            let mut body = json!({"messages":[{"role":"user","content":[
+                {"type":"text","text":"question"},
+                {"type":"image_url","image_url":{"url":"https://127.0.0.1/private"}},
+                {"type":"video_url","video_url":{"url":"https://127.0.0.1/private"}},
+                {"type":"video_url","video_url":{"unsupported_id":"unused"}}
+            ]}]});
+            processor(MediaConfig {
+                max_images: Some(0),
+                video,
+                image_max_edge: Some(384),
+                ..Default::default()
+            })
+            .prepare(&mut body, WireFormat::OpenAiChat)
+            .await
+            .unwrap();
+            let content = &body["messages"][0]["content"];
+            assert_eq!(content[0]["text"], "question");
+            assert_eq!(content[1]["text"], "[image omitted]");
+            let marker = if video == VideoMode::Omit {
+                "[video omitted]"
+            } else {
+                "[video frames omitted]"
+            };
+            assert_eq!(content[2]["text"], marker);
+            assert_eq!(content[3]["text"], marker);
+        }
     }
 
     #[tokio::test]
-    async fn native_video_formats_need_no_download_or_decoder() {
-        for url in ["https://example.com/clip.mp4", "data:video/mp4;base64,AQID"] {
-            let mut body = json!({"messages":[{"role":"user","content":[{"type":"video_url","video_url":{"url":url}}]}]});
-            processor(MediaConfig {
-                video: VideoMode::File,
-                ..Default::default()
-            })
-            .prepare(&mut body, WireFormat::OpenAiChat)
-            .await
-            .unwrap();
-            let file = &body["messages"][0]["content"][0]["file"];
-            assert_eq!(file["format"], "video/mp4");
-            assert_eq!(
-                file[if url.starts_with("data:") {
-                    "file_data"
-                } else {
-                    "file_id"
-                }],
-                url
-            );
-            processor(MediaConfig {
-                video: VideoMode::VideoUrl,
-                ..Default::default()
-            })
-            .prepare(&mut body, WireFormat::OpenAiChat)
-            .await
-            .unwrap();
-            assert_eq!(body["messages"][0]["content"][0]["video_url"]["url"], url);
+    async fn native_video_conversion_preserves_source_mime_and_same_format_options() {
+        for (block, url, mime) in [
+            (
+                json!({"type":"video_url","video_url":{"url":"https://example.com/a.webm","fps":2}}),
+                "https://example.com/a.webm",
+                "video/webm",
+            ),
+            (
+                json!({"type":"video_url","video_url":{"url":"data:video/mp4;base64,AQID"}}),
+                "data:video/mp4;base64,AQID",
+                "video/mp4",
+            ),
+            (
+                json!({"type":"input_video","video_url":"https://example.com/opaque.mov","media_type":"video/webm"}),
+                "https://example.com/opaque.mov",
+                "video/webm",
+            ),
+        ] {
+            let original = json!({"messages":[{"role":"user","content":[block]}]});
+            for video in [VideoMode::Passthrough, VideoMode::VideoUrl, VideoMode::File] {
+                let mut body = original.clone();
+                processor(MediaConfig {
+                    video,
+                    ..Default::default()
+                })
+                .prepare(&mut body, WireFormat::OpenAiChat)
+                .await
+                .unwrap();
+                let item = &body["messages"][0]["content"][0];
+                match video {
+                    VideoMode::Passthrough => assert_eq!(body, original),
+                    VideoMode::VideoUrl => {
+                        assert_eq!(item["video_url"]["url"], url);
+                        if block["type"] == "video_url" {
+                            assert_eq!(body, original);
+                        }
+                    }
+                    VideoMode::File => {
+                        assert_eq!(item["file"]["format"], mime);
+                        assert_eq!(
+                            item["file"][if url.starts_with("data:") {
+                                "file_data"
+                            } else {
+                                "file_id"
+                            }],
+                            url
+                        );
+                        processor(MediaConfig {
+                            video: VideoMode::VideoUrl,
+                            ..Default::default()
+                        })
+                        .prepare(&mut body, WireFormat::OpenAiChat)
+                        .await
+                        .unwrap();
+                        assert_eq!(body["messages"][0]["content"][0]["video_url"]["url"], url);
+                    }
+                    _ => unreachable!(),
+                }
+            }
         }
     }
 
@@ -591,94 +629,33 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires ffmpeg and ffprobe on PATH"]
-    async fn video_frames_work_in_all_formats_and_preserve_original_request() {
-        for (mime, bytes) in [
-            (
-                "video/mp4",
-                include_bytes!("../tests/fixtures/media/colors.mp4").as_slice(),
-            ),
-            (
-                "video/webm",
-                include_bytes!("../tests/fixtures/media/vp8.webm").as_slice(),
-            ),
-        ] {
-            let source = data_uri(mime, bytes);
-            for format in [
-                WireFormat::OpenAiChat,
-                WireFormat::OpenAiResponses,
-                WireFormat::AnthropicMessages,
-            ] {
-                let original = json!({"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"video_url","video_url":{"url":source}}]}]});
-                let mut body = original.clone();
-                processor(MediaConfig {
-                    video: VideoMode::Frames,
-                    video_max_frames: 3,
-                    frame_max_edge: 32,
-                    ..Default::default()
-                })
-                .prepare(&mut body, format)
-                .await
-                .unwrap();
-                let content = body["messages"][0]["content"].as_array().unwrap();
-                let frames: Vec<_> = content.iter().filter_map(image_url).collect();
-                assert_eq!(frames.len(), 3);
-                for url in frames {
-                    let image = image::load_from_memory(
-                        &processor(MediaConfig::default()).load(url).await.unwrap(),
-                    )
-                    .unwrap();
-                    assert!(image.width() <= 32 && image.height() <= 32);
-                }
-                assert_eq!(
-                    original["messages"][0]["content"][1]["video_url"]["url"],
-                    source
-                );
-                assert!(content.iter().any(|item| {
-                    item["text"]
-                        .as_str()
-                        .is_some_and(|text| text.contains("0.000s"))
-                }));
-            }
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires ffmpeg and ffprobe on PATH"]
-    async fn image_cap_counts_all_frames_without_changing_samples() {
+    async fn image_limit_counts_video_frames_before_fetching() {
         let original = json!({"messages":[{"role":"user","content":[
-            {"type":"image_url","image_url":{"url":still_image()}},
-            {"type":"video_url","video_url":{"url":data_uri("video/mp4", include_bytes!("../tests/fixtures/media/colors.mp4"))}}
+            {"type":"image_url","image_url":{"url":"https://127.0.0.1/image"}},
+            {"type":"video_url","video_url":{"url":"https://127.0.0.1/video"}}
         ]}]});
-        let mut unlimited = None;
-        for limit in [None, Some(0), Some(3), Some(4)] {
+        for limit in [0, 3] {
             let mut body = original.clone();
             let result = processor(MediaConfig {
-                max_images: limit,
+                max_images: Some(limit),
                 video: VideoMode::Frames,
                 video_max_frames: 3,
-                frame_max_edge: 32,
                 ..Default::default()
             })
             .prepare(&mut body, WireFormat::OpenAiChat)
             .await;
-            if limit == Some(3) {
+            if limit == 3 {
                 assert!(
                     matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
                 );
                 assert_eq!(body, original);
-                continue;
-            }
-            result.unwrap();
-            let content = body["messages"][0]["content"].as_array().unwrap();
-            assert_eq!(
-                content.iter().filter_map(image_url).count(),
-                if limit == Some(0) { 0 } else { 4 }
-            );
-            if limit.is_none() {
-                unlimited = Some(body);
-            } else if limit == Some(4) {
-                assert_eq!(Some(body), unlimited);
+            } else {
+                result.unwrap();
+                assert_eq!(body["messages"][0]["content"][0]["text"], "[image omitted]");
+                assert_eq!(
+                    body["messages"][0]["content"][1]["text"],
+                    "[video frames omitted]"
+                );
             }
         }
     }
@@ -686,13 +663,19 @@ mod tests {
     #[tokio::test]
     async fn image_resize_applies_exif_and_avoids_reencoding_small_images() {
         let slots = Arc::new(Semaphore::new(1));
-        let (_, bytes) = decode::resize(
-            include_bytes!("../tests/fixtures/media/oriented.jpg").to_vec(),
-            40,
-            slots.clone(),
-        )
-        .await
-        .unwrap();
+        let image = image::RgbImage::from_pixel(80, 40, image::Rgb([255, 0, 0]));
+        let mut jpeg = Cursor::new(Vec::new());
+        image.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
+        let mut jpeg = jpeg.into_inner();
+        // EXIF orientation 6: rotate 90 degrees clockwise.
+        jpeg.splice(
+            2..2,
+            [
+                0xff, 0xe1, 0, 34, b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0, 1,
+                0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        let (_, bytes) = decode::resize(jpeg, 40, slots.clone()).await.unwrap();
         let rotated = image::load_from_memory(&bytes).unwrap();
         assert_eq!((rotated.width(), rotated.height()), (20, 40));
         let original = processor(MediaConfig::default())
@@ -727,61 +710,5 @@ mod tests {
             .prepare(&mut body, WireFormat::OpenAiResponses)
             .await;
         assert!(matches!(result, Err(MediaError::Timeout)));
-    }
-
-    #[tokio::test]
-    async fn native_video_conversion_keeps_mime_and_same_format_options() {
-        let mut body = json!({"messages":[{"role":"user","content":[
-            {"type":"video_url","video_url":{"url":"https://example.com/a.webm","fps":2}}
-        ]}]});
-        let original = body.clone();
-        processor(MediaConfig {
-            video: VideoMode::VideoUrl,
-            ..Default::default()
-        })
-        .prepare(&mut body, WireFormat::OpenAiChat)
-        .await
-        .unwrap();
-        assert_eq!(body, original);
-        processor(MediaConfig {
-            video: VideoMode::File,
-            ..Default::default()
-        })
-        .prepare(&mut body, WireFormat::OpenAiChat)
-        .await
-        .unwrap();
-        assert_eq!(
-            body["messages"][0]["content"][0]["file"]["format"],
-            "video/webm"
-        );
-    }
-
-    #[tokio::test]
-    async fn zero_image_budget_skips_video_sources_before_validation() {
-        let mut body = json!({"messages":[{"role":"user","content":[
-            {"type":"video_url","video_url":{"unsupported_id":"unused"}}
-        ]}]});
-        processor(MediaConfig {
-            max_images: Some(0),
-            video: VideoMode::Frames,
-            ..Default::default()
-        })
-        .prepare(&mut body, WireFormat::OpenAiChat)
-        .await
-        .unwrap();
-        assert_eq!(
-            body["messages"][0]["content"][0]["text"],
-            "[video frames omitted]"
-        );
-    }
-
-    #[test]
-    fn declared_video_mime_takes_precedence_over_the_url_suffix() {
-        let source = video_source(&json!({
-            "type":"input_video", "video_url":"https://example.com/opaque.mov",
-            "media_type":"video/webm"
-        }))
-        .unwrap();
-        assert_eq!(source.1, "video/webm");
     }
 }
