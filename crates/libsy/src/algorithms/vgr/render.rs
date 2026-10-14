@@ -15,51 +15,29 @@ pub(super) const ATTEMPT_BUDGET: usize = 2200;
 const AGENTIC_TRAJECTORY_BUDGET: usize = 12_000;
 const AGENTIC_EVENT_BUDGET: usize = 1400;
 
-/// Redacted non-empty turns, and the index of the latest user turn among them.
-fn rendered(turns: &[Turn]) -> (Vec<(Role, String)>, Option<usize>) {
-    let rendered: Vec<(Role, String)> = turns
-        .iter()
-        .filter(|turn| !turn.text.trim().is_empty())
-        .map(|turn| (turn.role, redact(&turn.text)))
-        .collect();
-    let latest_user = rendered.iter().rposition(|(role, _)| *role == Role::User);
-    (rendered, latest_user)
-}
-
-fn role_label(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::Developer => "developer",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
-    }
-}
-
-fn attempt_section(attempt: &str) -> String {
-    clip_mid(&redact(attempt), ATTEMPT_BUDGET, 1.0 / 3.0)
-}
-
 /// Earlier turns first, then the latest user instruction and the attempt.
 pub(super) fn render_session(turns: &[Turn], attempt: &str) -> String {
-    let (turns, latest_user) = rendered(turns);
-    let mut lines: Vec<String> = turns
+    let latest_user = turns
         .iter()
-        .enumerate()
-        .filter(|(index, _)| Some(*index) != latest_user)
-        .map(|(_, (role, text))| {
-            let text = if matches!(role, Role::User | Role::System | Role::Developer) {
-                text.clone()
-            } else {
-                clip_mid(text, ASSISTANT_TURN_BUDGET, 0.5)
-            };
-            format!("[{}] {text}", role_label(*role))
-        })
-        .collect();
-    if let Some(index) = latest_user {
-        lines.push(format!("[user (latest)] {}", turns[index].1));
+        .rposition(|turn| turn.role == Role::User && !turn.text.trim().is_empty());
+    let mut lines = Vec::new();
+    for (index, turn) in turns.iter().enumerate() {
+        if turn.text.trim().is_empty() || Some(index) == latest_user {
+            continue;
+        }
+        let mut text = redact(&turn.text);
+        if matches!(turn.role, Role::Assistant | Role::Tool) {
+            text = clip_mid(&text, ASSISTANT_TURN_BUDGET, 0.5);
+        }
+        lines.push(format!("[{}] {text}", turn.role));
     }
-    lines.push(format!("[assistant attempt] {}", attempt_section(attempt)));
+    if let Some(index) = latest_user {
+        let text = redact(&turns[index].text);
+        lines.push(format!("[user (latest)] {text}"));
+    }
+    let attempt = redact(attempt);
+    let attempt = clip_mid(&attempt, ATTEMPT_BUDGET, 1.0 / 3.0);
+    lines.push(format!("[assistant attempt] {attempt}"));
     lines.join("\n")
 }
 
@@ -67,17 +45,18 @@ pub(super) fn render_session(turns: &[Turn], attempt: &str) -> String {
 ///
 /// Framework instructions are omitted.
 pub(super) fn render_agentic_view(request: &Request, turns: &[Turn], attempt: &str) -> String {
-    let (turns, _) = rendered(turns);
-    let requirements = turns
+    let user_turns = turns
         .iter()
-        .filter(|(role, _)| *role == Role::User)
-        .enumerate()
-        .map(|(index, (_, text))| match index {
+        .filter(|turn| turn.role == Role::User && !turn.text.trim().is_empty());
+    let mut requirements = Vec::new();
+    for (index, turn) in user_turns.enumerate() {
+        let text = redact(&turn.text);
+        requirements.push(match index {
             0 => format!("[user task] {text}"),
             _ => format!("[user update {index}] {text}"),
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+        });
+    }
+    let requirements = requirements.join("\n");
     let trajectory = agentic_trajectory(request);
     let mut parts = vec![format!("USER TASK AND UPDATES:\n{requirements}")];
     if !trajectory.is_empty() {
@@ -86,7 +65,9 @@ pub(super) fn render_agentic_view(request: &Request, turns: &[Turn], attempt: &s
             clip_mid(&trajectory.join("\n"), AGENTIC_TRAJECTORY_BUDGET, 1.0 / 3.0)
         ));
     }
-    parts.push(format!("CURRENT ATTEMPT:\n{}", attempt_section(attempt)));
+    let attempt = redact(attempt);
+    let attempt = clip_mid(&attempt, ATTEMPT_BUDGET, 1.0 / 3.0);
+    parts.push(format!("CURRENT ATTEMPT:\n{attempt}"));
     parts.join("\n\n")
 }
 
@@ -123,10 +104,9 @@ fn agentic_trajectory(request: &Request) -> Vec<String> {
                 _ => None,
             };
             if let Some((label, text)) = event {
-                events.push(format!(
-                    "[{label}] {}",
-                    clip_mid(&redact(&text), AGENTIC_EVENT_BUDGET, 0.5)
-                ));
+                let text = redact(&text);
+                let text = clip_mid(&text, AGENTIC_EVENT_BUDGET, 0.5);
+                events.push(format!("[{label}] {text}"));
             }
         }
     }

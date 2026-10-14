@@ -5,7 +5,7 @@
 //!
 //! Budgets and clipping count characters, not bytes.
 
-use std::sync::LazyLock;
+use std::{borrow::Cow, sync::LazyLock};
 
 use regex::Regex;
 use serde_json::Value;
@@ -14,12 +14,13 @@ use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role
 use crate::algorithms::util::tool_signals::classify_text;
 
 /// One flattened turn: instructions first, then messages.
-#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Turn {
     pub(super) role: Role,
     pub(super) text: String,
 }
 
+// API keys, AWS access keys, bearer tokens, and email addresses.
+// The 16-character key/token minimum avoids matching short ordinary identifiers.
 static REDACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"\b(sk|rk|pk)-[A-Za-z0-9_\-]{16,}\b",
@@ -28,11 +29,11 @@ static REDACT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         r"\b[\w.+-]+@[\w-]+\.[\w.]+\b",
     ]
     .iter()
-    .filter_map(|pattern| Regex::new(pattern).ok())
+    .map(|pattern| Regex::new(pattern).expect("valid redaction pattern"))
     .collect()
 });
 
-/// Code or test activity in the attempt itself; prose never matches.
+// Heuristic code/test markers: fences, shell commands, diffs, tracebacks, and test counts.
 static CODE_ACTIVITY: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(concat!(
         r"(?m)```|^\$ |^diff --git|^@@ |",
@@ -43,11 +44,13 @@ static CODE_ACTIVITY: LazyLock<Option<Regex>> = LazyLock::new(|| {
     .ok()
 });
 
+// Tool transcript labels and JSON tool-call fields.
 static TOOL_ACTIVITY: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\[tool\b|^\[[^\]\n]* calls tools?:|"tool_calls?"\s*:"#).ok()
 });
 
 /// Text of a content sequence, and whether it carried media or unknown blocks.
+/// Tool and reasoning blocks are skipped; unsupported blocks make derivation fail closed.
 pub(super) fn content_text(content: &[ContentBlock]) -> (String, bool) {
     let mut parts: Vec<&str> = Vec::new();
     let mut unsupported = false;
@@ -81,12 +84,12 @@ pub(super) fn turns(request: &Request) -> (Vec<Turn>, bool) {
 }
 
 /// The latest non-empty user turn.
-pub(super) fn user_task_text(turns: &[Turn]) -> String {
+pub(super) fn user_task_text(turns: &[Turn]) -> &str {
     turns
         .iter()
         .rev()
         .find(|turn| turn.role == Role::User && !turn.text.trim().is_empty())
-        .map(|turn| turn.text.clone())
+        .map(|turn| turn.text.as_str())
         .unwrap_or_default()
 }
 
@@ -111,7 +114,9 @@ pub(super) fn has_tool_trajectory(request: &Request) -> bool {
 pub(super) fn redact(text: &str) -> String {
     let mut out = text.to_string();
     for pattern in REDACT_PATTERNS.iter() {
-        out = pattern.replace_all(&out, "[REDACTED]").into_owned();
+        if let Cow::Owned(redacted) = pattern.replace_all(&out, "[REDACTED]") {
+            out = redacted;
+        }
     }
     out
 }
@@ -122,24 +127,38 @@ pub(super) fn char_len(text: &str) -> usize {
 
 /// Head-and-tail clip to `budget` characters, keeping `head_frac` as head.
 pub(super) fn clip_mid(text: &str, budget: usize, head_frac: f64) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= budget {
+    let len = char_len(text);
+    if len <= budget {
         return text.to_string();
     }
-    let head = ((budget as f64 * head_frac) as usize).max(1);
+    let head = ((budget as f64 * head_frac) as usize).max(1).min(budget);
     let tail = budget.saturating_sub(head);
-    let omitted = chars.len() - budget;
-    let head_text: String = chars[..head].iter().collect();
-    let tail_text: String = chars[chars.len() - tail..].iter().collect();
+    let omitted = len - budget;
+    let head_end = text
+        .char_indices()
+        .nth(head)
+        .map_or(text.len(), |(index, _)| index);
+    let tail_start = if tail == 0 {
+        text.len()
+    } else {
+        text.char_indices()
+            .rev()
+            .nth(tail - 1)
+            .map_or(0, |(index, _)| index)
+    };
+    let head_text = &text[..head_end];
+    let tail_text = &text[tail_start..];
     format!("{head_text}\n...[{omitted} chars omitted]...\n{tail_text}")
 }
 
+/// Detects heuristic code/test markers in the local attempt.
 pub(super) fn observed_hardening(attempt: &str) -> bool {
     CODE_ACTIVITY
         .as_ref()
         .is_some_and(|pattern| pattern.is_match(attempt))
 }
 
+/// Detects tool transcript labels and JSON tool-call fields in the local attempt.
 pub(super) fn observed_tool_activity(attempt: &str) -> bool {
     TOOL_ACTIVITY
         .as_ref()
@@ -151,7 +170,6 @@ pub(super) fn observed_tool_activity(attempt: &str) -> bool {
 pub(super) struct ToolRecord {
     pub(super) errors: i32,
     pub(super) results: i32,
-    pub(super) tail_clean: bool,
     /// Consecutive clean results ending the conversation.
     pub(super) clean_tail: i32,
 }
@@ -194,7 +212,6 @@ impl ToolRecord {
                 && !exit_ok;
             record.results = record.results.saturating_add(1);
             record.errors = record.errors.saturating_add(i32::from(failed));
-            record.tail_clean = !failed;
             record.clean_tail = if failed {
                 0
             } else {

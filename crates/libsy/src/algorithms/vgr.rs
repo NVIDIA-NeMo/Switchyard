@@ -49,7 +49,7 @@ enum TaskType {
 }
 
 /// The complete input the decision core sees.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Default)]
 struct Capabilities {
     branch: Branch,
     /// The judged view of the request and attempt.

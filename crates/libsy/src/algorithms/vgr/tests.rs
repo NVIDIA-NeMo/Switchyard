@@ -45,6 +45,7 @@ fn branch(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Bran
 }
 
 #[test]
+// Router typing selects a branch; tool history takes precedence over coding.
 fn router_typing_selects_the_verification_regime() {
     let single = request(vec![Message::text(Role::User, "Help with this task")]);
     for (task_type, expected) in [
@@ -72,6 +73,7 @@ fn router_typing_selects_the_verification_regime() {
 }
 
 #[test]
+// Missing text and unsupported content cannot license a local answer.
 fn missing_or_unrepresentable_evidence_fails_closed() {
     let task = request(vec![Message::text(Role::User, "task")]);
     assert_eq!(branch(&task, " ", None), Branch::Unknown);
@@ -90,6 +92,7 @@ fn missing_or_unrepresentable_evidence_fails_closed() {
 }
 
 #[test]
+// Executor success takes precedence over inferred tool errors.
 fn a_zero_exit_code_overrules_every_error_inference() {
     let record = ToolRecord::from_request(&request(vec![
         result(
@@ -109,13 +112,13 @@ fn a_zero_exit_code_overrules_every_error_inference() {
         ToolRecord {
             errors: 3,
             results: 5,
-            tail_clean: true,
             clean_tail: 1,
         }
     );
 }
 
 #[test]
+// Verifiers see user requirements and redacted tool history without framework instructions.
 fn the_agentic_view_keeps_the_task_and_redacts_the_trajectory() {
     let session = request(vec![
         Message::text(Role::System, "framework boilerplate"),
@@ -131,4 +134,82 @@ fn the_agentic_view_keeps_the_task_and_redacts_the_trajectory() {
     assert!(view.contains("[REDACTED]") && !view.contains("abcdefghij"));
     assert!(!view.contains("boilerplate"));
     assert!(view.ends_with("CURRENT ATTEMPT:\nrotated"));
+}
+
+#[test]
+fn redaction_covers_keys_tokens_and_email_and_is_idempotent() {
+    for (input, expected) in [
+        ("sk-abcdefghijklmnop", "[REDACTED]"),
+        ("rk-abcdefghijklmnop", "[REDACTED]"),
+        ("pk-abcdefghijklmnop", "[REDACTED]"),
+        ("AKIA0123456789ABCDEF", "[REDACTED]"),
+        (
+            "Authorization: Bearer abcdefghijklmnop",
+            "Authorization: [REDACTED]",
+        ),
+        ("BEARER abcdefghijklmnop", "[REDACTED]"),
+        ("contact dev+test@example.com", "contact [REDACTED]"),
+        ("ordinary task text", "ordinary task text"),
+        ("sk-abcdefghijklmno", "sk-abcdefghijklmno"),
+        ("Bearer abcdefghijklmno", "Bearer abcdefghijklmno"),
+    ] {
+        let redacted = super::text::redact(input);
+        assert_eq!(redacted, expected, "{input}");
+        assert_eq!(super::text::redact(&redacted), expected, "{input}");
+    }
+}
+
+#[test]
+fn clipping_preserves_character_budgets_and_utf8_boundaries() {
+    for (input, budget, fraction, expected) in [
+        ("abcdef", 6, 0.5, "abcdef"),
+        ("abcdef", 4, 0.5, "ab\n...[2 chars omitted]...\nef"),
+        ("aé🙂中z", 4, 0.5, "aé\n...[1 chars omitted]...\n中z"),
+        ("aé🙂中z", 3, 1.0 / 3.0, "a\n...[2 chars omitted]...\n中z"),
+        ("aé🙂中z", 2, 1.0, "aé\n...[3 chars omitted]...\n"),
+        ("aé🙂中z", 1, 0.5, "a\n...[4 chars omitted]...\n"),
+    ] {
+        assert_eq!(super::text::clip_mid(input, budget, fraction), expected);
+    }
+}
+
+#[test]
+fn session_rendering_preserves_roles_and_moves_the_latest_user_turn() {
+    let session = request(vec![
+        Message::text(Role::System, "system rule"),
+        Message::text(Role::Developer, "developer rule"),
+        Message::text(Role::User, "first task"),
+        Message::text(Role::Assistant, "first reply"),
+        Message::text(Role::User, "latest task"),
+        Message::text(Role::Tool, "tool output"),
+        Message::text(Role::User, " "),
+    ]);
+    let (turns, _) = super::text::turns(&session);
+    assert_eq!(
+        super::render::render_session(&turns, "done"),
+        "[system] system rule\n[developer] developer rule\n[user] first task\n[assistant] first reply\n[tool] tool output\n[user (latest)] latest task\n[assistant attempt] done"
+    );
+}
+
+#[test]
+fn agentic_rendering_preserves_long_user_updates_and_clips_redacted_attempts() {
+    let task = "é".repeat(2500);
+    let session = request(vec![
+        Message::text(Role::System, "framework"),
+        Message::text(Role::User, &task),
+        Message::text(Role::Assistant, "previous reply"),
+        Message::text(Role::User, " "),
+        Message::text(Role::User, "update sk-abcdefghijklmnop"),
+    ]);
+    let (turns, _) = super::text::turns(&session);
+    // A large secret must be redacted before clipping can expose fragments of it.
+    let attempt = format!("Bearer {}", "x".repeat(25_000));
+    let view = super::render::render_agentic_view(&session, &turns, &attempt);
+    assert!(view.starts_with(&format!(
+        "USER TASK AND UPDATES:\n[user task] {task}\n[user update 1] update [REDACTED]"
+    )));
+    assert!(view.contains("TOOL TRAJECTORY:\n[assistant] previous reply"));
+    assert!(!view.contains("framework"));
+    assert!(view.ends_with("CURRENT ATTEMPT:\n[REDACTED]"));
+    assert!(!view.contains("chars omitted"));
 }
