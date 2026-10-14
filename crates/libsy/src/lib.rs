@@ -18,6 +18,7 @@ mod error;
 pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
+pub use algorithms::adaptive_reasoning::AdaptiveReasoning;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{

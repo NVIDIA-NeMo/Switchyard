@@ -84,6 +84,9 @@ pub(crate) struct DeploymentConfig {
     decision_clients: BTreeMap<String, DecisionClientConfig>,
     #[serde(default)]
     decision_targets: BTreeMap<String, DecisionTargetConfig>,
+    /// Sets each routed request's reasoning effort from tool signals, on every route.
+    #[serde(default)]
+    adaptive_reasoning: bool,
     routes: BTreeMap<String, RouteConfig>,
 }
 
@@ -295,10 +298,13 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let (algorithm, models) = config
+            let (mut algorithm, models) = config
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if self.adaptive_reasoning {
+                algorithm = Arc::new(libsy::AdaptiveReasoning::new(algorithm));
+            }
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients, &decision_clients)?;
             let anthropic_auxiliary_target =

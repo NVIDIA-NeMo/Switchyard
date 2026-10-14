@@ -6,6 +6,7 @@
 //! Everything public here is re-exported at the crate root; reach for it by name —
 //! `use switchyard_libsy::Random`.
 
+pub mod adaptive_reasoning;
 pub mod advisor_gate;
 pub mod composite;
 mod escalation;
