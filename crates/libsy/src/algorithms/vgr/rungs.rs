@@ -13,7 +13,8 @@ use switchyard_protocol::{
 
 use super::TaskType;
 use super::decide::Tri;
-use super::text::{Turn, char_len, clip_mid, redact, turns};
+use super::text::{Turn, char_len, clip_mid, content_text, redact};
+use crate::algorithms::util::escalation::message_text;
 
 pub(super) const DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 512;
 pub(super) const LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;
@@ -68,7 +69,7 @@ progress — such that the CAPABLE tier should take over? A single failed comman
 iteration, or a hard task is not enough. Thin or ambiguous evidence means no. Reply with exactly \
 one word: yes or no.";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy)]
 pub(super) enum Question {
     /// Is this answer correct?
     Answer,
@@ -145,7 +146,19 @@ pub(super) fn build_typing_request(task_text: &str, metadata: Option<Metadata>) 
 
 /// The system and task anchors, the recent turns, and the proposed turn.
 pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> String {
-    let (turns, _) = turns(request);
+    let turns: Vec<Turn> = request
+        .llm_request
+        .instructions
+        .iter()
+        .map(|instruction| Turn {
+            role: instruction.role,
+            text: content_text(&instruction.content).0,
+        })
+        .chain(request.llm_request.messages.iter().map(|message| Turn {
+            role: message.role,
+            text: message_text(message),
+        }))
+        .collect();
     let system_index = turns.iter().position(|turn| turn.role == Role::System);
     let first_user_index = turns.iter().position(|turn| turn.role == Role::User);
 
@@ -163,11 +176,9 @@ pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> String 
         .filter(|(index, _)| Some(*index) != system_index && Some(*index) != first_user_index)
         .rev()
         .take(TURN_RECENT_MESSAGES)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
         .map(|(_, turn)| turn_line(turn, TURN_MESSAGE_CHARS))
         .collect();
+    window.reverse();
 
     let mut fragments = Vec::new();
     for output in proposed
@@ -210,8 +221,11 @@ pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> String 
 }
 
 fn turn_line(turn: &Turn, budget: usize) -> String {
-    let role = format!("{:?}", turn.role).to_ascii_lowercase();
-    format!("[{role}] {}", clip_mid(&redact(&turn.text), budget, 0.5))
+    format!(
+        "[{}] {}",
+        turn.role,
+        clip_mid(&redact(&turn.text), budget, 0.5)
+    )
 }
 
 pub(super) fn has_tool_call(response: &AggLlmResponse) -> bool {
@@ -338,5 +352,73 @@ mod tests {
                 .map(|text| text.len()),
             Some(TYPING_TASK_BUDGET)
         );
+    }
+
+    #[test]
+    fn turn_view_keeps_anchors_and_recent_turns_in_order() {
+        let mut messages = vec![
+            Message::text(Role::System, "system rule"),
+            Message::text(Role::User, "task"),
+        ];
+        messages
+            .extend((0..30).map(|index| Message::text(Role::Assistant, format!("turn {index}"))));
+        let request = super::super::tests::request(messages);
+        let view = turn_view(&request, &replied("next", None));
+        let mut expected = vec![
+            "[system] system rule".to_string(),
+            "[task] task".to_string(),
+        ];
+        expected.extend((2..30).map(|index| format!("[assistant] turn {index}")));
+        expected.push("[proposed next turn] [assistant] next".to_string());
+        assert_eq!(view, expected.join("\n"));
+    }
+
+    #[test]
+    fn turn_view_includes_redacted_tool_history_and_the_proposed_call() {
+        use switchyard_protocol::ToolCall;
+
+        let mut call = super::super::tests::call("history");
+        if let ContentBlock::ToolCall(call) = &mut call.content[0] {
+            call.arguments = serde_json::json!({"command": "echo sk-abcdefghijklmnop"});
+        }
+        let request = super::super::tests::request(vec![
+            Message::text(Role::User, "run the task"),
+            call,
+            super::super::tests::result("history", "failed; contact dev@example.com"),
+        ]);
+        let proposed = AggLlmResponse {
+            outputs: vec![ResponseOutput {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: "next".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "echo Bearer abcdefghijklmnop"}),
+                })],
+                url_citations: Vec::new(),
+                stop_reason: None,
+            }],
+            ..Default::default()
+        };
+        let view = turn_view(&request, &proposed);
+        assert!(view.contains(r#"[assistant] tool_call bash({"command":"echo [REDACTED]"})"#));
+        assert!(view.contains("[tool] failed; contact [REDACTED]"));
+        assert!(view.contains(
+            r#"[proposed next turn] [assistant] [tool call] bash({"command":"echo [REDACTED]"})"#
+        ));
+        assert!(!view.contains("abcdefghijklmnop"));
+        assert!(!view.contains("dev@example.com"));
+    }
+
+    #[test]
+    fn turn_view_clips_large_tool_results_at_utf8_boundaries() {
+        let request = super::super::tests::request(vec![
+            Message::text(Role::User, "task"),
+            super::super::tests::result("history", &format!("BEGIN{}END", "é".repeat(1000))),
+        ]);
+        let view = turn_view(&request, &replied("next", None));
+        assert!(view.contains("[tool] BEGIN"));
+        assert!(view.contains("chars omitted]..."));
+        assert!(view.contains("END\n[proposed next turn]"));
+        assert!(char_len(&view) <= TURN_MAX_CHARS);
     }
 }

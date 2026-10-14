@@ -337,7 +337,7 @@ pub(crate) fn conversation_turn(request: &Request) -> usize {
 /// [`Message::text_content`] is deliberately not used here: it keeps only text and refusal
 /// blocks, which would erase exactly the repeated-command signal the judge's loop detection
 /// relies on.
-fn message_text(message: &Message) -> String {
+pub(crate) fn message_text(message: &Message) -> String {
     let mut parts = Vec::new();
     let terminus_commands = if message.role == Role::Assistant {
         message

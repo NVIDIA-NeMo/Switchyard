@@ -283,4 +283,28 @@ mod decide {
         chat.branch = Branch::Coding;
         assert_eq!(decide(&chat, &readout(1.0), None), Route::Cloud);
     }
+
+    #[test]
+    fn deliberation_commits_only_on_an_affirmative_verdict() {
+        for branch in [Branch::Chat, Branch::Agentic, Branch::DefaultVerified] {
+            let mut caps = agentic(0, 1, 1);
+            caps.branch = branch;
+            for (verdict, expected) in [
+                (Some(Tri::Yes), Route::Local),
+                (Some(Tri::No), Route::Cloud),
+                (Some(Tri::Unknown), Route::Cloud),
+                (None, Route::Cloud),
+            ] {
+                let signals = Signals {
+                    deliberation: verdict,
+                    ..Signals::default()
+                };
+                assert_eq!(
+                    decide(&caps, &signals, None),
+                    expected,
+                    "{branch:?}: {verdict:?}"
+                );
+            }
+        }
+    }
 }

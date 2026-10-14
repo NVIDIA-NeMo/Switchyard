@@ -9,7 +9,6 @@
 use super::{Branch, Capabilities};
 
 const READOUT: f64 = 0.9;
-const DELIBERATION: f64 = 0.5;
 /// Most tool results a run may contain and still recover without the capable tier.
 const SHORT_RUN_MAX_TOOL_RESULTS: i32 = 100;
 
@@ -27,12 +26,12 @@ pub(super) enum Tri {
 }
 
 /// Evidence gathered for one decision.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Default)]
 pub(super) struct Signals {
     /// Local logprob score that the attempt is correct.
     pub(super) readout: Option<f64>,
-    /// Local deliberating verdict, mapped to 1.0 or 0.0.
-    pub(super) deliberation: Option<f64>,
+    /// Local deliberating verdict.
+    pub(super) deliberation: Option<Tri>,
     /// Capable-tier evidence verdict.
     pub(super) cloud_judge: Option<Tri>,
     /// Capable-tier answer verdict after `cloud_judge` affirms.
@@ -93,7 +92,7 @@ fn affirms(verdict: Option<Tri>) -> bool {
 /// The local rungs affirm: the readout at the branch dial, or deliberation.
 pub(super) fn locally_verified(branch: Branch, signals: &Signals) -> bool {
     let bar = dial(branch).map_or(READOUT, |dial| dial.min(READOUT));
-    clears(signals.readout, bar) || clears(signals.deliberation, DELIBERATION)
+    clears(signals.readout, bar) || affirms(signals.deliberation)
 }
 
 /// Commits the local attempt or escalates.
@@ -115,7 +114,7 @@ pub(super) fn decide(
         }
         Branch::Chat => {
             clean
-                && (clears(signals.deliberation, DELIBERATION)
+                && (affirms(signals.deliberation)
                     || clears(signals.readout, 0.3)
                     || (affirms(signals.cloud_judge) && affirms(signals.evidence_confirm)))
         }

@@ -5,6 +5,7 @@
 //!
 //! Normalized responses carry no logprobs, so this reads the preserved Chat
 //! body. Anything that cannot be scored is `None`, which never commits.
+//! The readout supports OpenAI Chat-compatible verifiers only.
 
 use serde_json::{Value, json};
 use switchyard_protocol::{AggLlmResponse, FormatId, Request, WireFormat};
@@ -80,5 +81,30 @@ mod tests {
         );
         assert_eq!(scored(json!([{"token": "maybe", "logprob": 0.0}])), None);
         assert_eq!(p_yes(&AggLlmResponse::default()), None);
+    }
+
+    #[test]
+    fn unavailable_chat_logprobs_produce_no_score() {
+        let mut response = AggLlmResponse::default();
+        for format in [WireFormat::OpenAiResponses, WireFormat::AnthropicMessages] {
+            response.preservation.responses.insert(
+                FormatId::from(format),
+                json!({"choices": [{"logprobs": {"content": [{"top_logprobs": [
+                    {"token": "yes", "logprob": 0.0}
+                ]}]}}]}),
+            );
+            assert_eq!(p_yes(&response), None);
+        }
+        for body in [
+            json!({"choices": []}),
+            json!({"choices": [{"logprobs": null}]}),
+            json!({"choices": [{"logprobs": {"content": []}}]}),
+        ] {
+            response
+                .preservation
+                .responses
+                .insert(FormatId::from(WireFormat::OpenAiChat), body);
+            assert_eq!(p_yes(&response), None);
+        }
     }
 }
