@@ -53,6 +53,7 @@ impl RoutingLog {
     pub(crate) fn append(
         &mut self,
         context: RoutingLogContext,
+        target: &str,
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
@@ -81,6 +82,7 @@ impl RoutingLog {
             agent_role: context.agent.role.map(Cow::Owned),
             subagent_identity_unsupported: context.agent.identity_unsupported,
             model: model.into(),
+            target: target.into(),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
@@ -238,7 +240,11 @@ struct RoutingRecord<'a> {
     agent_role: Option<Cow<'a, str>>,
     #[serde(skip_serializing_if = "is_false")]
     subagent_identity_unsupported: bool,
+    /// Provider model that served the call, which is what cost tools price.
     model: Cow<'a, str>,
+    /// Configured target that served the call. Targets may share a model.
+    #[serde(default, borrow)]
+    target: Cow<'a, str>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,
     cached_tokens: u64,

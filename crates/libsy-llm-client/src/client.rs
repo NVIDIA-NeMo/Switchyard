@@ -381,8 +381,11 @@ impl TranslatingLlmClient {
                 .normalize(&mut body);
         }
         // After the merge on purpose: the effort override must win over both the caller's
-        // value and any `reasoning` default a target set through `extra_body`.
-        apply_reasoning_effort(&mut body, backend);
+        // value and any `reasoning` default a target set through `extra_body`. Token counting
+        // does not depend on effort, and Anthropic's count endpoint may reject the field.
+        if matches!(endpoint, UpstreamEndpoint::Completion) {
+            apply_reasoning_effort(&mut body, backend);
+        }
         if matches!(backend, Backend::OpenAiResponses(_)) {
             normalize_codex_string_input(&backend.url(), &mut body);
         }
@@ -2492,6 +2495,45 @@ mod tests {
                 assert_eq!(serde_json::from_slice::<Value>(&calls[0].body)?, expected);
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn token_counting_does_not_send_the_effort_override()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages/count_tokens"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 3})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut backend = config(&server.uri());
+        backend.reasoning_effort = Some("max".to_string());
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        let llm_request = decode_request(
+            WireFormat::AnthropicMessages,
+            &json!({"model": "claude", "messages": [{"role": "user", "content": "hi"}]}),
+        )?;
+        let request = Request {
+            llm_request,
+            raw_request: None,
+            metadata: None,
+        };
+        client
+            .call_auxiliary(
+                &ModelId::from("claude"),
+                request,
+                AuxiliaryOperation::AnthropicCountTokens,
+            )
+            .await?;
+        let received = server.received_requests().await.unwrap_or_default();
+        let body: Value = serde_json::from_slice(&received[0].body)?;
+        assert!(body.get("output_config").is_none(), "{body}");
         Ok(())
     }
 
