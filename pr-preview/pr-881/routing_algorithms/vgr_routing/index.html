@@ -1557,9 +1557,9 @@ schema, then reference their target names:</p>
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">confirmed_recovery_min_clean_tail</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span></code></pre></div>
 <p><code>judge_target</code> defaults to <code>local_target</code>. <code>cloud_judge_target</code> is optional.
-The local and cloud targets must resolve to distinct model IDs. When the local
-backend reports its live context capacity, VGR republishes it through
-<code>/v1/models</code>. <code>confirmed_recovery_min_clean_tail</code>, when set, lets an agentic
+The local and cloud targets must resolve to distinct model IDs. When the
+route sets <code>context_window</code>, <code>/v1/models</code> advertises that configured limit.
+<code>confirmed_recovery_min_clean_tail</code>, when set, lets an agentic
 run that recovered from tool errors commit locally once that many trailing tool
 results are clean and the cloud judge confirms the evidence.</p>
 <h2 id="agentic-handoff">Agentic handoff<a class="headerlink" href="#agentic-handoff" title="Permanent link">&para;</a></h2>
