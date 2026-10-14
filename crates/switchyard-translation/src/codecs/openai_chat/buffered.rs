@@ -22,7 +22,7 @@ use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
     MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -158,7 +158,10 @@ impl FormatCodec for OpenAiChatCodec {
             }
         }
 
-        request.tools = decode_openai_tools(body.get("tools"), &mut diagnostics, policy)?;
+        request.tools = decode_openai_tools(body.get("tools"), &mut diagnostics, policy)?
+            .into_iter()
+            .map(Tool::from)
+            .collect();
         request.tool_choice = body.get("tool_choice").map(decode_openai_tool_choice);
         request.extensions.fields = provider_extensions(
             body,
@@ -233,7 +236,7 @@ impl FormatCodec for OpenAiChatCodec {
         body.insert("messages".to_string(), Value::Array(messages));
 
         if !tools.is_empty() {
-            body.insert("tools".to_string(), encode_openai_tools(tools));
+            body.insert("tools".to_string(), encode_openai_tools(tools)?);
             if let Some(choice) = tool_choice {
                 body.insert("tool_choice".to_string(), encode_openai_tool_choice(choice));
             }
@@ -1096,6 +1099,11 @@ pub(crate) fn encode_openai_content(
                 )?;
                 blocks.push(openai_text_part(&media_source_text(source)));
             }
+            ContentBlock::Mcp(_) => {
+                return Err(TranslationError::LossyConversion(
+                    "MCP history encoding is not implemented".into(),
+                ));
+            }
             ContentBlock::Unknown { provider, raw } => {
                 reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
                 push_lossy(
@@ -1152,11 +1160,16 @@ fn media_source_text(source: &MediaSource) -> String {
 }
 
 /// Encodes normalized tool definitions into OpenAI tool JSON.
-pub(crate) fn encode_openai_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
+pub(crate) fn encode_openai_tools(tools: &[Tool]) -> Result<Value> {
+    Ok(Value::Array(
         tools
             .iter()
             .map(|tool| {
+                let tool = tool.function().ok_or_else(|| {
+                    TranslationError::LossyConversion(
+                        "MCP and provider tool encoding is not implemented".into(),
+                    )
+                })?;
                 let mut function = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),
@@ -1165,10 +1178,10 @@ pub(crate) fn encode_openai_tools(tools: &[ToolDefinition]) -> Value {
                 if let Some(strict) = tool.strict {
                     function["strict"] = Value::Bool(strict);
                 }
-                json!({"type": "function", "function": function})
+                Ok(json!({"type": "function", "function": function}))
             })
-            .collect(),
-    )
+            .collect::<Result<_>>()?,
+    ))
 }
 
 /// Encodes normalized tool choice into OpenAI Chat JSON.

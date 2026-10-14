@@ -4131,7 +4131,7 @@ fn responses_lite_additional_tools_item_is_the_tool_list() -> TestResult {
         .request
         .tools
         .iter()
-        .map(|tool| tool.name.as_str())
+        .filter_map(|tool| tool.function().map(|tool| tool.name.as_str()))
         .collect::<Vec<_>>();
     assert_eq!(names, vec!["exec", "update_plan"]);
     assert!(
