@@ -55,14 +55,13 @@ impl Default for BreakerConfig {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct BreakerState {
     failures: u32,
     opened_at: Option<Instant>,
     trial_in_flight: bool,
 }
 
-#[derive(Debug)]
 pub(super) struct CircuitBreaker {
     config: BreakerConfig,
     state: Mutex<BreakerState>,
@@ -76,16 +75,22 @@ impl CircuitBreaker {
         }
     }
 
-    pub(super) fn is_open(&self) -> bool {
+    pub(super) fn attempt(&self) -> Option<Attempt<'_>> {
         let mut state = self.state.lock();
-        let Some(opened_at) = state.opened_at else {
-            return false;
+        let recovery = if let Some(opened_at) = state.opened_at {
+            if state.trial_in_flight || opened_at.elapsed() < self.config.cooldown {
+                return None;
+            }
+            state.trial_in_flight = true;
+            true
+        } else {
+            false
         };
-        if state.trial_in_flight || opened_at.elapsed() < self.config.cooldown {
-            return true;
-        }
-        state.trial_in_flight = true;
-        false
+        Some(Attempt {
+            breaker: self,
+            recovery,
+            completed: false,
+        })
     }
 
     pub(super) fn success(&self) {
@@ -98,6 +103,33 @@ impl CircuitBreaker {
         state.trial_in_flight = false;
         if state.failures >= self.config.threshold {
             state.opened_at = Some(Instant::now());
+        }
+    }
+}
+
+/// Releases a recovery trial if its local call is cancelled or abandoned.
+pub(super) struct Attempt<'a> {
+    breaker: &'a CircuitBreaker,
+    recovery: bool,
+    completed: bool,
+}
+
+impl Attempt<'_> {
+    pub(super) fn success(mut self) {
+        self.completed = true;
+        self.breaker.success();
+    }
+
+    pub(super) fn failure(mut self) {
+        self.completed = true;
+        self.breaker.failure();
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        if self.recovery && !self.completed {
+            self.breaker.state.lock().trial_in_flight = false;
         }
     }
 }
@@ -137,4 +169,35 @@ pub(super) fn endpoint_failure(error: &LibsyError) -> bool {
             _ => false,
         }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_trials_are_exclusive_and_can_be_retried_after_failure_or_drop() {
+        let breaker = CircuitBreaker::new(BreakerConfig {
+            threshold: 1,
+            cooldown: Duration::ZERO,
+        });
+        breaker.failure();
+        let trial = breaker.attempt().expect("recovery trial");
+        assert!(breaker.attempt().is_none());
+        drop(trial);
+        breaker.attempt().expect("released trial").failure();
+        breaker.attempt().expect("retry after failure").success();
+        assert!(breaker.state.lock().opened_at.is_none());
+        assert!(breaker.attempt().is_some());
+    }
+
+    #[test]
+    fn recovery_waits_for_the_cooldown() {
+        let breaker = CircuitBreaker::new(BreakerConfig {
+            threshold: 1,
+            cooldown: Duration::from_secs(30),
+        });
+        breaker.failure();
+        assert!(breaker.attempt().is_none());
+    }
 }

@@ -25,11 +25,20 @@ use crate::algorithms::util::buffered_response::buffer_response;
 use crate::algorithms::util::decisive;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
-use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 
-const TURN_STREAK_KEY: &str = "vgr.turn_verification.streak";
-const TURN_LATCHED_KEY: &str = "vgr.turn_verification.latched";
+#[derive(Default)]
+pub(super) struct VgrState {
+    pub(super) turn_streak: u32,
+    pub(super) turn_latched: bool,
+}
+
+struct RequestContext<'a> {
+    driver: &'a Driver,
+    request: &'a Request,
+    started: Instant,
+}
+
 /// Consecutive escalation votes that latch a session to the capable tier.
 const TURN_CONFIRMATIONS: u32 = 2;
 const TURN_ESCALATE_AT: f64 = 0.5;
@@ -42,15 +51,15 @@ pub(super) struct VgrClassifier {
 }
 
 #[async_trait]
-impl Classifier<State> for VgrClassifier {
+impl Classifier<VgrState> for VgrClassifier {
     async fn score(
         &self,
-        state: &mut State,
+        state: &mut VgrState,
         request: &mut Request,
         driver: &Driver,
     ) -> Result<Scored> {
         let started = Instant::now();
-        let local = self.config.targets.local.clone();
+        let local = &self.config.targets.local;
         let short_circuit = if self.config.mode == ServingMode::Off {
             Some("mode_off")
         } else if self
@@ -60,9 +69,7 @@ impl Classifier<State> for VgrClassifier {
             .is_some_and(|switch| switch.is_engaged())
         {
             Some("kill_switch")
-        } else if self.breaker.is_open() {
-            Some("breaker_open")
-        } else if turn_latched(state) {
+        } else if state.turn_latched {
             Some("turn_verification_latched")
         } else if !self.config.local_supports_images && request_has_image(request) {
             Some("local_image_unsupported")
@@ -70,11 +77,14 @@ impl Classifier<State> for VgrClassifier {
             None
         };
         if let Some(reason) = short_circuit {
-            return Ok(self.escalate(reason, None));
+            return Ok(self.escalate(driver, reason, None));
         }
 
         let Some(budget) = self.remaining(started) else {
-            return Ok(self.escalate("local_timed_out", None));
+            return Ok(self.escalate(driver, "local_timed_out", None));
+        };
+        let Some(trial) = self.breaker.attempt() else {
+            return Ok(self.escalate(driver, "breaker_open", None));
         };
         let attempted = tokio::time::timeout(budget, async {
             let response = driver
@@ -85,85 +95,85 @@ impl Classifier<State> for VgrClassifier {
         .await;
         let buffered = match attempted {
             Ok(Ok(buffered)) => {
-                self.breaker.success();
+                trial.success();
                 buffered
             }
             Ok(Err(error)) => {
                 if endpoint_failure(&error) {
-                    self.breaker.failure();
+                    trial.failure();
                 }
                 if !fallback_eligible(&error) {
                     return Err(error);
                 }
-                return Ok(self.escalate("local_unavailable", None));
+                return Ok(self.escalate(driver, "local_unavailable", None));
             }
             Err(_) => {
-                self.breaker.failure();
-                return Ok(self.escalate("local_timed_out", None));
+                trial.failure();
+                return Ok(self.escalate(driver, "local_timed_out", None));
             }
         };
 
+        let context = RequestContext {
+            driver,
+            request,
+            started,
+        };
         if rungs::has_tool_call(&buffered.agg) {
             if !tool_use_is_complete(&buffered.agg) {
-                return Ok(self.escalate("malformed_tool_call", None));
+                return Ok(self.escalate(driver, "malformed_tool_call", None));
             }
-            if self
-                .verify_turn(driver, request, &buffered.agg, state, started)
-                .await
-            {
-                return Ok(self.escalate("turn_verification_escalated", None));
+            if self.verify_turn(&context, &buffered.agg, state).await {
+                return Ok(self.escalate(driver, "turn_verification_escalated", None));
             }
             if self.config.mode == ServingMode::Shadow {
-                return Ok(self.escalate("turn_verification_complete", None));
+                return Ok(self.escalate(driver, "turn_verification_complete", None));
             }
-            log("turn_verification_complete", None, Route::Local);
-            return Ok((decisive(&local), Some(buffered.into_response())));
+            log(driver, "turn_verification_complete", None, Route::Local);
+            return Ok((decisive(local), Some(buffered.into_response())));
         }
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
-        let task_type = self.type_task(driver, request, started).await;
+        let task_type = self.type_task(&context).await;
         let caps = derive_capabilities(request, &attempt, task_type);
-        let signals = self.gather(driver, &caps, request, started).await;
+        let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
         if route == Route::Cloud || self.config.mode == ServingMode::Shadow {
-            return Ok(self.escalate("decided", Some(caps.branch)));
+            return Ok(self.escalate(driver, "decided", Some(caps.branch)));
         }
-        log("decided", Some(caps.branch), Route::Local);
-        Ok((decisive(&local), Some(buffered.into_response())))
+        log(driver, "decided", Some(caps.branch), Route::Local);
+        Ok((decisive(local), Some(buffered.into_response())))
     }
 }
 
 impl VgrClassifier {
-    fn escalate(&self, reason: &'static str, branch: Option<Branch>) -> Scored {
-        log(reason, branch, Route::Cloud);
+    fn escalate(&self, driver: &Driver, reason: &'static str, branch: Option<Branch>) -> Scored {
+        log(driver, reason, branch, Route::Cloud);
         (decisive(&self.config.targets.cloud), None)
     }
 
     /// Judges one proposed tool call; `true` escalates the rest of the session.
     async fn verify_turn(
         &self,
-        driver: &Driver,
-        request: &Request,
+        context: &RequestContext<'_>,
         proposed: &AggLlmResponse,
-        state: &mut State,
-        started: Instant,
+        state: &mut VgrState,
     ) -> bool {
         let mut call = rungs::build_request(
             Question::TurnTrajectory,
-            &rungs::turn_view(request, proposed),
+            &rungs::turn_view(context.request, proposed),
             readout::MAX_OUTPUT_TOKENS,
-            request.metadata.clone(),
+            context.request.metadata.clone(),
         );
         readout::request_logprobs(&mut call);
         let judge = self.config.judge();
-        let probability = match self.call(driver, call, judge, started).await {
+        let probability = match self.call(context, call, judge).await {
             None => return false,
             Some(Ok(agg)) => readout::p_yes(&agg),
             // Verification fails open, unless the local endpoint itself is down.
             Some(Err(error)) => {
                 if *judge == self.config.targets.local && endpoint_failure(&error) {
                     self.breaker.failure();
-                    latch_turns(state);
+                    state.turn_latched = true;
                     return true;
                 }
                 return false;
@@ -173,53 +183,34 @@ impl VgrClassifier {
             return false;
         };
         if probability < TURN_ESCALATE_AT {
-            state.extra.remove(TURN_STREAK_KEY);
+            state.turn_streak = 0;
             return false;
         }
-        let streak = match state.extra.get(TURN_STREAK_KEY) {
-            Some(StateValue::Count(streak)) => streak.saturating_add(1),
-            _ => 1,
-        };
-        state
-            .extra
-            .insert(TURN_STREAK_KEY.into(), StateValue::Count(streak));
+        state.turn_streak = state.turn_streak.saturating_add(1);
+        let streak = state.turn_streak;
         if streak >= TURN_CONFIRMATIONS {
-            latch_turns(state);
+            state.turn_latched = true;
         }
         streak >= TURN_CONFIRMATIONS
     }
 
     /// Types the request; abstains, selecting the default regime, on any failure.
-    async fn type_task(
-        &self,
-        driver: &Driver,
-        request: &Request,
-        started: Instant,
-    ) -> Option<TaskType> {
+    async fn type_task(&self, context: &RequestContext<'_>) -> Option<TaskType> {
         if !self.config.task_typing {
             return None;
         }
-        let (turns, _) = text::turns(request);
+        let (turns, _) = text::turns(context.request);
         let task = text::user_task_text(&turns);
         if task.trim().is_empty() {
             return None;
         }
-        let call = rungs::build_typing_request(task, request.metadata.clone());
-        let agg = self
-            .call(driver, call, self.config.judge(), started)
-            .await?
-            .ok()?;
+        let call = rungs::build_typing_request(task, context.request.metadata.clone());
+        let agg = self.call(context, call, self.config.judge()).await?.ok()?;
         rungs::parse_task_type(&agg)
     }
 
     /// Gathers evidence cheapest-first, stopping once the decision commits.
-    async fn gather(
-        &self,
-        driver: &Driver,
-        caps: &Capabilities,
-        request: &Request,
-        started: Instant,
-    ) -> Signals {
+    async fn gather(&self, context: &RequestContext<'_>, caps: &Capabilities) -> Signals {
         let mut signals = Signals::default();
         let branch = caps.branch;
         let confirmed = self.config.confirmed_min_clean_tail();
@@ -234,18 +225,10 @@ impl VgrClassifier {
         let cloud_confirms = run == Some(AgenticRun::ConfirmedRecovery);
         let local = self.config.judge();
         let ask = |target, question, max_output_tokens| {
-            self.ask(
-                driver,
-                target,
-                question,
-                judged,
-                max_output_tokens,
-                request,
-                started,
-            )
+            self.ask(context, target, question, judged, max_output_tokens)
         };
 
-        signals.readout = self.readout(driver, judged, request, started).await;
+        signals.readout = self.readout(context, judged).await;
         if settled(&signals) {
             return signals;
         }
@@ -291,45 +274,33 @@ impl VgrClassifier {
         signals
     }
 
-    async fn readout(
-        &self,
-        driver: &Driver,
-        judged: &str,
-        request: &Request,
-        started: Instant,
-    ) -> Option<f64> {
+    async fn readout(&self, context: &RequestContext<'_>, judged: &str) -> Option<f64> {
         let mut call = rungs::build_request(
             Question::Evidence,
             judged,
             readout::MAX_OUTPUT_TOKENS,
-            request.metadata.clone(),
+            context.request.metadata.clone(),
         );
         readout::request_logprobs(&mut call);
-        let agg = self
-            .call(driver, call, self.config.judge(), started)
-            .await?
-            .ok()?;
+        let agg = self.call(context, call, self.config.judge()).await?.ok()?;
         readout::p_yes(&agg)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn ask(
         &self,
-        driver: &Driver,
+        context: &RequestContext<'_>,
         target: &ModelId,
         question: Question,
         judged: &str,
         max_output_tokens: u64,
-        request: &Request,
-        started: Instant,
     ) -> Tri {
         let call = rungs::build_request(
             question,
             judged,
             max_output_tokens,
-            request.metadata.clone(),
+            context.request.metadata.clone(),
         );
-        match self.call(driver, call, target, started).await {
+        match self.call(context, call, target).await {
             Some(Ok(agg)) => rungs::parse_verdict(&agg),
             _ => Tri::Unknown,
         }
@@ -338,14 +309,16 @@ impl VgrClassifier {
     /// One verifier call inside the remaining budget; `None` once it is spent.
     async fn call(
         &self,
-        driver: &Driver,
+        context: &RequestContext<'_>,
         call: Request,
         target: &ModelId,
-        started: Instant,
     ) -> Option<Result<AggLlmResponse>> {
-        let budget = self.remaining(started)?;
+        let budget = self.remaining(context.started)?;
         let outcome = tokio::time::timeout(budget, async {
-            let response = driver.call_model(call, vec![target.clone()]).await?;
+            let response = context
+                .driver
+                .call_model(call, vec![target.clone()])
+                .await?;
             response
                 .llm_response
                 .into_agg()
@@ -371,21 +344,14 @@ impl VgrClassifier {
     }
 }
 
-fn log(reason: &'static str, branch: Option<Branch>, served: Route) {
+fn log(driver: &Driver, reason: &'static str, branch: Option<Branch>, served: Route) {
+    driver.set_evidence(serde_json::json!({
+        "source": "vgr",
+        "reason_code": reason,
+        "verdict": if served == Route::Local { "local" } else { "cloud" },
+        "branch": branch.map(|branch| format!("{branch:?}")),
+    }));
     tracing::info!(target: "libsy", reason, branch = ?branch, served = ?served, "vgr decision");
-}
-
-fn turn_latched(state: &State) -> bool {
-    matches!(
-        state.extra.get(TURN_LATCHED_KEY),
-        Some(StateValue::Count(value)) if *value > 0
-    )
-}
-
-fn latch_turns(state: &mut State) {
-    state
-        .extra
-        .insert(TURN_LATCHED_KEY.into(), StateValue::Count(1));
 }
 
 fn tool_use_is_complete(response: &AggLlmResponse) -> bool {

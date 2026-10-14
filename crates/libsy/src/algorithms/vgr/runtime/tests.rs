@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -16,7 +15,7 @@ use super::super::tests::{call, request, result};
 use crate::Result;
 use crate::algorithms::vgr::Vgr;
 use crate::core::algorithm::Algorithm;
-use crate::core::testing::{reply, test_drive_with_models};
+use crate::core::testing::{category_models, reply, test_drive_with_models};
 
 fn route(configure: impl FnOnce(&mut VgrConfig)) -> Result<Arc<dyn Algorithm>> {
     let mut config = VgrConfig::new(ModelId::new("local"), ModelId::new("cloud"));
@@ -28,13 +27,6 @@ fn route(configure: impl FnOnce(&mut VgrConfig)) -> Result<Arc<dyn Algorithm>> {
     config.task_typing = false;
     configure(&mut config);
     Ok(Arc::new(Vgr::new(config)?))
-}
-
-fn models() -> HashMap<Category, Vec<ModelId>> {
-    HashMap::from([(
-        Category::Any,
-        vec![ModelId::new("local"), ModelId::new("cloud")],
-    )])
 }
 
 fn session(messages: Vec<Message>) -> Request {
@@ -96,7 +88,7 @@ async fn drive(
     let (selected, _) = test_drive_with_models(
         Arc::clone(route),
         request,
-        models(),
+        category_models(Category::Any, &["local", "cloud"]),
         move |target: ModelId, _| {
             let calls = Arc::clone(&calls);
             async move {
@@ -231,7 +223,7 @@ async fn an_unavailable_local_tier_escalates_and_other_failures_surface() -> Res
         let outcome = test_drive_with_models(
             Arc::clone(&route),
             session(vec![Message::text(Role::User, "task")]),
-            models(),
+            category_models(Category::Any, &["local", "cloud"]),
             move |target: ModelId, _| async move {
                 match target.as_str() {
                     "local" => Err(LlmClientError::UpstreamHttp {
@@ -247,6 +239,121 @@ async fn an_unavailable_local_tier_escalates_and_other_failures_surface() -> Res
             outcome.is_ok_and(|(selected, _)| selected == "cloud"),
             escalates
         );
+    }
+    Ok(())
+}
+
+fn recovering_classifier() -> super::VgrClassifier {
+    let mut config = VgrConfig::new(ModelId::new("local"), ModelId::new("cloud"));
+    config.mode = ServingMode::Evaluate;
+    config.breaker.threshold = 1;
+    config.breaker.cooldown = std::time::Duration::ZERO;
+    let classifier = super::VgrClassifier {
+        breaker: super::CircuitBreaker::new(config.breaker),
+        config,
+    };
+    classifier.breaker.failure();
+    classifier
+}
+
+#[tokio::test]
+async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
+    use crate::core::classifier::Classifier;
+    use crate::core::testing::empty_driver;
+    use switchyard_protocol::ImageSource;
+
+    for skip in ["image", "latched", "off", "kill", "deadline"] {
+        let mut classifier = recovering_classifier();
+        let mut state = super::VgrState::default();
+        let mut task = request(vec![Message::text(Role::User, "task")]);
+        match skip {
+            "image" => {
+                task.llm_request.messages[0].content = vec![ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.test/image.png".into(),
+                        detail: None,
+                    },
+                }]
+            }
+            "latched" => state.turn_latched = true,
+            "off" => classifier.config.mode = ServingMode::Off,
+            "kill" => {
+                let switch = super::super::KillSwitch::new();
+                switch.engage();
+                classifier.config.kill_switch = Some(switch);
+            }
+            "deadline" => classifier.config.deadline = std::time::Duration::ZERO,
+            _ => unreachable!(),
+        }
+        classifier
+            .score(&mut state, &mut task, &empty_driver())
+            .await?;
+        assert!(
+            classifier.breaker.attempt().is_some(),
+            "{skip} reserved the recovery trial"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_local_generation_releases_the_recovery_trial() -> Result<()> {
+    use crate::core::algorithm::{Driver, RuntimeModels};
+    use crate::core::classifier::Classifier;
+
+    let classifier = recovering_classifier();
+    let mut state = super::VgrState::default();
+    let mut task = request(vec![Message::text(Role::User, "task")]);
+    let (driver, _steps) = Driver::new("vgr", Arc::new(RuntimeModels::default()));
+    let mut pending = classifier.score(&mut state, &mut task, &driver);
+    assert!(futures::poll!(&mut pending).is_pending());
+    assert!(classifier.breaker.attempt().is_none());
+    drop(pending);
+    assert!(classifier.breaker.attempt().is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Result<()> {
+    use crate::core::algorithm::Call;
+    use crate::core::testing::serve_decision;
+
+    for (mode, reason, served) in [
+        (ServingMode::Off, "mode_off", "cloud"),
+        (ServingMode::Evaluate, "decided", "local"),
+        (ServingMode::Shadow, "decided", "cloud"),
+    ] {
+        let algorithm = route(|config| config.mode = mode)?;
+        let outcome = crate::drive(
+            algorithm,
+            request(vec![Message::text(Role::User, "task")]),
+            Arc::new(category_models(Category::Any, &["local", "cloud"]).into()),
+            |call| async move {
+                match call {
+                    Call::Model(call) => {
+                        let response = if call.models[0] == ModelId::new("local") {
+                            reply("done")
+                        } else {
+                            scored(0.9)
+                        };
+                        call.respond(std::future::ready(Ok(response))).await
+                    }
+                    Call::Decision(call) => serve_decision(*call).await,
+                }
+            },
+        )
+        .await?;
+        assert_eq!(outcome.selected_model_ids, vec![ModelId::new(served)]);
+        let evidence = outcome
+            .metadata
+            .and_then(|metadata| metadata.evidence)
+            .unwrap_or_default();
+        assert_eq!(evidence["source"], "vgr");
+        assert_eq!(evidence["reason_code"], reason);
+        assert_eq!(evidence["verdict"], served);
+        if reason == "decided" {
+            assert_eq!(evidence["branch"], "DefaultVerified");
+        }
     }
     Ok(())
 }
