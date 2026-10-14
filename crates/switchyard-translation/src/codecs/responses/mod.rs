@@ -7,7 +7,15 @@ mod buffered;
 mod stream;
 
 pub use buffered::OpenAiResponsesCodec;
+pub(crate) use buffered::can_encode_mcp;
 pub use stream::OpenAiResponsesStreamCodec;
+
+pub(crate) fn is_mcp_item(kind: &str) -> bool {
+    matches!(
+        kind,
+        "mcp_call" | "mcp_list_tools" | "mcp_approval_request" | "mcp_approval_response"
+    )
+}
 
 pub(crate) fn is_native_output(kind: &str) -> bool {
     matches!(

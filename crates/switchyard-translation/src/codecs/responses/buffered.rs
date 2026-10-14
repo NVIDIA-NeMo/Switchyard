@@ -25,8 +25,9 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    McpContent, McpToolset, MediaSource, Message, OutputParams, ProviderExtensions,
+    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, Tool, ToolCall, ToolChoice,
+    ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -114,10 +115,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         let mut tool_namespaces = Map::new();
         let mut custom_tools = Map::new();
         request.tools =
-            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools)
-                .into_iter()
-                .map(Tool::from)
-                .collect();
+            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools);
         // Responses-lite clients (Codex with a GPT-5 model) carry the tool definitions inside
         // `input` as an `additional_tools` developer item instead of top-level `tools`. Those
         // definitions are the request's tools; the item itself is kept verbatim so the request
@@ -129,15 +127,11 @@ impl FormatCodec for OpenAiResponsesCodec {
                     && item.get("type").and_then(Value::as_str) == Some("additional_tools")
                     && let Some(tools) = item.get("tools").and_then(Value::as_array)
                 {
-                    request.tools.extend(
-                        decode_responses_tools(
-                            Some(&Value::Array(tools.clone())),
-                            &mut tool_namespaces,
-                            &mut custom_tools,
-                        )
-                        .into_iter()
-                        .map(Tool::from),
-                    );
+                    request.tools.extend(decode_responses_tools(
+                        Some(&Value::Array(tools.clone())),
+                        &mut tool_namespaces,
+                        &mut custom_tools,
+                    ));
                     additional_tools.extend(tools.iter().cloned());
                 }
             }
@@ -182,15 +176,20 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        let mut diagnostics = Vec::new();
+        let prepared = crate::codecs::common::prepare_request_tools(
+            request,
+            WireFormat::OpenAiResponses,
+            &mut diagnostics,
+            policy,
+        )?;
+        let request = prepared.as_ref();
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, policy)
         {
-            return Ok(EncodedRequest {
-                body,
-                diagnostics: Vec::new(),
-            });
+            return Ok(EncodedRequest { body, diagnostics });
         }
-        let mut diagnostics = Vec::new();
+
         validate_request_capabilities(request, &mut diagnostics, policy)?;
         let mut body = Map::new();
         if let Some(model) = &request.model {
@@ -247,7 +246,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                     &request.tools,
                     crate::codex_namespaces::tool_namespaces(&request.extensions),
                     crate::codex_custom_tools::custom_tools(&request.extensions),
-                )?,
+                ),
             );
         }
         if let Some(choice) = &request.tool_choice
@@ -423,15 +422,20 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn encode_response(
         &self,
         response: &AggLlmResponse,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
+        let mut diagnostics = Vec::new();
+        let prepared = crate::codecs::common::prepare_response_tools(
+            response,
+            WireFormat::OpenAiResponses,
+            &mut diagnostics,
+            policy,
+        )?;
+        let response = prepared.as_ref();
         if let Some(body) =
-            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, _policy)
+            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, policy)
         {
-            return Ok(EncodedResponse {
-                body,
-                diagnostics: Vec::new(),
-            });
+            return Ok(EncodedResponse { body, diagnostics });
         }
         let is_truncated = matches!(
             response
@@ -454,16 +458,16 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
                     "status": status,
                     "incomplete_details": incomplete_details,
-                    "output": encode_responses_output(&response.outputs),
+                    "output": encode_responses_output(&response.outputs, &mut diagnostics, policy)?,
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
                     "tool_choice": "auto",
                     "tools": [],
                 }),
                 &response.preservation,
-                _policy,
+                policy,
             ),
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 }
@@ -576,6 +580,30 @@ fn decode_responses_input(
                             &mut deferred_messages,
                             &mut pending_reasoning,
                             Message { role, content },
+                        );
+                    }
+                    Some(kind) if super::is_mcp_item(kind) => {
+                        flush_unattached_responses_reasoning(
+                            &mut messages,
+                            &mut pending_tool_calls,
+                            &mut pending_tool_outputs,
+                            &mut deferred_messages,
+                            &mut pending_reasoning,
+                        );
+                        push_responses_non_tool_message(
+                            &mut messages,
+                            &mut pending_tool_calls,
+                            &mut pending_tool_outputs,
+                            &mut deferred_messages,
+                            &mut pending_reasoning,
+                            Message {
+                                role: if kind == "mcp_approval_response" {
+                                    Role::User
+                                } else {
+                                    Role::Assistant
+                                },
+                                content: decode_mcp_item(item),
+                            },
                         );
                     }
                     Some("reasoning") => {
@@ -1006,7 +1034,328 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
     }
 }
 
-// Decodes Responses tool shapes, including Codex-style tool entries.
+// Normalize only definitions whose settings the typed IR can preserve completely.
+fn decode_mcp_tool(tool: &Map<String, Value>) -> Option<McpToolset> {
+    if tool.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "type"
+                | "server_label"
+                | "server_url"
+                | "authorization"
+                | "allowed_tools"
+                | "defer_loading"
+                | "require_approval"
+        )
+    }) {
+        return None;
+    }
+    let require_approval = match tool.get("require_approval") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(value)) if value == "always" => true,
+        Some(Value::String(value)) if value == "never" => false,
+        _ => return None,
+    };
+    Some(McpToolset {
+        name: tool.get("server_label")?.as_str()?.to_owned(),
+        url: tool.get("server_url")?.as_str()?.to_owned(),
+        authorization_token: serde_json::from_value(
+            tool.get("authorization").cloned().unwrap_or(Value::Null),
+        )
+        .ok()?,
+        allowed_tools: serde_json::from_value(
+            tool.get("allowed_tools").cloned().unwrap_or(Value::Null),
+        )
+        .ok()?,
+        enabled: None,
+        tool_enabled: Default::default(),
+        defer_loading: serde_json::from_value(
+            tool.get("defer_loading").cloned().unwrap_or(Value::Null),
+        )
+        .ok()?,
+        tool_defer_loading: Default::default(),
+        // Responses requires approval when the setting is omitted.
+        require_approval: Some(require_approval),
+    })
+}
+
+fn decode_mcp_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
+    let normalized = || -> Option<Vec<ContentBlock>> {
+        let server_name = item.get("server_label")?.as_str()?.to_owned();
+        let id = item.get("id")?.as_str()?.to_owned();
+        match item.get("type")?.as_str()? {
+            "mcp_list_tools" => {
+                if item.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "type" | "id" | "server_label" | "tools" | "error"
+                    )
+                }) {
+                    return None;
+                }
+                let tools = item.get("tools")?;
+                if tools.as_array()?.iter().any(|tool| {
+                    tool.as_object().is_none_or(|tool| {
+                        tool.keys().any(|key| {
+                            !matches!(
+                                key.as_str(),
+                                "name" | "description" | "input_schema" | "annotations"
+                            )
+                        })
+                    })
+                }) {
+                    return None;
+                }
+                Some(vec![ContentBlock::Mcp(McpContent::Listing {
+                    server_name,
+                    id: Some(id),
+                    tools: serde_json::from_value(tools.clone()).ok()?,
+                    error: serde_json::from_value(
+                        item.get("error").cloned().unwrap_or(Value::Null),
+                    )
+                    .ok()?,
+                })])
+            }
+            "mcp_call" => {
+                if item.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "type"
+                            | "id"
+                            | "server_label"
+                            | "name"
+                            | "arguments"
+                            | "output"
+                            | "error"
+                            | "approval_request_id"
+                            | "status"
+                    )
+                }) || item.get("error").is_some_and(|value| !value.is_null())
+                    || item
+                        .get("approval_request_id")
+                        .is_some_and(|value| !value.is_null())
+                    || item
+                        .get("status")
+                        .is_some_and(|value| !value.is_null() && value != "completed")
+                {
+                    return None;
+                }
+                let arguments: Value =
+                    serde_json::from_str(item.get("arguments")?.as_str()?).ok()?;
+                if !arguments.is_object() {
+                    return None;
+                }
+                Some(vec![
+                    ContentBlock::Mcp(McpContent::Call {
+                        server_name,
+                        call: ToolCall {
+                            id: id.clone(),
+                            name: item.get("name")?.as_str()?.to_owned(),
+                            arguments,
+                        },
+                    }),
+                    ContentBlock::Mcp(McpContent::Result(ToolResult {
+                        tool_call_id: id,
+                        content: vec![ContentBlock::Text {
+                            text: item.get("output")?.as_str()?.to_owned(),
+                        }],
+                        is_error: Some(false),
+                    })),
+                ])
+            }
+            _ => None,
+        }
+    };
+    normalized().unwrap_or_else(|| {
+        vec![ContentBlock::Unknown {
+            provider: WireFormat::OpenAiResponses.into(),
+            raw: Value::Object(item.clone()),
+        }]
+    })
+}
+
+// Convert MCP blocks to top-level Responses items before the ordinary content encoder runs.
+fn encode_mcp_content(
+    content: &[ContentBlock],
+    used_ids: &mut HashMap<String, usize>,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<ContentBlock>> {
+    let mut out = Vec::new();
+    let mut blocks = content.iter().peekable();
+    while let Some(block) = blocks.next() {
+        let raw = match block {
+            ContentBlock::Mcp(McpContent::Listing {
+                server_name,
+                id,
+                tools,
+                error,
+            }) => {
+                let id = match id {
+                    Some(id) => id.clone(),
+                    None => match &policy.deterministic_ids {
+                        DeterministicIdPolicy::Preserve => {
+                            push_lossy(
+                                diagnostics,
+                                policy,
+                                "Responses MCP listings require an ID",
+                            )?;
+                            continue;
+                        }
+                        DeterministicIdPolicy::GenerateStable { prefix } => {
+                            let mut index = 0;
+                            loop {
+                                let id = stable_id(&format!("{prefix}_mcpl"), index);
+                                if !used_ids.contains_key(&id) {
+                                    used_ids.insert(id.clone(), 1);
+                                    break id;
+                                }
+                                index += 1;
+                            }
+                        }
+                    },
+                };
+                let mut raw = json!({"type": "mcp_list_tools", "id": id, "server_label": server_name, "tools": tools});
+                if let Some(error) = error {
+                    raw["error"] = json!(error);
+                }
+                raw
+            }
+            ContentBlock::Mcp(McpContent::Call { server_name, call }) => {
+                let Some(ContentBlock::Mcp(McpContent::Result(result))) = blocks.peek().copied()
+                    .filter(|block| matches!(block, ContentBlock::Mcp(McpContent::Result(result)) if result.tool_call_id == call.id)) else {
+                    push_lossy(diagnostics, policy, "Responses MCP calls require an adjacent matching result")?;
+                    continue;
+                };
+                blocks.next();
+                let output = match result.content.as_slice() {
+                    [] => Some(""),
+                    [ContentBlock::Text { text }] => Some(text.as_str()),
+                    _ => None,
+                };
+                if used_ids.get(&call.id).copied().unwrap_or_default() > 1 {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses MCP calls require unique IDs",
+                    )?;
+                    continue;
+                }
+                if result.is_error == Some(true) || !call.arguments.is_object() || output.is_none()
+                {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses MCP calls require object arguments and a successful text result",
+                    )?;
+                    continue;
+                }
+                json!({"type": "mcp_call", "id": call.id, "server_label": server_name,
+                    "name": call.name, "arguments": json_string(&call.arguments), "output": output,
+                    "error": null, "approval_request_id": null})
+            }
+            ContentBlock::Mcp(McpContent::Result(_)) => {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Responses MCP results require an adjacent matching call",
+                )?;
+                continue;
+            }
+            other => {
+                out.push(other.clone());
+                continue;
+            }
+        };
+        out.push(ContentBlock::Unknown {
+            provider: WireFormat::OpenAiResponses.into(),
+            raw,
+        });
+    }
+    Ok(out)
+}
+
+fn mcp_item_ids<'a>(content: impl Iterator<Item = &'a ContentBlock>) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for id in content.filter_map(|block| match block {
+        ContentBlock::Mcp(McpContent::Listing { id, .. }) => id.clone(),
+        ContentBlock::Mcp(McpContent::Call { call, .. }) | ContentBlock::ToolCall(call) => {
+            Some(call.id.clone())
+        }
+        ContentBlock::Unknown { raw, .. } => {
+            raw.get("id").and_then(Value::as_str).map(str::to_owned)
+        }
+        _ => None,
+    }) {
+        *counts.entry(id).or_default() += 1;
+    }
+    counts
+}
+
+fn is_responses_mcp_block(block: &ContentBlock) -> bool {
+    matches!(block, ContentBlock::Unknown { provider, raw }
+        if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+            && raw["type"].as_str().is_some_and(super::is_mcp_item))
+}
+
+// An open-ended denylist cannot be reduced to a list of allowed names.
+pub(crate) fn can_encode_mcp(mcp: &McpToolset) -> bool {
+    mcp.allowed_tools.is_some()
+        || mcp.enabled == Some(false)
+        || mcp.tool_enabled.values().all(|enabled| *enabled)
+}
+
+fn encode_mcp_tool(mcp: &McpToolset) -> Value {
+    let mut tool = json!({"type": "mcp", "server_label": mcp.name, "server_url": mcp.url});
+    if let Some(token) = &mcp.authorization_token {
+        tool["authorization"] = json!(token);
+    }
+    if let Some(approval) = mcp.require_approval {
+        tool["require_approval"] = json!(if approval { "always" } else { "never" });
+    }
+    let allowed = if let Some(names) = &mcp.allowed_tools {
+        Some(
+            names
+                .iter()
+                .filter(|name| {
+                    mcp.tool_enabled
+                        .get(*name)
+                        .copied()
+                        .unwrap_or(mcp.enabled.unwrap_or(true))
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    } else if mcp.enabled == Some(false) {
+        Some(
+            mcp.tool_enabled
+                .iter()
+                .filter(|(_, enabled)| **enabled)
+                .map(|(name, _)| name.clone())
+                .collect(),
+        )
+    } else {
+        None
+    };
+    if let Some(allowed) = allowed {
+        tool["allowed_tools"] = json!(allowed);
+    }
+    // Loading eagerly preserves tool access when per-tool loading settings differ.
+    let defer_loading = if mcp
+        .tool_defer_loading
+        .values()
+        .any(|value| *value != mcp.defer_loading.unwrap_or(false))
+    {
+        Some(false)
+    } else {
+        mcp.defer_loading
+    };
+    if let Some(defer_loading) = defer_loading {
+        tool["defer_loading"] = json!(defer_loading);
+    }
+    tool
+}
+
 // Decodes Responses tool shapes, including Codex-style tool entries.
 //
 // Codex groups tools into non-standard ``namespace`` containers that
@@ -1017,7 +1366,7 @@ fn decode_responses_tools(
     value: Option<&Value>,
     namespaces: &mut Map<String, Value>,
     custom_tools: &mut Map<String, Value>,
-) -> Vec<ToolDefinition> {
+) -> Vec<Tool> {
     let Some(tools) = value.and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -1034,9 +1383,13 @@ fn decode_responses_tools(
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty());
             let description = tool.get("description").and_then(Value::as_str);
-            for mut child in decode_responses_tools(tool.get("tools"), namespaces, custom_tools) {
+            for child in decode_responses_tools(tool.get("tools"), namespaces, custom_tools) {
                 // A nested container already qualified its own children, and the
                 // innermost name is the one that identifies the tool.
+                let Tool::Function(mut child) = child else {
+                    out.push(child);
+                    continue;
+                };
                 let already_qualified = namespaces.contains_key(&child.name);
                 if let Some(container) = container
                     && !already_qualified
@@ -1051,8 +1404,17 @@ fn decode_responses_tools(
                     );
                     child.name = qualified;
                 }
-                out.push(child);
+                out.push(Tool::Function(child));
             }
+        } else if tool.get("type").and_then(Value::as_str) == Some("mcp") {
+            out.push(
+                decode_mcp_tool(tool)
+                    .map(Tool::Mcp)
+                    .unwrap_or_else(|| Tool::Provider {
+                        provider: WireFormat::OpenAiResponses.into(),
+                        raw: Value::Object(tool.clone()),
+                    }),
+            );
         } else if tool.get("type").and_then(Value::as_str) == Some("custom") {
             // A freeform tool takes a raw string, not JSON arguments. The IR sees it as a
             // function with a single `input` argument; the verbatim definition is kept so a
@@ -1066,7 +1428,7 @@ fn decode_responses_tools(
                 .filter(|name| !name.is_empty())
             {
                 custom_tools.insert(name.to_string(), Value::Object(tool.clone()));
-                out.push(ToolDefinition {
+                out.push(Tool::Function(ToolDefinition {
                     name: name.to_string(),
                     description: tool
                         .get("description")
@@ -1074,14 +1436,14 @@ fn decode_responses_tools(
                         .map(ToOwned::to_owned),
                     parameters: crate::codex_custom_tools::input_schema(),
                     strict: None,
-                });
+                }));
             }
         } else if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
                 if let Some(name) = function.get("name").and_then(Value::as_str)
                     && !name.is_empty()
                 {
-                    out.push(ToolDefinition {
+                    out.push(Tool::Function(ToolDefinition {
                         name: name.to_string(),
                         description: function
                             .get("description")
@@ -1092,7 +1454,7 @@ fn decode_responses_tools(
                             .cloned()
                             .unwrap_or_else(|| json!({})),
                         strict: function.get("strict").and_then(Value::as_bool),
-                    });
+                    }));
                 }
             } else {
                 if !push_responses_function_tool(&mut out, tool) {
@@ -1110,7 +1472,7 @@ fn decode_responses_tools(
 
 // Adds an OpenAI-style function tool to the normalized tool list.
 fn push_responses_function_tool(
-    out: &mut Vec<ToolDefinition>,
+    out: &mut Vec<Tool>,
     tool: &serde_json::Map<String, Value>,
 ) -> bool {
     let Some(name) = tool.get("name").and_then(Value::as_str) else {
@@ -1120,7 +1482,7 @@ fn push_responses_function_tool(
         return false;
     }
 
-    out.push(ToolDefinition {
+    out.push(Tool::Function(ToolDefinition {
         name: name.to_string(),
         description: tool
             .get("description")
@@ -1128,15 +1490,12 @@ fn push_responses_function_tool(
             .map(ToOwned::to_owned),
         parameters: tool.get("parameters").cloned().unwrap_or_else(|| json!({})),
         strict: tool.get("strict").and_then(Value::as_bool),
-    });
+    }));
     true
 }
 
 // Adds a Codex-style ID tool to the normalized tool list.
-fn push_responses_id_tool(
-    out: &mut Vec<ToolDefinition>,
-    tool: &serde_json::Map<String, Value>,
-) -> bool {
+fn push_responses_id_tool(out: &mut Vec<Tool>, tool: &serde_json::Map<String, Value>) -> bool {
     let Some(id) = tool.get("id").and_then(Value::as_str) else {
         return false;
     };
@@ -1144,7 +1503,7 @@ fn push_responses_id_tool(
         return false;
     }
 
-    out.push(ToolDefinition {
+    out.push(Tool::Function(ToolDefinition {
         name: id.to_string(),
         description: tool
             .get("description")
@@ -1157,7 +1516,7 @@ fn push_responses_id_tool(
             .cloned()
             .unwrap_or_else(|| json!({})),
         strict: None,
-    });
+    }));
     true
 }
 
@@ -1186,7 +1545,10 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
             })
         }
         Value::Object(object)
-            if object.get("type").and_then(Value::as_str) == Some("allowed_tools") =>
+            if matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("allowed_tools" | "mcp")
+            ) =>
         {
             Some(ToolChoice::Raw(value.clone()))
         }
@@ -1297,7 +1659,13 @@ fn encode_responses_input(
             }
         }
     }
+    let mut used_ids = mcp_item_ids(messages.iter().flat_map(|message| &message.content));
     for message in messages {
+        let content = encode_mcp_content(&message.content, &mut used_ids, diagnostics, policy)?;
+        let message = &Message {
+            role: message.role,
+            content,
+        };
         // The decoder carries each valid top-level built-in tool item as one
         // provider-qualified block, so replay that block in place.
         if message.role == Role::User
@@ -1327,10 +1695,11 @@ fn encode_responses_input(
             continue;
         }
         if content.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
-            )
+            is_responses_mcp_block(block)
+                || matches!(
+                    block,
+                    ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+                )
         }) {
             let mut visible_content = Vec::new();
             for block in &content {
@@ -1472,6 +1841,7 @@ fn encode_responses_special_input(
     policy: &TranslationPolicy,
 ) -> Result<Option<Value>> {
     Ok(match block {
+        ContentBlock::Unknown { raw, .. } if is_responses_mcp_block(block) => Some(raw.clone()),
         ContentBlock::Reasoning {
             text,
             signature: None,
@@ -1639,9 +2009,11 @@ fn encode_responses_content(
                 }
             },
             ContentBlock::Mcp(_) => {
-                return Err(TranslationError::LossyConversion(
-                    "MCP history encoding is not implemented".into(),
-                ));
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "MCP history has no mapping in this codec",
+                )?;
             }
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
@@ -1700,7 +2072,6 @@ fn responses_file_part(source: &FileSource) -> Option<Value> {
     Some(Value::Object(part))
 }
 
-// Encodes normalized tool definitions into Responses tool JSON.
 // Encodes normalized tools as Responses entries.
 //
 // A Responses client understands Codex containers, so a tool whose name this
@@ -1709,15 +2080,23 @@ fn encode_responses_tools(
     tools: &[Tool],
     namespaces: Option<&Map<String, Value>>,
     custom_tools: Option<&Map<String, Value>>,
-) -> Result<Value> {
+) -> Value {
     let mut out: Vec<Value> = Vec::new();
     let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
-    for tool in tools {
-        let tool = tool.function().ok_or_else(|| {
-            TranslationError::LossyConversion(
-                "MCP and provider tool encoding is not implemented".into(),
-            )
-        })?;
+    for entry in tools {
+        if let Tool::Mcp(mcp) = entry {
+            out.push(encode_mcp_tool(mcp));
+            continue;
+        }
+        if let Tool::Provider { provider, raw } = entry
+            && provider.as_str() == WireFormat::OpenAiResponses.as_str()
+        {
+            out.push(raw.clone());
+            continue;
+        }
+        let Some(tool) = entry.function() else {
+            continue;
+        };
         // A freeform tool goes back out exactly as the client defined it.
         if let Some(custom) = custom_tools.and_then(|custom| custom.get(&tool.name)) {
             out.push(custom.clone());
@@ -1762,7 +2141,7 @@ fn encode_responses_tools(
             "tools": children,
         }));
     }
-    Ok(Value::Array(out))
+    Value::Array(out)
 }
 
 // Encodes normalized tool choice into Responses JSON.
@@ -1804,6 +2183,12 @@ fn decode_responses_output_item(
         return Ok(None);
     };
     match item.get("type").and_then(Value::as_str) {
+        Some(kind) if super::is_mcp_item(kind) => Ok(Some(ResponseOutput {
+            url_citations: Vec::new(),
+            role: Role::Assistant,
+            content: decode_mcp_item(item),
+            stop_reason: None,
+        })),
         Some("message") => Ok(Some(ResponseOutput {
             url_citations: decode_responses_url_citations(item.get("content")),
             role: role_from_responses(item.get("role").and_then(Value::as_str)),
@@ -1902,112 +2287,163 @@ fn decode_responses_url_citations(content: Option<&Value>) -> Vec<crate::UrlCita
 }
 
 // Encodes normalized response outputs into Responses output items.
-fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
-    Value::Array(
-        outputs
-            .iter()
-            .flat_map(|output| {
-                let has_output_items = output.content.iter().any(|block| {
-                    matches!(block, ContentBlock::ToolCall(_))
-                        || matches!(block, ContentBlock::Unknown { provider, raw }
+fn encode_responses_output(
+    outputs: &[ResponseOutput],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Value> {
+    let mut items = Vec::new();
+    let mut used_ids = mcp_item_ids(outputs.iter().flat_map(|output| &output.content));
+    for output in outputs {
+        let content = encode_mcp_content(&output.content, &mut used_ids, diagnostics, policy)?;
+        if !content.iter().any(is_responses_mcp_block) {
+            let mut output = output.clone();
+            output.content = content;
+            items.extend(encode_responses_output_items(&[output]));
+            continue;
+        }
+        // MCP items must stay between the text/reasoning segments that surrounded them.
+        let mut start = 0;
+        let mut text_offset = 0;
+        for end in 0..=content.len() {
+            if end < content.len() && !is_responses_mcp_block(&content[end]) {
+                continue;
+            }
+            if start < end {
+                let mut segment = output.clone();
+                segment.content = content[start..end].to_vec();
+                let text_len = text_from_blocks(&segment.content, "").chars().count();
+                segment.url_citations.retain_mut(|citation| {
+                    if citation.start_index < text_offset
+                        || citation.end_index > text_offset + text_len
+                    {
+                        return false;
+                    }
+                    citation.start_index -= text_offset;
+                    citation.end_index -= text_offset;
+                    true
+                });
+                text_offset += text_len;
+                for mut item in encode_responses_output_items(&[segment]) {
+                    if item["type"] == "message" {
+                        item["id"] = json!(format!("msg_switchyard_{}", items.len()));
+                    }
+                    items.push(item);
+                }
+            }
+            if let Some(ContentBlock::Unknown { raw, .. }) = content.get(end) {
+                items.push(raw.clone());
+            }
+            start = end + 1;
+        }
+    }
+    Ok(Value::Array(items))
+}
+
+fn encode_responses_output_items(outputs: &[ResponseOutput]) -> Vec<Value> {
+    outputs
+        .iter()
+        .flat_map(|output| {
+            let has_output_items = output.content.iter().any(|block| {
+                matches!(block, ContentBlock::ToolCall(_))
+                    || matches!(block, ContentBlock::Unknown { provider, raw }
                             if provider.as_str() == WireFormat::OpenAiResponses.as_str()
                                 && raw["type"].as_str().is_some_and(super::is_native_output))
-                });
-                let text = text_from_blocks(&output.content, "");
-                let reasoning = reasoning_text_from_blocks(&output.content, "\n");
-                let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
-                    "incomplete"
-                } else {
-                    "completed"
-                };
-                let mut items = Vec::new();
+            });
+            let text = text_from_blocks(&output.content, "");
+            let reasoning = reasoning_text_from_blocks(&output.content, "\n");
+            let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
+                "incomplete"
+            } else {
+                "completed"
+            };
+            let mut items = Vec::new();
 
-                let encrypted_reasoning = output.content.iter().find_map(|block| match block {
-                    ContentBlock::Reasoning { details, .. } => encrypted_reasoning_data(details),
-                    _ => None,
-                });
-                let encrypted_reasoning_id = output.content.iter().find_map(|block| match block {
-                    ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
-                    _ => None,
-                });
-                let has_signed_reasoning = output.content.iter().any(|block| {
-                    matches!(
-                        block,
-                        ContentBlock::Reasoning {
-                            signature: Some(_),
-                            ..
-                        }
-                    )
-                });
-                if has_signed_reasoning {
-                    for (index, block) in output.content.iter().enumerate() {
-                        if let ContentBlock::Reasoning {
-                            text,
-                            signature,
-                            details,
-                        } = block
-                        {
-                            let encrypted = signature
-                                .as_deref()
-                                .map(|signature| super::encode_anthropic_thinking(text, signature))
-                                .or_else(|| encrypted_reasoning_data(details));
-                            let id = encrypted_reasoning_item_id(details)
-                                .unwrap_or_else(|| format!("rs_switchyard_{index}"));
-                            items.push(encode_responses_reasoning_output(
-                                text,
-                                encrypted.as_deref(),
-                                Some(&id),
-                            ));
-                        }
+            let encrypted_reasoning = output.content.iter().find_map(|block| match block {
+                ContentBlock::Reasoning { details, .. } => encrypted_reasoning_data(details),
+                _ => None,
+            });
+            let encrypted_reasoning_id = output.content.iter().find_map(|block| match block {
+                ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
+                _ => None,
+            });
+            let has_signed_reasoning = output.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Reasoning {
+                        signature: Some(_),
+                        ..
                     }
-                } else if !reasoning.is_empty() || encrypted_reasoning.is_some() {
-                    items.push(encode_responses_reasoning_output(
-                        &reasoning,
-                        encrypted_reasoning.as_deref(),
-                        encrypted_reasoning_id.as_deref(),
-                    ));
-                }
-
-                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
-                    items.push(json!({
-                        "type": "message",
-                        "id": "msg_switchyard",
-                        "status": status,
-                        "role": role_to_responses(output.role),
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": output.url_citations.iter().map(|citation| json!({
-                                "type": "url_citation",
-                                "start_index": citation.start_index,
-                                "end_index": citation.end_index,
-                                "url": citation.url,
-                                "title": citation.title,
-                            })).collect::<Vec<_>>(),
-                        }],
-                    }));
-                }
-
-                items.extend(output.content.iter().filter_map(|block| match block {
-                    ContentBlock::ToolCall(call) => Some(json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": call.name,
-                        "arguments": json_string_python_style(&call.arguments),
-                    })),
-                    ContentBlock::Unknown { provider, raw }
-                        if provider.as_str() == WireFormat::OpenAiResponses.as_str()
-                            && raw["type"].as_str().is_some_and(super::is_native_output) =>
+                )
+            });
+            if has_signed_reasoning {
+                for (index, block) in output.content.iter().enumerate() {
+                    if let ContentBlock::Reasoning {
+                        text,
+                        signature,
+                        details,
+                    } = block
                     {
-                        Some(raw.clone())
+                        let encrypted = signature
+                            .as_deref()
+                            .map(|signature| super::encode_anthropic_thinking(text, signature))
+                            .or_else(|| encrypted_reasoning_data(details));
+                        let id = encrypted_reasoning_item_id(details)
+                            .unwrap_or_else(|| format!("rs_switchyard_{index}"));
+                        items.push(encode_responses_reasoning_output(
+                            text,
+                            encrypted.as_deref(),
+                            Some(&id),
+                        ));
                     }
-                    _ => None,
-                }));
+                }
+            } else if !reasoning.is_empty() || encrypted_reasoning.is_some() {
+                items.push(encode_responses_reasoning_output(
+                    &reasoning,
+                    encrypted_reasoning.as_deref(),
+                    encrypted_reasoning_id.as_deref(),
+                ));
+            }
 
-                items
-            })
-            .collect(),
-    )
+            if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
+                items.push(json!({
+                    "type": "message",
+                    "id": "msg_switchyard",
+                    "status": status,
+                    "role": role_to_responses(output.role),
+                    "content": [{
+                        "type": "output_text",
+                        "text": text,
+                        "annotations": output.url_citations.iter().map(|citation| json!({
+                            "type": "url_citation",
+                            "start_index": citation.start_index,
+                            "end_index": citation.end_index,
+                            "url": citation.url,
+                            "title": citation.title,
+                        })).collect::<Vec<_>>(),
+                    }],
+                }));
+            }
+
+            items.extend(output.content.iter().filter_map(|block| match block {
+                ContentBlock::ToolCall(call) => Some(json!({
+                    "type": "function_call",
+                    "call_id": call.id,
+                    "name": call.name,
+                    "arguments": json_string_python_style(&call.arguments),
+                })),
+                ContentBlock::Unknown { provider, raw }
+                    if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                        && raw["type"].as_str().is_some_and(super::is_native_output) =>
+                {
+                    Some(raw.clone())
+                }
+                _ => None,
+            }));
+
+            items
+        })
+        .collect()
 }
 
 // Encodes private reasoning as a separate Responses output item. An encrypted-only item

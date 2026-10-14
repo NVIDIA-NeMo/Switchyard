@@ -3,10 +3,15 @@
 
 //! Provider-agnostic helpers shared by wire-format codecs.
 
+use std::borrow::Cow;
+
 use serde_json::{Map, Value};
 
 use crate::error::{Result, TranslationError};
-use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
+use crate::llm::{ContentBlock, LlmRequest, McpContent, Tool, ToolChoice};
+use crate::{
+    AggLlmResponse, PreservationMetadata, TranslationDiagnostic, TranslationPolicy, WireFormat,
+};
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
@@ -80,7 +85,7 @@ pub(crate) fn allowed_function_tools(
         .iter()
         .filter(|tool| {
             tool.function()
-                .is_some_and(|tool| names.contains(&tool.name))
+                .is_some_and(|definition| names.contains(&definition.name))
         })
         .cloned()
         .collect();
@@ -224,11 +229,358 @@ pub(crate) fn provider_extensions(
 ) -> Map<String, Value> {
     let mut extensions = Map::new();
     for (key, value) in object {
-        if key != ANTHROPIC_REQUEST_KEY && !known.contains(&key.as_str()) {
+        if key != ANTHROPIC_REQUEST_KEY
+            && key != super::anthropic::MCP_LAYOUTS_KEY
+            && !known.contains(&key.as_str())
+        {
             extensions.insert(key.clone(), value.clone());
         }
     }
     extensions
+}
+
+// Remove unsupported tool data before exact replay or preservation embedding can restore it.
+pub(crate) fn prepare_request_tools<'a>(
+    request: &'a LlmRequest,
+    target: WireFormat,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Cow<'a, LlmRequest>> {
+    let unsupported_tool = |tool: &Tool| match tool {
+        Tool::Function(_) => false,
+        Tool::Mcp(mcp) => match target {
+            WireFormat::AnthropicMessages => !super::anthropic::can_encode_mcp(mcp, request),
+            WireFormat::OpenAiResponses => !super::responses::can_encode_mcp(mcp),
+            WireFormat::OpenAiChat => true,
+        },
+        Tool::Provider { provider, .. } => provider.as_str() != target.as_str(),
+    };
+    let preserved_tools = target != WireFormat::AnthropicMessages
+        && ((target == WireFormat::OpenAiChat
+            && request
+                .extensions
+                .fields
+                .contains_key(super::anthropic::MCP_LAYOUTS_KEY))
+            || request
+                .preservation
+                .requests
+                .get(&WireFormat::AnthropicMessages.into())
+                .is_some_and(|body| {
+                    (target == WireFormat::OpenAiChat
+                        && body
+                            .get("mcp_servers")
+                            .and_then(Value::as_array)
+                            .is_some_and(|v| !v.is_empty()))
+                        || body
+                            .get("tools")
+                            .and_then(Value::as_array)
+                            .is_some_and(|tools| {
+                                tools.iter().any(|tool| {
+                                    !super::anthropic::is_function_tool(tool)
+                                        && (target == WireFormat::OpenAiChat
+                                            || tool["type"] != "mcp_toolset")
+                                })
+                            })
+                }));
+    let removed_servers: std::collections::HashSet<&str> = request
+        .tools
+        .iter()
+        .filter(|tool| unsupported_tool(tool))
+        .filter_map(|tool| match tool {
+            Tool::Mcp(mcp) => Some(mcp.name.as_str()),
+            Tool::Provider { raw, .. } if raw["type"] == "mcp" => raw["server_label"].as_str(),
+            _ => None,
+        })
+        .collect();
+    let removed_calls: std::collections::HashSet<&str> = request
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ContentBlock::Mcp(McpContent::Call { server_name, call })
+                if removed_servers.contains(server_name.as_str()) =>
+            {
+                Some(call.id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let orphaned = |block: &ContentBlock| match block {
+        ContentBlock::Mcp(
+            McpContent::Call { server_name, .. } | McpContent::Listing { server_name, .. },
+        ) => removed_servers.contains(server_name.as_str()),
+        ContentBlock::Mcp(McpContent::Result(result)) => {
+            removed_calls.contains(result.tool_call_id.as_str())
+        }
+        ContentBlock::Unknown { raw, .. } => raw["server_label"]
+            .as_str()
+            .is_some_and(|name| removed_servers.contains(name)),
+        _ => false,
+    };
+    let unsupported_choice = target != WireFormat::OpenAiResponses
+        && matches!(&request.tool_choice, Some(ToolChoice::Raw(raw)) if raw["type"] == "mcp");
+    let unsupported = unsupported_choice
+        || request.tools.iter().any(unsupported_tool)
+        || preserved_tools
+        || request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .chain(
+                request
+                    .instructions
+                    .iter()
+                    .flat_map(|instruction| &instruction.content),
+            )
+            .any(|block| orphaned(block) || is_unsupported_tool_content(block, target));
+    // MCP credentials and history in the IR are authoritative after edits. Replaying
+    // or embedding an earlier body could restore a removed definition or credential.
+    let has_mcp = request.tools.iter().any(|tool| {
+        matches!(tool, Tool::Mcp(_))
+            || matches!(tool, Tool::Provider { raw, .. } if raw["type"] == "mcp")
+    }) || request
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .any(is_mcp_content)
+        || request
+            .extensions
+            .fields
+            .get(crate::codex_custom_tools::ADDITIONAL_TOOLS_KEY)
+            .and_then(Value::as_array)
+            .is_some_and(|tools| tools.iter().any(|tool| tool["type"] == "mcp"))
+        || request.preservation.requests.values().any(|body| {
+            body.get("mcp_servers").is_some()
+                || body["tools"].as_array().is_some_and(|tools| {
+                    tools
+                        .iter()
+                        .any(|tool| matches!(tool["type"].as_str(), Some("mcp" | "mcp_toolset")))
+                })
+                || body["input"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item["type"]
+                            .as_str()
+                            .is_some_and(super::responses::is_mcp_item)
+                            || (item["type"] == "additional_tools"
+                                && item["tools"].as_array().is_some_and(|tools| {
+                                    tools.iter().any(|tool| tool["type"] == "mcp")
+                                }))
+                    })
+                })
+                || body["messages"].as_array().is_some_and(|messages| {
+                    messages.iter().any(|message| {
+                        message["content"].as_array().is_some_and(|content| {
+                            content.iter().any(|block| {
+                                block["type"]
+                                    .as_str()
+                                    .is_some_and(|kind| kind.starts_with("mcp_"))
+                            })
+                        })
+                    })
+                })
+        });
+    let unchanged = has_mcp
+        && request.preservation.requests.len() == 1
+        && request
+            .preservation
+            .requests
+            .get(&target.into())
+            .is_some_and(|body| {
+                preservation_codec(target)
+                    .decode_request(body, &preservation_check_policy())
+                    .is_ok_and(|original| {
+                        original.request.tools == request.tools
+                            && original.request.messages == request.messages
+                            && original.request.tool_choice == request.tool_choice
+                    })
+            });
+    if !unsupported && (!has_mcp || unchanged) {
+        return Ok(Cow::Borrowed(request));
+    }
+    if unsupported {
+        crate::util::push_lossy(
+            diagnostics,
+            policy,
+            format!("unmapped MCP or provider tools and history are dropped for {target}"),
+        )?;
+    }
+    let mut request = request.clone();
+    request.tools.retain(|tool| !unsupported_tool(tool));
+    if target != WireFormat::AnthropicMessages {
+        request
+            .extensions
+            .fields
+            .remove(super::anthropic::MCP_LAYOUTS_KEY);
+    }
+    request.messages.retain_mut(|message| {
+        message.content.retain(|block| !orphaned(block));
+        drop_unsupported_tool_content(&mut message.content, target);
+        !message.content.is_empty()
+    });
+    request.instructions.retain_mut(|instruction| {
+        instruction.content.retain(|block| !orphaned(block));
+        drop_unsupported_tool_content(&mut instruction.content, target);
+        !instruction.content.is_empty()
+    });
+    if unsupported_choice
+        || request.tools.is_empty()
+        || matches!(&request.tool_choice, Some(ToolChoice::Tool { name })
+        if !request.tools.iter().any(|tool| match tool {
+            Tool::Function(definition) => &definition.name == name,
+            Tool::Provider { raw, .. } => raw.get("name").and_then(Value::as_str) == Some(name),
+            Tool::Mcp(_) => false,
+        }))
+    {
+        request.tool_choice = None;
+    }
+    // Clear every format's cached body and embedded envelope: either could restore credentials.
+    request.preservation = PreservationMetadata::default();
+    request
+        .extensions
+        .fields
+        .remove(crate::codex_custom_tools::ADDITIONAL_TOOLS_KEY);
+    if let Some(metadata) = request
+        .extensions
+        .fields
+        .get_mut("metadata")
+        .and_then(Value::as_object_mut)
+    {
+        metadata.remove(crate::PRESERVATION_METADATA_KEY);
+    }
+    Ok(Cow::Owned(request))
+}
+
+fn is_mcp_content(block: &ContentBlock) -> bool {
+    match block {
+        ContentBlock::Mcp(_) => true,
+        ContentBlock::Unknown { provider, raw } => {
+            (provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                && raw["type"]
+                    .as_str()
+                    .is_some_and(super::responses::is_mcp_item))
+                || (provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                    && raw["type"]
+                        .as_str()
+                        .is_some_and(|kind| kind.starts_with("mcp_")))
+        }
+        ContentBlock::ToolResult(result) => result.content.iter().any(is_mcp_content),
+        _ => false,
+    }
+}
+
+fn is_unsupported_tool_content(block: &ContentBlock, target: WireFormat) -> bool {
+    match block {
+        ContentBlock::Mcp(_) => target == WireFormat::OpenAiChat,
+        ContentBlock::Unknown { provider, raw } => {
+            provider.as_str() != target.as_str()
+                && (is_mcp_content(block)
+                    || (provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                        && super::anthropic::is_provider_tool_block(raw)))
+        }
+        ContentBlock::ToolResult(result) => result
+            .content
+            .iter()
+            .any(|block| is_unsupported_tool_content(block, target)),
+        _ => false,
+    }
+}
+fn drop_unsupported_tool_content(content: &mut Vec<ContentBlock>, target: WireFormat) {
+    content.retain_mut(|block| {
+        match block {
+            ContentBlock::ToolResult(result) | ContentBlock::Mcp(McpContent::Result(result)) => {
+                drop_unsupported_tool_content(&mut result.content, target)
+            }
+            _ => {}
+        }
+        !is_unsupported_tool_content(block, target)
+    });
+}
+
+pub(crate) fn prepare_response_tools<'a>(
+    response: &'a AggLlmResponse,
+    target: WireFormat,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Cow<'a, AggLlmResponse>> {
+    let unsupported = response
+        .outputs
+        .iter()
+        .flat_map(|output| &output.content)
+        .any(|block| is_mcp_content(block) && is_unsupported_tool_content(block, target));
+    let has_mcp = response
+        .outputs
+        .iter()
+        .flat_map(|output| &output.content)
+        .any(is_mcp_content)
+        || response.preservation.responses.values().any(|body| {
+            body["output"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["type"]
+                        .as_str()
+                        .is_some_and(super::responses::is_mcp_item)
+                })
+            }) || body["content"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["type"]
+                        .as_str()
+                        .is_some_and(|kind| kind.starts_with("mcp_"))
+                })
+            })
+        });
+    let unchanged = has_mcp
+        && response.preservation.responses.len() == 1
+        && response
+            .preservation
+            .responses
+            .get(&target.into())
+            .is_some_and(|body| {
+                preservation_codec(target)
+                    .decode_response(body, &preservation_check_policy())
+                    .is_ok_and(|original| original.response.outputs == response.outputs)
+            });
+    if !unsupported && (!has_mcp || unchanged) {
+        return Ok(Cow::Borrowed(response));
+    }
+    if unsupported {
+        crate::util::push_lossy(
+            diagnostics,
+            policy,
+            "unmapped MCP or provider tool output is dropped",
+        )?;
+    }
+    let mut response = response.clone();
+    for output in &mut response.outputs {
+        output
+            .content
+            .retain(|block| !(is_mcp_content(block) && is_unsupported_tool_content(block, target)));
+    }
+    response.preservation = PreservationMetadata::default();
+    if let Some(metadata) = response
+        .extensions
+        .fields
+        .get_mut("metadata")
+        .and_then(Value::as_object_mut)
+    {
+        metadata.remove(crate::PRESERVATION_METADATA_KEY);
+    }
+    Ok(Cow::Owned(response))
+}
+
+// Compare normalized content before permitting exact replay. This retains native
+// fields on unchanged requests without restoring MCP data removed from the IR.
+fn preservation_codec(format: WireFormat) -> &'static dyn super::FormatCodec {
+    match format {
+        WireFormat::AnthropicMessages => &super::anthropic::AnthropicMessagesCodec,
+        WireFormat::OpenAiResponses => &super::responses::OpenAiResponsesCodec,
+        WireFormat::OpenAiChat => &super::openai_chat::OpenAiChatCodec,
+    }
+}
+
+fn preservation_check_policy() -> TranslationPolicy {
+    TranslationPolicy {
+        preservation: crate::PreservationPolicy::Disabled,
+        ..TranslationPolicy::default()
+    }
 }
 
 #[cfg(test)]

@@ -119,12 +119,15 @@ fn unsupported_content(
 ) -> Option<&'static str> {
     content.iter().find_map(|block| match block {
         ContentBlock::Image { .. } if capabilities.vision == Some(false) => Some("vision"),
-        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_) | ContentBlock::Mcp(_)
             if capabilities.tool_calling == Some(false) =>
         {
             Some("tool_calling")
         }
-        ContentBlock::ToolResult(result) => unsupported_content(capabilities, &result.content),
+        ContentBlock::ToolResult(result)
+        | ContentBlock::Mcp(switchyard_protocol::McpContent::Result(result)) => {
+            unsupported_content(capabilities, &result.content)
+        }
         _ => None,
     })
 }
@@ -255,21 +258,23 @@ mod tests {
     // Allowing tool results must not hide unsupported images nested in their content.
     #[test]
     fn rejects_images_inside_tool_results_when_tools_are_allowed() -> TestResult {
-        let body = json!({"messages": [{"role": "user", "content": [{
-            "type": "tool_result", "tool_use_id": "call_1", "content": [{
-                "type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}
-            }]
-        }]}]});
-        assert_requires_capability(
-            AnthropicMessages,
-            &body,
-            ModelCapabilities {
-                tool_calling: Some(true),
-                vision: Some(false),
-                ..Default::default()
-            },
-            "vision",
-        )?;
+        for kind in ["tool_result", "mcp_tool_result"] {
+            let body = json!({"messages": [{"role": "user", "content": [{
+                "type": kind, "tool_use_id": "call_1", "content": [{
+                    "type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}
+                }]
+            }]}]});
+            assert_requires_capability(
+                AnthropicMessages,
+                &body,
+                ModelCapabilities {
+                    tool_calling: Some(true),
+                    vision: Some(false),
+                    ..Default::default()
+                },
+                "vision",
+            )?;
+        }
         Ok(())
     }
 }
