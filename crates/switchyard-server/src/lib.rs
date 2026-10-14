@@ -17,7 +17,7 @@ mod stats;
 mod testing;
 mod usage_metrics;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
@@ -149,6 +149,8 @@ struct DecisionTargetResponse {
     model: ModelId,
     llm_client: DecisionLlmClientResponse,
     extra_body: BTreeMap<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 /// Non-secret client settings needed to call a selected model.
@@ -187,11 +189,16 @@ impl SharedRoutingLog {
     fn append(
         &self,
         context: routing_log::RoutingLogContext,
+        target: &str,
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
     ) {
-        if let Err(error) = self.writer.lock().append(context, model, tier, usage) {
+        if let Err(error) = self
+            .writer
+            .lock()
+            .append(context, target, model, tier, usage)
+        {
             tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
         }
     }
@@ -266,6 +273,7 @@ impl ServerState {
                 base_url: target.base_url,
             },
             extra_body: target.extra_body,
+            reasoning_effort: target.reasoning_effort,
         };
         Some(DecisionResponse {
             selected: convert(description.selected),
@@ -436,6 +444,7 @@ const CLASSIFIER_TIER: &str = "classifier";
 fn stats_observer(
     stats: StatsAccumulator,
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
+    provider_models: Arc<HashMap<ModelId, ModelId>>,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
         RunObservation::Outcome(_) => {}
@@ -453,9 +462,13 @@ fn stats_observer(
                 if let (Some((log, context)), Some(usage)) =
                     (classifier_log.as_ref(), call.usage.as_ref())
                 {
+                    let model = provider_models
+                        .get(&call.selected_model)
+                        .unwrap_or(&call.selected_model);
                     log.append(
                         context.clone(),
                         &call.selected_model,
+                        model,
                         Some(CLASSIFIER_TIER),
                         usage,
                     );
@@ -1070,6 +1083,7 @@ async fn handle_llm_request(
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
+        route.provider_models(),
     );
 
     let output = match route.execute(request, Some(observer)).await {
@@ -1106,6 +1120,7 @@ async fn handle_llm_request(
         usage_metrics::observe(
             response,
             served_model.as_str(),
+            provider_model.as_deref().unwrap_or(served_model.as_str()),
             started.0,
             state.stats,
             cache_eligible,
@@ -1793,7 +1808,11 @@ targets = ["only"]
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
         let metadata = metadata_from_headers(headers);
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
-        let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
+        let observer = stats_observer(
+            StatsAccumulator::default(),
+            Some((log.clone(), context)),
+            Arc::default(),
+        );
 
         let call = |model: &str, answer: bool| {
             let observation = ModelCallObservation {

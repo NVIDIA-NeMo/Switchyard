@@ -782,6 +782,7 @@ fn random_state_with_retries(
                     format: WireFormat::OpenAiChat,
                     base_url: base_url.to_string(),
                     extra_body: BTreeMap::new(),
+                    reasoning_effort: None,
                 })
                 .collect();
             Ok((
@@ -2191,6 +2192,24 @@ seed = 17
     }
     drop(calls);
 
+    let decision = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/random",
+                "messages": [{"role": "user", "content": "hello"}]
+            }
+        })),
+    )
+    .await?
+    .json()?;
+    let selected = &decision["selected"];
+    assert_eq!(selected["model"], "model/shared");
+    assert_eq!(selected["reasoning_effort"], selected["target"]);
+
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     let medium = stats["models"]["medium"]["calls"].as_u64().unwrap_or(0);
     let max = stats["models"]["max"]["calls"].as_u64().unwrap_or(0);
@@ -2870,8 +2889,9 @@ escalation = {{ confirmations = 1 }}
     assert_eq!(stats["total_calls"], 2);
     assert_eq!(stats["total_prompt_tokens"], 20);
     assert_eq!(stats["total_completion_tokens"], 4);
-    assert_eq!(stats["models"]["weak"]["calls"], 1);
-    assert_eq!(stats["models"]["classifier"]["calls"], 1);
+    // Session stats come from the routing log, which prices by provider model.
+    assert_eq!(stats["models"]["model/weak"]["calls"], 1);
+    assert_eq!(stats["models"]["model/strong"]["calls"], 1);
 
     let process_stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(process_stats["total_requests"], 1);
@@ -4255,10 +4275,12 @@ confidence_threshold = 1.0
     assert_eq!(records.len(), 2);
     assert_eq!(records[0]["route_id"], "route/passthrough");
     assert_eq!(records[0]["algorithm"], "passthrough");
-    assert_eq!(records[0]["model"], "shared");
+    assert_eq!(records[0]["model"], "model/shared");
+    assert_eq!(records[0]["target"], "shared");
     assert_eq!(records[1]["route_id"], "route/stage");
     assert_eq!(records[1]["algorithm"], "stage_router");
-    assert_eq!(records[1]["model"], "shared");
+    assert_eq!(records[1]["model"], "model/shared");
+    assert_eq!(records[1]["target"], "shared");
     Ok(())
 }
 
@@ -4441,11 +4463,11 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .map(serde_json::from_str::<Value>)
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(records.len(), 3);
-    assert!(
-        records.iter().all(|record| {
-            record["model"] == "second" && record.get("fallback_reason").is_none()
-        })
-    );
+    assert!(records.iter().all(|record| {
+        record["model"] == "model/strong"
+            && record["target"] == "second"
+            && record.get("fallback_reason").is_none()
+    }));
 
     let previous_call_count = upstream.calls.lock().await.len();
     let response = send(
@@ -5059,8 +5081,9 @@ async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
     );
     let consult = records
         .iter()
-        .find(|record| record["model"] == "advisor")
+        .find(|record| record["model"] == "model/advisor")
         .ok_or("consult row present")?;
+    assert_eq!(consult["target"], "advisor");
     assert_eq!(consult["tier"], "classifier");
     assert_eq!(consult["route_id"], "switchyard/advisor");
     assert_eq!(consult["algorithm"], "advisor_gate");

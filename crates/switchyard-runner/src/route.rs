@@ -3,6 +3,7 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 
@@ -117,6 +118,7 @@ pub struct Route {
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
+    provider_models: Arc<HashMap<ModelId, ModelId>>,
     models: Arc<RuntimeModels>,
 }
 
@@ -139,6 +141,10 @@ impl Route {
         decision_targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
+        let provider_models = decision_targets
+            .iter()
+            .map(|target| (ModelId::from(target.target.as_str()), target.model.clone()))
+            .collect();
         Self {
             algorithm,
             clients,
@@ -147,6 +153,7 @@ impl Route {
             anthropic_auxiliary_target,
             responses_auxiliary_target,
             decision_targets,
+            provider_models: Arc::new(provider_models),
             models: Arc::new(models),
         }
     }
@@ -177,10 +184,13 @@ impl Route {
     /// The provider model that serves `selected`, or `selected` itself when it names no
     /// target of this route.
     pub fn provider_model<'a>(&'a self, selected: &'a ModelId) -> &'a ModelId {
-        self.decision_targets
-            .iter()
-            .find(|target| target.target == selected.as_str())
-            .map_or(selected, |target| &target.model)
+        self.provider_models.get(selected).unwrap_or(selected)
+    }
+
+    /// Target name to provider model for every callable target, for observers that outlive
+    /// the borrow of this route.
+    pub fn provider_models(&self) -> Arc<HashMap<ModelId, ModelId>> {
+        Arc::clone(&self.provider_models)
     }
 
     /// Returns the models grouped for one algorithm execution.

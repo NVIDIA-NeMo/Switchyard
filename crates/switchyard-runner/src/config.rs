@@ -205,6 +205,7 @@ impl DeploymentConfig {
             format: client.format.wire_format(),
             base_url: client.base_url.as_str().to_string(),
             extra_body: target.extra_body.clone(),
+            reasoning_effort: target.reasoning_effort.clone(),
         })
     }
 
@@ -244,6 +245,13 @@ impl DeploymentConfig {
             if self.targets.contains_key(name) {
                 return Err(RunnerError::configuration(format!(
                     "target {name} is defined as both an LLM and decision target"
+                )));
+            }
+            // Algorithms route LLM targets by name and decision targets by id.
+            if self.targets.contains_key(target.id.as_str()) {
+                return Err(RunnerError::configuration(format!(
+                    "decision target {name} id {} is also an LLM target name; rename one of them",
+                    target.id
                 )));
             }
             if !decision_clients.contains_key(&target.decision_client) {
@@ -359,12 +367,21 @@ impl DeploymentConfig {
                 .ok_or_else(|| {
                     RunnerError::configuration("validated llm client was not initialized")
                 })?;
-            if let Some(effort) = &target.reasoning_effort
-                && effort.trim().is_empty()
-            {
-                return Err(RunnerError::configuration(format!(
-                    "target {target_name} reasoning_effort must not be empty"
-                )));
+            if let Some(effort) = &target.reasoning_effort {
+                if effort.trim().is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort must not be empty"
+                    )));
+                }
+                // Anthropic rejects any other value with a 400 on every request.
+                if matches!(client_config.format, ClientFormat::AnthropicMessages)
+                    && !ANTHROPIC_EFFORTS.contains(&effort.as_str())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort {effort:?} is not an anthropic_messages effort; use one of {}",
+                        ANTHROPIC_EFFORTS.join(", ")
+                    )));
+                }
             }
             model_configs.push(
                 ModelConfig::new(
@@ -624,6 +641,9 @@ impl DeploymentConfig {
             })
     }
 }
+
+/// Values Anthropic accepts for `output_config.effort`.
+const ANTHROPIC_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
     let target_name = target_name.to_ascii_lowercase();
@@ -1354,7 +1374,27 @@ evidence = { description = "candidate comparison" }
 
         let anthropic = VALID_CONFIG.replace(weak, &format!("{weak}\nreasoning_effort = \"high\""));
         runner_from_toml(&anthropic)?;
+
+        let minimal =
+            VALID_CONFIG.replace(weak, &format!("{weak}\nreasoning_effort = \"minimal\""));
+        assert!(
+            error_message(&minimal).contains("is not an anthropic_messages effort"),
+            "{}",
+            error_message(&minimal)
+        );
         Ok(())
+    }
+
+    #[test]
+    fn decision_target_ids_must_not_match_llm_target_names() {
+        let configured = format!(
+            "{VALID_CONFIG}\n[decision_clients.decisions]\nformat = \"system_one\"\nendpoint = \"https://example.test/decisions\"\napi_key_env = \"PATH\"\ntimeout_ms = 5000\n\n[decision_targets.judge]\nid = \"strong\"\ndecision_client = \"decisions\"\n"
+        );
+        let message = error_message(&configured);
+        assert!(
+            message.contains("decision target judge id strong is also an LLM target name"),
+            "{message}"
+        );
     }
 
     #[test]

@@ -41,6 +41,8 @@ pub struct DecisionTarget {
     pub format: WireFormat,
     pub base_url: String,
     pub extra_body: BTreeMap<String, Value>,
+    /// Effort the target forces, so a caller that dispatches the call itself can apply it.
+    pub reasoning_effort: Option<String>,
 }
 
 impl Runner {

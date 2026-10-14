@@ -14,9 +14,12 @@ use crate::routing_log::RoutingLogContext;
 use crate::stats::{StatsAccumulator, TokenUsage};
 
 /// Observes a routed response without changing its aggregate or streaming contents.
+/// `model` is the served target, which keys stats. `provider_model` is what the routing log
+/// records as the model.
 pub(crate) fn observe(
     response: Response,
     model: &str,
+    provider_model: &str,
     started: Instant,
     stats: StatsAccumulator,
     cache_eligible: f64,
@@ -28,12 +31,13 @@ pub(crate) fn observe(
         upstream_headers,
     } = response;
     let model = model.to_string();
+    let provider_model = provider_model.to_string();
 
     let llm_response = match llm_response {
         LlmResponse::Agg(agg) => {
             record_terminal(&stats, &agg.usage, &model, started, cache_eligible);
             if let Some((log, context)) = routing_log {
-                log.append(context, &model, None, &agg.usage);
+                log.append(context, &model, &provider_model, None, &agg.usage);
             }
             LlmResponse::Agg(agg)
         }
@@ -76,7 +80,7 @@ pub(crate) fn observe(
                     {
                         record_terminal(&stats, usage, &model, started, cache_eligible);
                         if let Some((log, context)) = routing_log.as_ref() {
-                            log.append(context.clone(), &model, None, usage);
+                            log.append(context.clone(), &model, &provider_model, None, usage);
                         }
                         recorded = true;
                     }
@@ -89,7 +93,7 @@ pub(crate) fn observe(
                     let usage = latest_usage.unwrap_or_default();
                     record_terminal(&stats, &usage, &model, started, cache_eligible);
                     if let Some((log, context)) = routing_log {
-                        log.append(context, &model, None, &usage);
+                        log.append(context, &model, &provider_model, None, &usage);
                     }
                 }
             };
@@ -216,6 +220,7 @@ mod tests {
         let stats = StatsAccumulator::default();
         let observed = observe(
             response,
+            "model/worker",
             "model/worker",
             Instant::now(),
             stats.clone(),
