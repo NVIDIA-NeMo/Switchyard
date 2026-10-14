@@ -896,6 +896,24 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plan/Execute Routing
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="./" class="md-nav__link md-nav__link--active">
         
   
@@ -912,6 +930,60 @@
   
 
       </a>
+      
+        
+
+  
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#session-capacity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session capacity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#responses-api-history-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Responses API history requirement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional settings
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -1373,6 +1445,47 @@
     
   
   
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#session-capacity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session capacity
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#responses-api-history-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Responses API history requirement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-settings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional settings
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
 </nav>
                   </div>
                 </div>
@@ -1393,8 +1506,8 @@
 
 <h1 id="planexecute-routing">Plan/Execute Routing<a class="headerlink" href="#planexecute-routing" title="Permanent link">&para;</a></h1>
 <p>Plan/execute routing uses a capable model to inspect and plan a coding task,
-then switches to an efficient model after the first file mutation. It does not
-make a classifier call.</p>
+then switches to an efficient model after the first recognized edit or write
+tool call. It does not make a classifier call.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">[llm_clients.provider]</span>
@@ -1420,7 +1533,33 @@ make a classifier call.</p>
 The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.</p>
-<p>Optional settings:</p>
+<h2 id="session-capacity">Session capacity<a class="headerlink" href="#session-capacity" title="Permanent link">&para;</a></h2>
+<p>Each router instance retains up to 4,096 executing identities in memory. Root
+requests use the session ID. Subagent requests use the session ID and agent ID.
+Once retained, an identity stays on the efficient target after history compaction
+until a request marks it with <code>session_final: true</code> or the router restarts.</p>
+<p>At capacity, a new identity's handoff returns an error before calling a model.
+Existing identities keep their execution phase. Mark an existing identity's last
+request with <code>session_final: true</code> to free its slot, then retry the handoff with
+the mutation history intact. The server accepts this flag through the
+<code>x-switchyard-session-final: true</code> header.</p>
+<p>A handoff marked final needs no saved slot and can still run at capacity.
+Requests that are still planning or have no stable identity also use no slots.</p>
+<h2 id="responses-api-history-requirement">Responses API history requirement<a class="headerlink" href="#responses-api-history-requirement" title="Permanent link">&para;</a></h2>
+<p>Plan/execute needs the conversation history to detect edits and hand the task to
+the executor. Continuing with only <code>previous_response_id</code> or a provider
+<code>conversation</code> ID and new input is not supported for this handoff.</p>
+<p>For example, a <code>function_call_output</code> contains the result and call ID, but not
+the tool name. Without the earlier <code>write_file</code> call, the router cannot tell that
+the result belongs to an edit and can stay on the planner.</p>
+<p>Send the conversation history in <code>input</code>, including earlier tool calls and their
+results. Omit <code>previous_response_id</code> and <code>conversation</code> so routing can switch
+models between turns.</p>
+<p>When embedding <code>libsy</code>, your application must supply that history in
+<code>Request.llm_request.messages</code> before routing. <code>libsy</code> does not fetch it from the
+provider. A stable session ID remembers a detected handoff, but cannot detect an
+edit missing from the request history.</p>
+<h2 id="optional-settings">Optional settings<a class="headerlink" href="#optional-settings" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
@@ -1429,6 +1568,10 @@ Without a session ID, the first mutation must remain in the request history.</p>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>tool_semantics.mutate</code></td>
+<td>Lists custom tools that trigger handoff.</td>
+</tr>
 <tr>
 <td><code>planning_prompt</code></td>
 <td>Replaces the built-in planning instruction.</td>
@@ -1443,6 +1586,12 @@ Without a session ID, the first mutation must remain in the request history.</p>
 </tr>
 </tbody>
 </table>
+<p>To make a custom tool trigger handoff:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[routes.plan_execute.tool_semantics]</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">mutate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;persist_source_file&quot;</span><span class="p">]</span>
+</span></code></pre></div>
+<p>This uses the same <a href="../stage_router_routing/#optional-custom-tool-semantics">tool matching rules</a>
+as Stage. The other custom tool categories do not trigger handoff.</p>
 <p>Use a stable session ID with handoff processing or history compaction.</p>
 
 
