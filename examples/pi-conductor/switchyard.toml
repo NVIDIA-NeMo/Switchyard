@@ -1,0 +1,25 @@
+schema_version = 1
+
+[llm_clients.responses]
+format = "openai_responses"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[targets.supervisor]
+id = "gpt-6-sol"
+llm_client = "responses"
+reasoning_effort = "max"
+
+[targets.worker]
+id = "gpt-6-luna"
+llm_client = "responses"
+reasoning_effort = "max"
+
+[routes.switchyard]
+id = "switchyard"
+type = "passthrough"
+target = "supervisor"
+
+[routes.switchyard.subagents]
+type = "passthrough"
+target = "worker"

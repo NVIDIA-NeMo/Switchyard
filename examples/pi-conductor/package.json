@@ -1,0 +1,26 @@
+{
+  "name": "@nvidia/pi-conductor",
+  "version": "0.0.0",
+  "private": true,
+  "engines": { "node": ">=22.19.0" },
+  "type": "module",
+  "description": "A Switchyard-routed supervisor and persistent worker for Pi",
+  "license": "Apache-2.0",
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "smoke": "tsx test/smoke.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typebox": "1.3.27",
+    "typescript": "^5.9.0"
+  }
+}
