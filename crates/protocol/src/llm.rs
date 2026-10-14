@@ -296,6 +296,13 @@ pub struct McpToolset {
     /// Per-tool enablement overrides.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tool_enabled: BTreeMap<String, bool>,
+    /// Whether tool definitions are loaded through tool search instead of initially.
+    /// Absence retains the provider's default loading behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
+    /// Per-tool loading overrides. Tools without an override inherit `defer_loading`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tool_defer_loading: BTreeMap<String, bool>,
     /// Whether all calls require approval (`true`) or none do (`false`).
     /// Absence retains provider defaults; conditional approval rules remain provider-specific.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,15 +321,45 @@ impl fmt::Debug for McpToolset {
             .field("enabled", &self.enabled)
             .field("allowed_tools", &self.allowed_tools)
             .field("tool_enabled", &self.tool_enabled)
+            .field("defer_loading", &self.defer_loading)
+            .field("tool_defer_loading", &self.tool_defer_loading)
             .field("require_approval", &self.require_approval)
             .finish()
     }
 }
 
-/// Backend-executed MCP history. Results reference the matching call's server identity.
+/// A tool discovered on an MCP server.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct McpListedTool {
+    /// Tool name as exposed by the server.
+    pub name: String,
+    /// Human-readable tool description, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema describing accepted arguments.
+    pub input_schema: Value,
+    /// Additional tool metadata reported by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Value>,
+}
+
+/// MCP discovery and execution history. Results reference the matching call's server identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum McpContent {
+    /// Tools discovered on a server at this point in the conversation.
+    Listing {
+        /// Identity of the MCP server.
+        server_name: String,
+        /// Listing identifier, when supplied by the provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// Discovered tools in the order reported by the server.
+        tools: Vec<McpListedTool>,
+        /// Discovery failure, when reported. An empty tool list alone is not a failure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// A call executed by the backend's MCP client.
     Call {
         /// Identity of the MCP server.
@@ -655,6 +692,17 @@ mod tests {
         assert!(matches!(&tools[2], Tool::Provider { .. }));
         assert_eq!(serde_json::to_value(&tools)?, definitions);
         let history = vec![
+            ContentBlock::Mcp(McpContent::Listing {
+                server_name: "inventory".into(),
+                id: None,
+                tools: vec![McpListedTool {
+                    name: "lookup".into(),
+                    description: None,
+                    input_schema: json!({"type": "object"}),
+                    annotations: None,
+                }],
+                error: None,
+            }),
             ContentBlock::Mcp(McpContent::Call {
                 server_name: "inventory".into(),
                 call: ToolCall {
@@ -675,6 +723,73 @@ mod tests {
             serde_json::from_value::<Vec<ContentBlock>>(serde_json::to_value(&history)?)?,
             history
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_loading_settings_preserve_omission_and_overrides() -> Result<(), serde_json::Error> {
+        let original = json!({"name": "inventory", "url": "https://example.invalid/mcp"});
+        let mcp: McpToolset = serde_json::from_value(original.clone())?;
+        assert_eq!(mcp.defer_loading, None);
+        assert!(mcp.tool_defer_loading.is_empty());
+        assert_eq!(serde_json::to_value(&mcp)?, original);
+
+        for default in [None, Some(false), Some(true)] {
+            let mut configured = original.clone();
+            if let Some(default) = default {
+                configured["defer_loading"] = json!(default);
+            }
+            configured["tool_defer_loading"] = json!({"lookup": false, "search": true});
+            let mcp: McpToolset = serde_json::from_value(configured.clone())?;
+            assert_eq!(mcp.defer_loading, default);
+            assert_eq!(
+                mcp.tool_defer_loading,
+                BTreeMap::from([("lookup".into(), false), ("search".into(), true)])
+            );
+            assert_eq!(serde_json::to_value(&mcp)?, configured);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_listings_preserve_fields_and_distinguish_discovery_failure()
+    -> Result<(), serde_json::Error> {
+        let listings = json!([
+            {
+                "type": "mcp", "kind": "listing", "server_name": "inventory",
+                "id": "listing_1",
+                "tools": [
+                    {
+                        "name": "lookup", "description": "Look up stock",
+                        "input_schema": {"type": "object", "properties": {"sku": {"type": "string"}}},
+                        "annotations": {"readOnlyHint": true}
+                    },
+                    {"name": "search", "input_schema": {"type": "object"}}
+                ]
+            },
+            {"type": "mcp", "kind": "listing", "server_name": "empty", "tools": []},
+            {
+                "type": "mcp", "kind": "listing", "server_name": "unavailable",
+                "tools": [], "error": "Server unavailable"
+            }
+        ]);
+        let content: Vec<ContentBlock> = serde_json::from_value(listings.clone())?;
+        assert!(matches!(
+            &content[0],
+            ContentBlock::Mcp(McpContent::Listing { id: Some(id), tools, error: None, .. })
+                if id == "listing_1" && tools.len() == 2
+        ));
+        assert!(matches!(
+            &content[1],
+            ContentBlock::Mcp(McpContent::Listing { id: None, tools, error: None, .. })
+                if tools.is_empty()
+        ));
+        assert!(matches!(
+            &content[2],
+            ContentBlock::Mcp(McpContent::Listing { tools, error: Some(error), .. })
+                if tools.is_empty() && error == "Server unavailable"
+        ));
+        assert_eq!(serde_json::to_value(&content)?, listings);
         Ok(())
     }
 
