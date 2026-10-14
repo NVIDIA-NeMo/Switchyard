@@ -588,7 +588,7 @@
 <a href=#588 id=588 data-nosnippet>588</a>
 <a href=#589 id=589 data-nosnippet>589</a>        <span class="kw">let </span>serve = <span class="kw">async </span>{
 <a href=#590 id=590 data-nosnippet>590</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="prelude-val">Ok</span>(Step::CallModel(call))) = steps.next().<span class="kw">await </span>{
-<a href=#591 id=591 data-nosnippet>591</a>                <span class="kw">let _ </span>= call.respond(reply);
+<a href=#591 id=591 data-nosnippet>591</a>                <span class="kw">let _ </span>= call.respond(std::future::ready(reply)).<span class="kw">await</span>;
 <a href=#592 id=592 data-nosnippet>592</a>            }
 <a href=#593 id=593 data-nosnippet>593</a>        };
 <a href=#594 id=594 data-nosnippet>594</a>        <span class="kw">let </span>(classification, ()) =
