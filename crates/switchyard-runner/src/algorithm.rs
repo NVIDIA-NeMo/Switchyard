@@ -195,6 +195,12 @@ struct CustomClassifierRouteConfig {
 pub struct CategoryModelConfig(BTreeMap<String, Vec<String>>);
 
 impl CategoryModelConfig {
+    fn restrict_to(&mut self, allowed: &BTreeSet<&str>) {
+        for models in self.0.values_mut() {
+            models.retain(|model| allowed.contains(model.as_str()));
+        }
+    }
+
     fn validate(&self, route_name: &str, default_target: &Category) -> AlgorithmResult<()> {
         for category in [Category::Any, Category::Judge] {
             if self.get(&category).is_empty() {
@@ -639,6 +645,81 @@ impl AlgorithmSpec {
             }
             _ => false,
         }
+    }
+
+    /// Filters configured pools without replacing required targets or changing their roles.
+    pub(crate) fn restricted_to(&self, allowed: &BTreeSet<&str>) -> AlgorithmResult<Self> {
+        let mut restricted = self.clone();
+        match &mut restricted {
+            Self::Random {
+                targets, weights, ..
+            } => {
+                if let Some(weights) = weights {
+                    if weights.len() != targets.len() {
+                        return Err(AlgorithmConfigError::new(format!(
+                            "random privacy expected {} weights, got {}",
+                            targets.len(),
+                            weights.len()
+                        )));
+                    }
+                    // Keep weight positions paired with the original target order.
+                    let mut index = 0;
+                    weights.retain(|_| {
+                        let keep = allowed.contains(targets[index].as_str());
+                        index += 1;
+                        keep
+                    });
+                }
+                targets.retain(|target| allowed.contains(target.as_str()));
+                if targets.is_empty() {
+                    return Err(AlgorithmConfigError::new(
+                        "privacy leaves random without a private target".to_string(),
+                    ));
+                }
+            }
+            Self::LlmClassifier { config } => {
+                if let Some(models) = &mut config.models {
+                    models.restrict_to(allowed);
+                }
+            }
+            _ => {}
+        }
+        if let Some((_, decision)) = restricted.decision_judge()
+            && let Some(target) = decision
+                .candidates
+                .values()
+                .find(|target| !allowed.contains(target.as_str()))
+        {
+            return Err(AlgorithmConfigError::new(format!(
+                "privacy decision candidate {target} must be private"
+            )));
+        }
+        let subagents = match &mut restricted {
+            Self::Passthrough { subagents, .. }
+            | Self::StageRouter { subagents, .. }
+            | Self::Composite { subagents, .. } => subagents.as_mut(),
+            _ => None,
+        };
+        if let Some(SubagentRouteConfig::LlmClassifier(config)) = subagents
+            && let Some(models) = &mut config.models
+        {
+            models.restrict_to(allowed);
+        }
+        if let Some(target) = restricted
+            .callable_target_names()
+            .into_iter()
+            .find(|target| !allowed.contains(target))
+        {
+            return Err(AlgorithmConfigError::new(format!(
+                "privacy requires target {target} to be private"
+            )));
+        }
+        Ok(restricted)
+    }
+
+    /// Whether the algorithm supports a restricted set of configured targets.
+    pub(crate) const fn supports_privacy_lanes(&self) -> bool {
+        !matches!(self, Self::PrefillRouter { .. })
     }
 
     pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
@@ -1686,4 +1767,150 @@ fn resolve_runtime_models(
             Ok((category, models))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restricted_random_preserves_weight_positions() -> AlgorithmResult<()> {
+        let allowed = BTreeSet::from(["private_a", "private_b"]);
+        let mut algorithm = AlgorithmSpec::Random {
+            targets: ["public_a", "private_a", "public_b", "private_b"]
+                .map(String::from)
+                .to_vec(),
+            weights: Some(vec![1.0, 2.0, 3.0, 4.0]),
+            seed: Some(42),
+        };
+        let AlgorithmSpec::Random {
+            targets,
+            weights,
+            seed,
+        } = algorithm.restricted_to(&allowed)?
+        else {
+            unreachable!();
+        };
+        assert_eq!(targets, ["private_a", "private_b"]);
+        assert_eq!(weights, Some(vec![2.0, 4.0]));
+        assert_eq!(seed, Some(42));
+        if let AlgorithmSpec::Random { weights, .. } = &mut algorithm {
+            *weights = Some(vec![1.0]);
+        }
+        assert!(algorithm.restricted_to(&allowed).is_err());
+        Ok(())
+    }
+
+    fn custom_classifier() -> LlmClassifierRouteConfig {
+        LlmClassifierRouteConfig {
+            mode: Some(ClassifierMode::Custom),
+            models: Some(CategoryModelConfig(BTreeMap::from([
+                ("any".into(), vec!["public".into(), "private".into()]),
+                ("efficient".into(), vec!["public".into(), "private".into()]),
+                ("judge".into(), vec!["judge".into()]),
+                ("research".into(), vec!["public".into()]),
+            ]))),
+            default_target: Some("efficient".into()),
+            prompt: Some("Select an available target.".into()),
+            response_schema: Some(r#"{"type":"object"}"#.into()),
+            max_output_tokens: default_classifier_max_output_tokens(),
+            policy: Some(ClassifierPolicyConfig::TargetSelector {
+                selector: "/target".into(),
+            }),
+            ..LlmClassifierRouteConfig::default()
+        }
+    }
+
+    #[test]
+    fn restricted_custom_pools_cover_parent_and_subagents() -> AlgorithmResult<()> {
+        let allowed = BTreeSet::from(["private", "judge"]);
+        let targets = BTreeMap::from([
+            ("private".into(), ModelId::from("private")),
+            ("judge".into(), ModelId::from("judge")),
+        ]);
+        let parent = AlgorithmSpec::LlmClassifier {
+            config: custom_classifier(),
+        };
+        let child = AlgorithmSpec::Passthrough {
+            target: "private".into(),
+            subagents: Some(SubagentRouteConfig::LlmClassifier(Box::new(
+                custom_classifier(),
+            ))),
+        };
+        for algorithm in [parent, child] {
+            let restricted = algorithm.restricted_to(&allowed)?;
+            let groups = restricted.runtime_model_names("test")?;
+            let groups = groups.subagent.unwrap_or(groups.parent);
+            assert_eq!(groups[&Category::Any], ["private"]);
+            assert_eq!(groups[&Category::Efficient], ["private"]);
+            assert_eq!(groups[&Category::Judge], ["judge"]);
+            restricted.build("test", &targets)?;
+            let missing_judge = algorithm.restricted_to(&BTreeSet::from(["private"]))?;
+            assert!(missing_judge.build("test", &targets).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn restricted_roles_and_decision_candidates_are_not_replaced() {
+        let stage = AlgorithmSpec::Auto {
+            capable_target: "private".into(),
+            efficient_target: "public".into(),
+        };
+        assert!(stage.restricted_to(&BTreeSet::from(["private"])).is_err());
+        let decision = AlgorithmSpec::LlmClassifier {
+            config: LlmClassifierRouteConfig {
+                classifier_target: "judge".into(),
+                strong_target: Some("strong".into()),
+                weak_target: Some("weak".into()),
+                max_output_tokens: default_classifier_max_output_tokens(),
+                decision: Some(DecisionJudgeRouteConfig {
+                    cutoff: 0.5,
+                    instructions: None,
+                    candidates: BTreeMap::from([
+                        ("strong".into(), "strong".into()),
+                        ("weak".into(), "weak".into()),
+                        ("extra".into(), "public".into()),
+                    ]),
+                    evidence: Value::Null,
+                }),
+                ..LlmClassifierRouteConfig::default()
+            },
+        };
+        let judge = decision.decision_judge().unwrap().1;
+        let classifier = serde_json::json!({
+            "target": "judge",
+            "decision": {
+                "cutoff": judge.cutoff, "candidates": judge.candidates,
+                "evidence": judge.evidence,
+            },
+        });
+        let tiers = serde_json::json!({
+            "capable_target": "strong",
+            "efficient_target": "weak",
+            "confidence_threshold": 0.6,
+        });
+        let composite = serde_json::from_value(serde_json::json!({
+            "type": "composite", "classifier": classifier, "stage": tiers,
+        }))
+        .unwrap();
+        let stage = serde_json::from_value(serde_json::json!({
+            "type": "stage_router", "classifier": classifier,
+            "capable_target": "strong", "efficient_target": "weak",
+            "confidence_threshold": 0.6, "picker": "efficient_first",
+        }))
+        .unwrap();
+        for decision in [decision, composite, stage] {
+            assert!(decision.runtime_model_names("test").is_ok());
+            let error = decision
+                .restricted_to(&BTreeSet::from(["strong", "weak", "judge"]))
+                .expect_err(
+                    "an extra public candidate must not be restored during lane construction",
+                );
+            assert_eq!(
+                error.to_string(),
+                "privacy decision candidate public must be private"
+            );
+        }
+    }
 }

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! One configured algorithm and the clients that serve its targets.
+//! Configured route execution and the clients that serve its targets.
 
 use std::error::Error;
 use std::sync::Arc;
@@ -13,6 +13,10 @@ use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat
 use thiserror::Error;
 
 use crate::DecisionTarget;
+use crate::privacy::{
+    PrivacyDecision, PrivacyLane, PrivacyPolicy, external_signal_not_accepted,
+    has_external_restriction, record_selected_lane, selected_lane, validate_mixed_request,
+};
 
 /// Capabilities declared for one route.
 ///
@@ -105,19 +109,50 @@ impl RunnerError {
     }
 }
 
-/// A configured algorithm and the per-target clients its calls resolve through.
-pub struct Route {
+// Configured algorithm and targets for one execution lane.
+pub(crate) struct ExecutionLane {
     algorithm: Arc<dyn Algorithm>,
     // Resolves each offloaded call to the client configured for the target the algorithm
     // selected. A route is a synthetic model with no upstream of its own, so this is a
     // per-target lookup, never one client serving the whole route.
     clients: ClientRouter,
-    caller_auth: Option<CallerAuthKind>,
-    capabilities: ModelCapabilities,
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
     models: Arc<RuntimeModels>,
+}
+
+impl ExecutionLane {
+    pub(crate) fn new(
+        algorithm: Arc<dyn Algorithm>,
+        clients: ClientRouter,
+        anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+        responses_auxiliary_target: Option<AuxiliaryTarget>,
+        decision_targets: Vec<DecisionTarget>,
+        models: RuntimeModels,
+    ) -> Self {
+        Self {
+            algorithm,
+            clients,
+            anthropic_auxiliary_target,
+            responses_auxiliary_target,
+            decision_targets,
+            models: Arc::new(models),
+        }
+    }
+}
+
+struct PrivacyExecution {
+    policy: PrivacyPolicy,
+    restricted: ExecutionLane,
+}
+
+/// One or more execution lanes behind a configured route.
+pub struct Route {
+    standard: ExecutionLane,
+    privacy: Option<PrivacyExecution>,
+    caller_auth: Option<CallerAuthKind>,
+    capabilities: ModelCapabilities,
 }
 
 /// The selected model and untouched response produced by a route execution.
@@ -139,21 +174,70 @@ impl Route {
         decision_targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
-        Self {
-            algorithm,
-            clients,
+        Self::from_lane(
+            ExecutionLane::new(
+                algorithm,
+                clients,
+                anthropic_auxiliary_target,
+                responses_auxiliary_target,
+                decision_targets,
+                models,
+            ),
             caller_auth,
             capabilities,
-            anthropic_auxiliary_target,
-            responses_auxiliary_target,
-            decision_targets,
-            models: Arc::new(models),
+        )
+    }
+
+    pub(crate) fn from_lane(
+        lane: ExecutionLane,
+        caller_auth: Option<CallerAuthKind>,
+        capabilities: ModelCapabilities,
+    ) -> Self {
+        Self {
+            standard: lane,
+            privacy: None,
+            caller_auth,
+            capabilities,
         }
+    }
+
+    pub(crate) fn with_privacy(mut self, policy: PrivacyPolicy, restricted: ExecutionLane) -> Self {
+        self.privacy = Some(PrivacyExecution { policy, restricted });
+        self
+    }
+
+    async fn select_lane(
+        &self,
+        request: &Request,
+    ) -> Result<(&ExecutionLane, Option<PrivacyDecision>), RunnerError> {
+        let Some(privacy) = &self.privacy else {
+            if has_external_restriction(request) {
+                return Err(external_signal_not_accepted().into());
+            }
+            return Ok((&self.standard, None));
+        };
+        validate_mixed_request(request)?;
+        let route = request.llm_request.model.as_deref().unwrap_or_default();
+        let algorithm = self.algorithm_name();
+        let decision = privacy.policy.decide(request).await?;
+        tracing::debug!(
+            switchyard.route = route,
+            switchyard.algorithm = algorithm,
+            privacy.lane = decision.lane(),
+            privacy.source = decision.source(),
+            privacy.reason_code = decision.reason_code(),
+            "privacy lane selected"
+        );
+        let lane = match decision.selected_lane() {
+            PrivacyLane::Standard => &self.standard,
+            PrivacyLane::Restricted => &privacy.restricted,
+        };
+        Ok((lane, Some(decision)))
     }
 
     /// Returns the configured libsy algorithm name.
     pub fn algorithm_name(&self) -> &str {
-        self.algorithm.name()
+        self.standard.algorithm.name()
     }
 
     /// Returns model-list capability metadata.
@@ -167,16 +251,25 @@ impl Route {
     }
 
     /// Resolves a selected model to this route's non-secret target metadata.
-    pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.decision_targets
+    pub(crate) fn decision_target(
+        &self,
+        model: &ModelId,
+        request: &Request,
+    ) -> Option<DecisionTarget> {
+        let targets = match (&self.privacy, selected_lane(request)) {
+            (None, _) | (Some(_), Some(PrivacyLane::Standard)) => &self.standard.decision_targets,
+            (Some(privacy), Some(PrivacyLane::Restricted)) => &privacy.restricted.decision_targets,
+            (Some(_), None) => return None,
+        };
+        targets
             .iter()
             .find(|target| target.model == *model)
             .cloned()
     }
 
-    /// Returns the models grouped for one algorithm execution.
+    /// Returns the models grouped for the standard execution lane.
     pub fn models(&self) -> &RuntimeModels {
-        &self.models
+        &self.standard.models
     }
 
     /// Rejects a caller format incompatible with forwarded credentials.
@@ -195,11 +288,12 @@ impl Route {
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
+        let (lane, _) = self.select_lane(&request).await?;
         let (selected_model, response) = switchyard_llm_client::run(
-            Arc::clone(&self.algorithm),
-            self.clients.clone(),
+            Arc::clone(&lane.algorithm),
+            lane.clients.clone(),
             request,
-            Arc::clone(&self.models),
+            Arc::clone(&lane.models),
             observer,
         )
         .await?;
@@ -211,14 +305,19 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        switchyard_llm_client::decide(
-            Arc::clone(&self.algorithm),
-            self.clients.clone(),
+        let (lane, privacy_decision) = self.select_lane(&request).await?;
+        let mut outcome = switchyard_llm_client::decide(
+            Arc::clone(&lane.algorithm),
+            lane.clients.clone(),
             request,
-            Arc::clone(&self.models),
+            Arc::clone(&lane.models),
         )
         .await
-        .map_err(Into::into)
+        .map_err(RunnerError::from)?;
+        if let Some(decision) = privacy_decision {
+            record_selected_lane(&mut outcome.request, decision.selected_lane());
+        }
+        Ok(outcome)
     }
 
     /// Executes a model-bearing provider operation through a compatible target.
@@ -227,10 +326,11 @@ impl Route {
         request: Request,
         operation: AuxiliaryOperation,
     ) -> Result<Value, RunnerError> {
+        let (lane, _) = self.select_lane(&request).await?;
         let target = match operation {
-            AuxiliaryOperation::AnthropicCountTokens => &self.anthropic_auxiliary_target,
+            AuxiliaryOperation::AnthropicCountTokens => &lane.anthropic_auxiliary_target,
             AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
-                &self.responses_auxiliary_target
+                &lane.responses_auxiliary_target
             }
         }
         .as_ref()
@@ -240,5 +340,171 @@ impl Route {
             .call_auxiliary(&target.model, request, operation)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use libsy::{Driver, Passthrough};
+    use reqwest::StatusCode;
+    use switchyard_protocol::{Category, LlmResponse, RoutedLlmClient, text_response};
+
+    use super::*;
+    use crate::privacy::mark_privacy_restricted;
+
+    struct CallThenRoute;
+
+    #[async_trait::async_trait]
+    impl Algorithm for CallThenRoute {
+        fn name(&self) -> &str {
+            "call_then_route"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> libsy::Result<RoutingOutcome> {
+            driver
+                .call_model(
+                    request.clone(),
+                    driver.models_for(&Category::Judge).to_vec(),
+                )
+                .await?;
+            let (selected, fallbacks) = driver
+                .models_for(&Category::Any)
+                .split_first()
+                .ok_or(LibsyError::NoTargets)?;
+            Ok(RoutingOutcome::route_to(
+                selected.clone(),
+                fallbacks.to_vec(),
+                request,
+            ))
+        }
+    }
+
+    struct RecordingClient {
+        calls: Arc<Mutex<Vec<ModelId>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl RoutedLlmClient for RecordingClient {
+        async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+            let model = request
+                .llm_request
+                .model
+                .map(ModelId::from)
+                .expect("driver should stamp a model");
+            self.calls.lock().expect("calls lock").push(model.clone());
+            if model == "restricted-primary" {
+                return Err(LlmClientError::UpstreamHttp {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    body: "unavailable".to_string(),
+                });
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(Some(model.to_string()), "ok")),
+                metadata: None,
+                upstream_headers: Default::default(),
+            })
+        }
+    }
+
+    fn lane(
+        algorithm: Arc<dyn Algorithm>,
+        client: Arc<dyn RoutedLlmClient>,
+        models: RuntimeModels,
+        auxiliary_model: &str,
+    ) -> ExecutionLane {
+        let routed_models = models
+            .models_for(&Category::Any)
+            .iter()
+            .chain(models.models_for(&Category::Judge))
+            .cloned()
+            .map(|model| (model, Arc::clone(&client)))
+            .collect();
+        let auxiliary_client =
+            Arc::new(TranslatingLlmClient::new(&[]).expect("empty test client should be valid"));
+        ExecutionLane::new(
+            algorithm,
+            ClientRouter::new(routed_models),
+            Some(AuxiliaryTarget {
+                model: auxiliary_model.into(),
+                client: auxiliary_client,
+            }),
+            None,
+            Vec::new(),
+            models,
+        )
+    }
+
+    fn restricted_request() -> Request {
+        let mut request = Request::default();
+        mark_privacy_restricted(&mut request);
+        request
+    }
+
+    #[tokio::test]
+    async fn privacy_restricted_lane_covers_judge_fallbacks_and_auxiliary_calls() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(RecordingClient {
+            calls: Arc::clone(&calls),
+        });
+        let standard = lane(
+            Arc::new(Passthrough),
+            Arc::clone(&client),
+            RuntimeModels::new(HashMap::from([(
+                Category::Any,
+                vec!["standard-primary".into()],
+            )])),
+            "standard-auxiliary",
+        );
+        let restricted = lane(
+            Arc::new(CallThenRoute),
+            client,
+            RuntimeModels::new(HashMap::from([
+                (Category::Judge, vec!["restricted-judge".into()]),
+                (
+                    Category::Any,
+                    vec!["restricted-primary".into(), "restricted-fallback".into()],
+                ),
+            ])),
+            "restricted-auxiliary",
+        );
+        let route = Route::from_lane(standard, None, ModelCapabilities::default())
+            .with_privacy(PrivacyPolicy::new(true), restricted);
+
+        let output = route
+            .execute(restricted_request(), None)
+            .await
+            .expect("restricted fallback should answer");
+        assert_eq!(output.selected_model, "restricted-primary");
+        assert_eq!(
+            output.response.served_model().map(ModelId::as_str),
+            Some("restricted-fallback")
+        );
+        assert_eq!(
+            *calls.lock().expect("calls lock"),
+            [
+                ModelId::from("restricted-judge"),
+                ModelId::from("restricted-primary"),
+                ModelId::from("restricted-fallback"),
+            ]
+        );
+
+        let error = route
+            .call_auxiliary(
+                restricted_request(),
+                AuxiliaryOperation::AnthropicCountTokens,
+            )
+            .await
+            .expect_err("empty auxiliary client should reject the model");
+        assert!(
+            error.to_string().contains("restricted-auxiliary"),
+            "{error}"
+        );
     }
 }
