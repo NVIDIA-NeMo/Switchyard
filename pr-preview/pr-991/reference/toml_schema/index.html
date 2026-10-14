@@ -2011,7 +2011,7 @@ such clients.</p>
 <td><code>reasoning_effort</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Reasoning effort forced on every request to this target, replacing the value the caller sent (<code>reasoning.effort</code> on <code>openai_responses</code>, <code>reasoning_effort</code> on <code>openai_chat</code>, <code>output_config.effort</code> on <code>anthropic_messages</code>). Use it to run one target at a different effort than the client asked for, for example a strong tier at <code>max</code> behind a client that sends <code>high</code>.</td>
+<td>Reasoning effort forced on every request to this target, replacing the value the caller sent (<code>reasoning.effort</code> on <code>openai_responses</code>, <code>reasoning_effort</code> on <code>openai_chat</code>, <code>output_config.effort</code> on <code>anthropic_messages</code>, which accepts <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, or <code>max</code>). Use it to run one target at a different effort than the client asked for, for example a strong tier at <code>max</code> behind a client that sends <code>high</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -2028,8 +2028,8 @@ example, one route can run the same model at two efforts:</p>
 </span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span>
 </span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">reasoning_effort</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;medium&quot;</span>
 </span></code></pre></div>
-<p>Responses and the <code>x-model-router-selected-model</code> header name the target's <code>id</code>. Stats, the
-routing log, and metrics name the target.</p>
+<p>Responses, the <code>x-model-router-selected-model</code> header, and the routing log <code>model</code> field name the
+target's <code>id</code>. The routing log also has a <code>target</code> field. Stats and metrics name the target.</p>
 <p>Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.
 Judge-only, classifier-only, and reviewer-only targets are not completion destinations and do not
