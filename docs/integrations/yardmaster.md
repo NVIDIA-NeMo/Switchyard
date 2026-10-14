@@ -40,7 +40,9 @@ docker run -d --name yardmaster --restart unless-stopped \
 docker logs yardmaster        # shows a one-time setup code
 ```
 
-Open `http://<host>:8080`, enter the setup code, and follow **Setup** to add
-providers, models and routes. People then point their tools at the gateway with
-their own token. See the
+Open `http://<host>:8080` from a trusted network, enter the setup code, and follow
+**Setup** to add providers, models and routes. Before people connect, give
+YardMaster its DNS name in **Settings** so it serves HTTPS on port 8443, and share
+the address shown in **Connect an agent**. Each person then points their tools at
+the gateway with their own token. See the
 [YardMaster install guide](https://github.com/bricke/YardMaster/blob/main/docs/install.md).
