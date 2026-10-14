@@ -137,13 +137,13 @@ pub(crate) async fn frames(
     tokio::task::spawn_blocking(move || {
         // Retain the worker permit even if the request deadline cancels the wait.
         let _permit = permit;
-        dynamo_frames(&bytes, count, edge, remaining_bytes)
+        decode_video_frames(&bytes, count, edge, remaining_bytes)
     })
     .await
     .map_err(|_| MediaError::Invalid("video worker failed"))?
 }
 
-fn dynamo_frames(
+fn decode_video_frames(
     bytes: &[u8],
     count: usize,
     edge: u32,
@@ -249,7 +249,7 @@ mod tests {
             b"not a video".as_slice(),
             b"\0\0\0\x18ftypisom\0\0\0\0isom".as_slice(),
         ] {
-            let result = dynamo_frames(bytes, 1, 32, 1024);
+            let result = decode_video_frames(bytes, 1, 32, 1024);
             assert!(
                 matches!(&result, Err(MediaError::Invalid("video decoding failed"))),
                 "{result:?}"
