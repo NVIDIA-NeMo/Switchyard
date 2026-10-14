@@ -7,18 +7,16 @@ The caller's original routing request is unchanged.
 Each target with media settings gets a reusable Dynamo fetcher at client setup,
 with its own input size limit. All targets share the client's two decoding slots.
 
-Media fetching, EXIF-aware JPEG decoding and RGB resizing use `dynamo-multimodal`, pinned to
-[`frontend-crates` main at `e979fc76`](https://github.com/ai-dynamo/frontend-crates/tree/e979fc762366b3580fdc4185874cee51217bd637/multimodal).
-RGB downscaling uses Lanczos. Other image formats retain the bounded `image`
+Media fetching, EXIF-aware JPEG decoding, RGB resizing, video decoding and frame
+JPEG encoding use `dynamo-multimodal`, pinned to
+[frontend-crates PR #378 at `4448b929`](https://github.com/ai-dynamo/frontend-crates/tree/4448b929bb2187645e83d1195dc9a85819dd5145/multimodal).
+RGB downscaling uses Lanczos. Other still-image formats retain the bounded `image`
 decoder, including transparency and higher bit depths. PNG output for transparency,
-FFmpeg frame extraction and provider formatting remain here. Frame sampling uses
-the selected video stream duration, or its packet timestamps when duration is
-unavailable, so longer audio tracks do not extend the sampling range. The client continues
-to use `MediaProcessor` and `MediaConfig`.
-Dynamo's optional Rayon pool is disabled; the existing bounded workers run decoding.
+provider formatting, and an FFmpeg video fallback remain in the client.
+Dynamo's optional Rayon pool is disabled; decoding uses the client's bounded workers.
 Building from source requires CMake and a C/C++ toolchain for libjpeg-turbo.
-Source builds use the pinned Git revision. Cargo packages use the compatible
-registry version `0.1.1`, which provides the same APIs.
+This pin uses the unreleased `video-decode` feature. Registry publication requires
+a Dynamo release containing that feature; registry version `0.1.1` does not provide it.
 
 Supported content: Chat `image_url` / `video_url`, Responses `input_image` /
 `input_video`, Anthropic image/video source blocks, and Gemini-on-Hub video
@@ -70,17 +68,28 @@ also counts frames that its video settings will extract. Native videos are not
 counted as images; use `video = "omit"` to remove them. Other targets still prepare
 their own copy of the original request.
 
-Video frame extraction requires `ffmpeg` and `ffprobe` on PATH, with MP4/MOV or
-Matroska/WebM demuxers and the input codec enabled. These are runtime dependencies;
-image-only and native-video calls need neither executable. A missing tool or failed
-decode returns an error instead of silently dropping media. Samples include text
-labels with requested seek times, not exact decoded frame timestamps. Uniform
-sampling can miss brief events; benchmark temporal accuracy must be evaluated separately.
+Video decoding tries Dynamo first. On 64-bit Linux, it uses NVDEC when a usable
+NVIDIA driver and compatible GPU are available, or system libvpx for CPU VP8/VP9.
+FFmpeg/FFprobe are used only when Dynamo reports an unsupported codec, format, or
+platform, preserving CPU-only H.264 and other existing inputs. Invalid media,
+allocation-limit failures, and internal decoder errors are returned directly.
+The server image retains FFmpeg, which also supplies libvpx.
+
+Dynamo selects uniformly spaced frame indices and returns real presentation times.
+One sample selects the first frame; requests above the source frame count return
+all available frames. The FFmpeg fallback samples timestamps across the video
+stream's duration, or packet timestamps when duration is unavailable, and also
+starts a single sample at the first frame. Its labels identify requested seek times.
+Longer audio does not extend the sampling range. Uniform sampling can miss brief events.
+
+Dynamo's selected RGB frames are capped at 128 MiB before resizing. JPEG outputs
+also obey `max_output_bytes`. The preparation deadline covers the request's wait;
+a running native blocking decoder completes in the background after cancellation,
+holding its shared worker permit until it finishes.
 
 Locally processed media can be base64 data URIs or public HTTP(S) URLs. Dynamo's
 `MediaFetcher` validates DNS and redirects and limits downloaded bytes. It receives
-no inference credentials or environment proxy. Fetchers are reused across requests
-with the same input limit. Inline limits count decoded bytes; Dynamo also bounds
+no inference credentials or environment proxy. Each target reuses its fetcher across requests. Inline limits count decoded bytes; Dynamo also bounds
 the encoded payload before decoding. The preparation deadline covers fetching.
 Local paths, private network URLs and provider-managed file IDs
 are not fetched. Use inline data for local files. At most 64 sources are processed

@@ -675,13 +675,14 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 [[package]]
 name = "dynamo-multimodal"
 version = "0.1.1"
-source = "git+https://github.com/ai-dynamo/frontend-crates.git?rev=e979fc762366b3580fdc4185874cee51217bd637#e979fc762366b3580fdc4185874cee51217bd637"
+source = "git+https://github.com/ai-dynamo/frontend-crates.git?rev=4448b929bb2187645e83d1195dc9a85819dd5145#4448b929bb2187645e83d1195dc9a85819dd5145"
 dependencies = [
  "base64",
  "blake3",
  "gif",
  "image",
  "ipnet",
+ "matroska-demuxer",
  "png",
  "reqwest 0.12.28",
  "serde",
@@ -1357,7 +1358,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -1818,6 +1819,12 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "matroska-demuxer"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbf36668475a45a46bf8710e927e7458b7c387e7c46ddb5457ae0c71cf5e817"
 
 [[package]]
 name = "memchr"
@@ -2687,7 +2694,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2726,7 +2733,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -3682,7 +3689,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

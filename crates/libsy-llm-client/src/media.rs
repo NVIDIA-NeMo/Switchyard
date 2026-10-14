@@ -45,7 +45,7 @@ pub struct MediaConfig {
     pub max_images: Option<usize>,
     /// Target video representation.
     pub video: VideoMode,
-    /// Uniform samples per video, including clip endpoints; one sample uses the midpoint.
+    /// Maximum uniform samples per video, including clip endpoints; one sample uses the first frame.
     pub video_max_frames: usize,
     /// Maximum edge for extracted video frames. Never upscale.
     pub frame_max_edge: u32,
@@ -593,43 +593,53 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires ffmpeg and ffprobe on PATH"]
     async fn video_frames_work_in_all_formats_and_preserve_original_request() {
-        let bytes = include_bytes!("../tests/fixtures/media/colors.mp4");
-        let source = data_uri("video/mp4", bytes);
-        for format in [
-            WireFormat::OpenAiChat,
-            WireFormat::OpenAiResponses,
-            WireFormat::AnthropicMessages,
+        for (mime, bytes) in [
+            (
+                "video/mp4",
+                include_bytes!("../tests/fixtures/media/colors.mp4").as_slice(),
+            ),
+            (
+                "video/webm",
+                include_bytes!("../tests/fixtures/media/vp8.webm").as_slice(),
+            ),
         ] {
-            let original = json!({"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"video_url","video_url":{"url":source}}]}]});
-            let mut body = original.clone();
-            processor(MediaConfig {
-                video: VideoMode::Frames,
-                video_max_frames: 3,
-                frame_max_edge: 32,
-                ..Default::default()
-            })
-            .prepare(&mut body, format)
-            .await
-            .unwrap();
-            let content = body["messages"][0]["content"].as_array().unwrap();
-            let frames: Vec<_> = content.iter().filter_map(image_url).collect();
-            assert_eq!(frames.len(), 3);
-            for url in frames {
-                let image = image::load_from_memory(
-                    &processor(MediaConfig::default()).load(url).await.unwrap(),
-                )
+            let source = data_uri(mime, bytes);
+            for format in [
+                WireFormat::OpenAiChat,
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+            ] {
+                let original = json!({"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"video_url","video_url":{"url":source}}]}]});
+                let mut body = original.clone();
+                processor(MediaConfig {
+                    video: VideoMode::Frames,
+                    video_max_frames: 3,
+                    frame_max_edge: 32,
+                    ..Default::default()
+                })
+                .prepare(&mut body, format)
+                .await
                 .unwrap();
-                assert!(image.width() <= 32 && image.height() <= 32);
+                let content = body["messages"][0]["content"].as_array().unwrap();
+                let frames: Vec<_> = content.iter().filter_map(image_url).collect();
+                assert_eq!(frames.len(), 3);
+                for url in frames {
+                    let image = image::load_from_memory(
+                        &processor(MediaConfig::default()).load(url).await.unwrap(),
+                    )
+                    .unwrap();
+                    assert!(image.width() <= 32 && image.height() <= 32);
+                }
+                assert_eq!(
+                    original["messages"][0]["content"][1]["video_url"]["url"],
+                    source
+                );
+                assert!(content.iter().any(|item| {
+                    item["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("0.000s"))
+                }));
             }
-            assert_eq!(
-                original["messages"][0]["content"][1]["video_url"]["url"],
-                source
-            );
-            assert!(content.iter().any(|item| {
-                item["text"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("0.000s"))
-            }));
         }
     }
 

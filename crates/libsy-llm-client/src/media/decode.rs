@@ -11,6 +11,11 @@ use dynamo_multimodal::image::{
     decode::{DecodeLimits, decode_rgb_exif_transposed},
     resize::resize_lanczos_rgb,
 };
+use dynamo_multimodal::{
+    MmError,
+    frames::{VideoFrames, VideoTiming, encode_jpeg_frames},
+    video_decode::{VideoDecodeLimits, decode_sampled, probe},
+};
 use image::{
     DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbImage, metadata::Orientation,
 };
@@ -23,6 +28,8 @@ use super::{MediaError, Result};
 
 const MAX_DIMENSION: u32 = 16_384;
 const MAX_ALLOC: u64 = 128 * 1024 * 1024;
+
+type EncodedFrames = Vec<(f64, Vec<u8>)>;
 
 pub(crate) async fn resize(
     bytes: Vec<u8>,
@@ -127,7 +134,7 @@ fn sample_times(count: usize, duration: f64, fps: f64) -> Result<Vec<f64>> {
     }
     let last = (duration - 1.0 / fps - 0.001).max(0.0);
     Ok(if count == 1 {
-        vec![last / 2.0]
+        vec![0.0]
     } else {
         (0..count)
             .map(|index| index as f64 * last / (count - 1) as f64)
@@ -168,12 +175,96 @@ pub(crate) async fn frames(
     count: usize,
     edge: u32,
     slots: Arc<Semaphore>,
-    mut remaining_bytes: usize,
-) -> Result<Vec<(f64, Vec<u8>)>> {
-    let _permit = slots
+    remaining_bytes: usize,
+) -> Result<EncodedFrames> {
+    let permit = slots
         .acquire_owned()
         .await
         .map_err(|_| MediaError::Invalid("media worker closed"))?;
+    let (bytes, permit, result) = tokio::task::spawn_blocking(move || {
+        // Retain the worker permit even if the request deadline cancels the wait.
+        let result = dynamo_frames(&bytes, count, edge, remaining_bytes);
+        (bytes, permit, result)
+    })
+    .await
+    .map_err(|_| MediaError::Invalid("video worker failed"))?;
+    let _permit = permit;
+    match result? {
+        Some(frames) => Ok(frames),
+        None => ffmpeg_frames(bytes, count, edge, remaining_bytes).await,
+    }
+}
+
+// Unsupported codecs/platforms retain the FFmpeg path. Invalid input and
+// resource-limit failures must not trigger another decoder attempt.
+fn dynamo_frames(
+    bytes: &[u8],
+    count: usize,
+    edge: u32,
+    mut remaining_bytes: usize,
+) -> Result<Option<EncodedFrames>> {
+    let mut limits = VideoDecodeLimits::default();
+    limits.max_width = MAX_DIMENSION;
+    limits.max_height = MAX_DIMENSION;
+    limits.max_output_bytes = MAX_ALLOC as usize;
+    let decoded = match probe(bytes)
+        .and_then(|info| decode_sampled(bytes, (count as u64).min(info.frame_count), &limits))
+    {
+        Ok(frames) => frames,
+        Err(MmError::Unsupported { .. }) => return Ok(None),
+        Err(MmError::LimitExceeded { .. }) => {
+            return Err(MediaError::Invalid("video exceeds decode allocation limit"));
+        }
+        Err(_) => return Err(MediaError::Invalid("video decoding failed")),
+    };
+    let (width, height) = (decoded.width(), decoded.height());
+    let prepared = if width.max(height) > edge as usize {
+        let scale = f64::from(edge) / width.max(height) as f64;
+        let out_width = (width as f64 * scale).round().max(1.0) as usize;
+        let out_height = (height as f64 * scale).round().max(1.0) as usize;
+        let rgb = decoded
+            .rgb()
+            .chunks_exact(width * height * 3)
+            .flat_map(|pixels| resize_lanczos_rgb(pixels, height, width, out_height, out_width))
+            .collect();
+        VideoFrames::new(
+            out_width,
+            out_height,
+            rgb,
+            VideoTiming {
+                timestamps: decoded.timestamps().to_vec(),
+                source_fps: decoded.source_fps(),
+                source_start: decoded.source_start(),
+                source_duration: decoded.source_duration(),
+            },
+        )
+        .map_err(|_| MediaError::Invalid("video frame resizing failed"))?
+    } else {
+        decoded
+    };
+    let frames = encode_jpeg_frames(&prepared, 85)
+        .map_err(|_| MediaError::Invalid("video frame encoding failed"))?;
+    frames
+        .into_iter()
+        .map(|frame| {
+            remaining_bytes =
+                remaining_bytes
+                    .checked_sub(frame.bytes.len())
+                    .ok_or(MediaError::Invalid(
+                        "prepared media exceeds max_output_bytes",
+                    ))?;
+            Ok((frame.timestamp_secs, frame.bytes))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+async fn ffmpeg_frames(
+    bytes: Vec<u8>,
+    count: usize,
+    edge: u32,
+    mut remaining_bytes: usize,
+) -> Result<EncodedFrames> {
     let directory = tempfile::tempdir()?;
     let input = directory.path().join("input.video");
     tokio::fs::write(&input, bytes).await?;
@@ -393,11 +484,44 @@ mod tests {
     }
 
     #[test]
-    fn sampling_covers_clip_and_centers_one_frame() {
+    #[ignore = "requires libvpx or a compatible NVIDIA decoder"]
+    fn dynamo_decodes_video_with_resize_timestamps_and_output_limits() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/media/vp8.webm").as_slice(),
+            include_bytes!("../../tests/fixtures/media/vp9.webm").as_slice(),
+        ] {
+            for count in [1, 3, 64] {
+                let frames = dynamo_frames(bytes, count, 32, 1024 * 1024)
+                    .unwrap()
+                    .unwrap();
+                let info = probe(bytes).unwrap();
+                assert_eq!(frames.len(), count.min(info.frame_count as usize));
+                assert_eq!(frames[0].0, info.start_time);
+                assert!(frames.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+                for (time, jpeg) in frames {
+                    assert!(time < info.start_time + info.duration);
+                    let image = image::load_from_memory(&jpeg).unwrap();
+                    assert_eq!((image.width(), image.height()), (32, 32));
+                }
+            }
+            assert!(
+                matches!(dynamo_frames(bytes, 3, 32, 1), Err(MediaError::Invalid(message)) if message.contains("max_output_bytes"))
+            );
+        }
+    }
+
+    #[test]
+    fn corrupt_video_is_rejected_before_fallback() {
+        let bytes = include_bytes!("../../tests/fixtures/media/colors.mp4");
+        assert!(dynamo_frames(&bytes[..36], 1, 32, 1024).is_err());
+    }
+
+    #[test]
+    fn sampling_covers_clip_and_starts_one_frame() {
         let times = sample_times(3, 7.0, 29.0).unwrap();
         assert_eq!(times[0], 0.0);
         assert!(times[2] > 6.9 && times[2] < 7.0);
-        assert_eq!(sample_times(1, 7.0, 29.0).unwrap()[0], times[1]);
+        assert_eq!(sample_times(1, 7.0, 29.0).unwrap()[0], 0.0);
         for duration in [0.0, f64::NAN, f64::INFINITY] {
             assert!(sample_times(1, duration, 29.0).is_err());
         }
