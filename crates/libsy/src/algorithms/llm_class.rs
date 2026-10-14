@@ -167,9 +167,9 @@ fn is_task_content(block: &ContentBlock) -> bool {
 
 /// Keeps references to the opening task and latest user follow-up when they differ.
 fn task_messages(messages: &[Message]) -> Vec<&Message> {
-    let mut user_messages = messages.iter().filter(|message| {
-        is_user_turn(message) && message.content.iter().any(is_task_content)
-    });
+    let mut user_messages = messages
+        .iter()
+        .filter(|message| is_user_turn(message) && message.content.iter().any(is_task_content));
     let Some(opening_task) = user_messages.next() else {
         return Vec::new();
     };
@@ -194,10 +194,10 @@ impl TaskInput {
     }
 
     fn includes(&self, block: &ContentBlock) -> bool {
-        if self.recent_turn_window.is_none() {
-            is_task_content(block)
-        } else {
-            !matches!(block, ContentBlock::Reasoning { .. })
+        match block {
+            ContentBlock::Reasoning { .. } => false,
+            ContentBlock::Text { text } if text.is_empty() => false,
+            _ => self.recent_turn_window.is_some() || is_task_content(block),
         }
     }
 
@@ -221,6 +221,7 @@ impl TaskInput {
                 (!content.is_empty()).then_some(Message {
                     role: message.role,
                     content,
+                    phase: message.phase.clone(),
                 })
             })
             .collect()
@@ -1030,6 +1031,7 @@ mod tests {
         };
         let mut request = classify_request();
         request.llm_request.messages = vec![Message {
+            phase: None,
             role: Role::User,
             content: vec![
                 image.clone(),
@@ -1725,6 +1727,7 @@ mod tests {
             let mut request = request.clone();
             if name == "image limit" {
                 request.llm_request.messages.push(Message {
+                    phase: None,
                     role: Role::User,
                     content: vec![
                         ContentBlock::Image {
@@ -2559,6 +2562,7 @@ mod tests {
         };
 
         let built = TaskInput {
+            judge_max_images: None,
             recent_turn_window: Some(8),
         }
         .build_messages(&State::default(), &request);

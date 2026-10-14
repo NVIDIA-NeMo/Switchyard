@@ -439,7 +439,7 @@ impl TranslatingLlmClient {
         }
         // Work on the final owned wire body: preserve native controls and prepare once
         // for all HTTP retries. The routing request remains available for other targets.
-        if let Some(processor) = self.media_processors.get(model) {
+        if let Some(processor) = self.media_processors.get(target_name) {
             processor
                 .prepare(&mut body, wire_format)
                 .await
@@ -1533,6 +1533,7 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request};
+    use switchyard_translation::{decode_request, encode_request};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1590,15 +1591,19 @@ mod tests {
         }))).expect(2).mount(&server).await;
         let backend = Backend::OpenAiChat(config(&format!("{}/v1", server.uri())));
         let client = TranslatingLlmClient::new(&[
-            ModelConfig::new("judge", backend.clone(), None).with_media(MediaConfig {
-                max_images: Some(0),
-                video: VideoMode::Omit,
-                ..Default::default()
-            }),
-            ModelConfig::new("answer", backend, None).with_media(MediaConfig {
-                video: VideoMode::File,
-                ..Default::default()
-            }),
+            ModelConfig::new("judge", backend.clone(), None)
+                .with_provider_model("shared-model")
+                .with_media(MediaConfig {
+                    max_images: Some(0),
+                    video: VideoMode::Omit,
+                    ..Default::default()
+                }),
+            ModelConfig::new("answer", backend, None)
+                .with_provider_model("shared-model")
+                .with_media(MediaConfig {
+                    video: VideoMode::File,
+                    ..Default::default()
+                }),
         ])?;
         let body = json!({"model":"route", "temperature":0.2, "custom_control":{"keep":true}, "messages":[{"role":"user","content":[
             {"type":"text","text":"question"},
@@ -1639,6 +1644,7 @@ mod tests {
             "https://example.com/clip.mp4"
         );
         for prepared in [judge, answer] {
+            assert_eq!(prepared["model"], "shared-model");
             assert_eq!(prepared["custom_control"], body["custom_control"]);
             assert_eq!(prepared["temperature"], body["temperature"]);
         }

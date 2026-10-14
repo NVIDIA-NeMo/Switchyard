@@ -1674,6 +1674,7 @@ impl LlmClassifierRouteConfig {
                     || *response_format_type != ClassifierResponseFormat::JsonSchema
                     || *max_output_tokens != default_classifier_max_output_tokens()
                     || judge_deadline_ms.is_some()
+                    || judge_max_images.is_some()
                 {
                     return Err(AlgorithmConfigError::new(format!(
                         "llm_classifier route {route_name} mode direct cannot use capability, escalation, or LLM judge fields"

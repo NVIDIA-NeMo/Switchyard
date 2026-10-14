@@ -328,6 +328,7 @@ impl DirectClassifier {
         Ok(Self {
             input: TaskInput {
                 recent_turn_window: Some(config.recent_turn_window.unwrap_or(DEFAULT_TURN_WINDOW)),
+                judge_max_images: None,
             },
             config,
             question,

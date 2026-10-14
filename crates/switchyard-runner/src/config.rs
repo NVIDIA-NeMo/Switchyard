@@ -15,8 +15,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig, ModelConfig,
-    OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig,
+    ModelConfig, OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::{
     LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
@@ -3095,9 +3096,17 @@ classify_trigger"#,
         let target = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
         let valid = VALID_CONFIG.replace(target, &format!("{target}\nmedia = {{ video = \"frames\", video_max_frames = 2, frame_max_edge = 384 }}"));
         assert!(runner_from_toml(&valid).is_ok());
-        assert!(error_message(&valid.replace("video_max_frames = 2", "video_max_frames = 0")).contains("invalid media limits"));
-        assert!(error_message(&valid.replace("video = \"frames\"", "video = \"video_url\"")).contains("require an openai_chat"));
-        let distinct = format!("{valid}\n[targets.duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"\nmedia = {{ video = \"frames\", video_max_frames = 1 }}\n");
+        assert!(
+            error_message(&valid.replace("video_max_frames = 2", "video_max_frames = 0"))
+                .contains("invalid media limits")
+        );
+        assert!(
+            error_message(&valid.replace("video = \"frames\"", "video = \"video_url\""))
+                .contains("require an openai_chat")
+        );
+        let distinct = format!(
+            "{valid}\n[targets.duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"\nmedia = {{ video = \"frames\", video_max_frames = 1 }}\n"
+        );
         assert!(runner_from_toml(&distinct).is_ok());
     }
 

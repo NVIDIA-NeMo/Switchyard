@@ -235,6 +235,11 @@ async fn direct_mode_serves_the_selected_group() -> Result<(), Box<dyn std::erro
 fn direct_mode_rejects_invalid_configuration() {
     for (from, to, expected) in [
         (
+            r#"mode = "direct""#,
+            "mode = \"direct\"\njudge_max_images = 0",
+            "mode direct cannot use",
+        ),
+        (
             r#"judge = ["router"]"#,
             r#"judge = ["fast"]"#,
             "requires target kind decision",

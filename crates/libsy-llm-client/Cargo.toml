@@ -18,7 +18,7 @@ publish = ["crates-io"]
 
 [dependencies]
 base64.workspace = true
-dynamo-multimodal = { version = "0.1.1", git = "https://github.com/ai-dynamo/frontend-crates.git", rev = "3954d9bcd481b4077bd4711528166eef9c4f977a", default-features = false, features = ["fetch", "video-decode"] }
+dynamo-multimodal = { version = "0.2.0", default-features = false, features = ["fetch", "video-decode"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 thiserror.workspace = true
 url = "2"

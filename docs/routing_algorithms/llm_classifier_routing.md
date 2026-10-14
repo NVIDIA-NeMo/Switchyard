@@ -149,7 +149,8 @@ Set `judge_max_images` on the route to limit that input:
 
 The limit is shared across selected messages and nested tool results. It applies
 when the judge runs and leaves the answer request unchanged. It does not select,
-resize, or reorder images. Escalation mode uses a text summary and rejects this setting.
+resize, or reorder images. This setting is supported in capability and custom modes;
+escalation and direct modes reject it.
 
 Video blocks are separate. For a text-only judge receiving image or video requests,
 configure its target:
