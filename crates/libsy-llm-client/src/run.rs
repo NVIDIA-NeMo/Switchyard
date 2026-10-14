@@ -2116,8 +2116,10 @@ mod tests {
             forward_auth: false,
             extra_headers: BTreeMap::new(),
             extra_body: BTreeMap::new(),
+            omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
+            failure_cooldown: std::time::Duration::ZERO,
             timeout: None,
         });
         let client = Arc::new(

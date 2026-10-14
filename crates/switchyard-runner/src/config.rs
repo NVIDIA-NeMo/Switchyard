@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig, ModelConfig,
-    SystemOneClient, TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig,
+    ModelConfig, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -1458,7 +1458,8 @@ evidence = { description = "candidate comparison" }
             "{valid}\n[targets.duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"\nmedia = {{ video = \"frames\", video_max_frames = 1 }}\n"
         );
         assert!(
-            error_message(&conflict).contains("different reasoning_effort, extra_body, or media")
+            error_message(&conflict)
+                .contains("different reasoning_effort, extra_body, omit_body_fields, or media")
         );
     }
 
