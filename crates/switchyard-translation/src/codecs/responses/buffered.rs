@@ -25,7 +25,7 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    McpContent, McpToolset, MediaSource, Message, OutputParams, ProviderExtensions,
+    McpContent, McpToolConfig, McpToolset, MediaSource, Message, OutputParams, ProviderExtensions,
     ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, Tool, ToolCall, ToolChoice,
     ToolDefinition, ToolResult, Usage,
 };
@@ -1056,6 +1056,29 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Option<McpToolset> {
         Some(Value::String(value)) if value == "never" => false,
         _ => return None,
     };
+    let allowed_tools: Option<Vec<String>> =
+        serde_json::from_value(tool.get("allowed_tools").cloned().unwrap_or(Value::Null)).ok()?;
+    // A disabled default with enabled per-tool overrides represents a Responses allow-list.
+    let default_config = McpToolConfig {
+        enabled: allowed_tools.as_ref().map(|_| false),
+        defer_loading: serde_json::from_value(
+            tool.get("defer_loading").cloned().unwrap_or(Value::Null),
+        )
+        .ok()?,
+    };
+    let configs = allowed_tools
+        .into_iter()
+        .flatten()
+        .map(|name| {
+            (
+                name,
+                McpToolConfig {
+                    enabled: Some(true),
+                    defer_loading: None,
+                },
+            )
+        })
+        .collect();
     Some(McpToolset {
         name: tool.get("server_label")?.as_str()?.to_owned(),
         url: tool.get("server_url")?.as_str()?.to_owned(),
@@ -1063,17 +1086,8 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Option<McpToolset> {
             tool.get("authorization").cloned().unwrap_or(Value::Null),
         )
         .ok()?,
-        allowed_tools: serde_json::from_value(
-            tool.get("allowed_tools").cloned().unwrap_or(Value::Null),
-        )
-        .ok()?,
-        enabled: None,
-        tool_enabled: Default::default(),
-        defer_loading: serde_json::from_value(
-            tool.get("defer_loading").cloned().unwrap_or(Value::Null),
-        )
-        .ok()?,
-        tool_defer_loading: Default::default(),
+        default_config,
+        configs,
         // Responses requires approval when the setting is omitted.
         require_approval: Some(require_approval),
     })
@@ -1300,9 +1314,11 @@ fn is_responses_mcp_block(block: &ContentBlock) -> bool {
 
 // An open-ended denylist cannot be reduced to a list of allowed names.
 pub(crate) fn can_encode_mcp(mcp: &McpToolset) -> bool {
-    mcp.allowed_tools.is_some()
-        || mcp.enabled == Some(false)
-        || mcp.tool_enabled.values().all(|enabled| *enabled)
+    mcp.default_config.enabled == Some(false)
+        || mcp
+            .configs
+            .values()
+            .all(|config| config.enabled != Some(false))
 }
 
 fn encode_mcp_tool(mcp: &McpToolset) -> Value {
@@ -1313,42 +1329,25 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Value {
     if let Some(approval) = mcp.require_approval {
         tool["require_approval"] = json!(if approval { "always" } else { "never" });
     }
-    let allowed = if let Some(names) = &mcp.allowed_tools {
-        Some(
-            names
-                .iter()
-                .filter(|name| {
-                    mcp.tool_enabled
-                        .get(*name)
-                        .copied()
-                        .unwrap_or(mcp.enabled.unwrap_or(true))
-                })
-                .cloned()
-                .collect::<Vec<_>>(),
-        )
-    } else if mcp.enabled == Some(false) {
-        Some(
-            mcp.tool_enabled
-                .iter()
-                .filter(|(_, enabled)| **enabled)
-                .map(|(name, _)| name.clone())
-                .collect(),
-        )
-    } else {
-        None
-    };
-    if let Some(allowed) = allowed {
+    if mcp.default_config.enabled == Some(false) {
+        let allowed: Vec<_> = mcp
+            .configs
+            .iter()
+            .filter(|(_, config)| config.enabled == Some(true))
+            .map(|(name, _)| name)
+            .collect();
         tool["allowed_tools"] = json!(allowed);
     }
     // Loading eagerly preserves tool access when per-tool loading settings differ.
     let defer_loading = if mcp
-        .tool_defer_loading
+        .configs
         .values()
-        .any(|value| *value != mcp.defer_loading.unwrap_or(false))
+        .filter_map(|config| config.defer_loading)
+        .any(|value| value != mcp.default_config.defer_loading.unwrap_or(false))
     {
         Some(false)
     } else {
-        mcp.defer_loading
+        mcp.default_config.defer_loading
     };
     if let Some(defer_loading) = defer_loading {
         tool["defer_loading"] = json!(defer_loading);

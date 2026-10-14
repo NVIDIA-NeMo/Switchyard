@@ -64,7 +64,7 @@ pub(crate) fn can_encode_mcp(mcp: &McpToolset, request: &LlmRequest) -> bool {
     let has_toolset = source.get("toolset").is_some_and(Value::is_object);
     source.get("server_index").and_then(Value::as_u64).is_some()
         && server.get("type").and_then(Value::as_str) == Some("url")
-        && (has_toolset || mcp.tool_enabled.is_empty())
+        && has_toolset
 }
 
 // Distinguishes tools we can normalize as functions from those that cannot be translated into other wire formats.

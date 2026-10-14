@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Provider-neutral conversation types shared by routing, clients, and translation.
+//!
+//! Debug output redacts MCP URLs and authorization tokens and hides raw provider tool definitions,
+//! extensions, and preserved bodies. Conversation content, including unknown provider
+//! blocks, remains visible and may contain secrets. Serialization retains the stored values.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -230,7 +234,7 @@ pub struct ToolDefinition {
 }
 
 /// A tool available to the model, in catalog order.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Tool {
     /// A remote MCP server and the tools it exposes.
@@ -245,6 +249,37 @@ pub enum Tool {
     /// An agent-executed function. Its JSON retains the existing flat definition shape.
     #[serde(untagged)]
     Function(ToolDefinition),
+}
+
+impl<'de> Deserialize<'de> for Tool {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Keep these variants and the conversion below in sync with Tool.
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum TaggedTool {
+            Mcp(McpToolset),
+            Provider { provider: FormatId, raw: Value },
+            Function(ToolDefinition),
+        }
+
+        let value = Value::deserialize(deserializer)?;
+        // Only definitions without a type use the legacy function shape. A malformed
+        // tagged definition must fail instead of falling back to a function.
+        if value.get("type").is_none() {
+            return serde_json::from_value(value)
+                .map(Self::Function)
+                .map_err(serde::de::Error::custom);
+        }
+        let tool = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(match tool {
+            TaggedTool::Mcp(mcp) => Self::Mcp(mcp),
+            TaggedTool::Provider { provider, raw } => Self::Provider { provider, raw },
+            TaggedTool::Function(function) => Self::Function(function),
+        })
+    }
 }
 
 impl fmt::Debug for Tool {
@@ -278,6 +313,10 @@ impl Tool {
 }
 
 /// Configuration for a URL-based remote MCP toolset.
+///
+/// This type covers the supported neutral settings. Definitions with additional settings,
+/// such as Responses headers, server descriptions, or conditional approval rules, belong
+/// in [`Tool::Provider`] with the complete original definition.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolset {
     /// Server identity used by MCP calls.
@@ -287,44 +326,59 @@ pub struct McpToolset {
     /// Credential sent to the MCP server, when supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_token: Option<String>,
-    /// Whether tools are enabled by default; absence retains provider defaults.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    /// Optional restriction to named tools. An empty list differs from no restriction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_tools: Option<Vec<String>>,
-    /// Per-tool enablement overrides.
+    /// Defaults for tools without a per-tool setting in `configs`.
+    #[serde(default, skip_serializing_if = "McpToolConfig::is_empty")]
+    pub default_config: McpToolConfig,
+    /// Per-tool settings, keyed by tool name. Each omitted setting inherits
+    /// from `default_config`, then falls back to the provider's default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tool_enabled: BTreeMap<String, bool>,
-    /// Whether tool definitions are loaded through tool search instead of initially.
-    /// Absence retains the provider's default loading behavior.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub defer_loading: Option<bool>,
-    /// Per-tool loading overrides. Tools without an override inherit `defer_loading`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tool_defer_loading: BTreeMap<String, bool>,
+    pub configs: BTreeMap<String, McpToolConfig>,
     /// Whether all calls require approval (`true`) or none do (`false`).
-    /// Absence retains provider defaults; conditional approval rules remain provider-specific.
+    /// Absence retains provider defaults. Definitions with conditional approval rules
+    /// are stored in full as [`Tool::Provider`], rather than as this type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_approval: Option<bool>,
 }
 
 impl fmt::Debug for McpToolset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            name,
+            url: _,
+            authorization_token,
+            default_config,
+            configs,
+            require_approval,
+        } = self;
         f.debug_struct("McpToolset")
-            .field("name", &self.name)
-            .field("url", &self.url)
+            .field("name", name)
+            // Credentials can appear in any part of the URL, including its path.
+            .field("url", &"[REDACTED]")
             .field(
                 "authorization_token",
-                &self.authorization_token.as_ref().map(|_| "[REDACTED]"),
+                &authorization_token.as_ref().map(|_| "[REDACTED]"),
             )
-            .field("enabled", &self.enabled)
-            .field("allowed_tools", &self.allowed_tools)
-            .field("tool_enabled", &self.tool_enabled)
-            .field("defer_loading", &self.defer_loading)
-            .field("tool_defer_loading", &self.tool_defer_loading)
-            .field("require_approval", &self.require_approval)
+            .field("default_config", default_config)
+            .field("configs", configs)
+            .field("require_approval", require_approval)
             .finish()
+    }
+}
+
+/// Settings for an individual MCP tool or the defaults for a toolset.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct McpToolConfig {
+    /// Whether the tool is available for the model to call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Whether the tool definition is loaded through tool search instead of initially.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
+}
+
+impl McpToolConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.defer_loading.is_none()
     }
 }
 
@@ -678,126 +732,85 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn tool_deserialization_rejects_invalid_tagged_definitions() {
+        for definition in [
+            json!({"type": "mcp", "name": "inv", "parameters": {}}),
+            json!({"type": "provider", "provider": "x", "name": "n", "parameters": {}}),
+            json!({"type": "unknown", "name": "n", "parameters": {}}),
+            json!({"type": null, "name": "n", "parameters": {}}),
+        ] {
+            assert!(serde_json::from_value::<Tool>(definition).is_err());
+        }
+        let error = serde_json::from_value::<Tool>(json!({
+            "type": "mcp", "name": "inv", "url": "https://example.invalid/mcp",
+            "authorization_token": 5, "parameters": {}
+        }))
+        .expect_err("an invalid credential must not become a function")
+        .to_string();
+        assert!(error.contains("string"), "field error was lost: {error}");
+    }
+
     #[test]
     fn tool_catalog_preserves_function_json_and_backend_history() -> Result<(), serde_json::Error> {
         let function = json!({"name": "lookup", "description": null, "parameters": {"type": "object"}, "strict": null});
         let definitions = json!([
             function,
             {"type": "mcp", "name": "inventory", "url": "https://example.invalid/mcp", "require_approval": false},
-            {"type": "provider", "provider": "openai_responses", "raw": {"type": "mcp", "connector_id": "connector_example", "server_label": "example"}}
+            {"type": "provider", "provider": "openai_responses", "raw": {"type": "mcp", "connector_id": "connector_example", "server_label": "example"}},
+            {
+                "type": "mcp", "name": "configured", "url": "https://example.invalid/mcp",
+                "default_config": {"enabled": false, "defer_loading": true},
+                "configs": {"lookup": {"enabled": true}, "search": {"defer_loading": false}}
+            }
         ]);
         let tools: Vec<Tool> = serde_json::from_value(definitions.clone())?;
         assert!(matches!(&tools[0], Tool::Function(_)));
         assert!(matches!(&tools[1], Tool::Mcp(_)));
         assert!(matches!(&tools[2], Tool::Provider { .. }));
         assert_eq!(serde_json::to_value(&tools)?, definitions);
-        let history = vec![
-            ContentBlock::Mcp(McpContent::Listing {
-                server_name: "inventory".into(),
-                id: None,
-                tools: vec![McpListedTool {
-                    name: "lookup".into(),
-                    description: None,
-                    input_schema: json!({"type": "object"}),
-                    annotations: None,
-                }],
-                error: None,
-            }),
-            ContentBlock::Mcp(McpContent::Call {
-                server_name: "inventory".into(),
-                call: ToolCall {
-                    id: "call_1".into(),
-                    name: "lookup".into(),
-                    arguments: json!({}),
-                },
-            }),
-            ContentBlock::Mcp(McpContent::Result(ToolResult {
-                tool_call_id: "call_1".into(),
-                content: vec![ContentBlock::Text {
-                    text: "in stock".into(),
-                }],
-                is_error: Some(false),
-            })),
-        ];
-        assert_eq!(
-            serde_json::from_value::<Vec<ContentBlock>>(serde_json::to_value(&history)?)?,
-            history
-        );
-        Ok(())
-    }
+        let explicit_function: Tool = serde_json::from_value(json!({
+            "type": "function", "name": "lookup", "parameters": {"type": "object"}
+        }))?;
+        assert_eq!(explicit_function, tools[0]);
 
-    #[test]
-    fn mcp_loading_settings_preserve_omission_and_overrides() -> Result<(), serde_json::Error> {
-        let original = json!({"name": "inventory", "url": "https://example.invalid/mcp"});
-        let mcp: McpToolset = serde_json::from_value(original.clone())?;
-        assert_eq!(mcp.defer_loading, None);
-        assert!(mcp.tool_defer_loading.is_empty());
-        assert_eq!(serde_json::to_value(&mcp)?, original);
-
-        for default in [None, Some(false), Some(true)] {
-            let mut configured = original.clone();
-            if let Some(default) = default {
-                configured["defer_loading"] = json!(default);
-            }
-            configured["tool_defer_loading"] = json!({"lookup": false, "search": true});
-            let mcp: McpToolset = serde_json::from_value(configured.clone())?;
-            assert_eq!(mcp.defer_loading, default);
-            assert_eq!(
-                mcp.tool_defer_loading,
-                BTreeMap::from([("lookup".into(), false), ("search".into(), true)])
-            );
-            assert_eq!(serde_json::to_value(&mcp)?, configured);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn mcp_listings_preserve_fields_and_distinguish_discovery_failure()
-    -> Result<(), serde_json::Error> {
-        let listings = json!([
+        let history = json!([
             {
                 "type": "mcp", "kind": "listing", "server_name": "inventory",
                 "id": "listing_1",
-                "tools": [
-                    {
-                        "name": "lookup", "description": "Look up stock",
-                        "input_schema": {"type": "object", "properties": {"sku": {"type": "string"}}},
-                        "annotations": {"readOnlyHint": true}
-                    },
-                    {"name": "search", "input_schema": {"type": "object"}}
-                ]
+                "tools": [{
+                    "name": "lookup", "description": "Look up stock",
+                    "input_schema": {"type": "object"},
+                    "annotations": {"readOnlyHint": true}
+                }]
             },
             {"type": "mcp", "kind": "listing", "server_name": "empty", "tools": []},
             {
                 "type": "mcp", "kind": "listing", "server_name": "unavailable",
                 "tools": [], "error": "Server unavailable"
+            },
+            {
+                "type": "mcp", "kind": "call", "server_name": "inventory",
+                "call": {"id": "call_1", "name": "lookup", "arguments": {}}
+            },
+            {
+                "type": "mcp", "kind": "result", "tool_call_id": "call_1",
+                "content": [{"type": "text", "text": "in stock"}], "is_error": false
             }
         ]);
-        let content: Vec<ContentBlock> = serde_json::from_value(listings.clone())?;
-        assert!(matches!(
-            &content[0],
-            ContentBlock::Mcp(McpContent::Listing { id: Some(id), tools, error: None, .. })
-                if id == "listing_1" && tools.len() == 2
-        ));
-        assert!(matches!(
-            &content[1],
-            ContentBlock::Mcp(McpContent::Listing { id: None, tools, error: None, .. })
-                if tools.is_empty()
-        ));
-        assert!(matches!(
-            &content[2],
-            ContentBlock::Mcp(McpContent::Listing { tools, error: Some(error), .. })
-                if tools.is_empty() && error == "Server unavailable"
-        ));
-        assert_eq!(serde_json::to_value(&content)?, listings);
+        let content: Vec<ContentBlock> = serde_json::from_value(history.clone())?;
+        assert_eq!(serde_json::to_value(&content)?, history);
         Ok(())
     }
 
     #[test]
     fn mcp_credentials_are_omitted_from_debug() -> Result<(), serde_json::Error> {
         let token = "synthetic-mcp-debug-secret";
+        let url_secret = "synthetic-mcp-url-secret";
+        let url = format!("https://example.invalid/mcp?api_key={url_secret}");
         let mcp: McpToolset = serde_json::from_value(json!({
-            "name": "inventory", "url": "https://example.invalid/mcp",
+            "name": "inventory", "url": url,
             "authorization_token": token
         }))?;
         let raw = json!({"mcp_servers": [{"authorization_token": token}]});
@@ -827,8 +840,13 @@ mod tests {
             format!("{request:#?}"),
         ] {
             assert!(!debug.contains(token), "Debug exposed an MCP credential");
+            assert!(
+                !debug.contains(url_secret),
+                "Debug exposed an MCP URL secret"
+            );
         }
         assert_eq!(serde_json::to_value(&request)?, serialized);
+        assert_eq!(serialized["tools"][0]["url"], url);
         assert_eq!(serialized["tools"][0]["authorization_token"], token);
         assert_eq!(serialized["tools"][1]["raw"]["authorization"], token);
         Ok(())

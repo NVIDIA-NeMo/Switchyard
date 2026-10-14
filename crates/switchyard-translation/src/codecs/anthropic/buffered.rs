@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::{is_function_tool, source_mcp_layout};
-use crate::{McpToolset, Tool, ToolDefinition};
+use crate::{McpToolConfig, McpToolset, Tool, ToolDefinition};
 
 use crate::codecs::common::{
     ANTHROPIC_REQUEST_KEY, is_anthropic_request, is_known_role_name, provider_extensions,
@@ -1390,11 +1390,11 @@ fn anthropic_stop_details(reason: StopReason, source: Option<&Value>) -> Value {
     }
 }
 
-// Legacy servers have no tools-array slot. Retain their layout separately from MCP semantics.
+// Retain source fields and server order separately from the normalized MCP settings.
 #[derive(Serialize, Deserialize)]
 struct McpLayout {
     server: Value,
-    toolset: Option<Value>,
+    toolset: Value,
     server_index: usize,
 }
 
@@ -1437,11 +1437,8 @@ fn decode_tools(body: &Map<String, Value>) -> Result<(Vec<Tool>, Value)> {
             if let Some(index) = servers.iter().position(|server| {
                 server.get("name").is_some() && server.get("name") == tool.get("mcp_server_name")
             }) {
-                let mcp = decode_mcp(&servers[index], Some(tool))?;
-                layouts.insert(
-                    mcp.name.clone(),
-                    mcp_layout(&servers[index], Some(tool), index),
-                );
+                let mcp = decode_mcp(&servers[index], tool)?;
+                layouts.insert(mcp.name.clone(), mcp_layout(&servers[index], tool, index));
                 out.push(Tool::Mcp(mcp));
                 used[index] = true;
             } else {
@@ -1462,20 +1459,16 @@ fn decode_tools(body: &Map<String, Value>) -> Result<(Vec<Tool>, Value)> {
         }
     }
 
-    // The deprecated mcp-client-2025-04-04 layout defines servers without toolset references.
-    // Newer versions require exactly one toolset per server, but this decoder has no beta
-    // header context, so unreferenced servers are treated as using the deprecated layout.
-    for (index, server) in servers.iter().enumerate() {
-        if !used[index] {
-            let mcp = decode_mcp(server, None)?;
-            layouts.insert(mcp.name.clone(), mcp_layout(server, None, index));
-            out.push(Tool::Mcp(mcp));
-        }
+    if used.iter().any(|used| !used) {
+        return Err(TranslationError::InvalidValue {
+            path: "mcp_servers".into(),
+            message: "each MCP server requires a tools-array toolset reference".into(),
+        });
     }
     Ok((out, Value::Object(layouts)))
 }
 
-fn mcp_layout(server: &Value, toolset: Option<&Value>, server_index: usize) -> Value {
+fn mcp_layout(server: &Value, toolset: &Value, server_index: usize) -> Value {
     let mut server = server.clone();
     if let Some(server) = server.as_object_mut() {
         // Credentials are authoritative in the typed MCP entry, never in reconstruction metadata.
@@ -1483,12 +1476,12 @@ fn mcp_layout(server: &Value, toolset: Option<&Value>, server_index: usize) -> V
     }
     json!(McpLayout {
         server,
-        toolset: toolset.cloned(),
+        toolset: toolset.clone(),
         server_index
     })
 }
 
-fn decode_mcp(server: &Value, toolset: Option<&Value>) -> Result<McpToolset> {
+fn decode_mcp(server: &Value, toolset: &Value) -> Result<McpToolset> {
     let required = |key: &str| {
         server
             .get(key)
@@ -1499,17 +1492,10 @@ fn decode_mcp(server: &Value, toolset: Option<&Value>) -> Result<McpToolset> {
                 message: "MCP server requires a string".into(),
             })
     };
-    let config = toolset
-        .and_then(|tool| tool.get("default_config"))
-        .or_else(|| server.get("tool_configuration"));
-    let allowed_tools = server
-        .pointer("/tool_configuration/allowed_tools")
-        .map(|value| serde_json::from_value(value.clone()))
-        .transpose()
-        .map_err(|_| crate::TranslationError::InvalidValue {
-            path: "mcp_servers.tool_configuration.allowed_tools".into(),
-            message: "expected tool names".into(),
-        })?;
+    let config = |value: &Value| McpToolConfig {
+        enabled: value.get("enabled").and_then(Value::as_bool),
+        defer_loading: value.get("defer_loading").and_then(Value::as_bool),
+    };
     Ok(McpToolset {
         name: required("name")?,
         url: required("url")?,
@@ -1517,36 +1503,16 @@ fn decode_mcp(server: &Value, toolset: Option<&Value>) -> Result<McpToolset> {
             .get("authorization_token")
             .and_then(Value::as_str)
             .map(str::to_owned),
-        enabled: config
-            .and_then(|v| v.get("enabled"))
-            .and_then(Value::as_bool),
-        allowed_tools,
-        tool_enabled: toolset
-            .and_then(|tool| tool.get("configs"))
+        default_config: toolset
+            .get("default_config")
+            .map(config)
+            .unwrap_or_default(),
+        configs: toolset
+            .get("configs")
             .and_then(Value::as_object)
             .into_iter()
             .flatten()
-            .filter_map(|(name, config)| {
-                config
-                    .get("enabled")
-                    .and_then(Value::as_bool)
-                    .map(|enabled| (name.clone(), enabled))
-            })
-            .collect(),
-        defer_loading: toolset
-            .and_then(|tool| tool.pointer("/default_config/defer_loading"))
-            .and_then(Value::as_bool),
-        tool_defer_loading: toolset
-            .and_then(|tool| tool.get("configs"))
-            .and_then(Value::as_object)
-            .into_iter()
-            .flatten()
-            .filter_map(|(name, config)| {
-                config
-                    .get("defer_loading")
-                    .and_then(Value::as_bool)
-                    .map(|defer_loading| (name.clone(), defer_loading))
-            })
+            .map(|(name, value)| (name.clone(), config(value)))
             .collect(),
         // Anthropic's MCP connector executes calls without an approval exchange.
         require_approval: Some(false),
@@ -1591,7 +1557,7 @@ fn encode_tools(
                     .or_else(|| {
                         (!is_anthropic_request(request)).then(|| McpLayout {
                             server: json!({"type": "url"}),
-                            toolset: Some(json!({"type": "mcp_toolset"})),
+                            toolset: json!({"type": "mcp_toolset"}),
                             server_index: index,
                         })
                     });
@@ -1603,9 +1569,7 @@ fn encode_tools(
                     )?;
                     continue;
                 };
-                if mcp.require_approval == Some(true)
-                    || (layout.toolset.is_none() && !mcp.tool_enabled.is_empty())
-                {
+                if mcp.require_approval == Some(true) {
                     push_lossy(
                         diagnostics,
                         policy,
@@ -1623,84 +1587,59 @@ fn encode_tools(
                     "authorization_token",
                     mcp.authorization_token.as_ref().map(|v| json!(v)),
                 );
-                if let Some(mut toolset) = layout.toolset {
-                    // New connections use the toolset layout; callers must enable the
-                    // corresponding Anthropic MCP beta on the target backend.
-                    let mut mcp = mcp.clone();
-                    if let Some(allowed) = &mcp.allowed_tools {
-                        mcp.tool_enabled = allowed
-                            .iter()
-                            .map(|name| {
-                                (
-                                    name.clone(),
-                                    mcp.tool_enabled
-                                        .get(name)
-                                        .copied()
-                                        .unwrap_or(mcp.enabled.unwrap_or(true)),
-                                )
-                            })
-                            .collect();
-                        mcp.enabled = Some(false);
-                    }
-                    toolset["mcp_server_name"] = json!(mcp.name);
-                    if mcp.enabled.is_some()
-                        || mcp.defer_loading.is_some()
-                        || toolset.get("default_config").is_some()
-                    {
-                        let config = toolset.as_object_mut().and_then(|tool| {
-                            tool.entry("default_config")
-                                .or_insert_with(|| json!({}))
-                                .as_object_mut()
-                        });
-                        if let Some(config) = config {
-                            set_optional(config, "enabled", mcp.enabled.map(|v| json!(v)));
-                            set_optional(
-                                config,
-                                "defer_loading",
-                                mcp.defer_loading.map(|v| json!(v)),
-                            );
-                        }
-                    }
-                    if !mcp.tool_enabled.is_empty()
-                        || !mcp.tool_defer_loading.is_empty()
-                        || toolset.get("configs").is_some()
-                    {
-                        let configs = toolset.as_object_mut().and_then(|tool| {
-                            tool.entry("configs")
-                                .or_insert_with(|| json!({}))
-                                .as_object_mut()
-                        });
-                        if let Some(configs) = configs {
-                            for config in configs.values_mut().filter_map(Value::as_object_mut) {
-                                config.remove("enabled");
-                                config.remove("defer_loading");
-                            }
-                            for (name, enabled) in &mcp.tool_enabled {
-                                configs.entry(name).or_insert_with(|| json!({}))["enabled"] =
-                                    json!(enabled);
-                            }
-                            for (name, defer_loading) in &mcp.tool_defer_loading {
-                                configs.entry(name).or_insert_with(|| json!({}))["defer_loading"] =
-                                    json!(defer_loading);
-                            }
-                        }
-                    }
-                    out.push(toolset);
-                } else if (mcp.enabled.is_some()
-                    || mcp.allowed_tools.is_some()
-                    || server.contains_key("tool_configuration"))
-                    && let Some(config) = server
-                        .entry("tool_configuration")
-                        .or_insert_with(|| json!({}))
-                        .as_object_mut()
+                let mut toolset = layout.toolset;
+                // Callers must enable the Anthropic MCP toolset beta on the target backend.
+                toolset["mcp_server_name"] = json!(mcp.name);
+                if mcp.default_config.enabled.is_some()
+                    || mcp.default_config.defer_loading.is_some()
+                    || toolset.get("default_config").is_some()
                 {
-                    set_optional(config, "enabled", mcp.enabled.map(|v| json!(v)));
-                    set_optional(
-                        config,
-                        "allowed_tools",
-                        mcp.allowed_tools.as_ref().map(|v| json!(v)),
-                    );
+                    let config = toolset.as_object_mut().and_then(|tool| {
+                        tool.entry("default_config")
+                            .or_insert_with(|| json!({}))
+                            .as_object_mut()
+                    });
+                    if let Some(config) = config {
+                        set_optional(
+                            config,
+                            "enabled",
+                            mcp.default_config.enabled.map(|v| json!(v)),
+                        );
+                        set_optional(
+                            config,
+                            "defer_loading",
+                            mcp.default_config.defer_loading.map(|v| json!(v)),
+                        );
+                    }
                 }
+                if !mcp.configs.is_empty() || toolset.get("configs").is_some() {
+                    let configs = toolset.as_object_mut().and_then(|tool| {
+                        tool.entry("configs")
+                            .or_insert_with(|| json!({}))
+                            .as_object_mut()
+                    });
+                    if let Some(configs) = configs {
+                        for config in configs.values_mut().filter_map(Value::as_object_mut) {
+                            config.remove("enabled");
+                            config.remove("defer_loading");
+                        }
+                        for (name, settings) in &mcp.configs {
+                            if let Some(config) = configs
+                                .entry(name)
+                                .or_insert_with(|| json!({}))
+                                .as_object_mut()
+                            {
+                                set_optional(config, "enabled", settings.enabled.map(|v| json!(v)));
+                                set_optional(
+                                    config,
+                                    "defer_loading",
+                                    settings.defer_loading.map(|v| json!(v)),
+                                );
+                            }
+                        }
+                    }
+                }
+                out.push(toolset);
                 servers.push((layout.server_index, layout.server));
             }
         }

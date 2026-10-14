@@ -21,6 +21,58 @@ use common::{
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn openai_chat_mcp_history_obeys_loss_policy_before_text_only_returns() {
+    use switchyard_translation::{LlmRequest, McpContent, Message, Role};
+
+    let engine = TranslationEngine::default();
+    for role in [Role::User, Role::Assistant] {
+        let request = LlmRequest {
+            messages: vec![Message {
+                role,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "Keep this text".into(),
+                    },
+                    ContentBlock::Mcp(McpContent::Listing {
+                        server_name: "inventory".into(),
+                        id: None,
+                        tools: Vec::new(),
+                        error: None,
+                    }),
+                ],
+            }],
+            ..LlmRequest::default()
+        };
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..TranslationPolicy::default()
+            };
+            let result = engine.encode_request(WireFormat::OpenAiChat, &request, &policy);
+            match lossy_conversion_policy {
+                LossyConversionPolicy::Reject => {
+                    assert!(matches!(result, Err(TranslationError::LossyConversion(_))));
+                }
+                LossyConversionPolicy::AllowWithDiagnostics => {
+                    let output = result.expect("permissive conversion should succeed");
+                    assert!(!output.diagnostics.is_empty());
+                    assert_eq!(
+                        output.body["messages"],
+                        json!([{
+                            "role": if role == Role::User { "user" } else { "assistant" },
+                            "content": "Keep this text"
+                        }])
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn responses_allowed_tools_is_translated_or_rejected() -> TestResult {
     let engine = TranslationEngine::default();
     for mode in ["auto", "required"] {
@@ -602,11 +654,12 @@ fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
                 "type": "url",
                 "name": "inventory",
                 "url": "https://fixture.invalid/mcp",
-                "authorization_token": "fixture-token-not-a-secret",
-                "tool_configuration": {
-                    "enabled": true,
-                    "allowed_tools": ["lookup_sku"]
-                }
+                "authorization_token": "fixture-token-not-a-secret"
+            }],
+            "tools": [{
+                "type": "mcp_toolset", "mcp_server_name": "inventory",
+                "default_config": {"enabled": false},
+                "configs": {"lookup_sku": {"enabled": true}}
             }],
             "container": {
                 "id": "container_fixture",
@@ -4613,13 +4666,25 @@ fn anthropic_mcp_loading_settings_follow_ir_edits() -> TestResult {
         let Tool::Mcp(mcp) = &request.tools[0] else {
             return Err("expected MCP toolset".into());
         };
-        assert_eq!(mcp.defer_loading, default);
+        assert_eq!(mcp.default_config.defer_loading, default);
         assert_eq!(
-            mcp.tool_defer_loading.get("lookup"),
-            default.map(|_| &false)
+            mcp.configs
+                .get("lookup")
+                .and_then(|config| config.defer_loading),
+            default.map(|_| false)
         );
-        assert_eq!(mcp.tool_defer_loading.get("search"), default.map(|_| &true));
-        assert!(!mcp.tool_defer_loading.contains_key("inherited"));
+        assert_eq!(
+            mcp.configs
+                .get("search")
+                .and_then(|config| config.defer_loading),
+            default.map(|_| true)
+        );
+        assert_eq!(
+            mcp.configs
+                .get("inherited")
+                .and_then(|config| config.defer_loading),
+            None
+        );
         let output = engine.encode_request(format, &request, &policy)?;
         assert!(output.diagnostics.is_empty());
         assert_eq!(output.body["tools"], body["tools"]);
@@ -4627,10 +4692,18 @@ fn anthropic_mcp_loading_settings_follow_ir_edits() -> TestResult {
         let Tool::Mcp(mcp) = &mut request.tools[0] else {
             return Err("expected MCP toolset".into());
         };
-        mcp.defer_loading = Some(true);
-        mcp.tool_defer_loading.clear();
-        mcp.tool_defer_loading.insert("lookup".into(), true);
-        mcp.tool_defer_loading.insert("new_tool".into(), false);
+        mcp.default_config.defer_loading = Some(true);
+        for config in mcp.configs.values_mut() {
+            config.defer_loading = None;
+        }
+        mcp.configs
+            .entry("lookup".into())
+            .or_default()
+            .defer_loading = Some(true);
+        mcp.configs
+            .entry("new_tool".into())
+            .or_default()
+            .defer_loading = Some(false);
         let output = engine.encode_request(format, &request, &policy)?.body;
         assert_eq!(output["tools"][0]["default_config"]["defer_loading"], true);
         assert_eq!(
@@ -4654,8 +4727,10 @@ fn anthropic_mcp_loading_settings_follow_ir_edits() -> TestResult {
         let Tool::Mcp(mcp) = &mut request.tools[0] else {
             return Err("expected MCP toolset".into());
         };
-        mcp.defer_loading = None;
-        mcp.tool_defer_loading.clear();
+        mcp.default_config.defer_loading = None;
+        for config in mcp.configs.values_mut() {
+            config.defer_loading = None;
+        }
         let output = engine.encode_request(format, &request, &policy)?.body;
         assert!(!output["tools"].to_string().contains("defer_loading"));
     }
@@ -4771,7 +4846,7 @@ fn anthropic_reconstruction_preserves_mcp_connections_provider_tools_and_results
     };
     mcp.name = "renamed".into();
     mcp.authorization_token = None;
-    mcp.tool_enabled.insert("lookup".into(), false);
+    mcp.configs.entry("lookup".into()).or_default().enabled = Some(false);
     let output = engine.encode_request(format, &request, &policy)?.body;
     assert_eq!(output["tools"][0]["mcp_server_name"], "renamed");
     assert_eq!(output["tools"][0]["configs"]["lookup"]["enabled"], false);
@@ -4812,23 +4887,13 @@ fn anthropic_reconstruction_preserves_mcp_connections_provider_tools_and_results
     assert!(output.get("mcp_servers").is_none());
     assert_eq!(output["tools"].as_array().ok_or("expected tools")?.len(), 1);
 
-    // Inline legacy configuration has no tools-array slot and needs no inferred beta version.
-    for config in [
-        None,
-        Some(json!({"enabled": true, "allowed_tools": ["lookup"]})),
-    ] {
-        let mut legacy = json!({"model": "route", "max_tokens": 32,
-            "mcp_servers": [{"type": "url", "name": "inventory", "url": "https://example.invalid/mcp"}],
-            "messages": [{"role": "user", "content": "hello"}]});
-        if let Some(config) = config {
-            legacy["mcp_servers"][0]["tool_configuration"] = config;
-        }
-        let output = engine
-            .translate_request(format, format, &legacy, &policy)?
-            .body;
-        assert_eq!(output["mcp_servers"], legacy["mcp_servers"]);
-        assert!(output.get("tools").is_none());
-    }
+    let unreferenced = json!({"model": "route", "max_tokens": 32,
+        "mcp_servers": [{"type": "url", "name": "inventory", "url": "https://example.invalid/mcp"}],
+        "messages": [{"role": "user", "content": "hello"}]});
+    assert!(matches!(
+        engine.decode_request(format, &unreferenced, &policy),
+        Err(TranslationError::InvalidValue { .. })
+    ));
 
     // Client tools keep their existing function conversion behavior.
     let body = json!({"model": "route", "max_tokens": 32, "mcp_servers": [],
@@ -5282,7 +5347,7 @@ fn per_tool_loading_uses_eager_fallback_without_loss_diagnostics() -> TestResult
         let Tool::Mcp(mcp) = &mut decoded.tools[0] else {
             panic!("expected MCP")
         };
-        mcp.tool_enabled.insert("delete".into(), false);
+        mcp.configs.entry("delete".into()).or_default().enabled = Some(false);
         assert!(
             engine
                 .encode_request(
@@ -5295,8 +5360,8 @@ fn per_tool_loading_uses_eager_fallback_without_loss_diagnostics() -> TestResult
         let Tool::Mcp(mcp) = &mut decoded.tools[0] else {
             unreachable!()
         };
-        mcp.enabled = Some(false);
-        mcp.tool_enabled.insert("lookup".into(), true);
+        mcp.default_config.enabled = Some(false);
+        mcp.configs.entry("lookup".into()).or_default().enabled = Some(true);
         assert_eq!(
             engine
                 .encode_request(

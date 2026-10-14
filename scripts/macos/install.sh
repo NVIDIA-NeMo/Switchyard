@@ -188,7 +188,9 @@ for label in "$SERVER_LABEL" "$MENUBAR_LABEL"; do
     sleep 0.1
   done
   launchctl bootstrap "gui/$UID" "$LAUNCH_AGENTS/$label.plist"
-  say "  loaded $label"
+  # macOS can defer RunAtLoad jobs until an explicit start is requested.
+  launchctl kickstart "gui/$UID/$label"
+  say "  started $label"
 done
 
 step "Adding the sy Codex profile"

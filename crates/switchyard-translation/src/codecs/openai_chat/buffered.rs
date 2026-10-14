@@ -1050,6 +1050,14 @@ pub(crate) fn encode_openai_content(
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Value> {
+    if content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Mcp(_)))
+    {
+        return Err(TranslationError::LossyConversion(
+            "MCP history encoding is not implemented".into(),
+        ));
+    }
     let has_non_text = content.iter().any(|block| {
         matches!(
             block,
