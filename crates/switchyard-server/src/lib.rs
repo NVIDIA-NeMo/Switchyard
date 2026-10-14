@@ -761,7 +761,10 @@ async fn decision_inner(
             match encode_aggregated_response(
                 &aggregate,
                 input_format,
-                outcome.selected_model_id().ok().map(ModelId::as_str),
+                outcome
+                    .selected_model_id()
+                    .ok()
+                    .map(|model| route.provider_model(model).as_str()),
             ) {
                 Ok(response) => Some(response),
                 Err(error) => return server_error(error.to_string()),
@@ -1091,6 +1094,10 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
+    // Stats and logs use the target. The caller sees the provider model that answered.
+    let provider_model = served_model
+        .as_ref()
+        .map(|model| route.provider_model(model).to_string());
     let mut response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
@@ -1109,7 +1116,7 @@ async fn handle_llm_request(
     };
 
     let upstream_headers = std::mem::take(&mut response.upstream_headers);
-    let response_model = served_model.as_ref().map(ToString::to_string);
+    let response_model = provider_model.clone();
     let mut response = match into_http_response(
         response,
         wire_format,
@@ -1129,8 +1136,8 @@ async fn handle_llm_request(
         }
         response_headers.append(name.clone(), value.clone());
     }
-    if let Some(served_model) = served_model.as_ref() {
-        attach_routing_headers(&mut response, served_model.as_str());
+    if let Some(provider_model) = provider_model.as_ref() {
+        attach_routing_headers(&mut response, provider_model);
     }
     response
 }

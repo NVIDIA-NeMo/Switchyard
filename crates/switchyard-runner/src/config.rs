@@ -230,37 +230,9 @@ impl DeploymentConfig {
             }
         }
 
-        // The LLM client keeps one backend per model id, so two targets naming the same model on
-        // the same client share it. That is harmless when their request settings agree (an alias
-        // for a different system prompt, say) and silently wrong when they do not: the second
-        // target's reasoning_effort or extra_body would never reach the wire.
-        let mut seen_client_model_ids: HashMap<(&str, &str), (&String, &TargetConfig)> =
-            HashMap::new();
         for (target_name, target) in &self.targets {
             validate_value("target name", target_name)?;
             validate_value(&format!("target {target_name} id"), &target.id)?;
-            match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    slot.insert((target_name, target));
-                }
-                std::collections::hash_map::Entry::Occupied(slot) => {
-                    let (first_name, first) = slot.get();
-                    if first.reasoning_effort != target.reasoning_effort
-                        || first.extra_body != target.extra_body
-                        || first.omit_body_fields != target.omit_body_fields
-                    {
-                        return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
-                            target.id, target.llm_client
-                        )));
-                    }
-                    tracing::warn!(
-                        "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
-                        target.id,
-                        target.llm_client
-                    );
-                }
-            }
         }
 
         let mut provider_api_keys = Vec::new();
@@ -325,8 +297,9 @@ impl DeploymentConfig {
                 self.build_anthropic_auxiliary_target(config, &clients);
             let responses_auxiliary_target =
                 self.build_responses_auxiliary_target(config, &clients);
+            // Judges are included so a judge answer maps to its provider model too.
             let decision_targets = config
-                .routing_target_names()
+                .callable_target_names()
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
@@ -398,17 +371,20 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            model_configs.push(ModelConfig::new(
-                target.id.clone(),
-                build_backend(
-                    &target.llm_client,
-                    client_config,
-                    &target.extra_body,
-                    &target.omit_body_fields,
-                    target.reasoning_effort.clone(),
-                )?,
-                None,
-            ));
+            model_configs.push(
+                ModelConfig::new(
+                    target_name.as_str(),
+                    build_backend(
+                        &target.llm_client,
+                        client_config,
+                        &target.extra_body,
+                        &target.omit_body_fields,
+                        target.reasoning_effort.clone(),
+                    )?,
+                    None,
+                )
+                .with_provider_model(target.id.clone()),
+            );
         }
 
         let mut clients = BTreeMap::new();
@@ -456,10 +432,13 @@ impl DeploymentConfig {
             .collect()
     }
 
+    /// Algorithms route on LLM target names, so targets that share a provider model keep
+    /// their own settings. The LLM client sends each target's `id` upstream. Decision targets
+    /// route on their `id`, which the decision client sends as is.
     fn build_targets(&self) -> BTreeMap<String, ModelId> {
         self.targets
-            .iter()
-            .map(|(name, config)| (name.clone(), config.id.clone()))
+            .keys()
+            .map(|name| (name.clone(), ModelId::from(name.as_str())))
             .chain(
                 self.decision_targets
                     .iter()
@@ -483,7 +462,6 @@ impl DeploymentConfig {
             routing_answer_target,
         } = self.build_route_target_prompts(route_name, route)?;
         let mut by_model = HashMap::new();
-        let mut targets_by_model: HashMap<&str, (&str, &TargetConfig)> = HashMap::new();
         let mut caller_auth = None;
         let mut has_mixed_families = false;
         let mut forwarding_origins = BTreeSet::new();
@@ -504,14 +482,6 @@ impl DeploymentConfig {
             let target = self.targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
             })?;
-            if let Some((first_name, first)) = targets_by_model.insert(&target.id, (name, target))
-                && first.llm_client != target.llm_client
-            {
-                return Err(RunnerError::configuration(format!(
-                    "route {route_name} targets {first_name} and {name} use model {} on different llm clients; execution is keyed by model id, so use distinct model ids within this route or put these targets in separate routes",
-                    target.id
-                )));
-            }
             let client = clients.get(&target.llm_client).ok_or_else(|| {
                 RunnerError::configuration(format!("target {name} has no constructed llm client"))
             })?;
@@ -528,7 +498,7 @@ impl DeploymentConfig {
                 forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
             }
             let client: Arc<dyn RoutedLlmClient> = client.clone();
-            by_model.insert(target.id.clone(), client);
+            by_model.insert(ModelId::from(name), client);
         }
         // Only forwarding clients count: an api_key_env client sends the server's own key.
         // Forwarding clients must share one credential family unless they all use the same
@@ -547,7 +517,7 @@ impl DeploymentConfig {
         let completion_targets = route
             .routing_target_names()
             .into_iter()
-            .map(|name| self.targets[name].id.clone())
+            .map(ModelId::from)
             .collect::<Vec<_>>();
         let router = ClientRouter::new_with_decision_clients(
             by_model,
@@ -566,23 +536,12 @@ impl DeploymentConfig {
         route: &RouteConfig,
     ) -> RunnerResult<TargetPromptPolicy> {
         let mut prompts = HashMap::new();
-        let mut aliases = HashMap::<&ModelId, Option<&str>>::new();
         for name in route.algorithm.routing_target_names() {
             let target = self.targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
             })?;
-            let prompt = target.system_prompt.as_deref();
-            if aliases
-                .insert(&target.id, prompt)
-                .is_some_and(|configured| configured != prompt)
-            {
-                return Err(RunnerError::configuration(format!(
-                    "route {route_name} maps completion target aliases to model {} with different system_prompt values",
-                    target.id
-                )));
-            }
-            if let Some(prompt) = prompt {
-                prompts.insert(target.id.clone(), prompt.to_string());
+            if let Some(prompt) = &target.system_prompt {
+                prompts.insert(ModelId::from(name), prompt.clone());
             }
         }
         let mut policy = TargetPromptPolicy {
@@ -594,22 +553,15 @@ impl DeploymentConfig {
         else {
             return Ok(policy);
         };
-        let response = self.targets.get(response_name).ok_or_else(|| {
-            RunnerError::configuration(format!("route references unknown target {response_name}"))
-        })?;
-        if !policy.prompts.contains_key(&response.id) {
+        if !policy.prompts.contains_key(response_name) {
             return Ok(policy);
         }
-        let dependency = self.targets.get(dependency_name).ok_or_else(|| {
-            RunnerError::configuration(format!("route references unknown target {dependency_name}"))
-        })?;
-        if response.id == dependency.id {
+        if response_name == dependency_name {
             return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
-                response.id,
+                "route {route_name} cannot apply system_prompt to target {response_name}: it is also the routing-only target"
             )));
         }
-        policy.routing_answer_target = Some(response.id.clone());
+        policy.routing_answer_target = Some(ModelId::from(response_name));
         Ok(policy)
     }
 
@@ -640,7 +592,11 @@ impl DeploymentConfig {
                     clients,
                     AuxiliaryOperation::AnthropicCountTokens,
                 )?;
-                Some((count_tokens_priority(name, &target.model), index, target))
+                Some((
+                    count_tokens_priority(name, &self.targets[name].id),
+                    index,
+                    target,
+                ))
             })
             .min_by_key(|(priority, index, _)| (*priority, *index))
             .map(|(_, _, target)| target)
@@ -664,10 +620,11 @@ impl DeploymentConfig {
     ) -> Option<AuxiliaryTarget> {
         let target = self.targets.get(name)?;
         let client = clients.get(&target.llm_client)?;
+        let model = ModelId::from(name);
         client
-            .supports_auxiliary(&target.id, operation)
+            .supports_auxiliary(&model, operation)
             .then(|| AuxiliaryTarget {
-                model: target.id.clone(),
+                model,
                 client: client.clone(),
             })
     }
@@ -1004,30 +961,30 @@ efficient_target = "weak"
         let models = classifier.models();
         assert_eq!(
             models.models_for(&Category::Judge),
-            [ModelId::from("classifier/model")]
+            [ModelId::from("classifier")]
         );
         assert_eq!(
             models.models_for(&Category::Efficient),
-            [ModelId::from("weak/model")]
+            [ModelId::from("weak")]
         );
         assert_eq!(
             models.models_for(&Category::Capable),
-            [ModelId::from("strong/model")]
+            [ModelId::from("strong")]
         );
         assert_eq!(
             models.models_for(&Category::Any),
-            [ModelId::from("weak/model"), ModelId::from("strong/model")]
+            [ModelId::from("weak"), ModelId::from("strong")]
         );
         let plan_execute = runner
             .route("switchyard/plan-execute")
             .expect("plan-execute route should exist");
         assert_eq!(
             plan_execute.models().models_for(&Category::Capable),
-            [ModelId::from("strong/model")]
+            [ModelId::from("strong")]
         );
         assert_eq!(
             plan_execute.models().models_for(&Category::Efficient),
-            [ModelId::from("weak/model")]
+            [ModelId::from("weak")]
         );
         assert!(runner.route("switchyard/passthrough").is_some());
         Ok(())
@@ -1072,10 +1029,7 @@ target = "strong"
             })],
         });
 
-        for (config, expected) in [
-            (VALID_CONFIG, "strong/model"),
-            (configured.as_str(), "weak/model"),
-        ] {
+        for (config, expected) in [(VALID_CONFIG, "strong"), (configured.as_str(), "weak")] {
             let runner = Runner::from_toml(config)?;
             let route = runner.route("switchyard/plan-execute").unwrap();
             let outcome = route.decide(request.clone()).await?;
@@ -1121,11 +1075,11 @@ classify_trigger = "new_session""#,
 
         assert_eq!(
             models.subagent_models_for(&Category::Any),
-            [ModelId::from("strong/model")]
+            [ModelId::from("strong")]
         );
         assert_eq!(
             models.models_for(&Category::Any),
-            [ModelId::from("strong/model"), ModelId::from("weak/model")]
+            [ModelId::from("strong"), ModelId::from("weak")]
         );
         Ok(())
     }
@@ -1309,7 +1263,7 @@ evidence = { description = "candidate comparison" }
     }
 
     #[test]
-    fn aliased_completion_targets_reject_prompt_conflicts() {
+    fn targets_sharing_a_model_keep_their_own_prompts() -> RunnerResult<()> {
         let configured = stage_config()
             .replace(
                 "id = \"strong/model\"\nllm_client = \"responses\"",
@@ -1320,15 +1274,12 @@ evidence = { description = "candidate comparison" }
                 "[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n\n[routes.stage]",
             )
             .replace("efficient_target = \"weak\"", "efficient_target = \"strong_alias\"");
-        let message = error_message(&configured);
-        assert!(
-            message.contains("completion target aliases to model strong/model with different system_prompt values"),
-            "unexpected error: {message}"
-        );
+        runner_from_toml(&configured)?;
+        Ok(())
     }
 
     #[test]
-    fn prompted_routing_response_cannot_share_a_model_with_a_dependency() {
+    fn prompted_routing_response_may_share_a_model_with_a_dependency() -> RunnerResult<()> {
         let configured = VALID_CONFIG
             .replace(
                 "id = \"classifier/model\"\nllm_client = \"primary\"",
@@ -1343,12 +1294,8 @@ evidence = { description = "candidate comparison" }
                 "base_threshold = 0.5\nescalation = { confirmations = 1 }",
             );
 
-        let message = error_message(&configured);
-
-        assert!(
-            message.contains("cannot apply system_prompt to target weak: model weak/model is also used by routing-only target classifier"),
-            "unexpected error: {message}"
-        );
+        runner_from_toml(&configured)?;
+        Ok(())
     }
 
     #[test]
@@ -1420,28 +1367,16 @@ evidence = { description = "candidate comparison" }
     }
 
     #[test]
-    fn duplicate_targets_with_conflicting_settings_are_rejected() -> RunnerResult<()> {
+    fn targets_may_share_a_model_with_different_settings() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
         assert!(VALID_CONFIG.contains(strong));
-        // Same model, same client, different effort: the second target could never take effect.
-        let conflicting = VALID_CONFIG.replace(
+        let shared = VALID_CONFIG.replace(
             strong,
             &format!(
                 "{strong}\n\n[targets.strong_max]\nid = \"strong/model\"\nllm_client = \"responses\"\nreasoning_effort = \"max\""
             ),
         );
-        assert!(
-            error_message(&conflicting)
-                .contains("different reasoning_effort, extra_body, or omit_body_fields"),
-            "{}",
-            error_message(&conflicting)
-        );
-        // An alias with identical settings is still allowed (it only warns).
-        let alias = VALID_CONFIG.replace(
-            strong,
-            &format!("{strong}\n\n[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\""),
-        );
-        runner_from_toml(&alias)?;
+        runner_from_toml(&shared)?;
         Ok(())
     }
 
@@ -1770,7 +1705,7 @@ target = "smart"
 
     #[test]
     fn accepts_same_model_id_on_different_llm_clients() -> RunnerResult<()> {
-        // Separate routes may serve the same model through different clients.
+        // One model may be served through different clients, in separate routes or one.
         const CROSS_PROVIDER: &str = r#"
 schema_version = 1
 
@@ -1813,15 +1748,7 @@ picker = "efficient_first"
 confidence_threshold = 0.5
 "#
         );
-        let message = error_message(&shared_route);
-        assert!(
-            message.contains("route shared")
-                && message.contains("openai")
-                && message.contains("azure")
-                && message.contains("gpt-4o")
-                && message.contains("different llm clients"),
-            "{message}"
-        );
+        runner_from_toml(&shared_route)?;
         Ok(())
     }
 
@@ -2212,15 +2139,15 @@ advisor_target = "advisor"
         // route's last-resort pool.
         assert_eq!(
             models.models_for(&Category::Efficient),
-            [ModelId::from("executor/model")]
+            [ModelId::from("executor")]
         );
         assert_eq!(
             models.models_for(&Category::Any),
-            [ModelId::from("executor/model")]
+            [ModelId::from("executor")]
         );
         assert_eq!(
             models.models_for(&Category::Judge),
-            [ModelId::from("advisor/model")]
+            [ModelId::from("advisor")]
         );
         assert_eq!(
             state

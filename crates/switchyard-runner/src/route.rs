@@ -170,8 +170,17 @@ impl Route {
     pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
         self.decision_targets
             .iter()
-            .find(|target| target.model == *model)
+            .find(|target| target.target == model.as_str())
             .cloned()
+    }
+
+    /// The provider model that serves `selected`, or `selected` itself when it names no
+    /// target of this route.
+    pub fn provider_model<'a>(&'a self, selected: &'a ModelId) -> &'a ModelId {
+        self.decision_targets
+            .iter()
+            .find(|target| target.target == selected.as_str())
+            .map_or(selected, |target| &target.model)
     }
 
     /// Returns the models grouped for one algorithm execution.
