@@ -9,8 +9,8 @@ use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
     ContentBlock, FormatId, ImageSource, LlmRequest, LossyConversionPolicy, Message, Role,
-    TranslationEngine, TranslationError, TranslationPolicy, WireFormat, prepare_request_for_target,
-    sanitize_anthropic_tool_use_id,
+    TranslationEngine, TranslationError, TranslationPolicy, WireFormat, decode_request,
+    encode_request, prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -4639,48 +4639,50 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
 }
 
 #[test]
-fn video_survives_normalization_judge_rebuild_and_cross_format_translation() {
-    use serde_json::json;
-    use switchyard_protocol::ContentBlock;
-    use switchyard_translation::{WireFormat, decode_request, encode_request};
-
-    for part in [
-        json!({"type":"video_url","video_url":{"url":"https://example.com/clip.mp4"}}),
-        json!({"type":"file","file":{"file_id":"https://example.com/clip.mp4","format":"video/mp4"}}),
+fn video_survives_judge_rebuild_and_cross_format_translation() -> TestResult {
+    for (format, part, url) in [
+        (
+            WireFormat::OpenAiChat,
+            json!({"type":"video_url","video_url":{"url":"https://example.com/clip.mp4"}}),
+            "https://example.com/clip.mp4",
+        ),
+        (
+            WireFormat::OpenAiChat,
+            json!({"type":"file","file":{"file_id":"https://example.com/opaque","format":"video/webm"}}),
+            "https://example.com/opaque",
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type":"input_video","video_url":"https://example.com/opaque","media_type":"video/webm"}),
+            "https://example.com/opaque",
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"type":"video","source":{"type":"base64","media_type":"video/mp4","data":"AQID"}}),
+            "data:video/mp4;base64,AQID",
+        ),
     ] {
-        let body = json!({"model":"video","messages":[{"role":"user","content":[part]}]});
-        let mut request = decode_request(WireFormat::OpenAiChat, &body).unwrap();
+        let key = if format == WireFormat::OpenAiResponses {
+            "input"
+        } else {
+            "messages"
+        };
+        let body =
+            json!({"model":"video", "max_tokens":100, key:[{"role":"user","content":[part]}]});
+        let mut request = decode_request(format, &body)?;
         assert!(matches!(
             request.messages[0].content[0],
             ContentBlock::Video { .. }
         ));
-        // Classifiers build a new request from normalized content without preservation.
+        // Judges rebuild requests from normalized content without the original wire body.
         request.preservation = Default::default();
-        let chat = encode_request(&request, WireFormat::OpenAiChat).unwrap();
-        assert_eq!(
-            chat["messages"][0]["content"][0]["video_url"]["url"],
-            "https://example.com/clip.mp4"
-        );
-        let responses = encode_request(&request, WireFormat::OpenAiResponses).unwrap();
-        assert_eq!(responses["input"][0]["content"][0]["type"], "input_video");
-        let decoded = decode_request(WireFormat::OpenAiResponses, &responses).unwrap();
-        assert!(matches!(
-            decoded.messages[0].content[0],
-            ContentBlock::Video { .. }
-        ));
+        let chat = encode_request(&request, WireFormat::OpenAiChat)?;
+        let block = &chat["messages"][0]["content"][0];
+        assert_eq!(block["video_url"]["url"], url);
+        let request = decode_request(WireFormat::OpenAiChat, &chat)?;
+        let responses = encode_request(&request, WireFormat::OpenAiResponses)?;
+        let decoded = decode_request(WireFormat::OpenAiResponses, &responses)?;
+        assert_eq!(decoded.messages, request.messages);
     }
-}
-
-#[test]
-fn anthropic_video_source_normalizes_for_a_chat_judge() {
-    let input = serde_json::json!({"model":"route","max_tokens":100,"messages":[{"role":"user","content":[
-        {"type":"video","source":{"type":"base64","media_type":"video/mp4","data":"AQID"}}
-    ]}]});
-    let request =
-        switchyard_translation::decode_request(WireFormat::AnthropicMessages, &input).unwrap();
-    let chat = switchyard_translation::encode_request(&request, WireFormat::OpenAiChat).unwrap();
-    assert_eq!(
-        chat["messages"][0]["content"][0]["video_url"]["url"],
-        "data:video/mp4;base64,AQID"
-    );
+    Ok(())
 }

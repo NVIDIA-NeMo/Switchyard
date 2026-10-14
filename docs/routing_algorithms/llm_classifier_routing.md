@@ -129,34 +129,33 @@ for the server merge behavior.
 
 ### Control images shown to the judge
 
-Capability and custom classifiers already pass images from selected messages to
-the judge. `judge_max_images` controls how many of those images the judge receives:
+Capability and custom classifiers forward images from the selected messages.
+Set `judge_max_images` on the route to limit that input:
+
+- Unset: keep all selected images.
+- `0`: replace images with text markers.
+- A positive number: reject input above that limit (HTTP 400), even with fail-open enabled.
+
+The limit is shared across selected messages and nested tool results. It applies
+when the judge runs and leaves the answer request unchanged. It does not select,
+resize, or reorder images. Escalation mode uses a text summary and rejects this setting.
+
+Video blocks are separate. For a text-only judge receiving image or video requests,
+configure its target:
 
 ```toml
-judge_max_images = 0  # Text-only judge; the answer model still receives all images.
+[targets.judge.media]
+max_images = 0
+video = "omit"
 ```
 
-Set `judge_max_images = 2` to allow at most two images in the messages selected
-by `recent_turn_window`. A request exceeding this cap fails before the judge or
-answer model is called (HTTP 400 through the server), including when judge
-fail-open is enabled. The cap counts images across selected messages and nested
-tool results. Omit the field for no limit.
-
-The caller or media processor chooses which frames to supply. This setting does
-not sample, reorder, fetch, or resize images. Accepted images keep their original
-URLs/data and detail settings. With `0`, images become text markers without
-copying their payloads, so image-only messages remain valid. The answer request
-is unchanged. The cap applies when the judge runs; a retained route can skip it.
-
-For target-side resizing or video extraction, configure `[targets.NAME.media]`.
-Its `max_images` uses the same unlimited/zero/reject rules and also counts the
-frames requested by `video_max_frames`. Neither image cap chooses which images
-to keep. See the [media reference](../../crates/libsy-llm-client/MEDIA.md).
+For a vision judge, the same table can resize images or extract video frames.
+Its `max_images` also counts the frames requested by `video_max_frames`. See the
+[media settings](../../crates/libsy-llm-client/MEDIA.md) for a judge/answer example.
 
 Use `classify_trigger = "every_request"` for independent image requests. The
 optional message-hash affinity key uses only text, so identical questions about
-different images must not share that key. Escalation mode uses a text summary
-and rejects `judge_max_images`.
+different images must not share that key.
 
 ### Override the classifier prompt
 

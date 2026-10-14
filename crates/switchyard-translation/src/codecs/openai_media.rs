@@ -284,6 +284,7 @@ pub(super) fn decode_video_source(block: &Map<String, Value>) -> MediaSource {
 
 pub(super) fn video_part(source: &MediaSource) -> Value {
     match source {
+        // TODO: Preserve explicit MIME types for Gemini file conversion when a URL has no extension.
         MediaSource::Url { url, .. } => json!({"type":"video_url", "video_url":{"url":url}}),
         MediaSource::Base64 { media_type, data } => {
             json!({"type":"video_url", "video_url":{"url":format!("data:{};base64,{data}", media_type.as_deref().unwrap_or("video/mp4"))}})
