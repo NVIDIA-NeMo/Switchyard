@@ -17,6 +17,28 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn normalized_chat_requests_forward_logprobs_with_top_logprobs() -> TestResult {
+    let engine = TranslationEngine::default();
+    for enabled in [true, false] {
+        let mut request = switchyard_translation::LlmRequest::default();
+        request
+            .extensions
+            .fields
+            .insert("logprobs".into(), json!(enabled));
+        request
+            .extensions
+            .fields
+            .insert("top_logprobs".into(), json!(8));
+        let body = engine
+            .encode_request(WireFormat::OpenAiChat, &request, &normalized_policy())?
+            .body;
+        assert_eq!(body["logprobs"], enabled);
+        assert_eq!(body["top_logprobs"], 8);
+    }
+    Ok(())
+}
+
+#[test]
 fn responses_allowed_tools_is_translated_or_rejected() -> TestResult {
     let engine = TranslationEngine::default();
     for mode in ["auto", "required"] {

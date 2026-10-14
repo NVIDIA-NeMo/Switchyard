@@ -1011,6 +1011,7 @@ fn copy_openai_chat_request_extensions(
         "service_tier",
         "store",
         "stream_options",
+        "logprobs",
         "top_logprobs",
         "user",
     ] {
