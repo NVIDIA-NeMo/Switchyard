@@ -199,11 +199,12 @@ impl VgrClassifier {
         if !self.config.task_typing {
             return None;
         }
-        let task = text::user_task_text(&text::turns(request).0);
+        let (turns, _) = text::turns(request);
+        let task = text::user_task_text(&turns);
         if task.trim().is_empty() {
             return None;
         }
-        let call = rungs::build_typing_request(&task, request.metadata.clone());
+        let call = rungs::build_typing_request(task, request.metadata.clone());
         let agg = self
             .call(driver, call, self.config.judge(), started)
             .await?
@@ -249,17 +250,14 @@ impl VgrClassifier {
             return signals;
         }
         if !(cloud_confirms && decide::locally_verified(branch, &signals)) {
-            signals.deliberation = match ask(
-                local,
-                Question::Deliberation,
-                rungs::LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
-            )
-            .await
-            {
-                Tri::Yes => Some(1.0),
-                Tri::No => Some(0.0),
-                Tri::Unknown => None,
-            };
+            signals.deliberation = Some(
+                ask(
+                    local,
+                    Question::Deliberation,
+                    rungs::LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
+                )
+                .await,
+            );
             if settled(&signals) {
                 return signals;
             }
