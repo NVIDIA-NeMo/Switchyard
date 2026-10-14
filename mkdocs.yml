@@ -27,6 +27,7 @@ nav:
       - NeMo Relay: integrations/nemo_relay.md
       - pi: integrations/pi.md
       - Oh My Pi: integrations/oh_my_pi.md
+      - YardMaster: integrations/yardmaster.md
   - Recipes:
       - Single-provider coding agents: recipes/single_provider_coding_agents.md
   - Routing:
