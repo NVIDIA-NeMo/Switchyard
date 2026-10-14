@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use clap::Parser;
 use switchyard_server::config::load_server_state;
 use switchyard_server::{
-    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, DEFAULT_LISTEN_BACKLOG, ServerError, ServerResult,
-    ServerRunOptions, ServerState, TlsOptions, run_server,
+    DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT, DEFAULT_LISTEN_BACKLOG, DEFAULT_MAX_REQUEST_BODY_BYTES,
+    ServerError, ServerResult, ServerRunOptions, ServerState, TlsOptions, run_server,
 };
 
 const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
@@ -40,6 +40,10 @@ pub(crate) struct ServerArgs {
     #[arg(long, default_value_t = DEFAULT_LISTEN_BACKLOG)]
     backlog: u32,
 
+    /// Maximum buffered JSON request bytes, including inline base64 media.
+    #[arg(long, value_name = "BYTES", default_value_t = DEFAULT_MAX_REQUEST_BODY_BYTES)]
+    max_request_body_bytes: usize,
+
     /// Maximum time active requests may drain during shutdown.
     #[arg(long, default_value_t = humantime::Duration::from(DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT))]
     shutdown_timeout: humantime::Duration,
@@ -68,7 +72,8 @@ impl ServerArgs {
     }
 
     fn into_runtime(self) -> ServerResult<(ServerState, ServerRunOptions)> {
-        let mut state = load_server_state(&self.config)?;
+        let mut state = load_server_state(&self.config)?
+            .with_max_request_body_bytes(self.max_request_body_bytes)?;
         if let Some(path) = self.routing_log_file {
             state = state.with_routing_log(path)?;
         }
