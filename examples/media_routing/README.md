@@ -36,6 +36,6 @@ base64 data URI. To make the judge text-only, set its media `max_images = 0`
 and `video = "omit"`.
 
 See the [media reference](../../crates/libsy-llm-client/MEDIA.md) for formats,
-limits, and embedded Rust use. Preparation runs in the LLM client, independently
+limits, and runtime requirements. Preparation runs in the LLM client, independently
 for each target. Frame sampling can miss brief events; this example demonstrates
 request handling and does not measure routing accuracy.

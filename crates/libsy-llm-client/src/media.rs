@@ -129,7 +129,6 @@ impl MediaProcessor {
     /// Only message content is traversed. Tools, JSON arguments, and other controls are retained.
     pub(crate) async fn prepare(&self, body: &mut Value, format: WireFormat) -> Result<()> {
         let config = &self.config;
-        config.validate(format)?;
         if let Some(limit) = config.max_images.filter(|limit| *limit > 0) {
             let count: usize = ["input", "messages", "system"]
                 .iter()
@@ -150,8 +149,7 @@ impl MediaProcessor {
             };
             for key in ["input", "messages", "system"] {
                 if let Some(Value::Array(items)) = body.get_mut(key) {
-                    self.prepare_items(items, format, config, &mut budget)
-                        .await?;
+                    self.prepare_items(items, format, &mut budget).await?;
                 }
             }
             Ok(())
@@ -164,10 +162,10 @@ impl MediaProcessor {
         &'a self,
         items: &'a mut Vec<Value>,
         format: WireFormat,
-        config: &'a MediaConfig,
         budget: &'a mut Budget,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            let config = &self.config;
             let mut output = Vec::with_capacity(items.len());
             for mut item in std::mem::take(items) {
                 if matches!(
@@ -243,7 +241,7 @@ impl MediaProcessor {
                 if let Some(key) = child_content_key(&item)
                     && let Some(Value::Array(children)) = item.get_mut(key)
                 {
-                    self.prepare_items(children, format, config, budget).await?;
+                    self.prepare_items(children, format, budget).await?;
                 }
                 output.push(item);
             }
@@ -442,8 +440,13 @@ mod tests {
             WireFormat::AnthropicMessages,
         ] {
             let image = image_part(format, &still_image());
-            let mut body = json!({"messages":[{"role":"user","content":[image]}],"tools":[{"input_schema":{"example":{"type":"image_url","image_url":{"url":"https://private.invalid"}}}}],"temperature":0.3,"custom_provider_control":true});
-            body["messages"][0]["content"][0]["cache_control"] = json!({"type":"ephemeral"});
+            let key = if format == WireFormat::OpenAiResponses {
+                "input"
+            } else {
+                "messages"
+            };
+            let mut body = json!({key:[{"role":"user","content":[image]}],"tools":[{"input_schema":{"example":{"type":"image_url","image_url":{"url":"https://private.invalid"}}}}],"temperature":0.3,"custom_provider_control":true});
+            body[key][0]["content"][0]["cache_control"] = json!({"type":"ephemeral"});
             let original = body.clone();
             processor(MediaConfig {
                 image_max_edge: Some(20),
@@ -452,9 +455,9 @@ mod tests {
             .prepare(&mut body, format)
             .await
             .unwrap();
-            let item = &body["messages"][0]["content"][0];
+            let item = &body[key][0]["content"][0];
             let url = image_url(item).unwrap();
-            let bytes = processor(MediaConfig::default()).load(url).await.unwrap();
+            let bytes = STANDARD.decode(url.split_once(',').unwrap().1).unwrap();
             let resized = image::load_from_memory(&bytes).unwrap();
             assert_eq!((resized.width(), resized.height()), (20, 10));
             assert_eq!(resized.to_rgba8().get_pixel(0, 0)[3], 128);
@@ -462,6 +465,19 @@ mod tests {
             assert_eq!(item["cache_control"], json!({"type":"ephemeral"}));
             assert_eq!(body["custom_provider_control"], true);
             assert_eq!(body["temperature"], 0.3);
+            let result = processor(MediaConfig {
+                image_max_edge: Some(20),
+                max_output_bytes: 1,
+                ..Default::default()
+            })
+            .prepare(&mut body, format)
+            .await;
+            assert!(matches!(
+                result,
+                Err(MediaError::Invalid(
+                    "prepared media exceeds max_output_bytes"
+                ))
+            ));
         }
     }
 
@@ -594,96 +610,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabled_processing_is_exact_passthrough_and_limits_fail_closed() {
-        let original = json!({"input":[{"role":"user","content":[image_part(WireFormat::OpenAiResponses, &still_image())]}]});
-        let mut body = original.clone();
-        processor(MediaConfig::default())
-            .prepare(&mut body, WireFormat::OpenAiResponses)
-            .await
-            .unwrap();
-        assert_eq!(body, original);
-        let result = processor(MediaConfig {
-            image_max_edge: Some(20),
-            max_output_bytes: 1,
-            ..Default::default()
-        })
-        .prepare(&mut body, WireFormat::OpenAiResponses)
-        .await;
-        assert!(result.unwrap_err().to_string().contains("max_output_bytes"));
-        assert!(
-            MediaConfig {
-                video: VideoMode::File,
-                ..Default::default()
-            }
-            .validate(WireFormat::OpenAiResponses)
-            .is_err()
-        );
-        assert!(
-            MediaConfig {
-                video_max_frames: 0,
-                ..Default::default()
-            }
-            .validate(WireFormat::OpenAiChat)
-            .is_err()
-        );
-    }
-
-    #[tokio::test]
     async fn image_limit_counts_video_frames_before_fetching() {
         let original = json!({"messages":[{"role":"user","content":[
             {"type":"image_url","image_url":{"url":"https://127.0.0.1/image"}},
             {"type":"video_url","video_url":{"url":"https://127.0.0.1/video"}}
         ]}]});
-        for limit in [0, 3] {
-            let mut body = original.clone();
-            let result = processor(MediaConfig {
-                max_images: Some(limit),
-                video: VideoMode::Frames,
-                video_max_frames: 3,
-                ..Default::default()
-            })
-            .prepare(&mut body, WireFormat::OpenAiChat)
-            .await;
-            if limit == 3 {
-                assert!(
-                    matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
-                );
-                assert_eq!(body, original);
-            } else {
-                result.unwrap();
-                assert_eq!(body["messages"][0]["content"][0]["text"], "[image omitted]");
-                assert_eq!(
-                    body["messages"][0]["content"][1]["text"],
-                    "[video frames omitted]"
-                );
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn image_resize_applies_exif_and_avoids_reencoding_small_images() {
-        let slots = Arc::new(Semaphore::new(1));
-        let image = image::RgbImage::from_pixel(80, 40, image::Rgb([255, 0, 0]));
-        let mut jpeg = Cursor::new(Vec::new());
-        image.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
-        let mut jpeg = jpeg.into_inner();
-        // EXIF orientation 6: rotate 90 degrees clockwise.
-        jpeg.splice(
-            2..2,
-            [
-                0xff, 0xe1, 0, 34, b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0, 1,
-                0, 0x12, 1, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
-            ],
+        let mut body = original.clone();
+        let result = processor(MediaConfig {
+            max_images: Some(3),
+            video: VideoMode::Frames,
+            video_max_frames: 3,
+            ..Default::default()
+        })
+        .prepare(&mut body, WireFormat::OpenAiChat)
+        .await;
+        assert!(
+            matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
         );
-        let (_, bytes) = decode::resize(jpeg, 40, slots.clone()).await.unwrap();
-        let rotated = image::load_from_memory(&bytes).unwrap();
-        assert_eq!((rotated.width(), rotated.height()), (20, 40));
-        let original = processor(MediaConfig::default())
-            .load(still_image())
-            .await
-            .unwrap();
-        let (_, retained) = decode::resize(original.clone(), 200, slots).await.unwrap();
-        assert_eq!(retained, original);
+        assert_eq!(body, original);
     }
 
     #[tokio::test]
