@@ -1565,16 +1565,13 @@ results are clean and the cloud judge confirms the evidence.</p>
 <h2 id="agentic-handoff">Agentic handoff<a class="headerlink" href="#agentic-handoff" title="Permanent link">&para;</a></h2>
 <p>These settings are off by default:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">agentic_handoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">compact_handoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">local_turn_budget_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">600</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">local_turn_budget_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">600</span>
 </span></code></pre></div>
 <p><code>agentic_handoff</code> tells the cloud tier, once per user turn, that it is taking
 over unverified tool-using work, including the local tier's unchecked final
-message. <code>compact_handoff</code> also condenses the local tier's history into a
-digest and reapplies that same digest to every later request of the user turn,
-which keeps the cloud tier's prompt cache warm. <code>local_turn_budget_seconds</code>
-escalates a user turn once the local tier has spent that much wall-clock time
-on it.</p>
+message. The handoff adds a notice while preserving the conversation's existing
+messages and content. <code>local_turn_budget_seconds</code> escalates a user turn once
+the local tier has spent that much wall-clock time on it.</p>
 <h2 id="serving-modes">Serving modes<a class="headerlink" href="#serving-modes" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>off</code> skips candidate generation and serves cloud. This is the default.</li>
