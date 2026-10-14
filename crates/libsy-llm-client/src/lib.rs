@@ -23,6 +23,7 @@
 pub mod backend;
 pub mod client;
 pub mod error;
+mod media;
 pub mod metrics;
 mod observability;
 mod observation;
@@ -36,12 +37,12 @@ mod system_one;
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
+pub use media::{MediaConfig, VideoMode};
 pub use observation::{ModelCallObservation, RunObservation, RunObserver};
 pub use openai_decisions::OpenAiDecisionClient;
 pub use raw::RawResponse;
 pub use responses_reasoning::ResponsesReasoningPolicy;
 pub use run::{ClientRouter, decide, run};
-pub use switchyard_media::{MediaConfig, VideoMode};
 pub use switchyard_translation::RawEventStream;
 pub use system_one::SystemOneClient;
 

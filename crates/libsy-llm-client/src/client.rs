@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::ready;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -16,7 +17,6 @@ use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value, json};
-use switchyard_media::{MediaConfig, MediaError, MediaProcessor};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
     ModelId, Request, Response, RoutedLlmClient,
@@ -24,11 +24,13 @@ use switchyard_protocol::{
 use switchyard_translation::{
     TranslationError, WireFormat, decode_stream, encode_stream_with_extensions,
 };
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::backend::{Backend, openai_url};
 use crate::error::{LlmClientError, Result};
+use crate::media::{MediaConfig, MediaError, MediaProcessor};
 use crate::metrics;
 use crate::observed_translation;
 use crate::raw::RawResponse;
@@ -148,7 +150,7 @@ pub struct TranslatingLlmClient {
     client: reqwest::Client,
     forward_auth_client: reqwest::Client,
     is_rate_limit_cooldown_enabled: bool,
-    media_processor: Option<MediaProcessor>,
+    media_processors: HashMap<ModelId, MediaProcessor>,
     cooldown_epoch: Instant,
     // Milliseconds since cooldown_epoch. Each atomic is independent, so relaxed ordering suffices.
     unavailable_until: HashMap<ModelId, AtomicU64>,
@@ -185,21 +187,25 @@ impl TranslatingLlmClient {
         // Forwarded credentials are sent only to the configured URL.
         let forward_auth_client =
             build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
-        let model_to_config = model_configs
+        let model_to_config: HashMap<_, _> = model_configs
             .iter()
             .map(|config| (config.model_name.clone(), config.clone()))
             .collect();
 
-        let media_processor = model_configs
-            .iter()
-            .any(|config| config.media.is_some())
-            .then(MediaProcessor::new)
-            .transpose()
-            .map_err(|error| LlmClientError::Configuration {
-                message: error.to_string(),
-            })?;
+        let slots = Arc::new(Semaphore::new(2));
+        let media_processors = model_to_config
+            .values()
+            .filter_map(|config| config.media.as_ref().map(|media| (config, media)))
+            .map(|(config, media)| {
+                MediaProcessor::new(media.clone(), slots.clone())
+                    .map(|processor| (config.model_name.clone(), processor))
+                    .map_err(|error| LlmClientError::Configuration {
+                        message: error.to_string(),
+                    })
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
-            media_processor,
+            media_processors,
             model_to_config,
             client,
             forward_auth_client,
@@ -403,16 +409,9 @@ impl TranslatingLlmClient {
         }
         // Work on the final owned wire body: preserve native controls and prepare once
         // for all HTTP retries. The routing request remains available for other targets.
-        if let Some(media) = self
-            .model_to_config
-            .get(model)
-            .and_then(|config| config.media.as_ref())
-        {
-            // Construction creates this processor whenever any model has media settings.
-            self.media_processor
-                .as_ref()
-                .expect("configured media processor")
-                .prepare(&mut body, wire_format, media)
+        if let Some(processor) = self.media_processors.get(model) {
+            processor
+                .prepare(&mut body, wire_format)
                 .await
                 .map_err(|error| match error {
                     MediaError::Timeout => LlmClientError::Timeout {
@@ -1565,11 +1564,12 @@ fn redact_forwarded_headers(
 mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
-    use std::io::{Read, Write};
+    use std::io::{Cursor, Read, Write};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread::JoinHandle;
 
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request};
     use wiremock::matchers::{method, path};
@@ -1596,7 +1596,7 @@ mod tests {
     #[tokio::test]
     async fn target_media_prepares_preserved_body_without_mutating_answer_or_controls()
     -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
-        use switchyard_media::VideoMode;
+        use crate::VideoMode;
         let server = MockServer::start().await;
         Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id":"r", "object":"chat.completion", "model":"answer",
@@ -1656,6 +1656,60 @@ mod tests {
             assert_eq!(prepared["custom_control"], body["custom_control"]);
             assert_eq!(prepared["temperature"], body["temperature"]);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn target_media_fetch_limits_are_independent()
+    -> std::result::Result<(), Box<dyn Error + Send + Sync>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"r", "object":"chat.completion", "model":"answer",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+            })))
+            .expect(1)
+            .mount(&server).await;
+        let image = image::RgbImage::from_pixel(40, 20, image::Rgb([255, 0, 0]));
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Jpeg)?;
+        let bytes = bytes.into_inner();
+        let backend = Backend::OpenAiChat(config(&format!("{}/v1", server.uri())));
+        let models: Vec<_> = [("judge", bytes.len() - 1), ("answer", bytes.len())]
+            .into_iter()
+            .map(|(name, max_input_bytes)| {
+                ModelConfig::new(name, backend.clone(), None).with_media(MediaConfig {
+                    image_max_edge: Some(20),
+                    max_input_bytes,
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let client = TranslatingLlmClient::new(&models)?;
+        let body = json!({"model":"route", "messages":[{"role":"user","content":[
+            {"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{}", STANDARD.encode(bytes))}}
+        ]}]});
+        let request = Request {
+            llm_request: decode_request(WireFormat::OpenAiChat, &body)?,
+            ..Default::default()
+        };
+        for name in ["judge", "answer", "judge"] {
+            let result = client
+                .call_rewrite_model(request.clone(), Some(&ModelId::from(name)))
+                .await;
+            if name == "answer" {
+                result?;
+            } else {
+                assert!(
+                    matches!(result, Err(LlmClientError::InvalidRequest { message })
+                    if message.contains("max_input_bytes"))
+                );
+            }
+        }
+        assert_eq!(
+            encode_request(&request.llm_request, WireFormat::OpenAiChat)?,
+            body
+        );
         Ok(())
     }
 
