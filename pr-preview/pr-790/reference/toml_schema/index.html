@@ -2706,9 +2706,9 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 </tr>
 <tr>
 <td><code>classifier.base_threshold</code></td>
-<td style="text-align: center;">Yes</td>
-<td>—</td>
-<td><code>p_solve</code> floor that still routes to the efficient tier. In <code>[0, 1]</code>.</td>
+<td style="text-align: center;">For LLM judges</td>
+<td>unset</td>
+<td><code>p_solve</code> floor that still routes to the efficient tier. In <code>[0, 1]</code>. Omit with <code>classifier.decision</code>.</td>
 </tr>
 <tr>
 <td><code>classifier.threshold_step</code></td>
@@ -2721,6 +2721,18 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <td style="text-align: center;">Yes</td>
 <td>—</td>
 <td><code>user_turn</code> re-picks the tier whenever the user speaks, <code>new_session</code> picks once and holds it. <code>every_request</code> is rejected here: a judge call per tool step is the cost this route exists to avoid.</td>
+</tr>
+<tr>
+<td><code>classifier.decision</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Use a decision model instead of an LLM judge. The classifier target must be in <code>decision_targets</code>.</td>
+</tr>
+<tr>
+<td><code>classifier.fail_open</code></td>
+<td style="text-align: center;">No</td>
+<td><code>true</code></td>
+<td>On judge failure, retain the last classified tier or default to efficient. Set <code>false</code> to return the error.</td>
 </tr>
 <tr>
 <td><code>classifier.message_hash_fallback</code></td>
@@ -2820,6 +2832,9 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 </tr>
 </tbody>
 </table>
+<p>For decision classifier configuration, see
+<a href="../../routing_algorithms/composite_routing/#decision-model-classifier">Decision model classifier</a>.
+The same decision settings are accepted by the optional <code>stage_router</code> classifier.</p>
 <p>The tier is retained per session. A deployment that sends no session ID needs
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
 instead. The outer <code>[routes.&lt;name&gt;.classifier]</code> table is required. The nested

@@ -634,8 +634,8 @@
 <a href=#634 id=634 data-nosnippet>634</a>                        .serve(target.clone(), request)
 <a href=#635 id=635 data-nosnippet>635</a>                        .<span class="kw">await
 <a href=#636 id=636 data-nosnippet>636</a>                        </span>.map_err(|source| LibsyError::client_call(target, source));
-<a href=#637 id=637 data-nosnippet>637</a>                    call.respond(response)
-<a href=#638 id=638 data-nosnippet>638</a>                }
+<a href=#637 id=637 data-nosnippet>637</a>                    call.respond(std::future::ready(response)).<span class="kw">await
+<a href=#638 id=638 data-nosnippet>638</a>                </span>}
 <a href=#639 id=639 data-nosnippet>639</a>            },
 <a href=#640 id=640 data-nosnippet>640</a>        )
 <a href=#641 id=641 data-nosnippet>641</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
