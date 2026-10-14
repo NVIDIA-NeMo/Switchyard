@@ -2013,6 +2013,12 @@ such clients.</p>
 <td>unset</td>
 <td>Reasoning effort forced on every request to this target, replacing the value the caller sent (<code>reasoning.effort</code> on <code>openai_responses</code>, <code>reasoning_effort</code> on <code>openai_chat</code>). Rejected on <code>anthropic_messages</code> clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at <code>max</code> behind a client that sends <code>high</code>. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate <code>llm_clients</code> entries (same endpoint, different name).</td>
 </tr>
+<tr>
+<td><code>media</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Per-target image resizing, video format, frame sampling, and preparation limits. See the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/82929f94a23825a9ab7d665dddb51c7589fa0301/crates/libsy-llm-client/MEDIA.md">media settings</a>.</td>
+</tr>
 </tbody>
 </table>
 <p>Within one route, callable targets with the same model ID must use the same <code>llm_client</code>.
