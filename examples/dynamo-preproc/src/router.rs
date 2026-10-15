@@ -115,7 +115,7 @@ impl Router {
             }
         }
         ensure!(outcome.response.is_none(), "routing-only contract violated");
-        let model = outcome.selected_model_id()?.clone();
+        let model = route.provider_model(outcome.selected_model_id()?).clone();
         let mut selected_ir = outcome.request.llm_request;
         selected_ir.model = None;
         ensure!(

@@ -150,12 +150,26 @@ such clients.
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
 | `omit_body_fields` | No | `[]` | Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's `format`, so use that format's field names, for example `reasoning_effort` on `openai_chat` or `reasoning` on `openai_responses`. Switchyard applies `extra_body` and `reasoning_effort` after the removal, so either can set a removed field again. |
-| `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate `llm_clients` entries (same endpoint, different name). |
+| `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`, `output_config.effort` on `anthropic_messages`, which accepts `low`, `medium`, `high`, `xhigh`, or `max`). Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. |
 
-Within one route, callable targets with the same model ID must use the same `llm_client`.
-This includes completion targets and targets used for judging or classification. Switchyard rejects
-same-model targets on different clients within a route because execution is keyed by model ID.
-Separate routes may use the same model ID on different clients.
+Switchyard routes on target names, so several targets may share one `id`. Each target keeps its
+own `llm_client`, `system_prompt`, `extra_body`, `omit_body_fields`, and `reasoning_effort`. For
+example, one route can run the same model at two efforts:
+
+```toml
+[targets.capable]
+id = "gpt"
+llm_client = "openai"
+reasoning_effort = "max"
+
+[targets.efficient]
+id = "gpt"
+llm_client = "openai"
+reasoning_effort = "medium"
+```
+
+Responses, the `x-model-router-selected-model` header, and the routing log `model` field name the
+target's `id`. The routing log also has a `target` field. Stats and metrics name the target.
 
 Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.
@@ -163,9 +177,8 @@ Judge-only, classifier-only, and reviewer-only targets are not completion destin
 receive this prompt.
 
 Escalation's weak target and Advisor's executor produce a candidate response while routing, so
-their target prompt is applied to that call. A prompted target in either role cannot use the same
-model ID as that route's judge or reviewer because those calls would otherwise be indistinguishable
-at the client boundary; Switchyard rejects that configuration when it loads.
+their target prompt is applied to that call. A prompted target in either role cannot also be that
+route's judge or reviewer; Switchyard rejects that configuration when it loads.
 Token-count requests do not apply target system prompts.
 
 ## `[routes.<name>]`
