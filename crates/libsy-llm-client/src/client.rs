@@ -930,9 +930,12 @@ fn forward_metadata_headers(
     };
     let mut forwarded = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
+        // `add_litellm_session_id` owns this header, so a caller's copy must not
+        // replace the id it selected.
         let is_allowed = if backend.is_forwarding_auth() {
             !is_non_forwardable_header(name.as_str(), headers)
                 && !backend.is_provider_owned_header(name.as_str())
+                && name.as_str() != LITELLM_SESSION_ID_HEADER
         } else {
             is_allowed_metadata_header(name.as_str())
         };
@@ -2849,6 +2852,7 @@ mod tests {
     // upstream received.
     async fn litellm_session_id_sent_with(
         metadata: Option<Metadata>,
+        forward_auth: bool,
     ) -> std::result::Result<Option<http::HeaderValue>, Box<dyn Error + Sync + Send + 'static>>
     {
         let server = MockServer::start().await;
@@ -2860,7 +2864,17 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let base_url = format!("{}/v1", server.uri());
+        let models = if forward_auth {
+            vec![ModelConfig::new(
+                "gpt",
+                Backend::OpenAiChat(forwarding_config(&base_url)),
+                None,
+            )]
+        } else {
+            chat_map(&base_url)
+        };
+        let client = TranslatingLlmClient::new(&models)?;
         let mut request = request_for(Some("gpt"), false);
         request.metadata = metadata;
         client.call_rewrite_model(request, None).await?;
@@ -2876,11 +2890,14 @@ mod tests {
     #[tokio::test]
     async fn litellm_session_id_prefers_the_agent_id()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        let sent = litellm_session_id_sent_with(Some(Metadata {
-            session_id: Some("root-session".to_string()),
-            agent_id: Some("child-thread".to_string()),
-            ..Default::default()
-        }))
+        let sent = litellm_session_id_sent_with(
+            Some(Metadata {
+                session_id: Some("root-session".to_string()),
+                agent_id: Some("child-thread".to_string()),
+                ..Default::default()
+            }),
+            false,
+        )
         .await?;
         assert_eq!(sent, Some(http::HeaderValue::from_static("child-thread")));
         Ok(())
@@ -2889,10 +2906,13 @@ mod tests {
     #[tokio::test]
     async fn litellm_session_id_falls_back_to_the_session_id()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        let sent = litellm_session_id_sent_with(Some(Metadata {
-            session_id: Some("root-session".to_string()),
-            ..Default::default()
-        }))
+        let sent = litellm_session_id_sent_with(
+            Some(Metadata {
+                session_id: Some("root-session".to_string()),
+                ..Default::default()
+            }),
+            false,
+        )
         .await?;
         assert_eq!(sent, Some(http::HeaderValue::from_static("root-session")));
         Ok(())
@@ -2901,9 +2921,9 @@ mod tests {
     #[tokio::test]
     async fn litellm_session_id_is_absent_without_an_id()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        assert_eq!(litellm_session_id_sent_with(None).await?, None);
+        assert_eq!(litellm_session_id_sent_with(None, false).await?, None);
         assert_eq!(
-            litellm_session_id_sent_with(Some(Metadata::default())).await?,
+            litellm_session_id_sent_with(Some(Metadata::default()), false).await?,
             None
         );
         Ok(())
@@ -2912,12 +2932,44 @@ mod tests {
     #[tokio::test]
     async fn litellm_session_id_skips_an_id_that_is_not_a_valid_header()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        let sent = litellm_session_id_sent_with(Some(Metadata {
-            session_id: Some("bad\nid".to_string()),
-            ..Default::default()
-        }))
+        let sent = litellm_session_id_sent_with(
+            Some(Metadata {
+                session_id: Some("bad\nid".to_string()),
+                ..Default::default()
+            }),
+            false,
+        )
         .await?;
         assert_eq!(sent, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn litellm_session_id_is_not_overridden_by_a_forwarded_header()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "x-litellm-session-id",
+            http::HeaderValue::from_static("caller-id"),
+        );
+        let with_id = Metadata {
+            agent_id: Some("child-thread".to_string()),
+            http_headers: Some(headers.clone()),
+            ..Default::default()
+        };
+        let without_id = Metadata {
+            http_headers: Some(headers),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            litellm_session_id_sent_with(Some(with_id), true).await?,
+            Some(http::HeaderValue::from_static("child-thread"))
+        );
+        assert_eq!(
+            litellm_session_id_sent_with(Some(without_id), true).await?,
+            None
+        );
         Ok(())
     }
 
