@@ -7,9 +7,11 @@ fit the same route type.
 
 ## What exists today
 
-One pairing: a classifier sets the tier a stage router falls open to when
-its own signals are not confident. The stage router's `picker` mode is unchanged,
-and so is how it scores signals, escalates, and de-escalates. Both algorithms and the
+One pairing: a classifier selects the stage router's starting policy.
+An efficient classification selects efficient-first with the configured
+confidence threshold (default `0.5`). A capable classification selects
+capable-first with a threshold of `0.0`. Tool signals can still change the tier
+during execution. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
 

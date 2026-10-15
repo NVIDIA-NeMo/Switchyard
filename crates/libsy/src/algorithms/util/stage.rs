@@ -134,6 +134,7 @@ const FALL_OPEN_KEY: &str = "fall_open";
 /// Overrides the default tier undecided turns fall open to, until
 /// [`clear_fall_open`] restores the picker's. Held in session state, so it
 /// survives later requests only when they carry a session id.
+/// Capable selects a zero threshold. Efficient uses the configured threshold.
 pub fn set_fall_open(state: &mut State, tier: Tier) {
     state.extra.insert(
         FALL_OPEN_KEY.to_string(),
@@ -639,10 +640,15 @@ impl Classifier<State> for StageClassifier {
         if clean_test_pass {
             state.extra.remove(&capable_hold_key);
         }
+        let (mode, threshold) = match fall_open_tier(state) {
+            Some(Tier::Capable) => (PickerMode::CapableFirst, 0.0),
+            Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),
+            None => (self.mode, self.confidence_threshold),
+        };
         let outcome = if !clean_test_pass && Self::consume_capable_hold(state, &capable_hold_key) {
             resolved(Tier::Capable, DecisionSource::CapableHold, 0.5, Some(1.0))
         } else {
-            pick_tier(&signal, self.mode, self.confidence_threshold)
+            pick_tier(&signal, mode, threshold)
         };
         record_score_metrics(&signal, &outcome);
         match outcome {
@@ -685,7 +691,7 @@ impl Classifier<State> for StageClassifier {
                     (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
                         "source": source.as_str(),
                         "confidence": confidence,
-                        "threshold": self.confidence_threshold,
+                        "threshold": threshold,
                     }),
                     _ => serde_json::json!({"source": source.as_str()}),
                 };
@@ -989,6 +995,42 @@ mod tests {
             tool_signals: Some(signal),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn classified_tier_controls_the_stage_threshold() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            let classifier = StageClassifier::new(mode, 0.5);
+            let mut state = state_with(ToolSignals {
+                severity: 0.3,
+                recent_edit_count: 1,
+                tool_result_count: 1,
+                ..Default::default()
+            });
+            let driver = driver();
+            for tier in [
+                None,
+                Some(Tier::Efficient),
+                Some(Tier::Capable),
+                Some(Tier::Efficient),
+                None,
+            ] {
+                match tier {
+                    Some(tier) => set_fall_open(&mut state, tier),
+                    None => clear_fall_open(&mut state),
+                }
+                let (classification, _) = classifier
+                    .score(&mut state, &mut Request::default(), &driver)
+                    .await?;
+                let target = classification.argmax(false)?.map(|score| score.target);
+                assert_eq!(
+                    target,
+                    (tier == Some(Tier::Capable)).then(|| ModelId::from("weak")),
+                    "mode {mode:?}, classified tier {tier:?}"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]
