@@ -39,6 +39,9 @@ pub(crate) fn frame_stream(
                 // Preserve the upstream error's fields, apart from credential redaction,
                 // rather than replacing it with a synthesized error.
                 Err(LlmStreamError::Upstream(value)) => {
+                    // Log only the event type; the error message can quote request content.
+                    let event_type = value.get("type").and_then(Value::as_str).unwrap_or("error");
+                    tracing::warn!(event_type, "stream ended with an in-band error event");
                     failed = true;
                     frame_event(target_format, value.clone(), &redactor).unwrap_or_else(|error| {
                         tracing::warn!(error = %error, "in-band error event could not be framed");
@@ -235,7 +238,7 @@ mod tests {
             .enable_all()
             .build()?;
 
-        let body = tracing::subscriber::with_default(subscriber, || {
+        let body = crate::testing::with_subscriber(subscriber, || {
             runtime.block_on(chat_body(vec![Err(LlmStreamError::Client(
                 LlmClientError::UpstreamHttp {
                     status: axum::http::StatusCode::BAD_GATEWAY,

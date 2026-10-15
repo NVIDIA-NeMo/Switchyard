@@ -13,6 +13,8 @@ mod routing_log;
 mod shutdown;
 mod sse;
 mod stats;
+#[cfg(test)]
+mod testing;
 mod usage_metrics;
 
 use std::collections::BTreeMap;
@@ -445,7 +447,7 @@ fn stats_observer(
                 stats.record_error(&call.selected_model);
             }
         }
-        RunObservation::LlmCall(call) => {
+        RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_success {
                 if let (Some((log, context)), Some(usage)) =
@@ -702,6 +704,15 @@ struct DecisionEndpointRequest {
 /// Selects a target while still allowing the algorithm's classifier and judge calls.
 async fn decision(
     State(state): State<ServerState>,
+    headers: HeaderMap,
+    body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
+) -> Response {
+    let span = observability::request_span(&headers);
+    decision_inner(state, headers, body).instrument(span).await
+}
+
+async fn decision_inner(
+    state: ServerState,
     headers: HeaderMap,
     body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
 ) -> Response {
@@ -1687,28 +1698,101 @@ fn endpoint_listing(has_routing_log: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use switchyard_llm_client::LlmCallObservation;
+    use switchyard_llm_client::ModelCallObservation;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::{Notify, oneshot};
 
     use super::*;
 
-    /// A successful judge call lands in the per-session routing snapshot under its
-    /// model id with the classifier tier, while routed calls stay off the observer's
-    /// log path — they are logged with terminal usage when the served response is
-    /// observed, so an append here would double count them.
+    #[tokio::test]
+    async fn decision_continues_incoming_w3c_trace_context() {
+        use std::io::Write as _;
+
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tower::ServiceExt as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("decision-test")));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut config = tempfile::NamedTempFile::new().expect("config file");
+        config
+            .write_all(
+                br#"schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://127.0.0.1:9/v1"
+
+[targets.only]
+id = "only-model"
+llm_client = "upstream"
+
+[routes.pick]
+id = "pick"
+type = "random"
+targets = ["only"]
+"#,
+            )
+            .expect("write config");
+        let app = build_switchyard_router(config::load_server_state(config.path()).expect("state"));
+
+        let request = axum::http::Request::post("/v1/decision")
+            .header("content-type", "application/json")
+            .header(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            )
+            .body(axum::body::Body::from(
+                r#"{"input_format":"openai_chat","request":{"model":"pick","messages":[{"role":"user","content":"hi"}]}}"#,
+            ))
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let span = |name: &str| {
+            spans
+                .iter()
+                .find(|span| span.name == name)
+                .unwrap_or_else(|| panic!("{name} span"))
+        };
+        let request_span = span("switchyard.request");
+        assert_eq!(
+            request_span.span_context.trace_id().to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+        assert_eq!(request_span.parent_span_id.to_string(), "00f067aa0ba902b7");
+        let run_span = span("libsy.run");
+        assert_eq!(
+            run_span.span_context.trace_id(),
+            request_span.span_context.trace_id()
+        );
+    }
+
+    /// The observer logs judge calls with their model IDs, classifier tier, and
+    /// recorded session and turn IDs. The served response logs routed calls with
+    /// their final usage, so logging them here would count each routed call twice.
     #[test]
-    fn stats_observer_logs_judge_calls_to_the_routing_log() {
+    fn stats_observer_logs_judge_calls_to_the_routing_log() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir().expect("temp dir");
         let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
         let mut headers = HeaderMap::new();
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
+        headers.insert("x-switchyard-turn-id", "turn-1".parse()?);
         let metadata = metadata_from_headers(headers);
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
         let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
 
         let call = |model: &str, answer: bool| {
-            let observation = LlmCallObservation {
+            let observation = ModelCallObservation {
                 selected_model: ModelId::from(model),
                 is_success: true,
                 duration: Duration::from_millis(3),
@@ -1736,6 +1820,10 @@ mod tests {
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
+        let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&log.path)?)?;
+        assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["turn_id"], "turn-1");
+        Ok(())
     }
 
     #[derive(Clone)]
@@ -1945,7 +2033,7 @@ mod tests {
 
         let captured = CapturedEvents::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
-        tracing::subscriber::with_default(subscriber, run);
+        crate::testing::with_subscriber(subscriber, run);
         captured.0.lock().clone()
     }
 

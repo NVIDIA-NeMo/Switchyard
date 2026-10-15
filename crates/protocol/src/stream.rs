@@ -214,7 +214,7 @@ impl AggLlmResponse {
     ///
     /// This conversion is lossy: only text, reasoning, and tool-call content has
     /// a synthetic chunk representation. Refusals, tool results, media, files,
-    /// unknown blocks, response extensions, and preservation metadata are omitted.
+    /// MCP activity, unknown blocks, response extensions, and preservation metadata are omitted.
     pub fn into_stream(self) -> LlmResponseStream {
         let mut chunks: Vec<LlmResponseChunk> = Vec::new();
         chunks.push(LlmResponseChunk::MessageStart {
@@ -255,8 +255,7 @@ impl AggLlmResponse {
                         });
                         tool_call_index += 1;
                     }
-                    // Other variants (Image, ToolResult, Refusal, etc.) don't have
-                    // a streaming chunk representation and don't appear in assistant outputs.
+                    // Other variants, including backend MCP activity, have no synthetic chunks.
                     _ => {}
                 }
             }
@@ -506,7 +505,9 @@ fn stop_reason_from_str(reason: Option<&str>) -> StopReason {
     match reason {
         Some("length" | "max_tokens" | "model_context_window_exceeded") => StopReason::MaxTokens,
         Some("tool_calls" | "function_call" | "tool_use") => StopReason::ToolUse,
-        Some("content_filter" | "content_filtered" | "guardrail_intervened") => {
+        // Anthropic spells a content-policy stop `refusal`; the buffered codec
+        // already maps it (anthropic/buffered.rs, map_anthropic_stop_reason).
+        Some("content_filter" | "refusal" | "content_filtered" | "guardrail_intervened") => {
             StopReason::ContentFilter
         }
         Some("malformed_model_output" | "malformed_tool_use") => StopReason::Error,
@@ -564,6 +565,33 @@ mod tests {
                 text: "Hello".to_string()
             }]
         );
+    }
+
+    #[test]
+    fn stop_reason_spellings_normalize_the_same_streamed_as_buffered() {
+        // A stop reason has to mean the same thing whether the response arrived
+        // buffered or was folded out of a stream. The expectations here are the
+        // ones the codecs apply to a buffered body.
+        for (reason, expected) in [
+            ("length", StopReason::MaxTokens),
+            ("max_tokens", StopReason::MaxTokens),
+            ("tool_calls", StopReason::ToolUse),
+            ("tool_use", StopReason::ToolUse),
+            ("content_filter", StopReason::ContentFilter),
+            ("refusal", StopReason::ContentFilter),
+            ("stop", StopReason::EndTurn),
+            ("end_turn", StopReason::EndTurn),
+        ] {
+            let agg = fold(vec![LlmResponseChunk::MessageStop {
+                reason: Some(reason.to_string()),
+            }]);
+
+            assert_eq!(
+                agg.outputs.first().and_then(|output| output.stop_reason),
+                Some(expected),
+                "stop reason {reason:?}"
+            );
+        }
     }
 
     #[test]

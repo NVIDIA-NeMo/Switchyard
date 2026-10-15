@@ -236,6 +236,42 @@ response when routing already produced the answer. Otherwise the host makes the 
 call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
 already owns its HTTP stack, retries, and credentials.
 
+Pass each call's work to `respond` before awaiting it. In Rust:
+
+```rust
+use switchyard_libsy::{CallModel, LibsyError, Result};
+use switchyard_protocol::RoutedLlmClient;
+
+async fn serve(call: CallModel, client: &dyn RoutedLlmClient) -> Result<()> {
+    let request = call.request.clone();
+    let model = call.models[0].clone();
+    call.respond(async move {
+        client.call(request).await.map_err(|error| LibsyError::client_call(model, error))
+    }).await
+}
+```
+
+In Python, the client coroutine returns `LlmResponse.Agg` or `LlmResponse.Stream`:
+
+```python
+await call.respond(client.call(call.request, call.models[0]))
+```
+
+`respond` now accepts a future or awaitable instead of a completed response. Move
+the provider await into this method. Python `call.fail(error)` is also awaitable.
+Decision calls use the same pattern with their existing decision response type.
+
+When an algorithm stops waiting for a call, `respond` cancels that work and
+returns normally. Python waits for task cleanup before returning. For concurrent
+algorithms, schedule each Python handler with `asyncio.create_task` and cancel and
+await remaining handlers when the run ends; see the complete
+[Python example](../examples/libsy.py). Awaiting handlers one at a time inside the
+step loop serializes their execution. Rust hosts can use `libsy::drive` to manage
+concurrent handlers and their lifetime.
+
+After a response stream is delivered, its consumer controls its lifetime.
+Cancellation cannot guarantee that an upstream provider stops generating or billing.
+
 Successful runs also include `OutcomeMetadata`: a unique `outcome_id`, the algorithm
 name, and optional JSON evidence. In Python, read `outcome.metadata.outcome_id`,
 `outcome.metadata.algorithm`, and `outcome.metadata.evidence` after checking that

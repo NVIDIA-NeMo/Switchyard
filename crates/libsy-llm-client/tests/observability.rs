@@ -1427,6 +1427,17 @@ impl RoutedLlmClient for TimeoutClient {
     }
 }
 
+struct HostErrorClient;
+
+#[async_trait]
+impl RoutedLlmClient for HostErrorClient {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        Err(LlmClientError::Host {
+            source: Box::new(TestError(LEAKED_CONTENT)),
+        })
+    }
+}
+
 #[tokio::test]
 async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
@@ -1554,6 +1565,28 @@ async fn typed_client_failure_records_semantic_error_type() {
     );
 }
 
+// Host error text must not appear in the client span.
+#[tokio::test]
+async fn host_error_source_is_redacted_from_the_client_call_span() {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const MODEL: &str = "obs-host-error-model";
+    let _ = run(
+        algo("obs-host-error-algo", MODEL),
+        Arc::new(HostErrorClient),
+        request_with_metadata("obs-host-error-session", "obs-host-error-corr"),
+    )
+    .await;
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("error.type").map(String::as_str),
+        Some("host")
+    );
+    assert!(!format!("{client_span:?}").contains(LEAKED_CONTENT));
+}
+
 /// Verifies that the client span retains the HTTP status without the upstream body.
 #[tokio::test]
 async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_libsy::Result<()> {
@@ -1604,6 +1637,146 @@ async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_lib
 }
 
 #[tokio::test]
+async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Result<()> {
+    use switchyard_protocol::{DecisionRequest, DecisionResponse};
+
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    struct DecisionAlgo(String);
+
+    #[async_trait]
+    impl Algorithm for DecisionAlgo {
+        fn name(&self) -> &str {
+            &self.0
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> switchyard_libsy::Result<RoutingOutcome> {
+            driver
+                .call_decision(
+                    DecisionRequest {
+                        model: None,
+                        context: json!(LEAKED_CONTENT),
+                        questions: Default::default(),
+                    },
+                    self.0.clone().into(),
+                )
+                .await?;
+            Ok(RoutingOutcome::route_to("answer".into(), vec![], request))
+        }
+    }
+
+    for mode in ["reply", "error", "fail", "drop", "cancel"] {
+        let algorithm = format!("obs-decision-{mode}");
+        let name = algorithm.as_str();
+        let mut stream = Box::pin(Arc::new(DecisionAlgo(algorithm.clone())).run_stream(
+            request_with_metadata("decision-session", "decision-correlation"),
+            Arc::new(RuntimeModels::default()),
+        ));
+        let Some(Ok(Step::CallDecision(call))) = stream.next().await else {
+            return Err(test_error("expected a decision call"));
+        };
+        assert_eq!(
+            u64_counter_value(
+                &flushed_metrics(exporter, provider),
+                "switchyard.decision_calls",
+                &[("algorithm", name)],
+            ),
+            None,
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if mode == "cancel" {
+            drop(stream);
+            drop(call);
+        } else {
+            match mode {
+                "reply" => {
+                    call.respond(std::future::ready(Ok(DecisionResponse {
+                        id: Some("decision-response".into()),
+                        model: Some("provider-model".into()),
+                        answers: Default::default(),
+                        usage: Usage {
+                            input_tokens: Some(42),
+                            output_tokens: Some(5),
+                            ..Usage::default()
+                        },
+                    })))
+                    .await?
+                }
+                "error" => {
+                    call.respond(std::future::ready(Err(test_error(LEAKED_CONTENT))))
+                        .await?
+                }
+                "fail" => assert!(call.fail(test_error(LEAKED_CONTENT)).is_err()),
+                "drop" => drop(call),
+                _ => unreachable!(),
+            }
+            while stream.next().await.is_some() {}
+        }
+        let outcome = if mode == "reply" { "ok" } else { "error" };
+        let attrs = [
+            ("algorithm", name),
+            ("selected_model", name),
+            ("outcome", outcome),
+        ];
+        let snapshots = flushed_metrics(exporter, provider);
+        assert_eq!(
+            u64_counter_value(&snapshots, "switchyard.decision_calls", &attrs),
+            Some(1)
+        );
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.decision_calls",
+                &[
+                    ("algorithm", name),
+                    ("outcome", if mode == "reply" { "error" } else { "ok" })
+                ],
+            ),
+            None,
+        );
+        assert_eq!(
+            f64_histogram_count(&snapshots, "switchyard.decision_call_duration_ms", &attrs),
+            Some(1)
+        );
+        assert!(
+            f64_histogram_sum_ms(&snapshots, "switchyard.decision_call_duration_ms", &attrs)
+                .unwrap_or(0)
+                >= 10
+        );
+        assert_eq!(
+            u64_counter_value(&snapshots, "switchyard.llm_calls", &[("algorithm", name)]),
+            None
+        );
+
+        let span = find_span(&store.spans(), "libsy.decision_call", "algorithm", name);
+        assert_eq!(span.parent.as_deref(), Some("libsy.run"));
+        assert_eq!(
+            span.fields.get("outcome").map(String::as_str),
+            Some(outcome)
+        );
+        for (field, value) in [
+            ("input_tokens", "42"),
+            ("output_tokens", "5"),
+            ("gen_ai.response.id", "decision-response"),
+            ("gen_ai.response.model", "provider-model"),
+        ] {
+            assert_eq!(
+                span.fields.get(field).map(String::as_str),
+                (mode == "reply").then_some(value)
+            );
+        }
+        assert!(!span.fields.contains_key("total_tokens"));
+        assert!(!span.fields.contains_key("error"));
+        assert!(!format!("{span:?}").contains(LEAKED_CONTENT));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (store, exporter, provider, _, _) = telemetry();
@@ -1623,8 +1796,12 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
     let mut saw_error_step = false;
     while let Some(step) = stream.next().await {
         match step {
-            Ok(Step::CallModel(call)) => {
-                call.respond(Err(test_error("synthetic upstream failure")))?;
+            Ok(Step::CallModel(mut call)) => {
+                call.recover_errors = true;
+                call.respond(std::future::ready(Err(test_error(
+                    "synthetic upstream failure",
+                ))))
+                .await?;
             }
             Ok(Step::CallDecision(_)) => return Err(test_error("unexpected decision call")),
             Ok(Step::Done(_)) => {
@@ -1997,11 +2174,12 @@ async fn in_flight_gauge_reads_a_run_parked_on_an_unanswered_routing_call()
         "the run counter must not report a run that has not resolved"
     );
 
-    call.respond(Ok(Response {
+    call.respond(std::future::ready(Ok(Response {
         llm_response: LlmResponse::Agg(text_response(Some(MODEL.to_string()), "answer")),
         metadata: None,
         upstream_headers: http::HeaderMap::new(),
-    }))?;
+    })))
+    .await?;
     while stream.next().await.is_some() {}
 
     let snapshots = flushed_metrics(exporter, provider);
@@ -2016,7 +2194,7 @@ async fn in_flight_gauge_reads_a_run_parked_on_an_unanswered_routing_call()
 #[tokio::test]
 async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (_, exporter, provider, _, _) = telemetry();
+    let (store, exporter, provider, _, _) = telemetry();
     const ALGO: &str = "obs-abandoned-algo";
     const MODEL: &str = "obs-abandoned-model";
     let algorithm = Arc::new(RoutingCallAlgo {
@@ -2060,6 +2238,11 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
         ),
         Some(0),
         "an abandoned run must not strand the gauge above zero"
+    );
+    let call_span = find_span(&store.spans(), "libsy.llm_call", "selected_model", MODEL);
+    assert_eq!(
+        call_span.fields.get("outcome").map(String::as_str),
+        Some("error")
     );
     Ok(())
 }

@@ -41,7 +41,7 @@ use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{OutcomeMetadata, Result};
-use switchyard_protocol::{ModelId, Request, Response};
+use switchyard_protocol::{DecisionResponse, ModelId, Request, Response, Usage};
 
 const METRICS_SCOPE: &str = "switchyard";
 const TRACING_TARGET: &str = "libsy";
@@ -256,24 +256,55 @@ pub(crate) fn record_llm_call(
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
 }
 
-/// Records the outcome and token fields on the algorithm's call span.
-pub(crate) fn record_llm_call_span(result: &Result<Response>, span: &Span) {
-    span.record("outcome", outcome_value(result));
-    if let Ok(response) = result {
-        // Token usage exists only once a response is buffered; a streamed
-        // response resolves before its usage is known, so none is recorded.
-        let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) else {
-            return;
-        };
-        for (field, value) in [
-            ("input_tokens", usage.input_tokens),
-            ("output_tokens", usage.output_tokens),
-            ("total_tokens", usage.total_tokens),
-            ("reasoning_tokens", usage.reasoning_tokens),
-        ] {
-            if let Some(value) = value {
-                span.record(field, value);
-            }
+/// Records buffered token usage on the algorithm's call span.
+pub(crate) fn record_llm_response(response: &Response, span: &Span) {
+    // A streamed response resolves before its usage is known.
+    if let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) {
+        record_call_usage(usage, span);
+    }
+}
+
+pub(crate) fn record_decision_call(
+    algorithm: &str,
+    selected_model: &str,
+    duration: Duration,
+    is_ok: bool,
+) {
+    let attributes = [
+        KeyValue::new("algorithm", algorithm.to_string()),
+        KeyValue::new("selected_model", selected_model.to_string()),
+        KeyValue::new("outcome", if is_ok { "ok" } else { "error" }),
+    ];
+    let meter = meter();
+    meter
+        .u64_counter("switchyard.decision_calls")
+        .build()
+        .add(1, &attributes);
+    meter
+        .f64_histogram("switchyard.decision_call_duration_ms")
+        .build()
+        .record(duration.as_secs_f64() * 1000.0, &attributes);
+}
+
+pub(crate) fn record_decision_response(response: &DecisionResponse, span: &Span) {
+    if let Some(id) = &response.id {
+        span.record("gen_ai.response.id", id.as_str());
+    }
+    if let Some(model) = &response.model {
+        span.record("gen_ai.response.model", model.as_str());
+    }
+    record_call_usage(&response.usage, span);
+}
+
+fn record_call_usage(usage: &Usage, span: &Span) {
+    for (field, value) in [
+        ("input_tokens", usage.input_tokens),
+        ("output_tokens", usage.output_tokens),
+        ("total_tokens", usage.total_tokens),
+        ("reasoning_tokens", usage.reasoning_tokens),
+    ] {
+        if let Some(value) = value {
+            span.record(field, value);
         }
     }
 }

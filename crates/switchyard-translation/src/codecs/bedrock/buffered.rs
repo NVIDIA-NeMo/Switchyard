@@ -157,16 +157,21 @@ impl FormatCodec for BedrockConverseCodec {
                             })
                         })
                         .transpose()?;
-                    request.tools.push(ToolDefinition {
-                        name: required_string(spec, "name", &path)?.into(),
-                        description: spec
-                            .get("description")
-                            .map(|v| string(v, &format!("{path}.description")).map(str::to_owned))
-                            .transpose()?,
-                        parameters: required(schema, "json", &format!("{path}.inputSchema"))?
-                            .clone(),
-                        strict,
-                    });
+                    request.tools.push(
+                        ToolDefinition {
+                            name: required_string(spec, "name", &path)?.into(),
+                            description: spec
+                                .get("description")
+                                .map(|v| {
+                                    string(v, &format!("{path}.description")).map(str::to_owned)
+                                })
+                                .transpose()?,
+                            parameters: required(schema, "json", &format!("{path}.inputSchema"))?
+                                .clone(),
+                            strict,
+                        }
+                        .into(),
+                    );
                 } else {
                     push_lossy(
                         &mut diagnostics,
@@ -318,6 +323,11 @@ impl FormatCodec for BedrockConverseCodec {
                 .tools
                 .iter()
                 .map(|tool| {
+                    let tool = tool.function().ok_or_else(|| {
+                        TranslationError::LossyConversion(
+                            "MCP and provider tool encoding is not implemented".into(),
+                        )
+                    })?;
                     let mut spec =
                         json!({"name": tool.name, "inputSchema": {"json": tool.parameters}});
                     if let Some(v) = &tool.description {
@@ -326,9 +336,9 @@ impl FormatCodec for BedrockConverseCodec {
                     if let Some(v) = tool.strict {
                         spec["strict"] = v.into();
                     }
-                    json!({"toolSpec": spec})
+                    Ok(json!({"toolSpec": spec}))
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             let mut config = json!({"tools": tools});
             if !is_tool_disabled && let Some(choice) = &request.tool_choice {
                 config["toolChoice"] = encode_tool_choice(choice)?;

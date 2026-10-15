@@ -10,12 +10,13 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-The plugin requires NeMo Relay `>=0.8.0, <1.0.0`.
+The plugin uses `nemo-relay-plugin` 0.10.0 and requires NeMo Relay
+`>=0.10.0, <1.0.0`. Relay 0.10 changes the native callback layout, so older
+hosts cannot load this build. The manifest's native plugin API label stays `1`.
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when this native
 plugin is enabled, including for models outside its configured routes. This is
-a known issue tracked by [NeMo Relay PR #1109](https://github.com/NVIDIA/NeMo-Relay/pull/1109).
-Until a fix is available, isolate unmanaged traffic in a plugin-disabled gateway.
+a known issue on those older hosts. This build requires Relay 0.10 or later.
 See the [upstream error compatibility note](../../docs/integrations/nemo_relay.md#upstream-error-compatibility).
 
 ### Install a released bundle
@@ -141,7 +142,7 @@ attestation = "integrity_only"
 ```
 
 The policy override is required. The generated manifest carries a SHA-256
-digest but no signature, and Relay 0.8 refuses to activate an unsigned dynamic
+digest but no signature, and Relay refuses to activate an unsigned dynamic
 plugin at gateway start unless its host policy says otherwise; `plugins
 validate` still passes without the override, so the failure only shows up at
 startup as `requires integrity.signature under host policy`. Native plugins

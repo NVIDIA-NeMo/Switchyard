@@ -98,7 +98,10 @@ fn native_requests_and_cross_format_tool_histories() -> TestResult {
         body
     );
     assert_eq!(decoded.output.max_output_tokens, Some(123));
-    assert_eq!(decoded.tools[0].strict, Some(true));
+    assert_eq!(
+        decoded.tools[0].function().expect("function tool").strict,
+        Some(true)
+    );
     assert!(
         matches!(&decoded.messages[2].content[0], ContentBlock::ToolResult(result) if result.is_error == Some(true))
     );
@@ -828,5 +831,24 @@ fn signed_bedrock_reasoning_keeps_anthropic_answer_but_redacted_fails() -> TestR
             .finish_stream(&mut state, WireFormat::AnthropicMessages)?
             .is_empty()
     );
+    Ok(())
+}
+
+#[test]
+fn rejects_unsupported_tool_catalog_variants() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut ir = engine
+        .decode_request(BEDROCK, &request(), &normalized())?
+        .request;
+    for tool in [
+        json!({"type": "mcp", "name": "remote", "url": "https://example.com/mcp"}),
+        json!({"type": "provider", "provider": "openai_responses", "raw": {"type": "web_search"}}),
+    ] {
+        ir.tools = vec![serde_json::from_value(tool)?];
+        assert!(matches!(
+            engine.encode_request(BEDROCK, &ir, &normalized()),
+            Err(switchyard_translation::TranslationError::LossyConversion(_))
+        ));
+    }
     Ok(())
 }

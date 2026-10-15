@@ -149,6 +149,7 @@ such clients.
 | `llm_client` | Yes | — | Key under `[llm_clients]`. |
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
+| `omit_body_fields` | No | `[]` | Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's `format`, so use that format's field names, for example `reasoning_effort` on `openai_chat` or `reasoning` on `openai_responses`. Switchyard applies `extra_body` and `reasoning_effort` after the removal, so either can set a removed field again. |
 | `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate `llm_clients` entries (same endpoint, different name). |
 
 Within one route, callable targets with the same model ID must use the same `llm_client`.
@@ -222,12 +223,13 @@ Splits traffic across targets. See
 ### `plan_execute`
 
 Plans on a capable target, then switches to an efficient target after the first
-file mutation. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
+recognized edit or write tool call. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `capable_target` | Yes | - | Target used for read-only inspection and planning. |
 | `efficient_target` | Yes | - | Target used after the first edit or write. |
+| `tool_semantics.mutate` | No | `[]` | Additional tool names that trigger handoff. See the [example](../routing_algorithms/plan_execute_routing.md#optional-settings). |
 | `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
 | `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
 | `planner_reasoning_as_text` | No | `false` | Converts visible planner reasoning summaries to assistant text at handoff. |
@@ -389,9 +391,11 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `classifier.target` | Yes | — | Target the tier judge is called through. Not a routing destination. |
-| `classifier.base_threshold` | Yes | — | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. |
+| `classifier.base_threshold` | For LLM judges | unset | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
+| `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. |
+| `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
 | `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
@@ -408,6 +412,10 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `stage.tool_semantics.new` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as neutral forward activity. |
 | `stage.handoff_notes` | No | unset | Optional guidance appended to forwarded requests. Uses the same fields and behavior as [stage-router handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes). |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
+
+For decision classifier configuration, see
+[Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier).
+The same decision settings are accepted by the optional `stage_router` classifier.
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message

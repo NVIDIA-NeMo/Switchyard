@@ -4,13 +4,16 @@
 [workspace]
 resolver = "3"
 members = [
+    "examples/dynamo-preproc",
     "crates/libsy",
     "crates/libsy-llm-client",
     "crates/prefill-router",
     "crates/switchyard-py",
+    "crates/switchyard-node",
     "crates/protocol",
     "crates/switchyard-nemo-relay-plugin",
     "crates/switchyard-runner",
+    "crates/switchyard-menubar",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
@@ -36,7 +39,7 @@ http = "1"
 httpdate = "1"
 jsonschema = { version = "0.49.4", default-features = false }
 jsonptr = { version = "0.8.1", default-features = false, features = ["std", "json", "resolve"] }
-nemo-relay-plugin = ">=0.8.0, <1.0.0"
+nemo-relay-plugin = "0.10.0"
 parking_lot = "0.12"
 prefill-router = { path = "crates/prefill-router", version = "0.3.0" }
 rand = "0.10"
