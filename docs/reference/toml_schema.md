@@ -416,6 +416,10 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 For decision classifier configuration, see
 [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier).
 The same decision settings are accepted by the optional `stage_router` classifier.
+`decision.criteria` supplies two custom Choice descriptions keyed by candidate label;
+it requires `decision.instructions` and exactly the two labels in `decision.candidates`.
+It is optional and also works with standalone task routes.
+See [custom decision questions](../routing_algorithms/llm_classifier_routing.md#use-a-decision-model).
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message

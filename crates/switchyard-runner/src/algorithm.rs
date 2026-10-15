@@ -138,6 +138,7 @@ impl CapabilityClassifierRouteConfig {
                 CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                     cutoff: judge.cutoff,
                     instructions: judge.instructions,
+                    criteria: judge.criteria,
                     candidates,
                     evidence: judge.evidence,
                 })
@@ -266,14 +267,17 @@ impl CategoryModelConfig {
     }
 }
 
-/// Relative-advantage judgment using a decision model instead of an LLM prompt.
+/// Choice judgment using a decision model instead of an LLM prompt.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionJudgeRouteConfig {
-    /// Route capable only when its advantage score is strictly above this cutoff.
+    /// Route capable only when its configured Choice score is strictly above this cutoff.
     pub cutoff: f64,
     /// Replaces the default relative-advantage instructions.
     pub instructions: Option<Value>,
+    /// Custom Choice descriptions keyed by the capable and efficient candidate labels.
+    /// Requires `instructions`; the capable candidate's probability is compared to `cutoff`.
+    pub criteria: Option<BTreeMap<String, Value>>,
     /// Anonymous evidence labels mapped to configured LLM target names.
     pub candidates: BTreeMap<String, String>,
     /// Candidate descriptions and reference outcomes, passed unchanged to the judge.

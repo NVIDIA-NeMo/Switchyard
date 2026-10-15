@@ -1295,6 +1295,7 @@ mod tests {
         let settings = DecisionJudgeConfig {
             cutoff: 0.4,
             instructions: None,
+            criteria: None,
             candidates: BTreeMap::from([
                 ("a".into(), "capable".into()),
                 ("b".into(), "efficient".into()),

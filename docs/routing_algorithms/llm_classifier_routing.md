@@ -54,6 +54,25 @@ The target table names are local references. Their `id` values are the model
 identifiers sent to the upstream provider. The route's `id`, `smart`, is the
 model name clients send to Switchyard.
 
+## Use a decision model
+
+For a [decision model judge](composite_routing.md#decision-model-classifier),
+optional `criteria` replaces `advantage` / `no_advantage` with your own choices.
+Supply custom instructions and exactly the two labels in `candidates`:
+
+```toml
+[routes.smart.decision]
+cutoff = 0.05
+candidates = { candidate_a = "strong", candidate_b = "weak" }
+evidence = {}
+instructions = { setting = "Compare the task requirements with the candidates' capabilities." }
+criteria = { candidate_a = "A has a specific advantage that justifies its cost.", candidate_b = "Otherwise prefer B." }
+```
+
+The router selects capable when its candidate's probability exceeds `cutoff`;
+ties select efficient. Instructions and criteria descriptions support structured
+JSON. Task context, evidence, and fallback behavior stay unchanged.
+
 ## How the decision works
 
 The classifier target returns a structured verdict containing:

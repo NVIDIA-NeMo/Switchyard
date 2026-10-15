@@ -304,14 +304,15 @@ impl PyLlmClassifierConfig {
 
 #[pymethods]
 impl PyTaskClassifierConfig {
-    /// Use a decision model's relative-advantage probability to select a target.
+    /// Apply a cutoff to relative advantage or a custom candidate Choice score.
     #[staticmethod]
-    #[pyo3(signature = (*, cutoff, candidates, evidence, instructions=None))]
+    #[pyo3(signature = (*, cutoff, candidates, evidence, instructions=None, criteria=None))]
     fn decision(
         cutoff: f64,
         candidates: BTreeMap<String, String>,
         evidence: &Bound<'_, PyAny>,
         instructions: Option<&Bound<'_, PyAny>>,
+        criteria: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         Ok(Self {
             inner: TaskClassifierConfig {
@@ -323,6 +324,7 @@ impl PyTaskClassifierConfig {
                         .collect(),
                     evidence: from_python(evidence)?,
                     instructions: instructions.map(from_python).transpose()?,
+                    criteria: criteria.map(from_python).transpose()?,
                 }),
                 ..TaskClassifierConfig::default()
             },
