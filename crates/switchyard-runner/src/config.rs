@@ -847,9 +847,9 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
         )));
     }
     if variable.contains(['\0', '=']) {
-        return Err(RunnerError::configuration(
-            "Invalid credential environment variable name.",
-        ));
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env must not contain '=' or NUL"
+        )));
     }
     let api_key = std::env::var(variable).map_err(|error| {
         // VarError can contain the raw credential, so errors report only its category.
@@ -2055,15 +2055,6 @@ confidence_threshold = 0.5
 
     #[test]
     fn api_key_environment_reference_is_validated() {
-        const RAW_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_RAW_KEY";
-        if std::env::var_os(RAW_KEY_ENV).is_some() {
-            let error = read_api_key("fixture", RAW_KEY_ENV)
-                .expect_err("invalid raw credential")
-                .to_string();
-            assert!(error.contains("not valid Unicode"));
-            assert!(!error.contains("DUMMY_SECRET_DO_NOT_LOG"));
-            return;
-        }
         let missing = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
             "base_url = \"https://example.test/v1\"\napi_key_env = \"SWITCHYARD_CONFIG_TEST_KEY_THAT_IS_NOT_SET\"",
@@ -2086,6 +2077,21 @@ confidence_threshold = 0.5
             std::env::remove_var(EMPTY_KEY_ENV);
         }
         assert!(message.contains("is empty"));
+
+        // macOS reads `FOO` for the name `FOO=x`, so the config would use another variable.
+        let with_equals = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\napi_key_env = \"SWITCHYARD_CONFIG_TEST_KEY=x\"",
+            1,
+        );
+        assert!(error_message(&with_equals).contains("api_key_env must not contain '=' or NUL"));
+    }
+
+    // `VarError::NotUnicode` holds the variable's value, so printing that error prints the key.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn invalid_unicode_api_key_is_not_printed() {
+        const RAW_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_RAW_KEY";
         #[cfg(unix)]
         let raw = {
             use std::os::unix::ffi::OsStringExt;
@@ -2100,26 +2106,17 @@ confidence_threshold = 0.5
             words.push(0xd800);
             std::ffi::OsString::from_wide(&words)
         };
-        #[cfg(any(unix, windows))]
-        {
-            let output =
-                std::process::Command::new(std::env::current_exe().expect("test executable"))
-                    .args([
-                        "--exact",
-                        "config::deployment_tests::api_key_environment_reference_is_validated",
-                        "--nocapture",
-                    ])
-                    .env(RAW_KEY_ENV, raw)
-                    .output()
-                    .expect("raw credential regression");
-            assert!(
-                output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        unsafe {
+            // "unsafe" is for concurrent reads and writes, very rare
+            std::env::set_var(RAW_KEY_ENV, raw);
         }
+        let result = read_api_key("llm client fixture", RAW_KEY_ENV);
+        unsafe {
+            std::env::remove_var(RAW_KEY_ENV);
+        }
+        let error = result.expect_err("invalid Unicode credential").to_string();
+        assert!(error.contains("not valid Unicode"), "{error}");
+        assert!(!error.contains("DUMMY_SECRET_DO_NOT_LOG"), "{error}");
     }
 
     #[test]
