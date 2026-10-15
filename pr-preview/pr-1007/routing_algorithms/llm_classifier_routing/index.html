@@ -1723,7 +1723,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <p>The same classifier also supports <a href="../escalation_router_routing/">escalation</a>
 and <a href="#custom-multi-target-routing">custom routing</a> across two or more targets.</p>
 <p>For a task-level decision-model experiment, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8e94ba31d7088fbb4131b5ec390bf8f4d53c520b/benchmark/TB21_JEV_TASK_ROUTER_REPORT.md">Jev Terminal-Bench 2.1 results</a>,
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ecbbf0548a14f2fdd2cc7b05842aefaef7e46930/benchmark/TB21_JEV_TASK_ROUTER_REPORT.md">Jev Terminal-Bench 2.1 results</a>,
 including separate train/test scores, cost accounting, and limits.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
@@ -1827,7 +1827,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8e94ba31d7088fbb4131b5ec390bf8f4d53c520b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ecbbf0548a14f2fdd2cc7b05842aefaef7e46930/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
