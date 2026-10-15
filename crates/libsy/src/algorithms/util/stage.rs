@@ -134,7 +134,6 @@ const FALL_OPEN_KEY: &str = "fall_open";
 /// Overrides the default tier undecided turns fall open to, until
 /// [`clear_fall_open`] restores the picker's. Held in session state, so it
 /// survives later requests only when they carry a session id.
-/// Capable selects `capable_first_threshold`. Efficient uses `confidence_threshold`.
 pub fn set_fall_open(state: &mut State, tier: Tier) {
     state.extra.insert(
         FALL_OPEN_KEY.to_string(),
