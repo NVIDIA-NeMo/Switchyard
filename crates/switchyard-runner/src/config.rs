@@ -846,9 +846,20 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
             "{client} api_key_env must not be empty"
         )));
     }
+    // A name with `=` is often a pasted `NAME=key` line, so this error omits the name.
+    if variable.contains(['\0', '=']) {
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env must not contain '=' or NUL"
+        )));
+    }
     let api_key = std::env::var(variable).map_err(|error| {
+        // VarError can contain the raw credential, so errors report only its category.
+        let reason = match error {
+            std::env::VarError::NotPresent => "environment variable not found",
+            std::env::VarError::NotUnicode(_) => "environment variable is not valid Unicode",
+        };
         RunnerError::configuration(format!(
-            "{client} could not read api_key_env {variable}: {error}"
+            "{client} could not read api_key_env {variable}: {reason}"
         ))
     })?;
     if api_key.trim().is_empty() {
@@ -2067,6 +2078,49 @@ confidence_threshold = 0.5
             std::env::remove_var(EMPTY_KEY_ENV);
         }
         assert!(message.contains("is empty"));
+
+        // macOS reads `FOO` for the name `FOO=x`, so the config would use another variable. A
+        // name with `=` is often a pasted `NAME=key` line, so the error leaves it out.
+        let with_equals = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\napi_key_env = \"NVIDIA_API_KEY=DUMMY_SECRET_DO_NOT_LOG\"",
+            1,
+        );
+        let message = error_message(&with_equals);
+        assert!(message.contains("llm client primary api_key_env must not contain '=' or NUL"));
+        assert!(!message.contains("DUMMY_SECRET_DO_NOT_LOG"), "{message}");
+    }
+
+    // `VarError::NotUnicode` holds the variable's value, so printing that error prints the key.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn invalid_unicode_api_key_is_not_printed() {
+        const RAW_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_RAW_KEY";
+        #[cfg(unix)]
+        let raw = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = b"DUMMY_SECRET_DO_NOT_LOG".to_vec();
+            bytes.push(0xff);
+            std::ffi::OsString::from_vec(bytes)
+        };
+        #[cfg(windows)]
+        let raw = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut words: Vec<_> = "DUMMY_SECRET_DO_NOT_LOG".encode_utf16().collect();
+            words.push(0xd800);
+            std::ffi::OsString::from_wide(&words)
+        };
+        unsafe {
+            // "unsafe" is for concurrent reads and writes, very rare
+            std::env::set_var(RAW_KEY_ENV, raw);
+        }
+        let result = read_api_key("llm client fixture", RAW_KEY_ENV);
+        unsafe {
+            std::env::remove_var(RAW_KEY_ENV);
+        }
+        let error = result.expect_err("invalid Unicode credential").to_string();
+        assert!(error.contains("not valid Unicode"), "{error}");
+        assert!(!error.contains("DUMMY_SECRET_DO_NOT_LOG"), "{error}");
     }
 
     #[test]
