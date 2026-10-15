@@ -128,6 +128,7 @@ pub struct TranslatingLlmClient {
     model_to_config: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
     forward_auth_client: reqwest::Client,
+    is_rate_limit_cooldown_enabled: bool,
     cooldown_epoch: Instant,
     // Milliseconds since cooldown_epoch. Each atomic is independent, so relaxed ordering suffices.
     unavailable_until: HashMap<ModelId, AtomicU64>,
@@ -166,9 +167,16 @@ impl TranslatingLlmClient {
             model_to_config,
             client,
             forward_auth_client,
+            is_rate_limit_cooldown_enabled: true,
             cooldown_epoch: Instant::now(),
             unavailable_until,
         })
+    }
+
+    /// Disable HTTP 429 cooldown so subsequent calls can receive the upstream error.
+    pub fn without_rate_limit_cooldown(mut self) -> Self {
+        self.is_rate_limit_cooldown_enabled = false;
+        self
     }
 
     /// The backend serving `model` over `format` — the default backend when its
@@ -302,11 +310,11 @@ impl TranslatingLlmClient {
         let result = self
             .send_with_retries(&url, backend, &body, metadata, model, streaming)
             .await;
-        // Forwarded credentials can hit a user's quota while the backend remains healthy.
+        // Keep quota failures request-local when forwarding auth or returning 429 to callers.
         if let Some(until) = unavailable_until
             && let Err(error) = &result
             && is_transient_failure(error)
-            && !(backend.is_forwarding_auth()
+            && !((backend.is_forwarding_auth() || !self.is_rate_limit_cooldown_enabled)
                 && matches!(error, LlmClientError::UpstreamHttp { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS))
         {
             let deadline = duration_millis(self.cooldown_epoch.elapsed().saturating_add(cooldown));

@@ -64,6 +64,29 @@ def read_config(path):
     return path.read_text()
 
 
+def test_install_starts_each_launch_agent_after_loading_it(setup):
+    _, _, _, env = setup
+    command_log = Path(env["TMPDIR"]) / "launchctl.log"
+    stub = Path(env["PATH"].split(":")[0]) / "launchctl"
+    stub.write_text(
+        '#!/bin/bash\nset -eu\n'
+        f'printf "%s\\n" "$*" >> "{command_log}"\n'
+        '[[ "$1" != print ]]\n'
+    )
+
+    result = run(setup, "install.sh")
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text().splitlines()
+    for label in ("com.nvidia.switchyard.server", "com.nvidia.switchyard.menubar"):
+        bootstrap = next(
+            index for index, command in enumerate(commands)
+            if command.startswith("bootstrap ") and command.endswith(f"/{label}.plist")
+        )
+        domain = commands[bootstrap].split()[1]
+        assert commands[bootstrap + 1] == f"kickstart {domain}/{label}"
+
+
 def test_install_escapes_switchyard_path_in_launch_agent(setup):
     _, home, switchyard_home, _ = setup
     result = run(setup, "install.sh")
