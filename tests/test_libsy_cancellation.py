@@ -25,7 +25,12 @@ async def test_response_cancellation_cleans_up_python_work(
 ) -> None:
     config = (
         TaskClassifierConfig.decision(
-            cutoff=0.5, candidates={"strong": "strong", "weak": "weak"}, evidence={}
+            policy={
+                "rules": [{"score": "weak", "target": "weak", "cutoff": 0.5}],
+                "fallback": "strong",
+            },
+            candidates={"strong": "strong", "weak": "weak"},
+            evidence={},
         )
         if decision
         else TaskClassifierConfig(0.5)
@@ -74,7 +79,12 @@ async def test_response_cancellation_cleans_up_python_work(
 async def test_decision_response_and_failure_keep_their_routing_behavior(failure: bool) -> None:
     algorithm = algorithms.llm_task_classifier(
         config=TaskClassifierConfig.decision(
-            cutoff=0.5, candidates={"strong": "strong", "weak": "weak"}, evidence={}
+            policy={
+                "rules": [{"score": "weak", "target": "weak", "cutoff": 0.5}],
+                "fallback": "strong",
+            },
+            candidates={"strong": "strong", "weak": "weak"},
+            evidence={},
         )
     )
     stream = algorithm.run_stream(
@@ -98,8 +108,8 @@ async def test_decision_response_and_failure_keep_their_routing_behavior(failure
                     "value": {
                         "type": "choice",
                         "data": {
-                            "selected": "no_advantage",
-                            "probabilities": {"advantage": 0.1, "no_advantage": 0.9},
+                            "selected": "weak",
+                            "probabilities": {"strong": 0.1, "weak": 0.9},
                         },
                     },
                     "provider_confidence": None,
