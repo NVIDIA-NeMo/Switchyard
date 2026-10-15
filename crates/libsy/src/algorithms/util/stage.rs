@@ -134,7 +134,7 @@ const FALL_OPEN_KEY: &str = "fall_open";
 /// Overrides the default tier undecided turns fall open to, until
 /// [`clear_fall_open`] restores the picker's. Held in session state, so it
 /// survives later requests only when they carry a session id.
-/// Capable selects a zero threshold. Efficient uses the configured threshold.
+/// Capable selects `capable_first_threshold`. Efficient uses `confidence_threshold`.
 pub fn set_fall_open(state: &mut State, tier: Tier) {
     state.extra.insert(
         FALL_OPEN_KEY.to_string(),
@@ -538,6 +538,7 @@ impl HandoffNoteConfig {
 pub struct StageClassifier {
     mode: PickerMode,
     confidence_threshold: f64,
+    capable_first_threshold: f64,
     capable_hold_turns: u32,
     handoff_notes: Option<HandoffNoteConfig>,
 }
@@ -549,9 +550,16 @@ impl StageClassifier {
         Self {
             mode,
             confidence_threshold,
+            capable_first_threshold: 0.0,
             capable_hold_turns: 2,
             handoff_notes: None,
         }
+    }
+
+    /// Threshold used when an outer classifier selects capable-first.
+    pub fn with_capable_first_threshold(mut self, threshold: f64) -> Self {
+        self.capable_first_threshold = threshold;
+        self
     }
 
     /// Keep the capable tier for this many requests after an escalation. A
@@ -641,7 +649,7 @@ impl Classifier<State> for StageClassifier {
             state.extra.remove(&capable_hold_key);
         }
         let (mode, threshold) = match fall_open_tier(state) {
-            Some(Tier::Capable) => (PickerMode::CapableFirst, 0.0),
+            Some(Tier::Capable) => (PickerMode::CapableFirst, self.capable_first_threshold),
             Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),
             None => (self.mode, self.confidence_threshold),
         };
@@ -999,8 +1007,14 @@ mod tests {
 
     #[tokio::test]
     async fn classified_tier_controls_the_stage_threshold() -> Result<()> {
-        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
-            let classifier = StageClassifier::new(mode, 0.5);
+        for (mode, threshold) in [
+            (PickerMode::EfficientFirst, 0.0),
+            (PickerMode::EfficientFirst, 0.5),
+            (PickerMode::CapableFirst, 0.0),
+            (PickerMode::CapableFirst, 0.5),
+        ] {
+            let classifier =
+                StageClassifier::new(mode, 0.5).with_capable_first_threshold(threshold);
             let mut state = state_with(ToolSignals {
                 severity: 0.3,
                 recent_edit_count: 1,
@@ -1025,8 +1039,9 @@ mod tests {
                 let target = classification.argmax(false)?.map(|score| score.target);
                 assert_eq!(
                     target,
-                    (tier == Some(Tier::Capable)).then(|| ModelId::from("weak")),
-                    "mode {mode:?}, classified tier {tier:?}"
+                    (tier == Some(Tier::Capable) && threshold == 0.0)
+                        .then(|| ModelId::from("weak")),
+                    "mode {mode:?}, classified tier {tier:?}, threshold {threshold}"
                 );
             }
         }

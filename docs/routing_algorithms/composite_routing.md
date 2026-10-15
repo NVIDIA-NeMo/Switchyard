@@ -8,9 +8,11 @@ fit the same route type.
 ## What exists today
 
 One pairing: a classifier selects the stage router's starting policy.
-An efficient classification selects efficient-first with the configured
-confidence threshold (default `0.5`). A capable classification selects
-capable-first with a threshold of `0.0`. Tool signals can still change the tier
+An efficient classification selects efficient-first with `efficient_first_threshold`
+(default `0.5`).
+A capable classification selects capable-first with `capable_first_threshold`
+(default `0.0`). Both thresholds are configurable from `0.0` to `1.0`.
+Tool signals can still change the tier
 during execution. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
@@ -38,7 +40,8 @@ classify_trigger = "user_turn"
 [routes.switchyard.stage]
 capable_target = "strong"
 efficient_target = "weak"
-confidence_threshold = 0.5
+efficient_first_threshold = 0.5
+capable_first_threshold = 0.0
 
 [routes.switchyard.stage.tool_semantics]
 observe = ["lookup_customer"]
@@ -52,6 +55,7 @@ new = ["send_message"]
 whenever the user speaks, `new_session` picks once and holds it.
 `[routes.switchyard.stage]` takes the stage settings, but accepts neither `picker`
 nor a second `classifier`. The outer classifier supplies the default tier.
+`confidence_threshold` remains an alias for `efficient_first_threshold`.
 Custom `tool_semantics` remain stage-local and have the same additive behavior as
 on a standalone stage route.
 

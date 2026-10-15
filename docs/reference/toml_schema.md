@@ -385,7 +385,8 @@ one manually.
 ### `composite`
 
 Composes other algorithms, letting one set another's
-configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
+configuration. Today a classifier selects the stage router's starting tier and
+confidence threshold. Tool signals still drive escalation and recovery. See
 [Composite Routing](../routing_algorithms/composite_routing.md).
 
 | Key | Required | Default | Meaning |
@@ -403,7 +404,8 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
-| `stage.confidence_threshold` | Yes | — | Corroboration a decisive signal needs. In `[0, 1]`. |
+| `stage.efficient_first_threshold` | No | `0.5` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
+| `stage.capable_first_threshold` | No | `0.0` | Signal confidence required after a Capable classification. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
 | `stage.capable_hold_turns` | No | `2` | Requests kept on the capable tier after escalation. A clean test pass clears the hold early; `0` disables it. |
 | `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
