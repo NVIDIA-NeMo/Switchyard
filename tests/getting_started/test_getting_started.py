@@ -16,6 +16,14 @@ def test_getting_started_documents_current_paths() -> None:
     assert "nemo-switchyard[cli]" not in guide
     assert "cargo install --locked switchyard-server" in guide
     assert "switchyard-server --config routes.toml --dry-run" in guide
+    assert (
+        guide.index("### Run the server")
+        < guide.index("### Verify routing is active")
+        < guide.index("### Routing algorithms")
+    )
+    assert "x-model-router-selected-model" in guide
+    assert "/v1/stats" in guide
+    assert "--routing-log-file" in guide
 
     for legacy_command in (
         "switchyard configure",
