@@ -424,6 +424,10 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 For decision classifier configuration, see
 [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier).
 The same decision settings are accepted by the optional `stage_router` classifier.
+Decision judges require `decision.policy` with ordered rules and an explicit fallback.
+Standalone task routes support N-way selection. See
+[ordered decision cutoffs](../routing_algorithms/llm_classifier_routing.md#decision-models-with-ordered-cutoffs).
+Stage-backed policies must keep their destinations within the configured tier pair.
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message
