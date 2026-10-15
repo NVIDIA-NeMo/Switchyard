@@ -17,6 +17,9 @@ When translating to Responses, an Anthropic MCP call with a failed or non-text r
 under `LossyConversionPolicy::Reject`. With `AllowWithDiagnostics`, the call and result are dropped
 and a diagnostic is returned. Other conversation content is kept. The convenience encoders used
 by the client and server log these diagnostics because their return values contain only the body.
+The same policy applies to Responses MCP listings sent to Anthropic: listings with IDs, errors,
+or tool annotations are rejected under `Reject` and dropped with a diagnostic under
+`AllowWithDiagnostics`.
 
 Streaming translation supports MCP calls and results between Responses and Anthropic, including
 argument deltas, completed-item snapshots, and conversion through a buffered aggregate. Anthropic

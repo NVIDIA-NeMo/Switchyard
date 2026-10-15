@@ -114,6 +114,24 @@ fn anthropic_mcp_listings_round_trip_in_responses_and_history() -> TestResult {
             engine.encode_request(format, &request, &policy),
             Err(TranslationError::LossyConversion(_))
         ));
+        let response_output = engine.encode_response(format, &response, &normalized_policy())?;
+        let request_output = engine.encode_request(format, &request, &normalized_policy())?;
+        for diagnostics in [&response_output.diagnostics, &request_output.diagnostics] {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("MCP listings"))
+            );
+        }
+        assert_eq!(response_output.body["content"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            request_output.body["messages"][0]["content"],
+            response_output.body["content"]
+        );
+        assert_eq!(
+            response_output.body["content"][0]["mcp_server_name"],
+            "empty"
+        );
     }
     Ok(())
 }
@@ -1919,5 +1937,63 @@ fn citations_spanning_mcp_items_are_preserved_on_both_text_segments() -> TestRes
         encoded.body["output"][0]["id"],
         encoded.body["output"][2]["id"]
     );
+    Ok(())
+}
+
+#[test]
+fn reasoning_ids_stay_unique_across_mcp_segments() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = strict_normalized_policy();
+    let response = engine.decode_response(WireFormat::AnthropicMessages, &json!({
+        "type": "message", "role": "assistant", "content": [
+            {"type": "thinking", "thinking": "Before", "signature": "sig_before"},
+            {"type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {}},
+            {"type": "mcp_tool_result", "tool_use_id": "call_1", "content": "12"},
+            {"type": "thinking", "thinking": "After", "signature": "sig_after"},
+            {"type": "text", "text": "Done"}
+        ], "stop_reason": "end_turn"
+    }), &policy)?.response;
+    for signed in [false, true] {
+        for provider_id in [None, Some("rs_switchyard"), Some("rs_switchyard_0")] {
+            let mut response = response.clone();
+            for block in &mut response.outputs[0].content {
+                if let ContentBlock::Reasoning {
+                    text,
+                    signature,
+                    details,
+                } = block
+                {
+                    if !signed {
+                        *signature = None;
+                    }
+                    if text == "After"
+                        && let Some(id) = provider_id
+                    {
+                        *signature = None;
+                        *details = vec![
+                            json!({"type": "reasoning.encrypted", "id": id, "data": "opaque"}),
+                        ];
+                    }
+                }
+            }
+            let encoded =
+                engine.encode_response(WireFormat::OpenAiResponses, &response, &policy)?;
+            let reasoning: Vec<_> = encoded.body["output"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .collect();
+            assert_eq!(reasoning.len(), 2);
+            assert_ne!(
+                reasoning[0]["id"], reasoning[1]["id"],
+                "{signed}, {provider_id:?}"
+            );
+            if let Some(id) = provider_id {
+                assert_eq!(reasoning[1]["id"], id);
+                assert_eq!(reasoning[1]["encrypted_content"], "opaque");
+            }
+        }
+    }
     Ok(())
 }

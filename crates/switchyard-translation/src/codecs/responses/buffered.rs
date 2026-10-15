@@ -1296,6 +1296,7 @@ fn mcp_item_ids<'a>(content: impl Iterator<Item = &'a ContentBlock>) -> HashMap<
         ContentBlock::Unknown { raw, .. } => {
             raw.get("id").and_then(Value::as_str).map(str::to_owned)
         }
+        ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
         _ => None,
     }) {
         *counts.entry(id).or_default() += 1;
@@ -2295,7 +2296,7 @@ fn encode_responses_output(
         if !content.iter().any(is_responses_mcp_block) {
             let mut output = output.clone();
             output.content = content;
-            items.extend(encode_responses_output_items(&[output]));
+            items.extend(encode_responses_output_items(&[output], &mut id_counts));
             continue;
         }
         // MCP items must stay between the text/reasoning segments that surrounded them.
@@ -2321,7 +2322,7 @@ fn encode_responses_output(
                     true
                 });
                 text_offset += text_len;
-                for mut item in encode_responses_output_items(&[segment]) {
+                for mut item in encode_responses_output_items(&[segment], &mut id_counts) {
                     if item["type"] == "message" {
                         item["id"] = json!(format!("msg_switchyard_{}", items.len()));
                     }
@@ -2337,7 +2338,10 @@ fn encode_responses_output(
     Ok(Value::Array(items))
 }
 
-fn encode_responses_output_items(outputs: &[ResponseOutput]) -> Vec<Value> {
+fn encode_responses_output_items(
+    outputs: &[ResponseOutput],
+    id_counts: &mut HashMap<String, usize>,
+) -> Vec<Value> {
     outputs
         .iter()
         .flat_map(|output| {
@@ -2385,8 +2389,9 @@ fn encode_responses_output_items(outputs: &[ResponseOutput]) -> Vec<Value> {
                             .as_deref()
                             .map(|signature| super::encode_anthropic_thinking(text, signature))
                             .or_else(|| encrypted_reasoning_data(details));
-                        let id = encrypted_reasoning_item_id(details)
-                            .unwrap_or_else(|| format!("rs_switchyard_{index}"));
+                        let id = encrypted_reasoning_item_id(details).unwrap_or_else(|| {
+                            generated_reasoning_id(format!("rs_switchyard_{index}"), id_counts)
+                        });
                         items.push(encode_responses_reasoning_output(
                             text,
                             encrypted.as_deref(),
@@ -2395,10 +2400,12 @@ fn encode_responses_output_items(outputs: &[ResponseOutput]) -> Vec<Value> {
                     }
                 }
             } else if !reasoning.is_empty() || encrypted_reasoning.is_some() {
+                let id = encrypted_reasoning_id
+                    .unwrap_or_else(|| generated_reasoning_id("rs_switchyard".into(), id_counts));
                 items.push(encode_responses_reasoning_output(
                     &reasoning,
                     encrypted_reasoning.as_deref(),
-                    encrypted_reasoning_id.as_deref(),
+                    Some(&id),
                 ));
             }
 
@@ -2441,6 +2448,17 @@ fn encode_responses_output_items(outputs: &[ResponseOutput]) -> Vec<Value> {
             items
         })
         .collect()
+}
+
+// Reserve generated IDs across segments without changing provider-issued reasoning IDs.
+fn generated_reasoning_id(preferred: String, id_counts: &mut HashMap<String, usize>) -> String {
+    let id = if id_counts.contains_key(&preferred) {
+        unused_stable_id("rs_switchyard", 0, |id| id_counts.contains_key(id))
+    } else {
+        preferred
+    };
+    id_counts.insert(id.clone(), 1);
+    id
 }
 
 // Encodes private reasoning as a separate Responses output item. An encrypted-only item

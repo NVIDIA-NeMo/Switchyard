@@ -448,7 +448,7 @@ impl FormatCodec for AnthropicMessagesCodec {
     fn encode_response(
         &self,
         response: &AggLlmResponse,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         super::super::responses::validate_response_output(response, WireFormat::AnthropicMessages)?;
         let mut diagnostics = Vec::new();
@@ -456,19 +456,19 @@ impl FormatCodec for AnthropicMessagesCodec {
             response,
             WireFormat::AnthropicMessages,
             &mut diagnostics,
-            _policy,
+            policy,
         )?;
         let response = prepared.as_ref();
         if let Some(body) = exact_preserved_response(
             &response.preservation,
             WireFormat::AnthropicMessages,
-            _policy,
+            policy,
         ) {
             return Ok(EncodedResponse { body, diagnostics });
         }
         let output = response.first_output();
         let content = output
-            .map(|output| encode_anthropic_content(&output.content))
+            .map(|output| encode_anthropic_content(&output.content, &mut diagnostics, policy))
             .transpose()?
             .unwrap_or_else(|| vec![json!({"type": "text", "text": ""})]);
         let normalized_stop_reason = output.and_then(|output| output.stop_reason);
@@ -490,7 +490,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             "usage": encode_anthropic_usage(&response.usage),
         });
         Ok(EncodedResponse {
-            body: embed_preservation(body, &response.preservation, _policy),
+            body: embed_preservation(body, &response.preservation, policy),
             diagnostics,
         })
     }
@@ -981,7 +981,7 @@ fn encode_anthropic_content_with_policy(
                 )?;
                 blocks.push(json!({"type": "text", "text": json_string(raw)}));
             }
-            other => blocks.extend(encode_one_anthropic_block(other)?),
+            other => blocks.extend(encode_one_anthropic_block(other, diagnostics, policy)?),
         }
     }
     if blocks.is_empty() {
@@ -1043,12 +1043,20 @@ fn encode_anthropic_file(source: &FileSource) -> Result<Value> {
     }
 }
 
-// Encodes content without producing diagnostics for response paths.
-fn encode_anthropic_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
+// Encodes response content with the active loss policy.
+fn encode_anthropic_content(
+    content: &[ContentBlock],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
     let mut blocks = Vec::new();
     for block in content {
         crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
-        blocks.extend(encode_one_anthropic_response_block(block)?);
+        blocks.extend(encode_one_anthropic_response_block(
+            block,
+            diagnostics,
+            policy,
+        )?);
     }
     if blocks.is_empty() {
         blocks.push(json!({"type": "text", "text": ""}));
@@ -1057,7 +1065,11 @@ fn encode_anthropic_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
 }
 
 // Encodes response content, where synthetic reasoning may be shown to clients.
-fn encode_one_anthropic_response_block(block: &ContentBlock) -> Result<Vec<Value>> {
+fn encode_one_anthropic_response_block(
+    block: &ContentBlock,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
     match block {
         ContentBlock::Reasoning {
             text,
@@ -1068,12 +1080,16 @@ fn encode_one_anthropic_response_block(block: &ContentBlock) -> Result<Vec<Value
             "thinking": text,
             "signature": "",
         })]),
-        other => encode_one_anthropic_block(other),
+        other => encode_one_anthropic_block(other, diagnostics, policy),
     }
 }
 
 // Encodes a single normalized content block into Anthropic block JSON.
-fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
+fn encode_one_anthropic_block(
+    block: &ContentBlock,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
     Ok(match block {
         ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
             vec![json!({"type": "text", "text": text})]
@@ -1098,10 +1114,12 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
                 || error.is_some()
                 || tools.iter().any(|tool| tool.annotations.is_some())
             {
-                return Err(TranslationError::LossyConversion(
-                    "Anthropic MCP listings cannot represent IDs, errors, or tool annotations"
-                        .into(),
-                ));
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic MCP listings cannot represent IDs, errors, or tool annotations",
+                )?;
+                return Ok(Vec::new());
             }
             vec![json!({
                 "type": "mcp_tool_listing", "mcp_server_name": server_name, "tools": tools,
@@ -1114,7 +1132,11 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
         ContentBlock::Mcp(McpContent::Result(result)) => {
             let mut content = Vec::new();
             for block in &result.content {
-                content.extend(encode_one_anthropic_tool_result_block(block)?);
+                content.extend(encode_one_anthropic_tool_result_block(
+                    block,
+                    diagnostics,
+                    policy,
+                )?);
             }
             let mut item = json!({"type": "mcp_tool_result", "tool_use_id": result.tool_call_id, "content": content});
             if let Some(is_error) = result.is_error {
@@ -1139,7 +1161,11 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
             } else {
                 let mut content = Vec::new();
                 for block in &result.content {
-                    content.extend(encode_one_anthropic_tool_result_block(block)?);
+                    content.extend(encode_one_anthropic_tool_result_block(
+                        block,
+                        diagnostics,
+                        policy,
+                    )?);
                 }
                 Value::Array(content)
             };
@@ -1205,12 +1231,16 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
 }
 
 // Encodes only provider-safe block shapes inside Anthropic tool results.
-fn encode_one_anthropic_tool_result_block(block: &ContentBlock) -> Result<Vec<Value>> {
+fn encode_one_anthropic_tool_result_block(
+    block: &ContentBlock,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
     match block {
         ContentBlock::Text { .. }
         | ContentBlock::Refusal { .. }
         | ContentBlock::Image { .. }
-        | ContentBlock::File { .. } => encode_one_anthropic_block(block),
+        | ContentBlock::File { .. } => encode_one_anthropic_block(block, diagnostics, policy),
         ContentBlock::Unknown { provider, raw }
             if provider.as_str() == WireFormat::AnthropicMessages.as_str() =>
         {

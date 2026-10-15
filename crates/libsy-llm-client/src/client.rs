@@ -497,14 +497,20 @@ impl TranslatingLlmClient {
             };
             metrics::record_upstream_attempt(Some(status.as_u16()));
             let mut body = body.to_vec();
-            // Anthropic can return an error envelope under HTTP 200. Successful model
+            // Providers can return an error envelope under HTTP 200. Successful model
             // output stays unchanged, including tool results and signed content.
             if may_contain_mcp_tokens(&body, &mcp_patterns)
                 && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
-                && value.get("type").and_then(Value::as_str) == Some("error")
             {
-                redact_mcp_json(&mut value, &mcp_patterns);
-                body = value.to_string().into_bytes();
+                if value.get("type").and_then(Value::as_str) == Some("error") {
+                    redact_mcp_json(&mut value, &mcp_patterns);
+                    body = value.to_string().into_bytes();
+                } else if value.get("status").and_then(Value::as_str) == Some("failed")
+                    && let Some(error) = value.get_mut("error")
+                {
+                    redact_mcp_json(error, &mcp_patterns);
+                    body = value.to_string().into_bytes();
+                }
             }
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
@@ -3577,6 +3583,46 @@ mod tests {
             }
             assert!(error.contains("remote"));
         }
+    }
+
+    #[tokio::test]
+    async fn responses_failed_http_200_redacts_mcp_error_only()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let response_body = json!({
+            "status": "failed",
+            "error": {"code": "mcp_error", "message": "Rejected synthetic-mcp-token"},
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "synthetic-mcp-token"}]}]
+        });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = Backend::OpenAiResponses(config(&server.uri()));
+        let model = ModelId::from("gpt");
+        let client =
+            TranslatingLlmClient::new(&[ModelConfig::new(model.clone(), backend.clone(), None)])?;
+        let response = client
+            .send_once(
+                &backend.url(),
+                &backend,
+                &json!({"tools": [{"type": "mcp", "authorization": "synthetic-mcp-token"}]}),
+                None,
+                &model,
+                false,
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        let EncodedResponse::Buffered { body, .. } = response else {
+            return Err("expected a buffered response".into());
+        };
+        let body: Value = serde_json::from_slice(&body)?;
+        assert_eq!(body["error"]["message"], "Rejected [REDACTED]");
+        assert_eq!(body["error"]["code"], "mcp_error");
+        assert_eq!(body["output"], response_body["output"]);
+        server.verify().await;
+        Ok(())
     }
 
     #[tokio::test]
