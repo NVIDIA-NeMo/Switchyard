@@ -308,6 +308,46 @@ pub fn decode_stream_event(
         })
 }
 
+// These outputs have no neutral streaming representation. Reject them before
+// their raw events are discarded; same-format replay can still preserve them.
+pub(crate) fn validate_stream_output(
+    source: &FormatId,
+    target: &FormatId,
+    event: &Value,
+) -> Result<()> {
+    if source == target {
+        return Ok(());
+    }
+    let unsupported = if source.as_str() == WireFormat::OpenAiResponses.as_str() {
+        event["type"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("response.mcp_"))
+            || event
+                .get("item")
+                .into_iter()
+                .chain(event["response"]["output"].as_array().into_iter().flatten())
+                .any(|item| {
+                    item["type"].as_str().is_some_and(|kind| {
+                        super::responses::is_native_output(kind)
+                            || super::responses::is_mcp_item(kind)
+                    })
+                })
+    } else if source.as_str() == WireFormat::AnthropicMessages.as_str() {
+        event["content_block"]["type"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("mcp_"))
+    } else {
+        false
+    };
+    if unsupported {
+        return Err(TranslationError::UnsupportedTranslation {
+            from: source.clone(),
+            to: target.clone(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) fn encode_response_stream_event(
     state: &mut StreamTranslationState,
     target_codec: &dyn StreamCodec,
@@ -320,7 +360,7 @@ pub(crate) fn encode_response_stream_event(
     let (preservation, normalized) = event.into_parts();
     if let Some(preservation) = preservation {
         let (source, raw) = preservation.into_parts();
-        if let Err(error) = super::responses::validate_stream_output(&source, target, &raw) {
+        if let Err(error) = validate_stream_output(&source, target, &raw) {
             return target_codec.encode_event(
                 state,
                 LlmResponseChunk::DecodeError {

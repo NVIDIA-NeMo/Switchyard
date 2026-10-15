@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
@@ -128,7 +129,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                     && let Some(tools) = item.get("tools").and_then(Value::as_array)
                 {
                     request.tools.extend(decode_responses_tools(
-                        Some(&Value::Array(tools.clone())),
+                        item.get("tools"),
                         &mut tool_namespaces,
                         &mut custom_tools,
                     ));
@@ -1123,7 +1124,7 @@ fn decode_mcp_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
                 Some(vec![ContentBlock::Mcp(McpContent::Listing {
                     server_name,
                     id: Some(id),
-                    tools: serde_json::from_value(tools.clone()).ok()?,
+                    tools: Vec::deserialize(tools).ok()?,
                     error: serde_json::from_value(
                         item.get("error").cloned().unwrap_or(Value::Null),
                     )
@@ -1191,7 +1192,7 @@ fn decode_mcp_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
 // Convert MCP blocks to top-level Responses items before the ordinary content encoder runs.
 fn encode_mcp_content(
     content: &[ContentBlock],
-    used_ids: &mut HashMap<String, usize>,
+    id_counts: &mut HashMap<String, usize>,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Vec<ContentBlock>> {
@@ -1220,8 +1221,8 @@ fn encode_mcp_content(
                             let mut index = 0;
                             loop {
                                 let id = stable_id(&format!("{prefix}_mcpl"), index);
-                                if !used_ids.contains_key(&id) {
-                                    used_ids.insert(id.clone(), 1);
+                                if !id_counts.contains_key(&id) {
+                                    id_counts.insert(id.clone(), 1);
                                     break id;
                                 }
                                 index += 1;
@@ -1247,7 +1248,7 @@ fn encode_mcp_content(
                     [ContentBlock::Text { text }] => Some(text.as_str()),
                     _ => None,
                 };
-                if used_ids.get(&call.id).copied().unwrap_or_default() > 1 {
+                if id_counts.get(&call.id).copied().unwrap_or_default() > 1 {
                     push_lossy(
                         diagnostics,
                         policy,
@@ -1658,9 +1659,9 @@ fn encode_responses_input(
             }
         }
     }
-    let mut used_ids = mcp_item_ids(messages.iter().flat_map(|message| &message.content));
+    let mut id_counts = mcp_item_ids(messages.iter().flat_map(|message| &message.content));
     for message in messages {
-        let content = encode_mcp_content(&message.content, &mut used_ids, diagnostics, policy)?;
+        let content = encode_mcp_content(&message.content, &mut id_counts, diagnostics, policy)?;
         let message = &Message {
             role: message.role,
             content,
@@ -2292,9 +2293,9 @@ fn encode_responses_output(
     policy: &TranslationPolicy,
 ) -> Result<Value> {
     let mut items = Vec::new();
-    let mut used_ids = mcp_item_ids(outputs.iter().flat_map(|output| &output.content));
+    let mut id_counts = mcp_item_ids(outputs.iter().flat_map(|output| &output.content));
     for output in outputs {
-        let content = encode_mcp_content(&output.content, &mut used_ids, diagnostics, policy)?;
+        let content = encode_mcp_content(&output.content, &mut id_counts, diagnostics, policy)?;
         if !content.iter().any(is_responses_mcp_block) {
             let mut output = output.clone();
             output.content = content;
@@ -2313,13 +2314,14 @@ fn encode_responses_output(
                 segment.content = content[start..end].to_vec();
                 let text_len = text_from_blocks(&segment.content, "").chars().count();
                 segment.url_citations.retain_mut(|citation| {
-                    if citation.start_index < text_offset
-                        || citation.end_index > text_offset + text_len
-                    {
+                    // A citation spanning an MCP item applies to text on both sides.
+                    let start = citation.start_index.max(text_offset);
+                    let end = citation.end_index.min(text_offset + text_len);
+                    if start >= end {
                         return false;
                     }
-                    citation.start_index -= text_offset;
-                    citation.end_index -= text_offset;
+                    citation.start_index = start - text_offset;
+                    citation.end_index = end - text_offset;
                     true
                 });
                 text_offset += text_len;

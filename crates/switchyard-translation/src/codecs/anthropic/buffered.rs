@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use super::{is_function_tool, source_mcp_layout};
+use super::{is_function_tool, validate_mcp};
 use crate::{McpToolConfig, McpToolset, Tool, ToolDefinition};
 
 use crate::codecs::common::{
@@ -218,6 +218,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        let source_request = request;
         let mut diagnostics = Vec::new();
         let prepared = crate::codecs::common::prepare_request_tools(
             request,
@@ -265,7 +266,9 @@ impl FormatCodec for AnthropicMessagesCodec {
             )?),
         );
 
-        let (tools, servers) = encode_tools(tools, request, &mut diagnostics, policy)?;
+        // Resolve layouts against the same names used during preparation, before
+        // rejected servers were removed from the tool catalog.
+        let (tools, servers) = encode_tools(tools, source_request, &mut diagnostics, policy)?;
         if !tools.is_empty() {
             body.insert("tools".into(), json!(tools));
         }
@@ -691,6 +694,18 @@ fn decode_anthropic_content(
     }
 }
 
+fn required_mcp_string(block: &Map<String, Value>, key: &str, kind: &str) -> Result<String> {
+    block
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| TranslationError::InvalidValue {
+            path: format!("{kind}.{key}"),
+            message: "expected a nonempty string".into(),
+        })
+}
+
 // Decodes one Anthropic content block into one or more IR blocks.
 fn decode_anthropic_content_block(
     block: &Map<String, Value>,
@@ -721,14 +736,7 @@ fn decode_anthropic_content_block(
             details: Vec::new(),
         }],
         Some("mcp_tool_listing") => vec![ContentBlock::Mcp(McpContent::Listing {
-            server_name: block
-                .get("mcp_server_name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| TranslationError::InvalidValue {
-                    path: "mcp_tool_listing.mcp_server_name".into(),
-                    message: "expected a server name".into(),
-                })?
-                .to_owned(),
+            server_name: required_mcp_string(block, "mcp_server_name", "mcp_tool_listing")?,
             id: None,
             tools: serde_json::from_value(block.get("tools").cloned().unwrap_or(Value::Null))
                 .map_err(|_| TranslationError::InvalidValue {
@@ -738,31 +746,15 @@ fn decode_anthropic_content_block(
             error: None,
         })],
         Some("mcp_tool_use") => vec![ContentBlock::Mcp(McpContent::Call {
-            server_name: block
-                .get("server_name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            server_name: required_mcp_string(block, "server_name", "mcp_tool_use")?,
             call: ToolCall {
-                id: block
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                name: block
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
+                id: required_mcp_string(block, "id", "mcp_tool_use")?,
+                name: required_mcp_string(block, "name", "mcp_tool_use")?,
                 arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
             },
         })],
         Some("mcp_tool_result") => vec![ContentBlock::Mcp(McpContent::Result(ToolResult {
-            tool_call_id: block
-                .get("tool_use_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            tool_call_id: required_mcp_string(block, "tool_use_id", "mcp_tool_result")?,
             content: decode_tool_result_content(block.get("content").unwrap_or(&Value::Null)),
             is_error: block.get("is_error").and_then(Value::as_bool),
         }))],
@@ -1482,6 +1474,10 @@ fn mcp_layout(server: &Value, toolset: &Value, server_index: usize) -> Value {
 }
 
 fn decode_mcp(server: &Value, toolset: &Value) -> Result<McpToolset> {
+    super::validate_mcp_configs(toolset).map_err(|message| TranslationError::InvalidValue {
+        path: "tools.mcp_toolset".into(),
+        message: message.into(),
+    })?;
     let required = |key: &str| {
         server
             .get(key)
@@ -1552,34 +1548,34 @@ fn encode_tools(
                 "provider tool cannot be encoded as an Anthropic tool",
             )?,
             Tool::Mcp(mcp) => {
-                let layout = source_mcp_layout(mcp, request)
-                    .and_then(|raw| serde_json::from_value::<McpLayout>(raw.clone()).ok())
-                    .or_else(|| {
-                        (!is_anthropic_request(request)).then(|| McpLayout {
-                            server: json!({"type": "url"}),
-                            toolset: json!({"type": "mcp_toolset"}),
-                            server_index: index,
+                let layout = validate_mcp(mcp, request).and_then(|source| {
+                    source
+                        .map(|raw| {
+                            serde_json::from_value::<McpLayout>(raw.clone())
+                                .map_err(|_| "invalid Anthropic MCP source layout")
                         })
-                    });
-                let Some(mut layout) = layout else {
-                    push_lossy(
-                        diagnostics,
-                        policy,
-                        "MCP encoding requires an Anthropic source layout compatible with the caller's beta header",
-                    )?;
-                    continue;
+                        .unwrap_or_else(|| {
+                            Ok(McpLayout {
+                                server: json!({"type": "url"}),
+                                toolset: json!({"type": "mcp_toolset"}),
+                                server_index: index,
+                            })
+                        })
+                });
+                let mut layout = match layout {
+                    Ok(layout) => layout,
+                    Err(message) => {
+                        push_lossy(diagnostics, policy, message)?;
+                        continue;
+                    }
                 };
-                if mcp.require_approval == Some(true) {
-                    push_lossy(
-                        diagnostics,
-                        policy,
-                        "MCP settings cannot be expressed in the retained Anthropic layout",
-                    )?;
-                    continue;
-                }
-                let Some(server) = layout.server.as_object_mut() else {
-                    continue;
-                };
+                // validate_mcp requires an object; new layouts above also create one.
+                let server = layout.server.as_object_mut().ok_or_else(|| {
+                    TranslationError::InvalidValue {
+                        path: "mcp_layout.server".into(),
+                        message: "expected an object".into(),
+                    }
+                })?;
                 server.insert("name".into(), json!(mcp.name));
                 server.insert("url".into(), json!(mcp.url));
                 set_optional(
@@ -1594,50 +1590,28 @@ fn encode_tools(
                     || mcp.default_config.defer_loading.is_some()
                     || toolset.get("default_config").is_some()
                 {
-                    let config = toolset.as_object_mut().and_then(|tool| {
-                        tool.entry("default_config")
-                            .or_insert_with(|| json!({}))
-                            .as_object_mut()
-                    });
-                    if let Some(config) = config {
-                        set_optional(
-                            config,
-                            "enabled",
-                            mcp.default_config.enabled.map(|v| json!(v)),
-                        );
-                        set_optional(
-                            config,
-                            "defer_loading",
-                            mcp.default_config.defer_loading.map(|v| json!(v)),
-                        );
-                    }
+                    toolset["default_config"] =
+                        encode_mcp_config(toolset.get("default_config"), &mcp.default_config);
                 }
                 if !mcp.configs.is_empty() || toolset.get("configs").is_some() {
-                    let configs = toolset.as_object_mut().and_then(|tool| {
-                        tool.entry("configs")
-                            .or_insert_with(|| json!({}))
-                            .as_object_mut()
-                    });
-                    if let Some(configs) = configs {
-                        for config in configs.values_mut().filter_map(Value::as_object_mut) {
-                            config.remove("enabled");
-                            config.remove("defer_loading");
-                        }
-                        for (name, settings) in &mcp.configs {
-                            if let Some(config) = configs
-                                .entry(name)
-                                .or_insert_with(|| json!({}))
-                                .as_object_mut()
-                            {
-                                set_optional(config, "enabled", settings.enabled.map(|v| json!(v)));
-                                set_optional(
-                                    config,
-                                    "defer_loading",
-                                    settings.defer_loading.map(|v| json!(v)),
-                                );
-                            }
+                    // Validation above ensures every retained config is an object.
+                    let mut configs = toolset
+                        .get("configs")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    for (name, config) in &mut configs {
+                        *config = encode_mcp_config(
+                            Some(config),
+                            mcp.configs.get(name).unwrap_or(&McpToolConfig::default()),
+                        );
+                    }
+                    for (name, settings) in &mcp.configs {
+                        if !configs.contains_key(name) {
+                            configs.insert(name.clone(), encode_mcp_config(None, settings));
                         }
                     }
+                    toolset["configs"] = Value::Object(configs);
                 }
                 out.push(toolset);
                 servers.push((layout.server_index, layout.server));
@@ -1646,6 +1620,21 @@ fn encode_tools(
     }
     servers.sort_by_key(|(index, _)| *index);
     Ok((out, servers.into_iter().map(|(_, server)| server).collect()))
+}
+
+// Retain unknown config fields while replacing settings owned by the IR.
+fn encode_mcp_config(source: Option<&Value>, settings: &McpToolConfig) -> Value {
+    let mut config = source
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    set_optional(&mut config, "enabled", settings.enabled.map(Value::Bool));
+    set_optional(
+        &mut config,
+        "defer_loading",
+        settings.defer_loading.map(Value::Bool),
+    );
+    Value::Object(config)
 }
 
 fn set_optional(object: &mut Map<String, Value>, key: &str, value: Option<Value>) {

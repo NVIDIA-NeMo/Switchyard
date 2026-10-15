@@ -41,6 +41,29 @@ async fn child_method() -> TestResult {
             "url": "https://example.invalid/mcp", "authorization_token": MCP_TOKEN}],
         "tools": [{"type": "mcp_toolset", "mcp_server_name": "inventory"}]
     });
+    // Client and server convenience encoders must expose permissive losses in logs.
+    let request =
+        switchyard_translation::decode_request(WireFormat::AnthropicMessages, &initial_body)?;
+    let encoded = switchyard_translation::encode_request(&request, WireFormat::OpenAiChat)?;
+    assert!(encoded.get("tools").is_none());
+    let response = switchyard_translation::decode_aggregated_response(
+        &json!({
+            "type": "message", "role": "assistant", "content": [
+                {"type": "mcp_tool_use", "id": "call_1", "server_name": "inventory", "name": "lookup", "input": {}},
+                {"type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": true, "content": MCP_TOKEN},
+                {"type": "mcp_tool_use", "id": "call_2", "server_name": "inventory", "name": "lookup", "input": {}},
+                {"type": "mcp_tool_result", "tool_use_id": "call_2", "is_error": true, "content": MCP_TOKEN},
+                {"type": "text", "text": "Retained"}
+            ]
+        }),
+        WireFormat::AnthropicMessages,
+    )?;
+    let encoded = switchyard_translation::encode_aggregated_response(
+        &response,
+        WireFormat::OpenAiResponses,
+        None,
+    )?;
+    assert_eq!(encoded["output"][0]["content"][0]["text"], "Retained");
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .and(header("anthropic-version", "2023-06-01"))
@@ -258,6 +281,17 @@ async fn ensure_credentials_are_not_leaked() -> TestResult {
         assert!(!stdout.contains(token), "credential leaked to stdout");
         assert!(!stderr.contains(token), "credential leaked to stderr/logs");
     }
+    assert!(stderr.contains("unmapped MCP or provider tools and history are dropped"));
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.contains(
+                "Responses MCP calls require object arguments and a successful text result"
+            ))
+            .count(),
+        1,
+        "multiple response losses should produce one warning"
+    );
     assert!(
         output.status.success(),
         "Anthropic credential scenarios failed"

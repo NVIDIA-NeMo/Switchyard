@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 
-use crate::{LlmRequest, McpToolset};
+use crate::{LlmRequest, McpToolset, Tool};
 
 mod buffered;
 mod stream;
@@ -27,8 +27,8 @@ pub(crate) fn is_provider_tool_block(block: &Value) -> bool {
         })
 }
 
-// Names identify servers; a unique endpoint can retain the layout after a rename.
-// If both change, the codec cannot safely associate the entry with an original layout.
+// A rename can reuse a layout only when one source name disappeared and its URL
+// still uniquely matches. This prevents borrowing another server's retained fields.
 fn source_mcp_layout<'a>(mcp: &McpToolset, request: &'a LlmRequest) -> Option<&'a Value> {
     if !super::common::is_anthropic_request(request) {
         return None;
@@ -41,30 +41,85 @@ fn source_mcp_layout<'a>(mcp: &McpToolset, request: &'a LlmRequest) -> Option<&'
     if let Some(layout) = layouts.get(&mcp.name) {
         return Some(layout);
     }
+    let mut unclaimed = layouts.iter().filter(|(name, _)| {
+        !request
+            .tools
+            .iter()
+            .any(|tool| matches!(tool, Tool::Mcp(current) if &current.name == *name))
+    });
+    let (source_name, _) = unclaimed.next()?;
+    if unclaimed.next().is_some() {
+        return None;
+    }
     let mut matches = layouts.values().filter(|layout| {
         layout.pointer("/server/url").and_then(Value::as_str) == Some(mcp.url.as_str())
     });
     let matched = matches.next()?;
-    matches.next().is_none().then_some(matched)
+    (matches.next().is_none() && layouts.get(source_name) == Some(matched)).then_some(matched)
 }
 
 pub(crate) fn can_encode_mcp(mcp: &McpToolset, request: &LlmRequest) -> bool {
-    // Anthropic's MCP connector requires HTTPS; plain HTTP is not supported.
-    // It also has no setting to require approval before tool calls.
+    validate_mcp(mcp, request).is_ok()
+}
+
+// Both preparation and encoding use these checks so rejected tools and their
+// history are removed together, before a cached body can restore them.
+fn validate_mcp<'a>(
+    mcp: &McpToolset,
+    request: &'a LlmRequest,
+) -> Result<Option<&'a Value>, &'static str> {
+    // Anthropic requires HTTPS and has no MCP approval setting.
     if !mcp.url.starts_with("https://") || mcp.require_approval == Some(true) {
-        return false;
+        return Err("MCP settings cannot be expressed by Anthropic");
     }
     let Some(source) = source_mcp_layout(mcp, request) else {
-        return !super::common::is_anthropic_request(request)
-            && mcp.require_approval == Some(false);
+        return if !super::common::is_anthropic_request(request)
+            && mcp.require_approval == Some(false)
+        {
+            Ok(None)
+        } else {
+            Err("MCP encoding requires an unambiguous Anthropic source layout")
+        };
     };
-    let Some(server) = source.get("server").and_then(Value::as_object) else {
-        return false;
+    let valid_server = source
+        .get("server")
+        .and_then(Value::as_object)
+        .is_some_and(|server| server.get("type").and_then(Value::as_str) == Some("url"));
+    if !valid_server
+        || source
+            .get("server_index")
+            .and_then(Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .is_none()
+        || !source.get("toolset").is_some_and(Value::is_object)
+    {
+        return Err("invalid Anthropic MCP source layout");
+    }
+    validate_mcp_configs(&source["toolset"])?;
+    Ok(Some(source))
+}
+
+fn validate_mcp_configs(toolset: &Value) -> Result<(), &'static str> {
+    let valid_config = |config: &Value| {
+        config.is_object()
+            && ["enabled", "defer_loading"]
+                .iter()
+                .all(|key| config.get(key).is_none_or(Value::is_boolean))
     };
-    let has_toolset = source.get("toolset").is_some_and(Value::is_object);
-    source.get("server_index").and_then(Value::as_u64).is_some()
-        && server.get("type").and_then(Value::as_str) == Some("url")
-        && has_toolset
+    if toolset
+        .get("default_config")
+        .is_some_and(|config| !valid_config(config))
+    {
+        return Err("MCP default_config requires an object with boolean settings");
+    }
+    if toolset.get("configs").is_some_and(|configs| {
+        configs
+            .as_object()
+            .is_none_or(|configs| configs.values().any(|config| !valid_config(config)))
+    }) {
+        return Err("MCP configs requires objects with boolean settings");
+    }
+    Ok(())
 }
 
 // Distinguishes tools we can normalize as functions from those that cannot be translated into other wire formats.

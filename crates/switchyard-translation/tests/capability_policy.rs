@@ -5,12 +5,14 @@ use serde_json::json;
 use switchyard_translation::util::validate_request_capabilities;
 use switchyard_translation::{
     ContentBlock, DiagnosticSeverity, FileSource, ImageSource, LlmRequest, LossyConversionPolicy,
-    MediaSource, Message, Role, TargetCapabilities, ToolCall, TranslationError, TranslationPolicy,
+    McpContent, MediaSource, Message, Role, TargetCapabilities, ToolCall, TranslationError,
+    TranslationPolicy,
 };
 
 #[derive(Clone, Copy, Debug)]
 enum CapabilityCase {
     Tools,
+    McpHistory,
     Images,
     Audio,
     Video,
@@ -19,8 +21,9 @@ enum CapabilityCase {
     StructuredOutput,
 }
 
-const CASES: [CapabilityCase; 7] = [
+const CASES: [CapabilityCase; 8] = [
     CapabilityCase::Tools,
+    CapabilityCase::McpHistory,
     CapabilityCase::Images,
     CapabilityCase::Audio,
     CapabilityCase::Video,
@@ -36,6 +39,12 @@ fn request_for(case: CapabilityCase) -> LlmRequest {
             id: "call_1".to_string(),
             name: "lookup".to_string(),
             arguments: json!({}),
+        })),
+        CapabilityCase::McpHistory => Some(ContentBlock::Mcp(McpContent::Listing {
+            server_name: "inventory".to_string(),
+            id: None,
+            tools: Vec::new(),
+            error: None,
         })),
         CapabilityCase::Images => Some(ContentBlock::Image {
             source: ImageSource::Url {
@@ -86,7 +95,9 @@ fn policy_for(
 ) -> TranslationPolicy {
     let mut target_capabilities = TargetCapabilities::default();
     match case {
-        CapabilityCase::Tools => target_capabilities.supports_tools = Some(is_supported),
+        CapabilityCase::Tools | CapabilityCase::McpHistory => {
+            target_capabilities.supports_tools = Some(is_supported);
+        }
         CapabilityCase::Images => target_capabilities.supports_images = Some(is_supported),
         CapabilityCase::Audio => target_capabilities.supports_audio = Some(is_supported),
         CapabilityCase::Video => target_capabilities.supports_video = Some(is_supported),
@@ -107,7 +118,9 @@ fn policy_for(
 
 fn expected_message(case: CapabilityCase) -> &'static str {
     match case {
-        CapabilityCase::Tools => "target format/profile does not support tools",
+        CapabilityCase::Tools | CapabilityCase::McpHistory => {
+            "target format/profile does not support tools"
+        }
         CapabilityCase::Images => "target format/profile does not support images",
         CapabilityCase::Audio => "target format/profile does not support audio",
         CapabilityCase::Video => "target format/profile does not support video",

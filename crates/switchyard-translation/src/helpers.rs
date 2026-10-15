@@ -37,9 +37,13 @@ pub fn decode_request(wire_format: WireFormat, body: &Value) -> Result<LlmReques
 
 /// Encodes a normalized request into `wire_format`'s JSON body.
 pub fn encode_request(request: &LlmRequest, wire_format: WireFormat) -> Result<Value> {
-    Ok(DEFAULT_TRANSLATION_ENGINE
-        .encode_request(wire_format, request, &DEFAULT_TRANSLATION_POLICY)?
-        .body)
+    let encoded = DEFAULT_TRANSLATION_ENGINE.encode_request(
+        wire_format,
+        request,
+        &DEFAULT_TRANSLATION_POLICY,
+    )?;
+    warn_on_diagnostics(wire_format, &encoded.diagnostics);
+    Ok(encoded.body)
 }
 
 /// Decodes a buffered `wire_format` response body into the neutral aggregate.
@@ -75,18 +79,29 @@ pub fn encode_aggregated_response_with_extensions(
     served_model: Option<&str>,
     request_extensions: &switchyard_protocol::ProviderExtensions,
 ) -> Result<Value> {
-    let mut body = DEFAULT_TRANSLATION_ENGINE
-        .encode_response_with_extensions(
-            wire_format,
-            agg,
-            request_extensions,
-            &DEFAULT_TRANSLATION_POLICY,
-        )?
-        .body;
+    let encoded = DEFAULT_TRANSLATION_ENGINE.encode_response_with_extensions(
+        wire_format,
+        agg,
+        request_extensions,
+        &DEFAULT_TRANSLATION_POLICY,
+    )?;
+    warn_on_diagnostics(wire_format, &encoded.diagnostics);
+    let mut body = encoded.body;
     if let (Some(model), Value::Object(object)) = (served_model, &mut body) {
         object.insert("model".to_string(), Value::String(model.to_string()));
     }
     Ok(body)
+}
+
+// These wrappers return only the body, so callers cannot inspect diagnostics.
+fn warn_on_diagnostics(format: WireFormat, diagnostics: &[crate::TranslationDiagnostic]) {
+    if !diagnostics.is_empty() {
+        tracing::warn!(
+            target_format = %format,
+            ?diagnostics,
+            "translation changed or dropped data"
+        );
+    }
 }
 
 /// A stream of wire-format event objects in one format — the unframed body of an

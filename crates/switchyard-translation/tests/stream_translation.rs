@@ -3430,3 +3430,94 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn mcp_streams_replay_natively_and_reject_cross_format_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let listing =
+        json!({"type": "mcp_list_tools", "id": "list_1", "server_label": "inventory", "tools": []});
+    let cases = [
+        (
+            WireFormat::OpenAiResponses,
+            vec![
+                json!({"type": "response.output_item.added", "output_index": 0, "item": listing}),
+                json!({"type": "response.output_item.done", "output_index": 0, "item": listing}),
+                json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "output": [listing]}}),
+            ],
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            vec![
+                json!({"type": "response.mcp_call_arguments.delta", "item_id": "call_1", "output_index": 0, "delta": "{}"}),
+                json!({"type": "response.mcp_call.failed", "item_id": "call_1", "output_index": 0}),
+            ],
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            vec![
+                json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed", "output": [listing]}}),
+            ],
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            vec![
+                json!({"type": "content_block_start", "index": 0, "content_block": {
+                    "type": "mcp_tool_use", "id": "call_1", "server_name": "inventory", "name": "lookup", "input": {}
+                }}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{}"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "message_stop"}),
+            ],
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            vec![
+                json!({"type": "content_block_start", "index": 0, "content_block": {
+                    "type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": true, "content": "Failed"
+                }}),
+                json!({"type": "message_stop"}),
+            ],
+        ),
+    ];
+    for (source, frames) in cases {
+        let mut decoder = StreamTranslationState::default();
+        let mut encoder = StreamTranslationState::default();
+        let mut replay = Vec::new();
+        for frame in &frames {
+            let decoded = engine.decode_stream_event(&mut decoder, source, frame.clone())?;
+            replay.extend(engine.encode_stream_event(&mut encoder, source, decoded)?);
+        }
+        assert_eq!(replay, frames);
+        for target in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            if source == target {
+                continue;
+            }
+            for preserved in [false, true] {
+                let mut decoder = StreamTranslationState::default();
+                let mut encoder = StreamTranslationState::default();
+                let mut output = Vec::new();
+                for frame in &frames {
+                    output.extend(if preserved {
+                        let decoded =
+                            engine.decode_stream_event(&mut decoder, source, frame.clone())?;
+                        engine.encode_stream_event(&mut encoder, target, decoded)?
+                    } else {
+                        engine.translate_event(&mut encoder, source, target, frame)?
+                    });
+                }
+                output.extend(engine.finish_stream(&mut encoder, target)?);
+                assert_eq!(output.len(), 1, "{source:?} -> {target:?}: {output:?}");
+                assert!(
+                    output[0]["error"].is_object() || output[0]["type"] == "error",
+                    "{output:?}"
+                );
+                assert!(encoder.errored);
+            }
+        }
+    }
+    Ok(())
+}

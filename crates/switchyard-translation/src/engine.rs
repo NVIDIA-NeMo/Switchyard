@@ -264,9 +264,7 @@ impl TranslationEngine {
         let target = target.into();
         let source_codec = self.stream_registry.codec(source.clone())?;
         let target_codec = self.stream_registry.codec(target.clone())?;
-        if let Err(error) =
-            crate::codecs::responses::validate_stream_output(&source, &target, event)
-        {
+        if let Err(error) = crate::codecs::stream::validate_stream_output(&source, &target, event) {
             return Ok(target_codec.encode_event(
                 state,
                 crate::LlmResponseChunk::DecodeError {

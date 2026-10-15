@@ -4886,16 +4886,29 @@ fn anthropic_reconstruction_preserves_mcp_connections_provider_tools_and_results
     let output = engine.encode_request(format, &request, &policy)?.body;
     assert!(output.get("mcp_servers").is_none());
     assert_eq!(output["tools"].as_array().ok_or("expected tools")?.len(), 1);
+    Ok(())
+}
 
+#[test]
+fn anthropic_mcp_servers_require_a_toolset_reference() {
     let unreferenced = json!({"model": "route", "max_tokens": 32,
         "mcp_servers": [{"type": "url", "name": "inventory", "url": "https://example.invalid/mcp"}],
         "messages": [{"role": "user", "content": "hello"}]});
     assert!(matches!(
-        engine.decode_request(format, &unreferenced, &policy),
+        TranslationEngine::default().decode_request(
+            WireFormat::AnthropicMessages,
+            &unreferenced,
+            &strict_normalized_policy()
+        ),
         Err(TranslationError::InvalidValue { .. })
     ));
+}
 
-    // Client tools keep their existing function conversion behavior.
+#[test]
+fn anthropic_bash_keeps_function_tool_conversion() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::AnthropicMessages;
+    let policy = strict_normalized_policy();
     let body = json!({"model": "route", "max_tokens": 32, "mcp_servers": [],
         "messages": [{"role": "user", "content": "hello"}],
         "tools": [{"name": "retained", "input_schema": {"type": "object"}},
@@ -5211,7 +5224,7 @@ fn responses_approval_default_is_not_silently_removed() -> TestResult {
         let decoded = engine
             .decode_request(
                 WireFormat::OpenAiResponses,
-                &mcp_request(tool),
+                &mcp_request(tool.clone()),
                 &strict_normalized_policy(),
             )?
             .request;
@@ -5227,6 +5240,27 @@ fn responses_approval_default_is_not_silently_removed() -> TestResult {
             ),
             Err(TranslationError::LossyConversion(_))
         ));
+        for preservation in [PreservationPolicy::InMemory, PreservationPolicy::Embed] {
+            let policy = TranslationPolicy {
+                preservation,
+                ..normalized_policy()
+            };
+            let anthropic = engine.translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &mcp_request(tool.clone()),
+                &policy,
+            )?;
+            assert!(!anthropic.diagnostics.is_empty());
+            assert!(anthropic.body.get("mcp_servers").is_none());
+            let back = engine.translate_request(
+                WireFormat::AnthropicMessages,
+                WireFormat::OpenAiResponses,
+                &anthropic.body,
+                &policy,
+            )?;
+            assert!(back.body.get("tools").is_none());
+        }
     }
     let mut body = mcp_request(mcp_definition());
     body["tool_choice"] = json!({"type": "mcp", "server_label": "inventory", "name": "lookup"});
@@ -5317,6 +5351,7 @@ fn opaque_definitions_replay_whole_and_drop_associated_foreign_history() -> Test
 #[test]
 fn per_tool_loading_uses_eager_fallback_without_loss_diagnostics() -> TestResult {
     let engine = TranslationEngine::default();
+    let policy = strict_normalized_policy();
     for (default, override_value, expected) in [
         (true, false, false),
         (false, true, false),
@@ -5332,47 +5367,39 @@ fn per_tool_loading_uses_eager_fallback_without_loss_diagnostics() -> TestResult
             WireFormat::AnthropicMessages,
             WireFormat::OpenAiResponses,
             &body,
-            &strict_normalized_policy(),
+            &policy,
         )?;
         assert!(encoded.diagnostics.is_empty());
         assert_eq!(encoded.body["tools"][0]["defer_loading"], expected);
         assert_eq!(encoded.body["tools"][0]["require_approval"], "never");
-        let mut decoded = engine
-            .decode_request(
-                WireFormat::AnthropicMessages,
-                &body,
-                &strict_normalized_policy(),
-            )?
-            .request;
-        let Tool::Mcp(mcp) = &mut decoded.tools[0] else {
-            panic!("expected MCP")
-        };
-        mcp.configs.entry("delete".into()).or_default().enabled = Some(false);
-        assert!(
-            engine
-                .encode_request(
-                    WireFormat::OpenAiResponses,
-                    &decoded,
-                    &strict_normalized_policy()
-                )
-                .is_err()
-        );
-        let Tool::Mcp(mcp) = &mut decoded.tools[0] else {
-            unreachable!()
-        };
-        mcp.default_config.enabled = Some(false);
-        mcp.configs.entry("lookup".into()).or_default().enabled = Some(true);
-        assert_eq!(
-            engine
-                .encode_request(
-                    WireFormat::OpenAiResponses,
-                    &decoded,
-                    &strict_normalized_policy()
-                )?
-                .body["tools"][0]["allowed_tools"],
-            json!(["lookup"])
-        );
     }
+    Ok(())
+}
+
+#[test]
+fn responses_allow_list_requires_disabled_defaults_for_tool_exclusions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = strict_normalized_policy();
+    let format = WireFormat::OpenAiResponses;
+    let mut request = engine
+        .decode_request(format, &mcp_request(mcp_definition()), &policy)?
+        .request;
+    let Tool::Mcp(mcp) = &mut request.tools[0] else {
+        panic!("expected MCP")
+    };
+    mcp.configs.entry("delete".into()).or_default().enabled = Some(false);
+    assert!(matches!(
+        engine.encode_request(format, &request, &policy),
+        Err(TranslationError::LossyConversion(_))
+    ));
+    let Tool::Mcp(mcp) = &mut request.tools[0] else {
+        unreachable!()
+    };
+    mcp.default_config.enabled = Some(false);
+    mcp.configs.entry("lookup".into()).or_default().enabled = Some(true);
+    let encoded = engine.encode_request(format, &request, &policy)?;
+    assert_eq!(encoded.body["tools"][0]["allowed_tools"], json!(["lookup"]));
+    assert!(encoded.diagnostics.is_empty());
     Ok(())
 }
 
@@ -5421,5 +5448,122 @@ fn mcp_request_ir_edits_do_not_restore_cached_connections_credentials_or_history
             assert!(!encoded.body.to_string().contains("synthetic-secret"));
         }
     }
+    Ok(())
+}
+
+#[test]
+fn anthropic_mcp_config_validation_preserves_edits_and_extra_fields() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::AnthropicMessages;
+    let mut body = engine
+        .translate_request(
+            WireFormat::OpenAiResponses,
+            format,
+            &mcp_request(mcp_definition()),
+            &normalized_policy(),
+        )?
+        .body;
+    body["tools"][0]["configs"] = json!({"lookup": {"enabled": true, "extra": "retained"}});
+    let mut request = engine
+        .decode_request(format, &body, &normalized_policy())?
+        .request;
+    let Tool::Mcp(mcp) = &mut request.tools[0] else {
+        panic!("expected MCP")
+    };
+    mcp.configs.get_mut("lookup").unwrap().enabled = Some(false);
+    let encoded = engine.encode_request(format, &request, &strict_normalized_policy())?;
+    assert_eq!(
+        encoded.body["tools"][0]["configs"]["lookup"],
+        json!({"enabled": false, "extra": "retained"})
+    );
+    for (field, malformed) in [
+        ("default_config", json!(null)),
+        ("configs", json!({"lookup": "malformed"})),
+        ("configs", json!({"lookup": {"enabled": "false"}})),
+    ] {
+        let mut invalid_body = body.clone();
+        invalid_body["tools"][0][field] = malformed.clone();
+        assert!(matches!(
+            engine.decode_request(format, &invalid_body, &normalized_policy()),
+            Err(TranslationError::InvalidValue { .. })
+        ));
+        let mut invalid_layout = request.clone();
+        invalid_layout
+            .extensions
+            .fields
+            .get_mut("switchyard_anthropic_mcp_layouts")
+            .unwrap()["inventory"]["toolset"][field] = malformed;
+        assert!(matches!(
+            engine.encode_request(format, &invalid_layout, &strict_normalized_policy()),
+            Err(TranslationError::LossyConversion(_))
+        ));
+        let encoded = engine.encode_request(format, &invalid_layout, &normalized_policy())?;
+        assert!(!encoded.diagnostics.is_empty());
+        assert!(encoded.body.get("mcp_servers").is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_mcp_renames_do_not_borrow_another_servers_layout() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::AnthropicMessages;
+    let body = json!({"model": "route", "messages": [{"role": "user", "content": "Check"}],
+        "mcp_servers": [
+            {"type": "url", "name": "a", "url": "https://a.example/mcp", "extra": "A"},
+            {"type": "url", "name": "b", "url": "https://b.example/mcp", "extra": "B"}
+        ], "tools": [{"type": "mcp_toolset", "mcp_server_name": "a"}, {"type": "mcp_toolset", "mcp_server_name": "b"}]
+    });
+    for remove_other in [false, true] {
+        let mut request = engine
+            .decode_request(format, &body, &normalized_policy())?
+            .request;
+        let Tool::Mcp(mcp) = &mut request.tools[0] else {
+            panic!("expected MCP")
+        };
+        mcp.name = "renamed".into();
+        mcp.url = "https://b.example/mcp".into();
+        if remove_other {
+            request.tools.truncate(1);
+        }
+        assert!(matches!(
+            engine.encode_request(format, &request, &strict_normalized_policy()),
+            Err(TranslationError::LossyConversion(_))
+        ));
+        let encoded = engine.encode_request(format, &request, &normalized_policy())?;
+        assert!(!encoded.diagnostics.is_empty());
+        assert!(!encoded.body.to_string().contains("renamed"));
+    }
+    let mut request = engine
+        .decode_request(format, &body, &normalized_policy())?
+        .request;
+    let Tool::Mcp(mcp) = &mut request.tools[0] else {
+        panic!("expected MCP")
+    };
+    mcp.name = "renamed".into();
+    let Tool::Mcp(other) = &mut request.tools[1] else {
+        panic!("expected MCP")
+    };
+    other.require_approval = Some(true);
+    let encoded = engine.encode_request(format, &request, &normalized_policy())?;
+    assert_eq!(
+        encoded.body["mcp_servers"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(encoded.body["mcp_servers"][0]["name"], "renamed");
+    assert_eq!(encoded.body["mcp_servers"][0]["extra"], "A");
+    let mut shared_url = body;
+    shared_url["mcp_servers"][1]["url"] = shared_url["mcp_servers"][0]["url"].clone();
+    let mut request = engine
+        .decode_request(format, &shared_url, &normalized_policy())?
+        .request;
+    let Tool::Mcp(mcp) = &mut request.tools[0] else {
+        panic!("expected MCP")
+    };
+    mcp.name = "renamed".into();
+    assert!(matches!(
+        engine.encode_request(format, &request, &strict_normalized_policy()),
+        Err(TranslationError::LossyConversion(_))
+    ));
     Ok(())
 }

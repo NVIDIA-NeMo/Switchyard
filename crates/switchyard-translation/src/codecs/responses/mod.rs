@@ -42,27 +42,6 @@ pub(crate) fn validate_response_output(
     Ok(())
 }
 
-// Native outputs have no neutral streaming representation; inspect them before discarding raw events.
-pub(crate) fn validate_stream_output(
-    source: &crate::FormatId,
-    target: &crate::FormatId,
-    event: &serde_json::Value,
-) -> crate::Result<()> {
-    if source.as_str() == crate::WireFormat::OpenAiResponses.as_str() && source != target {
-        let mut items = event
-            .get("item")
-            .into_iter()
-            .chain(event["response"]["output"].as_array().into_iter().flatten());
-        if items.any(|item| item["type"].as_str().is_some_and(is_native_output)) {
-            return Err(crate::TranslationError::UnsupportedTranslation {
-                from: source.clone(),
-                to: target.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
 // This is a transport envelope, not encryption. Keep it distinct from native OpenAI
 // ciphertext, and retain the original text because the signature covers that text.
 const ANTHROPIC_THINKING_PREFIX: &str = "switchyard:anthropic-thinking:v1:";
