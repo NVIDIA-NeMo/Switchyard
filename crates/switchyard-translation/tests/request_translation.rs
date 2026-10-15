@@ -5452,6 +5452,50 @@ fn mcp_request_ir_edits_do_not_restore_cached_connections_credentials_or_history
 }
 
 #[test]
+fn removed_mcp_tools_in_additional_namespaces_do_not_reappear() -> TestResult {
+    let engine = TranslationEngine::default();
+    let other = json!({"type": "custom", "name": "exec", "description": "Run",
+        "format": {"type": "text"}});
+    let mut tool = mcp_definition();
+    tool["authorization"] = json!("synthetic-secret");
+    let body = json!({"model": "route", "input": [
+        {"type": "additional_tools", "role": "developer", "tools": [
+            other, {"type": "namespace", "name": "remote", "tools": [tool]}
+        ]},
+        {"role": "user", "content": "Check stock"}
+    ]});
+    for preservation in [
+        PreservationPolicy::Disabled,
+        PreservationPolicy::InMemory,
+        PreservationPolicy::Embed,
+    ] {
+        let policy = TranslationPolicy {
+            preservation,
+            ..strict_normalized_policy()
+        };
+        let mut request = engine
+            .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+            .request;
+        assert!(
+            request
+                .tools
+                .iter()
+                .any(|tool| matches!(tool, Tool::Mcp(_)))
+        );
+        request.tools.retain(|tool| !matches!(tool, Tool::Mcp(_)));
+        let encoded = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+        assert!(
+            !encoded.body.to_string().contains("synthetic-secret"),
+            "{preservation:?}"
+        );
+        assert!(!encoded.body.to_string().contains("inventory"));
+        assert_eq!(encoded.body["tools"], json!([other]));
+        assert!(encoded.diagnostics.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
 fn anthropic_mcp_config_validation_preserves_edits_and_extra_fields() -> TestResult {
     let engine = TranslationEngine::default();
     let format = WireFormat::AnthropicMessages;

@@ -1997,3 +1997,53 @@ fn reasoning_ids_stay_unique_across_mcp_segments() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn anthropic_nested_mcp_content_obeys_loss_policy() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut response = engine
+        .decode_response(
+            WireFormat::OpenAiResponses,
+            &mcp_response(json!([mcp_call()])),
+            &normalized_policy(),
+        )?
+        .response;
+    let nested = response.outputs[0].content[0].clone();
+    let ContentBlock::Mcp(McpContent::Result(result)) = &mut response.outputs[0].content[1] else {
+        return Err("expected MCP result".into());
+    };
+    result.content.push(nested);
+    let mut request = engine
+        .decode_request(
+            WireFormat::OpenAiResponses,
+            &mcp_request(mcp_definition()),
+            &normalized_policy(),
+        )?
+        .request;
+    request.messages[0].role = switchyard_translation::Role::Assistant;
+    request.messages[0].content = response.outputs[0].content.clone();
+    let target = WireFormat::AnthropicMessages;
+    assert!(matches!(
+        engine.encode_response(target, &response, &strict_normalized_policy()),
+        Err(TranslationError::LossyConversion(_))
+    ));
+    assert!(matches!(
+        engine.encode_request(target, &request, &strict_normalized_policy()),
+        Err(TranslationError::LossyConversion(_))
+    ));
+    let encoded_response = engine.encode_response(target, &response, &normalized_policy())?;
+    let encoded_request = engine.encode_request(target, &request, &normalized_policy())?;
+    for diagnostics in [&encoded_response.diagnostics, &encoded_request.diagnostics] {
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("nested MCP"));
+    }
+    assert_eq!(
+        encoded_response.body["content"][1]["content"],
+        json!([{"type": "text", "text": "12"}])
+    );
+    assert_eq!(
+        encoded_request.body["messages"][0]["content"],
+        encoded_response.body["content"]
+    );
+    Ok(())
+}

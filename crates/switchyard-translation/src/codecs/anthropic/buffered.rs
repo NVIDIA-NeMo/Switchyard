@@ -1249,12 +1249,19 @@ fn encode_one_anthropic_tool_result_block(
         ContentBlock::Unknown { raw, .. } => {
             Ok(vec![json!({"type": "text", "text": json_string(raw)})])
         }
+        ContentBlock::Mcp(_) => {
+            push_lossy(
+                diagnostics,
+                policy,
+                "nested MCP content cannot be represented inside an Anthropic tool result",
+            )?;
+            Ok(Vec::new())
+        }
         ContentBlock::Reasoning { .. }
         | ContentBlock::Audio { .. }
         | ContentBlock::Video { .. }
         | ContentBlock::ToolCall(_)
-        | ContentBlock::ToolResult(_)
-        | ContentBlock::Mcp(_) => Ok(Vec::new()),
+        | ContentBlock::ToolResult(_) => Ok(Vec::new()),
     }
 }
 

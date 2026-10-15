@@ -381,9 +381,10 @@ fn has_unsupported_preserved_tools(request: &LlmRequest, target: WireFormat) -> 
 
 fn has_mcp_tools(tools: &Value) -> bool {
     tools.as_array().is_some_and(|tools| {
-        tools
-            .iter()
-            .any(|tool| matches!(tool["type"].as_str(), Some("mcp" | "mcp_toolset")))
+        tools.iter().any(|tool| {
+            matches!(tool["type"].as_str(), Some("mcp" | "mcp_toolset"))
+                || (tool["type"] == "namespace" && has_mcp_tools(&tool["tools"]))
+        })
     })
 }
 
