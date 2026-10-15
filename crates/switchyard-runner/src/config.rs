@@ -846,6 +846,7 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
             "{client} api_key_env must not be empty"
         )));
     }
+    // A name with `=` is often a pasted `NAME=key` line, so this error omits the name.
     if variable.contains(['\0', '=']) {
         return Err(RunnerError::configuration(format!(
             "{client} api_key_env must not contain '=' or NUL"
@@ -2078,13 +2079,16 @@ confidence_threshold = 0.5
         }
         assert!(message.contains("is empty"));
 
-        // macOS reads `FOO` for the name `FOO=x`, so the config would use another variable.
+        // macOS reads `FOO` for the name `FOO=x`, so the config would use another variable. A
+        // name with `=` is often a pasted `NAME=key` line, so the error leaves it out.
         let with_equals = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
-            "base_url = \"https://example.test/v1\"\napi_key_env = \"SWITCHYARD_CONFIG_TEST_KEY=x\"",
+            "base_url = \"https://example.test/v1\"\napi_key_env = \"NVIDIA_API_KEY=DUMMY_SECRET_DO_NOT_LOG\"",
             1,
         );
-        assert!(error_message(&with_equals).contains("api_key_env must not contain '=' or NUL"));
+        let message = error_message(&with_equals);
+        assert!(message.contains("llm client primary api_key_env must not contain '=' or NUL"));
+        assert!(!message.contains("DUMMY_SECRET_DO_NOT_LOG"), "{message}");
     }
 
     // `VarError::NotUnicode` holds the variable's value, so printing that error prints the key.
