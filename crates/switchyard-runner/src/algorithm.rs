@@ -445,10 +445,11 @@ pub enum AlgorithmSpec {
         /// The efficient tier.
         efficient_target: String,
     },
-    /// A judge picks the tier at each user turn; a stage router runs the turns within it.
+    /// An optional judge picks the default tier before stage routes execution.
     Composite {
-        /// Judge that picks the tier. Called through its own target.
-        classifier: StageClassifierConfig,
+        /// Judge that picks the tier. Omit for efficient-first stage routing alone.
+        #[serde(default)]
+        classifier: Option<StageClassifierConfig>,
         /// The stage router the judge hands off to.
         stage: StageTierConfig,
         /// Separate policy for delegated sub-agent work.
@@ -647,7 +648,10 @@ impl AlgorithmSpec {
                 .decision
                 .as_ref()
                 .map(|decision| (config.classifier_target.as_str(), decision)),
-            Self::Composite { classifier, .. }
+            Self::Composite {
+                classifier: Some(classifier),
+                ..
+            }
             | Self::StageRouter {
                 classifier: Some(classifier),
                 ..
@@ -762,7 +766,10 @@ impl AlgorithmSpec {
                 classifier: Some(classifier),
                 ..
             } => names.push(&classifier.target),
-            Self::Composite { classifier, .. } => {
+            Self::Composite {
+                classifier: Some(classifier),
+                ..
+            } => {
                 names.push(&classifier.target);
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
@@ -841,15 +848,20 @@ impl AlgorithmSpec {
             ]),
             Self::Composite {
                 classifier, stage, ..
-            } => category_models([
-                (Category::Judge, vec![classifier.target.clone()]),
-                (Category::Capable, vec![stage.capable_target.clone()]),
-                (Category::Efficient, vec![stage.efficient_target.clone()]),
-                (
-                    Category::Any,
-                    vec![stage.capable_target.clone(), stage.efficient_target.clone()],
-                ),
-            ]),
+            } => {
+                let mut models = category_models([
+                    (Category::Capable, vec![stage.capable_target.clone()]),
+                    (Category::Efficient, vec![stage.efficient_target.clone()]),
+                    (
+                        Category::Any,
+                        vec![stage.capable_target.clone(), stage.efficient_target.clone()],
+                    ),
+                ]);
+                if let Some(classifier) = classifier {
+                    models.insert(Category::Judge, vec![classifier.target.clone()]);
+                }
+                models
+            }
             Self::Advisor {
                 executor_target,
                 advisor_target,
@@ -1516,17 +1528,21 @@ fn build_algorithm(
             }
             stage_config.tool_semantics = stage.tool_semantics.clone();
             stage_config.handoff_notes = stage.handoff_notes.clone();
-            let config = CompositeRouterConfig {
-                judge: classifier.task_classifier_config(route_name, stage, targets)?,
-                stage: stage_config,
+            let algorithm = match classifier {
+                Some(classifier) => CompositeRouter::new(CompositeRouterConfig {
+                    judge: classifier.task_classifier_config(route_name, stage, targets)?,
+                    stage: stage_config,
+                })
+                .map(|router| Arc::new(router) as Arc<dyn Algorithm>),
+                None => StageRouter::new(stage_config)
+                    .map(|router| Arc::new(router) as Arc<dyn Algorithm>),
             };
-            let algorithm = CompositeRouter::new(config).map_err(|error| {
+            let parent = algorithm.map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("composite route {route_name}: {error}"),
                     error,
                 )
             })?;
-            let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
         AlgorithmSpec::Advisor {

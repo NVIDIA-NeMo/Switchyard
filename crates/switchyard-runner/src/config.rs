@@ -1235,6 +1235,102 @@ evidence = { description = "candidate comparison" }
         }
     }
 
+    fn composite_without_classifier() -> String {
+        composite_config()
+            .replace(
+                "[routes.composed.classifier]\ntarget = \"tier_judge\"\nbase_threshold = 0.5\nclassify_trigger = \"user_turn\"\n",
+                "",
+            )
+            .replace(
+                "[targets.tier_judge]\nid = \"tier-judge/model\"\nllm_client = \"primary\"\n",
+                "",
+            )
+    }
+
+    #[tokio::test]
+    async fn composite_without_classifier_routes_tools_without_a_judge() -> RunnerResult<()> {
+        use switchyard_protocol::{ContentBlock, Message, Request, Role, ToolCall, ToolResult};
+
+        let source = composite_without_classifier();
+        let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
+        let spec = &deployment.routes["composed"].algorithm;
+        assert_eq!(spec.callable_target_names(), ["strong", "weak"]);
+        assert!(spec.decision_judge().is_none());
+        let runner = Runner::from_toml(&source)?;
+        let route = runner.route("switchyard/hier").unwrap();
+        assert!(route.models().models_for(&Category::Judge).is_empty());
+
+        let mut request = Request::default();
+        request
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "fix the build"));
+        assert_eq!(
+            route.decide(request.clone()).await?.selected_model_ids[0],
+            "weak/model"
+        );
+        for (index, failed, output, expected) in [
+            (
+                1,
+                true,
+                "fatal runtime error: out of memory",
+                "strong/model",
+            ),
+            (2, false, "All tests passed", "strong/model"),
+            (3, false, "All tests passed", "strong/model"),
+            (4, false, "All tests passed", "weak/model"),
+        ] {
+            let id = format!("test-{index}");
+            request.llm_request.messages.push(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: id.clone(),
+                    name: "Bash".into(),
+                    arguments: json!({"command": "cargo test"}),
+                })],
+            });
+            request.llm_request.messages.push(Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: id,
+                    content: vec![ContentBlock::Text {
+                        text: output.into(),
+                    }],
+                    is_error: Some(failed),
+                })],
+            });
+            let outcome = route.decide(request.clone()).await?;
+            assert_eq!(outcome.selected_model_ids[0], expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn optional_composite_classifier_preserves_validation_and_subagents() -> RunnerResult<()> {
+        let source = composite_without_classifier();
+        let configured = with_subagent_passthrough(&source, "composed");
+        let runner = Runner::from_toml(&configured)?;
+        let models = runner.route("switchyard/hier").unwrap().models();
+        assert_eq!(
+            models.subagent_models_for(&Category::Any),
+            [ModelId::from("strong/model")]
+        );
+        assert!(models.models_for(&Category::Judge).is_empty());
+        for invalid in [
+            source.replace("confidence_threshold = 0.5", "confidence_threshold = 1.5"),
+            source.replace("new = [\"send_message\"]", "new = [\"Bash\"]"),
+            format!("{source}\n[routes.composed.classifier]\n"),
+            composite_config().replace("target = \"tier_judge\"", "target = \"missing_judge\""),
+            composite_config().replace(
+                "classify_trigger = \"user_turn\"",
+                "classify_trigger = \"every_request\"",
+            ),
+        ] {
+            assert!(Runner::from_toml(&invalid).is_err());
+        }
+        Ok(())
+    }
+
     #[test]
     fn composite_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
         let runner = runner_from_toml(&composite_config())?;
