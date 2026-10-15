@@ -129,6 +129,12 @@ Clients can send `x-switchyard-origin: codex-cli` (or another client label) to i
 `"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.
 Older records without `origin` remain readable by the session stats endpoint.
 
+A child agent can share its parent's session ID. To tell their calls apart, records also include
+the agent identity from the request metadata: `agent_id`, `parent_agent_id`, `agent_kind`,
+`agent_role`, and `delegated` (`true` when the request carries delegated sub-agent work). When the client
+cannot identify its child agents, the record has `"subagent_identity_unsupported": true`. Each of
+these fields is left out when it is not set, so records without agent identity are unchanged.
+
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
 `base_threshold` is required, and anything the judge cannot decide routes to `strong_target`:
