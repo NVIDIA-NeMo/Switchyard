@@ -62,7 +62,9 @@ fn category_models_from_python(
 }
 
 /// Convert Python-owned headers into the request metadata expected by libsy.
-fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::HeaderMap> {
+pub(crate) fn header_map_from_python(
+    headers: &HashMap<String, String>,
+) -> PyResult<http::HeaderMap> {
     let mut result = http::HeaderMap::new();
     for (name, value) in headers {
         let name = HeaderName::from_bytes(name.as_bytes())
@@ -439,7 +441,7 @@ impl PyLlmResponse {
     }
 }
 
-fn ffi_error(error: PyErr) -> LlmClientError {
+pub(crate) fn ffi_error(error: PyErr) -> LlmClientError {
     LlmClientError::Ffi {
         source: Box::new(error),
     }
