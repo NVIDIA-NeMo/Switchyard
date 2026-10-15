@@ -277,9 +277,6 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_provider_body(&mut body);
         }
-        if matches!(endpoint, UpstreamEndpoint::Completion) {
-            define_tools_for_replayed_calls(&mut body, wire_format);
-        }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
         if matches!(backend, Backend::Anthropic(_)) {
@@ -1077,85 +1074,6 @@ fn ensure_responses_function_tool_description(object: &mut Map<String, Value>) {
     }
 }
 
-/// Description of a tool definition that Switchyard adds only so that earlier calls to the
-/// tool stay valid.
-const REPLAYED_TOOL_DESCRIPTION: &str =
-    "Earlier calls to this tool appear in the conversation. It is not available in this request.";
-
-// When a request defines no tools, this adds a definition for each tool that its history
-// calls and sets `tool_choice` to `none`. Codex compacts a thread by resending its tool-call
-// history with an empty `tools` list, and LiteLLM in front of Bedrock Claude rejects that on
-// both OpenAI APIs. This edits the outbound body because a same-format request is otherwise
-// sent verbatim. Bedrock has no `tool_choice` of `none` and LiteLLM drops it, so a Bedrock
-// model can still call one of these tools if the prompt asks it to.
-fn define_tools_for_replayed_calls(body: &mut Value, wire_format: WireFormat) {
-    let Value::Object(object) = body else {
-        return;
-    };
-    if object
-        .get("tools")
-        .and_then(Value::as_array)
-        .is_some_and(|tools| !tools.is_empty())
-    {
-        return;
-    }
-    let mut seen = BTreeSet::new();
-    let tools: Vec<Value> = match wire_format {
-        WireFormat::OpenAiResponses => {
-            let items = object
-                .get("input")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            // A Responses-lite request defines its tools inside `input`.
-            if items.iter().any(|item| item["type"] == "additional_tools") {
-                return;
-            }
-            items
-                .iter()
-                .filter_map(|item| Some((item.get("type")?.as_str()?, item.get("name")?.as_str()?)))
-                .filter(|(kind, name)| {
-                    matches!(*kind, "function_call" | "custom_tool_call") && seen.insert(*name)
-                })
-                .map(|(kind, name)| match kind {
-                    "function_call" => json!({
-                        "type": "function",
-                        "name": name,
-                        "description": REPLAYED_TOOL_DESCRIPTION,
-                        "parameters": {"type": "object"},
-                    }),
-                    _ => json!({"type": "custom", "name": name, "description": REPLAYED_TOOL_DESCRIPTION}),
-                })
-                .collect()
-        }
-        WireFormat::OpenAiChat => object
-            .get("messages")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|message| message.get("tool_calls")?.as_array())
-            .flatten()
-            .filter_map(|call| call.pointer("/function/name")?.as_str())
-            .filter(|name| seen.insert(*name))
-            .map(|name| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": REPLAYED_TOOL_DESCRIPTION,
-                        "parameters": {"type": "object"},
-                    },
-                })
-            })
-            .collect(),
-        WireFormat::AnthropicMessages => return,
-    };
-    if !tools.is_empty() {
-        object.insert("tools".to_string(), Value::Array(tools));
-        object.insert("tool_choice".to_string(), json!("none"));
-    }
-}
-
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
 //
 // A router can serve earlier turns of a session from an OpenAI-format target and
@@ -1743,69 +1661,6 @@ mod tests {
             body["messages"][2]["content"][0]["cache_control"],
             json!({"type": "ephemeral"})
         );
-    }
-
-    // A gateway in front of Bedrock rejects tool-call history in a request with no tools, so
-    // the client defines each called tool. Requests with their own tool definitions, with no
-    // tool calls, or bound for an Anthropic backend keep their bodies.
-    #[test]
-    fn replayed_tool_calls_get_definitions_only_when_the_request_has_none() {
-        let custom =
-            json!({"type": "custom_tool_call", "call_id": "c1", "name": "exec", "input": "ls"});
-        let function =
-            json!({"type": "function_call", "call_id": "c2", "name": "shell", "arguments": "{}"});
-        let mut responses =
-            json!({"tools": [], "tool_choice": "auto", "input": [custom, function, function]});
-        define_tools_for_replayed_calls(&mut responses, WireFormat::OpenAiResponses);
-        let defined: Vec<_> = responses["tools"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|tool| (&tool["type"], &tool["name"]))
-            .collect();
-        assert_eq!(
-            defined,
-            [
-                (&json!("custom"), &json!("exec")),
-                (&json!("function"), &json!("shell"))
-            ]
-        );
-        assert_eq!(responses["tool_choice"], "none");
-
-        let shell = json!({"type": "function", "function": {"name": "shell", "arguments": "{}"}});
-        let mut chat = json!({"messages": [{"role": "assistant", "tool_calls": [shell, shell]}]});
-        define_tools_for_replayed_calls(&mut chat, WireFormat::OpenAiChat);
-        assert_eq!(chat["tools"].as_array().map(Vec::len), Some(1));
-        assert_eq!(chat["tools"][0]["function"]["name"], "shell");
-        assert_eq!(chat["tool_choice"], "none");
-
-        let anthropic_history = json!([
-            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}
-        ]);
-        for (body, format) in [
-            (
-                json!({"tools": [{"type": "function", "name": "own"}], "tool_choice": "auto", "input": [function]}),
-                WireFormat::OpenAiResponses,
-            ),
-            // A Responses-lite request defines its tools inside `input`.
-            (
-                json!({"input": [{"type": "additional_tools", "tools": []}, function]}),
-                WireFormat::OpenAiResponses,
-            ),
-            (
-                json!({"tools": [], "input": [{"type": "message", "role": "user", "content": "hi"}]}),
-                WireFormat::OpenAiResponses,
-            ),
-            (
-                json!({"messages": anthropic_history}),
-                WireFormat::AnthropicMessages,
-            ),
-        ] {
-            let mut edited = body.clone();
-            define_tools_for_replayed_calls(&mut edited, format);
-            assert_eq!(edited, body, "{format}");
-        }
     }
 
     // A request that pins `format` in its metadata, so the client resolves that
