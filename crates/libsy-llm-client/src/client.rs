@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use http::StatusCode;
 use reqwest::RequestBuilder;
-use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::{Map, Value, json};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -33,6 +33,8 @@ use crate::raw::RawResponse;
 
 // Caller headers safe to send when caller auth forwarding is disabled.
 const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id"];
+
+const LITELLM_SESSION_ID_HEADER: &str = "x-litellm-session-id";
 
 // Headers tied to the inbound connection, destination, or body. The HTTP client
 // must rebuild these for the upstream request, even when forwarding auth.
@@ -922,6 +924,7 @@ fn forward_metadata_headers(
     metadata: Option<&Metadata>,
     backend: &Backend,
 ) -> RequestBuilder {
+    let builder = add_litellm_session_id(builder, metadata);
     let Some(headers) = metadata.and_then(|metadata| metadata.http_headers.as_ref()) else {
         return builder;
     };
@@ -939,6 +942,23 @@ fn forward_metadata_headers(
         forwarded.append(name, value.clone());
     }
     builder.headers(forwarded)
+}
+
+// LiteLLM's ChatGPT provider sends this id as the upstream `session_id`, which
+// keeps a conversation on one prompt cache. Without it, LiteLLM picks a new id
+// per call and most of the prompt misses the cache. The agent id comes first
+// because each child thread has its own prompt prefix.
+fn add_litellm_session_id(builder: RequestBuilder, metadata: Option<&Metadata>) -> RequestBuilder {
+    let id = metadata.and_then(|metadata| {
+        metadata
+            .agent_id
+            .as_deref()
+            .or(metadata.session_id.as_deref())
+    });
+    match id.and_then(|id| HeaderValue::from_str(id).ok()) {
+        Some(value) => builder.header(LITELLM_SESSION_ID_HEADER, value),
+        None => builder,
+    }
 }
 
 // Adds the backend's custom per-call headers.
@@ -2822,6 +2842,82 @@ mod tests {
         let received = received.first().ok_or("expected one upstream request")?;
         assert!(!received.headers.contains_key("x-goog-api-key"));
         assert!(!received.headers.contains_key("x-custom-internal-secret"));
+        Ok(())
+    }
+
+    // Sends one call with `metadata` and returns the `x-litellm-session-id` the
+    // upstream received.
+    async fn litellm_session_id_sent_with(
+        metadata: Option<Metadata>,
+    ) -> std::result::Result<Option<http::HeaderValue>, Box<dyn Error + Sync + Send + 'static>>
+    {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1", "model": "gpt",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {}
+            })))
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map(&format!("{}/v1", server.uri())))?;
+        let mut request = request_for(Some("gpt"), false);
+        request.metadata = metadata;
+        client.call_rewrite_model(request, None).await?;
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let received = received.first().ok_or("expected one upstream request")?;
+        Ok(received.headers.get("x-litellm-session-id").cloned())
+    }
+
+    #[tokio::test]
+    async fn litellm_session_id_prefers_the_agent_id()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let sent = litellm_session_id_sent_with(Some(Metadata {
+            session_id: Some("root-session".to_string()),
+            agent_id: Some("child-thread".to_string()),
+            ..Default::default()
+        }))
+        .await?;
+        assert_eq!(sent, Some(http::HeaderValue::from_static("child-thread")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn litellm_session_id_falls_back_to_the_session_id()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let sent = litellm_session_id_sent_with(Some(Metadata {
+            session_id: Some("root-session".to_string()),
+            ..Default::default()
+        }))
+        .await?;
+        assert_eq!(sent, Some(http::HeaderValue::from_static("root-session")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn litellm_session_id_is_absent_without_an_id()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        assert_eq!(litellm_session_id_sent_with(None).await?, None);
+        assert_eq!(
+            litellm_session_id_sent_with(Some(Metadata::default())).await?,
+            None
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn litellm_session_id_skips_an_id_that_is_not_a_valid_header()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let sent = litellm_session_id_sent_with(Some(Metadata {
+            session_id: Some("bad\nid".to_string()),
+            ..Default::default()
+        }))
+        .await?;
+        assert_eq!(sent, None);
         Ok(())
     }
 
