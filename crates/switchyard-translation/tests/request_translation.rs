@@ -17,6 +17,106 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn anthropic_server_tools_survive_request_reconstruction() -> TestResult {
+    use switchyard_translation::{InstructionBlock, Role, Tool};
+
+    let engine = TranslationEngine::default();
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        for stream in [false, true] {
+            let mut body = json!({
+                "model": "route", "max_tokens": 400, "stream": stream,
+                "messages": [{"role": "user", "content": "Search before editing."}],
+                "tools": [
+                    {"type": "web_search_20250305", "name": "web_search", "max_uses": 1,
+                     "allowed_domains": ["rust-lang.org"]},
+                    {"type": "custom", "name": "edit", "description": "Edit a file",
+                     "input_schema": {"type": "object"}},
+                    {"type": "future_server_tool", "settings": {"enabled": true}}
+                ]
+            });
+            let mut request = engine
+                .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+                .request;
+            assert!(matches!(&request.tools[0], Tool::Provider { provider, raw }
+                if provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                    && raw == &body["tools"][0]));
+            let Tool::Function(function) = &mut request.tools[1] else {
+                panic!("custom tools must remain editable functions");
+            };
+            function.description = Some("Updated edit description".into());
+            request.instructions.push(InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: "Plan first.".into(),
+                }],
+            });
+            request.preservation.requests.clear();
+            let output = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+            body["tools"][1].as_object_mut().unwrap().remove("type");
+            body["tools"][1]["description"] = json!("Updated edit description");
+            assert_eq!(output.body["tools"], body["tools"]);
+            assert_eq!(output.body["stream"].as_bool().unwrap_or(false), stream);
+            assert_eq!(output.body["system"], json!("Plan first."));
+
+            request.tools.remove(0);
+            let output = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+            assert_eq!(
+                output.body["tools"],
+                json!([body["tools"][1], body["tools"][2]])
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_server_tools_are_rejected_for_other_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route", "max_tokens": 400,
+        "messages": [{"role": "user", "content": "Search the web."}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}]
+    });
+    for lossy_conversion_policy in [
+        LossyConversionPolicy::AllowWithDiagnostics,
+        LossyConversionPolicy::Reject,
+    ] {
+        let policy = TranslationPolicy {
+            lossy_conversion_policy,
+            ..normalized_policy()
+        };
+        for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+            assert!(matches!(
+                engine.translate_request(WireFormat::AnthropicMessages, target, &body, &policy),
+                Err(TranslationError::LossyConversion(_))
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_rejects_provider_tools_from_other_formats() {
+    use switchyard_translation::{LlmRequest, Tool};
+
+    let request = LlmRequest {
+        tools: vec![Tool::Provider {
+            provider: WireFormat::OpenAiResponses.into(),
+            raw: json!({"type": "web_search"}),
+        }],
+        ..LlmRequest::default()
+    };
+    assert!(matches!(
+        TranslationEngine::default().encode_request(
+            WireFormat::AnthropicMessages,
+            &request,
+            &normalized_policy()
+        ),
+        Err(TranslationError::LossyConversion(_))
+    ));
+}
+
+#[test]
 fn openai_chat_rejects_mcp_history_before_text_only_returns() {
     use switchyard_translation::{LlmRequest, McpContent, Message, Role};
 
