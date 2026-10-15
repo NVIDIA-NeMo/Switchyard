@@ -16,9 +16,8 @@ use serde_json::{Map, Value};
 use crate::format::FormatId;
 
 /// Actor role normalized across provider APIs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, strum_macros::Display)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
 pub enum Role {
     /// System-level instructions.
     System,
