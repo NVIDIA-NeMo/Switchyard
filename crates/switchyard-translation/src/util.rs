@@ -136,6 +136,21 @@ pub fn stable_id(prefix: &str, counter: usize) -> String {
     format!("{prefix}_{counter:08}")
 }
 
+/// Finds the first available stable ID, starting at the supplied counter.
+pub(crate) fn unused_stable_id(
+    prefix: &str,
+    mut counter: usize,
+    mut is_used: impl FnMut(&str) -> bool,
+) -> String {
+    loop {
+        let id = stable_id(prefix, counter);
+        if !is_used(&id) {
+            return id;
+        }
+        counter += 1;
+    }
+}
+
 /// Serializes JSON values into provider argument strings.
 pub fn json_string(value: &Value) -> String {
     match value {

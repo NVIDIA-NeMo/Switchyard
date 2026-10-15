@@ -37,7 +37,9 @@ struct Gateway {
 
 impl Gateway {
     async fn start() -> TestResult<Self> {
-        let app = Router::new().route("/v1/responses", post(gateway));
+        let app = Router::new()
+            .route("/v1/responses", post(gateway))
+            .route("/v1/messages", post(mcp_gateway));
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let root = format!("http://{}", listener.local_addr()?);
         let task = tokio::spawn(async move { axum::serve(listener, app).await });
@@ -52,7 +54,7 @@ impl Drop for Gateway {
 }
 
 /// Builds the server from a config file, as `switchyard-server --config` does.
-fn app(gateway: &Gateway) -> TestResult<Router> {
+fn app(gateway: &Gateway, format: &str) -> TestResult<Router> {
     let mut config = tempfile::Builder::new().suffix(".toml").tempfile()?;
     write!(
         config,
@@ -60,7 +62,7 @@ fn app(gateway: &Gateway) -> TestResult<Router> {
 schema_version = 1
 
 [llm_clients.gateway]
-format = "openai_responses"
+format = "{format}"
 base_url = "{root}/v1"
 max_retries = 0
 
@@ -188,7 +190,7 @@ fn function_call(index: u64, arguments: &str) -> (Vec<Value>, Value) {
 #[tokio::test]
 async fn codex_tool_call_streams_reach_response_completed() -> TestResult {
     let gateway = Gateway::start().await?;
-    let app = app(&gateway)?;
+    let app = app(&gateway, "openai_responses")?;
     for route in CLAUDE_ROUTES {
         let (status, body) = post_responses(&app, &codex_turn(route)).await?;
         assert_eq!(status, StatusCode::OK, "{route}: {body}");
@@ -217,6 +219,63 @@ async fn codex_tool_call_streams_reach_response_completed() -> TestResult {
                 (&json!("shell"), &json!(r#"{"cmd": "pwd"}"#))
             ],
             "{route}"
+        );
+    }
+    Ok(())
+}
+
+async fn mcp_gateway(Json(body): Json<Value>) -> Response {
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["mcp_servers"][0]["name"], "inventory");
+    let frames = vec![
+        json!({"type": "message_start", "message": {"id": "msg_mcp", "model": body["model"], "usage": {"input_tokens": 4, "output_tokens": 0}}}),
+        json!({"type": "content_block_start", "index": 0, "content_block": {"type": "mcp_tool_use", "id": "call_1", "server_name": "inventory", "name": "lookup", "input": {}}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"sku\":"}}),
+        json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "\"widget\"}"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "content_block_start", "index": 1, "content_block": {"type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": false, "content": "12"}}),
+        json!({"type": "content_block_stop", "index": 1}),
+        json!({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": "12 widgets"}}),
+        json!({"type": "content_block_stop", "index": 2}),
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 3}}),
+        json!({"type": "message_stop"}),
+    ];
+    Sse::new(futures_util::stream::iter(frames.into_iter().map(
+        |frame| Ok::<Event, Infallible>(Event::default().data(frame.to_string())),
+    )))
+    .into_response()
+}
+
+#[tokio::test]
+async fn mcp_streams_cross_the_client_and_server_boundary() -> TestResult {
+    let gateway = Gateway::start().await?;
+    let app = app(&gateway, "anthropic_messages")?;
+    for route in CLAUDE_ROUTES {
+        let (status, body) = post_responses(&app, &json!({
+            "model": route, "stream": true, "input": "Check stock", "tools": [{
+                "type": "mcp", "server_label": "inventory", "server_url": "https://inventory.example/mcp", "require_approval": "never"
+            }]
+        })).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let frames = sse_events(&body);
+        assert!(
+            !frames.iter().any(|frame| frame["type"] == "error"),
+            "{body}"
+        );
+        let completed = frames.last().ok_or("missing response completion")?;
+        assert_eq!(completed["type"], "response.completed", "{body}");
+        assert_eq!(completed["response"]["output"][0]["type"], "mcp_call");
+        assert_eq!(completed["response"]["output"][0]["output"], "12");
+        assert_eq!(
+            completed["response"]["output"][1]["content"][0]["text"],
+            "12 widgets"
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame["type"] == "response.mcp_call.completed")
+                .count(),
+            1
         );
     }
     Ok(())

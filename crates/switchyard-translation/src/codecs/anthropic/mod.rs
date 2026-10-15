@@ -9,6 +9,7 @@ use crate::{LlmRequest, McpToolset, Tool};
 
 mod buffered;
 mod stream;
+pub(crate) use buffered::decode_anthropic_content_block;
 
 pub use buffered::AnthropicMessagesCodec;
 pub use stream::AnthropicMessagesStreamCodec;

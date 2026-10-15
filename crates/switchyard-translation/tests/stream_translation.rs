@@ -16,7 +16,7 @@ use switchyard_translation::{
 
 use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
-type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
 fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {
@@ -1683,7 +1683,7 @@ fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestRes
             accumulator.push(chunk);
         }
     }
-    let aggregate = accumulator.finish();
+    let aggregate = accumulator.try_finish()?;
 
     assert_eq!(
         aggregate.outputs[0].stop_reason,
@@ -1747,7 +1747,7 @@ fn responses_buffered_and_streamed_outputs_match() -> TestResult {
         }
     }
 
-    assert_eq!(buffered.outputs, accumulator.finish().outputs);
+    assert_eq!(buffered.outputs, accumulator.try_finish()?.outputs);
     Ok(())
 }
 
@@ -2522,7 +2522,12 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
         StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
     let incomplete = json!({
         "type": "response.incomplete",
-        "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}
+        "response": {
+            "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"type": "message", "id": "msg_1", "role": "assistant", "status": "incomplete",
+                "content": [{"type": "output_text", "text": "Partial answer", "annotations": []}]}],
+            "usage": {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+        }
     });
 
     let mut events = engine.translate_event(
@@ -2537,6 +2542,13 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
         return Err("finish should emit a terminal Chat chunk".into());
     };
     assert_eq!(terminal["choices"][0]["finish_reason"], "length");
+    assert_eq!(terminal["usage"]["prompt_tokens"], 7);
+    assert_eq!(terminal["usage"]["completion_tokens"], 3);
+    let text: String = events
+        .iter()
+        .filter_map(|event| event["choices"][0]["delta"]["content"].as_str())
+        .collect();
+    assert_eq!(text, "Partial answer");
     Ok(())
 }
 
@@ -3435,7 +3447,7 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
             }
             assert_eq!(
                 expected.outputs,
-                accumulator.finish().outputs,
+                accumulator.try_finish()?.outputs,
                 "{target:?}: {mode}"
             );
         }
@@ -3522,7 +3534,7 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
 }
 
 #[test]
-fn mcp_streams_replay_natively_and_reject_cross_format_translation() -> TestResult {
+fn unrepresentable_mcp_streams_replay_natively_and_reject_strict_conversion() -> TestResult {
     let engine = TranslationEngine::default();
     let listing =
         json!({"type": "mcp_list_tools", "id": "list_1", "server_label": "inventory", "tools": []});
@@ -3538,8 +3550,10 @@ fn mcp_streams_replay_natively_and_reject_cross_format_translation() -> TestResu
         (
             WireFormat::OpenAiResponses,
             vec![
+                json!({"type": "response.output_item.added", "output_index": 0, "item": {"type": "mcp_call", "id": "call_1", "server_label": "inventory", "name": "lookup", "arguments": "", "output": null}}),
                 json!({"type": "response.mcp_call_arguments.delta", "item_id": "call_1", "output_index": 0, "delta": "{}"}),
                 json!({"type": "response.mcp_call.failed", "item_id": "call_1", "output_index": 0}),
+                json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "mcp_call", "id": "call_1", "server_label": "inventory", "name": "lookup", "arguments": "{}", "output": null, "error": "failed"}}),
             ],
         ),
         (
@@ -3565,6 +3579,7 @@ fn mcp_streams_replay_natively_and_reject_cross_format_translation() -> TestResu
                 json!({"type": "content_block_start", "index": 0, "content_block": {
                     "type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": true, "content": "Failed"
                 }}),
+                json!({"type": "content_block_stop", "index": 0}),
                 json!({"type": "message_stop"}),
             ],
         ),
@@ -3588,7 +3603,8 @@ fn mcp_streams_replay_natively_and_reject_cross_format_translation() -> TestResu
             }
             for preserved in [false, true] {
                 let mut decoder = StreamTranslationState::default();
-                let mut encoder = StreamTranslationState::default();
+                let mut encoder = StreamTranslationState::default()
+                    .with_policy(common::strict_normalized_policy());
                 let mut output = Vec::new();
                 for frame in &frames {
                     output.extend(if preserved {
@@ -3671,5 +3687,544 @@ fn responses_custom_tool_calls_decode_from_the_finished_item() -> TestResult {
             .collect();
         assert_eq!(arguments, r#"{"input":"ls"}"#, "{shape}");
     }
+    Ok(())
+}
+
+fn anthropic_mcp_frames(content: &[Value]) -> Vec<Value> {
+    let mut frames = vec![json!({"type": "message_start", "message": {
+        "id": "msg_mcp", "model": "route", "usage": {"input_tokens": 4, "output_tokens": 0}
+    }})];
+    for (index, block) in content.iter().enumerate() {
+        let mut start = block.clone();
+        if block["type"] == "mcp_tool_use" {
+            start["input"] = json!({});
+        }
+        frames.push(json!({"type": "content_block_start", "index": index, "content_block": start}));
+        if block["type"] == "mcp_tool_use" {
+            let arguments = block["input"].to_string();
+            for delta in [&arguments[..1], &arguments[1..]] {
+                frames.push(json!({"type": "content_block_delta", "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": delta}}));
+            }
+        }
+        frames.push(json!({"type": "content_block_stop", "index": index}));
+    }
+    frames.extend([
+        json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 3}}),
+        json!({"type": "message_stop"}),
+    ]);
+    frames
+}
+
+fn translate_mcp_frames(
+    source: WireFormat,
+    target: WireFormat,
+    frames: &[Value],
+    preserved: bool,
+    policy: switchyard_translation::TranslationPolicy,
+) -> TestResult<(Vec<Value>, StreamTranslationState)> {
+    let engine = TranslationEngine::default();
+    let mut decoder = StreamTranslationState::default();
+    let mut encoder = StreamTranslationState::default().with_policy(policy);
+    let mut output = Vec::new();
+    for frame in frames {
+        output.extend(if preserved {
+            let event = engine.decode_stream_event(&mut decoder, source, frame.clone())?;
+            engine.encode_stream_event(&mut encoder, target, event)?
+        } else {
+            engine.translate_event(&mut encoder, source, target, frame)?
+        });
+    }
+    output.extend(engine.finish_stream(&mut encoder, target)?);
+    Ok((output, encoder))
+}
+
+fn fold_mcp_frames(
+    source: WireFormat,
+    frames: &[Value],
+) -> TestResult<switchyard_translation::AggLlmResponse> {
+    let engine = TranslationEngine::default();
+    let mut state = StreamTranslationState::default();
+    let mut accumulator = ResponseAccumulator::new();
+    for frame in frames {
+        for chunk in engine
+            .decode_stream_event(&mut state, source, frame.clone())?
+            .into_parts()
+            .1
+        {
+            assert!(
+                !matches!(
+                    chunk,
+                    LlmResponseChunk::DecodeError { .. } | LlmResponseChunk::StreamError { .. }
+                ),
+                "{chunk:?}"
+            );
+            accumulator.push(chunk);
+        }
+    }
+    Ok(accumulator.try_finish()?)
+}
+
+#[test]
+fn mcp_calls_stream_both_directions_and_survive_aggregation() -> TestResult {
+    use switchyard_translation::{ContentBlock, McpContent};
+    let engine = TranslationEngine::default();
+    let content = vec![
+        json!({"type": "text", "text": "Before"}),
+        json!({"type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {"sku": "widget"}}),
+        json!({"type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": false, "content": [{"type": "text", "text": "12"}]}),
+        json!({"type": "text", "text": "After"}),
+    ];
+    let anthropic = anthropic_mcp_frames(&content);
+    let expected = fold_mcp_frames(WireFormat::AnthropicMessages, &anthropic)?;
+    assert!(matches!(
+        expected.outputs[0].content.as_slice(),
+        [
+            ContentBlock::Text { .. },
+            ContentBlock::Mcp(McpContent::Call { .. }),
+            ContentBlock::Mcp(McpContent::Result(_)),
+            ContentBlock::Text { .. }
+        ]
+    ));
+    for preserved in [false, true] {
+        let (responses, state) = translate_mcp_frames(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &anthropic,
+            preserved,
+            common::strict_normalized_policy(),
+        )?;
+        assert!(!state.errored, "{responses:?}");
+        assert!(state.diagnostics.is_empty());
+        for (number, frame) in responses.iter().enumerate() {
+            assert_eq!(frame["sequence_number"], number);
+        }
+        assert_eq!(
+            responses.last().unwrap()["response"]["output"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            fold_mcp_frames(WireFormat::OpenAiResponses, &responses)?.outputs,
+            expected.outputs
+        );
+        // A final snapshot can supply MCP content even when no item events arrived.
+        let (snapshot_only, snapshot_state) = translate_mcp_frames(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &responses[responses.len() - 1..],
+            preserved,
+            common::strict_normalized_policy(),
+        )?;
+        assert!(!snapshot_state.errored, "{snapshot_only:?}");
+        assert_eq!(
+            fold_mcp_frames(WireFormat::AnthropicMessages, &snapshot_only)?.outputs,
+            expected.outputs
+        );
+        let (back, state) = translate_mcp_frames(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &responses,
+            preserved,
+            common::strict_normalized_policy(),
+        )?;
+        assert!(!state.errored, "{back:?}");
+        let back = fold_mcp_frames(WireFormat::AnthropicMessages, &back)?;
+        assert_eq!(back.outputs, expected.outputs);
+        assert_eq!(back.usage.input_tokens, expected.usage.input_tokens);
+        assert_eq!(back.usage.output_tokens, expected.usage.output_tokens);
+    }
+    for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
+        use futures::StreamExt;
+        let chunks =
+            futures::executor::block_on(expected.clone().into_stream().collect::<Vec<_>>());
+        let mut state =
+            StreamTranslationState::default().with_policy(common::strict_normalized_policy());
+        let mut frames = Vec::new();
+        for event in chunks {
+            frames.extend(engine.encode_stream_event(&mut state, target, event?)?);
+        }
+        frames.extend(engine.finish_stream(&mut state, target)?);
+        assert!(!state.errored, "{frames:?}");
+        assert_eq!(fold_mcp_frames(target, &frames)?.outputs, expected.outputs);
+    }
+    Ok(())
+}
+
+#[test]
+fn mcp_stream_listings_and_losses_follow_policy() -> TestResult {
+    let listing = json!({"type": "mcp_tool_listing", "mcp_server_name": "inventory", "tools": []});
+    let frames = anthropic_mcp_frames(&[
+        listing.clone(),
+        listing,
+        json!({"type": "text", "text": "After"}),
+    ]);
+    let (responses, state) = translate_mcp_frames(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &frames,
+        true,
+        common::strict_normalized_policy(),
+    )?;
+    assert!(!state.errored, "{responses:?}");
+    let items = &responses.last().unwrap()["response"]["output"];
+    assert_eq!(items[0]["type"], "mcp_list_tools");
+    assert_eq!(items[1]["type"], "mcp_list_tools");
+    assert_ne!(items[0]["id"], items[1]["id"]);
+    let failed_call = anthropic_mcp_frames(&[
+        json!({"type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {}}),
+        json!({"type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": true, "content": "unavailable"}),
+        json!({"type": "mcp_tool_use", "id": "call_2", "name": "lookup", "server_name": "inventory", "input": {}}),
+        json!({"type": "mcp_tool_result", "tool_use_id": "call_2", "is_error": true, "content": "unavailable"}),
+        json!({"type": "text", "text": "After"}),
+    ]);
+    for (source, target, input, losses) in [
+        (
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &frames,
+            2,
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &responses,
+            2,
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &failed_call,
+            2,
+        ),
+    ] {
+        for strict in [false, true] {
+            let policy = if strict {
+                common::strict_normalized_policy()
+            } else {
+                common::normalized_policy()
+            };
+            let (output, state) = translate_mcp_frames(source, target, input, false, policy)?;
+            assert_eq!(state.errored, strict, "{output:?}");
+            if strict {
+                assert_eq!(
+                    output
+                        .iter()
+                        .filter(|event| event["type"] == "error" || event["error"].is_object())
+                        .count(),
+                    1
+                );
+                assert!(!output.iter().any(|event| event["type"] == "message_stop"));
+            } else {
+                assert_eq!(state.diagnostics.len(), losses);
+                if target == WireFormat::OpenAiResponses {
+                    assert_eq!(output.last().unwrap()["type"], "response.completed");
+                    assert_eq!(
+                        output.last().unwrap()["response"]["output"]
+                            .as_array()
+                            .unwrap()
+                            .len(),
+                        1
+                    );
+                    assert!(
+                        !output
+                            .iter()
+                            .any(|event| event["item"]["id"] == "msg_switchyard")
+                    );
+                }
+                assert_eq!(
+                    fold_mcp_frames(target, &output)?.outputs[0].content,
+                    vec![switchyard_translation::ContentBlock::Text {
+                        text: "After".into()
+                    }]
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn mcp_streams_pair_delayed_results_and_reject_truncation() -> TestResult {
+    let blocks = vec![
+        json!({"type": "mcp_tool_use", "id": "a", "name": "lookup", "server_name": "inventory", "input": {}}),
+        json!({"type": "mcp_tool_use", "id": "b", "name": "lookup", "server_name": "inventory", "input": {}}),
+        json!({"type": "mcp_tool_result", "tool_use_id": "b", "content": "B"}),
+        json!({"type": "mcp_tool_result", "tool_use_id": "a", "content": "A"}),
+    ];
+    let frames = anthropic_mcp_frames(&blocks);
+    let (output, state) = translate_mcp_frames(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &frames,
+        true,
+        common::strict_normalized_policy(),
+    )?;
+    assert!(!state.errored, "{output:?}");
+    let items = &output.last().unwrap()["response"]["output"];
+    assert_eq!(items[0]["id"], "a");
+    assert_eq!(items[0]["output"], "A");
+    assert_eq!(items[1]["id"], "b");
+    assert_eq!(items[1]["output"], "B");
+    for preserved in [false, true] {
+        let (output, state) = translate_mcp_frames(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &frames[..3],
+            preserved,
+            common::normalized_policy(),
+        )?;
+        assert!(state.errored);
+        assert_eq!(output.last().unwrap()["type"], "error");
+        assert!(
+            !output
+                .iter()
+                .any(|event| event["type"] == "response.completed")
+        );
+        let mut failed = frames[..3].to_vec();
+        failed.push(json!({"type": "error", "error": {"type": "api_error", "message": "backend unavailable"}}));
+        let (output, state) = translate_mcp_frames(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &failed,
+            preserved,
+            common::normalized_policy(),
+        )?;
+        assert!(state.errored);
+        assert_eq!(output.last().unwrap()["message"], "backend unavailable");
+    }
+    let mut accumulator = ResponseAccumulator::new();
+    let engine = TranslationEngine::default();
+    let mut decoder = StreamTranslationState::default();
+    let mut chunks = Vec::new();
+    for frame in &frames[..3] {
+        for chunk in engine
+            .decode_stream_event(&mut decoder, WireFormat::AnthropicMessages, frame.clone())?
+            .into_parts()
+            .1
+        {
+            chunks.push(Ok(LlmResponseStreamEvent::from(chunk.clone())));
+            accumulator.push(chunk);
+        }
+    }
+    assert!(accumulator.try_finish().is_err());
+    use futures::StreamExt;
+    let output = switchyard_translation::encode_stream(
+        Box::pin(futures::stream::iter(chunks)),
+        WireFormat::OpenAiResponses,
+        None,
+    )?;
+    let output = futures::executor::block_on(output.collect::<Vec<_>>());
+    assert!(output.last().is_some_and(Result::is_err));
+    Ok(())
+}
+
+#[test]
+fn mcp_snapshots_allow_only_equivalent_optional_fields() -> TestResult {
+    let engine = TranslationEngine::default();
+    let call = json!({"type": "mcp_call", "id": "call_1", "name": "lookup", "server_label": "inventory", "arguments": "{}", "output": "12"});
+    let listing =
+        json!({"type": "mcp_list_tools", "id": "list_1", "server_label": "inventory", "tools": []});
+    let mut no_output = call.clone();
+    no_output.as_object_mut().unwrap().remove("output");
+    for (original, key, value, equivalent) in [
+        (&call, "error", Value::Null, true),
+        (&call, "approval_request_id", Value::Null, true),
+        (&call, "status", json!("completed"), true),
+        (&listing, "error", Value::Null, true),
+        (&no_output, "output", Value::Null, true),
+        (&no_output, "status", json!("completed"), false),
+        (&call, "id", json!("other"), false),
+        (&call, "name", json!("other"), false),
+        (&call, "server_label", json!("other"), false),
+        (&call, "arguments", json!("{\"sku\":1}"), false),
+        (&call, "output", json!("changed"), false),
+        (
+            &call,
+            "error",
+            json!({"type": "http_error", "code": 500, "message": "failed"}),
+            false,
+        ),
+        (&call, "approval_request_id", json!("approval_1"), false),
+        (&call, "status", json!("failed"), false),
+        (&call, "extra", Value::Null, false),
+        (
+            &listing,
+            "tools",
+            json!([{"name": "lookup", "input_schema": {}}]),
+            false,
+        ),
+    ] {
+        let mut changed = original.clone();
+        changed[key] = value;
+        for (first, last) in [(original, &changed), (&changed, original)] {
+            let mut state = StreamTranslationState::default();
+            engine.decode_stream_event(
+                &mut state,
+                WireFormat::OpenAiResponses,
+                json!({"type": "response.output_item.done", "output_index": 0, "item": first}),
+            )?;
+            let decoded = engine.decode_stream_event(
+                &mut state,
+                WireFormat::OpenAiResponses,
+                json!({"type": "response.completed", "response": {"output": [last]}}),
+            )?;
+            assert_eq!(
+                decoded
+                    .normalized()
+                    .iter()
+                    .any(|chunk| matches!(chunk, LlmResponseChunk::DecodeError { .. })),
+                !equivalent,
+                "{key}: {first} -> {last}"
+            );
+            if equivalent {
+                assert!(!decoded.normalized().iter().any(|chunk| matches!(
+                    chunk,
+                    LlmResponseChunk::McpContentBlockComplete { .. }
+                )));
+                assert!(
+                    decoded
+                        .normalized()
+                        .iter()
+                        .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }))
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_mcp_streams_stop_after_one_error() -> TestResult {
+    let call = json!({"type": "mcp_call", "id": "call_1", "name": "lookup", "server_label": "inventory", "arguments": "{}", "output": "12"});
+    let done = json!({"type": "response.output_item.done", "output_index": 0, "item": call});
+    let mut changed = call.clone();
+    changed["output"] = json!("changed");
+    let added = json!({"type": "response.output_item.added", "output_index": 0,
+        "item": {"type": "mcp_call", "id": "call_1", "name": "lookup", "server_label": "inventory", "arguments": ""}});
+    let cases = [
+        (
+            WireFormat::AnthropicMessages,
+            vec![
+                json!({"type": "content_block_start", "index": 0, "content_block": {
+                    "type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {}}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                // The loop adds a delta after this completed block.
+            ],
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            vec![
+                json!({"type": "content_block_start", "index": 0, "content_block": {
+                "type": "mcp_tool_use", "name": "lookup", "server_name": "inventory", "input": {}}}),
+            ],
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            vec![
+                json!({"type": "content_block_start", "index": 0, "content_block": {
+                "type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+            ],
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            vec![
+                added.clone(),
+                json!({"type": "response.mcp_call_arguments.delta", "output_index": 0, "item_id": "other", "delta": "{}"}),
+                done.clone(),
+            ],
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            vec![
+                added.clone(),
+                json!({"type": "response.mcp_call_arguments.done", "output_index": 0, "item_id": "call_1", "arguments": "{\"sku\":1}"}),
+                done.clone(),
+            ],
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            vec![
+                done.clone(),
+                json!({"type": "response.completed", "response": {"output": [changed]}}),
+            ],
+        ),
+    ];
+    for (source, mut frames) in cases {
+        frames.push(if source == WireFormat::AnthropicMessages {
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "}"}})
+        } else {
+            json!({"type": "response.output_text.delta", "output_index": 1, "delta": "must not appear"})
+        });
+        for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
+            for preserved in [false, true] {
+                let (output, state) = translate_mcp_frames(
+                    source,
+                    target,
+                    &frames,
+                    preserved,
+                    common::normalized_policy(),
+                )?;
+                assert!(state.errored, "{source:?} -> {target:?}: {output:?}");
+                assert_eq!(
+                    output
+                        .iter()
+                        .filter(|event| event["type"] == "error")
+                        .count(),
+                    1
+                );
+                assert_eq!(output.last().unwrap()["type"], "error");
+                assert!(
+                    !output
+                        .iter()
+                        .any(|event| event["delta"] == "must not appear")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn mcp_streams_keep_ordinary_tools_in_order_and_emit_before_the_response_ends() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::default().with_policy(common::strict_normalized_policy());
+    let mut output = Vec::new();
+    for (index, item) in [
+        json!({"type": "function_call", "id": "fc_1", "call_id": "local_1", "name": "first", "arguments": "{}"}),
+        json!({"type": "function_call", "id": "fc_2", "call_id": "local_2", "name": "second", "arguments": "{}"}),
+        json!({"type": "mcp_call", "id": "call_1", "name": "lookup", "server_label": "inventory", "arguments": "{}", "output": "12"}),
+        json!({"type": "function_call", "id": "fc_3", "call_id": "local_3", "name": "third", "arguments": "{}"}),
+    ].into_iter().enumerate() {
+        output.extend(engine.translate_event(&mut state, WireFormat::OpenAiResponses, WireFormat::AnthropicMessages,
+            &json!({"type": "response.output_item.done", "output_index": index, "item": item}))?);
+        if index == 2 {
+            assert!(output.iter().any(|event| event["content_block"]["type"] == "mcp_tool_result"));
+            assert!(!state.finished);
+        }
+    }
+    output.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    assert!(!state.errored, "{output:?}");
+    let kinds: Vec<_> = output
+        .iter()
+        .filter_map(|event| event["content_block"]["type"].as_str())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "tool_use",
+            "tool_use",
+            "mcp_tool_use",
+            "mcp_tool_result",
+            "tool_use"
+        ]
+    );
+    let aggregate = fold_mcp_frames(WireFormat::AnthropicMessages, &output)?;
+    assert_eq!(aggregate.outputs[0].content.len(), 5);
     Ok(())
 }

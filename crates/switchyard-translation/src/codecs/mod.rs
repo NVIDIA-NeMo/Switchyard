@@ -5,6 +5,7 @@
 
 pub mod anthropic;
 pub(crate) mod common;
+pub(crate) mod mcp_stream;
 pub mod openai_chat;
 mod openai_media;
 pub mod responses;

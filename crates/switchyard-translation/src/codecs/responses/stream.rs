@@ -30,7 +30,8 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         state: &mut StreamTranslationState,
         event: &Value,
     ) -> Vec<LlmResponseChunk> {
-        decode_responses_stream(state, event)
+        super::super::mcp_stream::decode_responses(state, event)
+            .unwrap_or_else(|| decode_responses_stream(state, event))
     }
 
     fn encode_event(
@@ -38,7 +39,12 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         state: &mut StreamTranslationState,
         event: LlmResponseChunk,
     ) -> Vec<Value> {
-        let events = encode_responses_stream(state, event);
+        let events = super::super::mcp_stream::encode(
+            state,
+            event,
+            WireFormat::OpenAiResponses,
+            encode_responses_stream,
+        );
         add_sequence_numbers(state, events)
     }
 
@@ -54,7 +60,9 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         // Exact replay emits `raw` once. Normalized encodings only advance codec state;
         // their generated events are discarded and must not create sequence-number gaps.
         for chunk in normalized {
-            drop(encode_responses_stream(state, chunk));
+            if !super::super::mcp_stream::observe_replay(state, &chunk) {
+                drop(encode_responses_stream(state, chunk));
+            }
         }
         state.response_sequence_number = raw
             .get("sequence_number")
@@ -68,7 +76,12 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
     }
 
     fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
-        let events = finish_responses_stream(state);
+        let mut events = super::super::mcp_stream::finish(
+            state,
+            WireFormat::OpenAiResponses,
+            encode_responses_stream,
+        );
+        events.extend(finish_responses_stream(state));
         add_sequence_numbers(state, events)
     }
 }
@@ -264,7 +277,7 @@ fn decode_responses_stream(
                 })
                 .unwrap_or_default()
         }
-        Some("response.completed") => {
+        Some("response.completed" | "response.incomplete") => {
             let mut out = Vec::new();
             // Some providers send output only in the final snapshot. Reconcile it with
             // decoded deltas before emitting the stop, without repeating streamed content.
@@ -274,6 +287,15 @@ fn decode_responses_stream(
                 .and_then(Value::as_array)
             {
                 for (position, item) in items.iter().enumerate() {
+                    if let Some(chunks) =
+                        super::super::mcp_stream::decode_snapshot(state, position, item)
+                    {
+                        out.extend(chunks);
+                        if matches!(out.last(), Some(LlmResponseChunk::DecodeError { .. })) {
+                            return out;
+                        }
+                        continue;
+                    }
                     if let Some(item) = item.as_object() {
                         out.extend(decode_responses_completed_item(item, position, state));
                         if matches!(out.last(), Some(LlmResponseChunk::DecodeError { .. })) {
@@ -281,6 +303,12 @@ fn decode_responses_stream(
                         }
                     }
                 }
+            }
+            if super::super::mcp_stream::incomplete(state) {
+                out.push(LlmResponseChunk::DecodeError {
+                    message: "Responses ended before MCP item completion".into(),
+                });
+                return out;
             }
             if let Some(usage) = event
                 .get("response")
@@ -298,14 +326,14 @@ fn decode_responses_stream(
             // use for such output; the stream must too, or stop-reason-driven tool loops
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
-            let reason = state.decoded_tool_call.then(|| "tool_use".to_string());
+            let reason = if event_type == Some("response.incomplete") {
+                Some("max_tokens".to_string())
+            } else {
+                state.decoded_tool_call.then(|| "tool_use".to_string())
+            };
             out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
-        // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("response")
@@ -336,6 +364,61 @@ fn encode_responses_stream(
         return Vec::new();
     }
     match event {
+        LlmResponseChunk::McpCallDelta { .. } | LlmResponseChunk::McpContentBlockStart { .. } => {
+            Vec::new()
+        }
+        LlmResponseChunk::McpContentBlockComplete { block, .. } => {
+            let crate::ContentBlock::Unknown { raw, .. } = *block else {
+                return Vec::new();
+            };
+            let mut out = open_held_reasoning(state, None);
+            out.extend(ensure_responses_created(state));
+            out.extend(close_responses_text(state, "completed"));
+            let index = state.next_response_output_index;
+            state.next_response_output_index += 1;
+            let id = raw["id"].clone();
+            let mut start = raw.clone();
+            let kind = raw["type"].as_str().unwrap_or_default();
+            if kind == "mcp_call" {
+                start["arguments"] = json!("");
+                start["output"] = Value::Null;
+                start["error"] = Value::Null;
+                start["status"] = json!("in_progress");
+            } else if kind == "mcp_list_tools" {
+                start["tools"] = json!([]);
+                start["error"] = Value::Null;
+            }
+            out.push(
+                json!({"type": "response.output_item.added", "output_index": index, "item": start}),
+            );
+            if matches!(kind, "mcp_call" | "mcp_list_tools") {
+                out.push(json!({"type": format!("response.{kind}.in_progress"), "output_index": index, "item_id": id}));
+                if kind == "mcp_call" {
+                    out.push(json!({"type": "response.mcp_call_arguments.delta", "output_index": index, "item_id": id, "delta": raw["arguments"]}));
+                    out.push(json!({"type": "response.mcp_call_arguments.done", "output_index": index, "item_id": id, "arguments": raw["arguments"]}));
+                }
+                let status = if raw.get("error").is_some_and(|value| !value.is_null())
+                    || raw["status"] == "failed"
+                {
+                    Some("failed")
+                } else if raw
+                    .get("status")
+                    .is_some_and(|value| !value.is_null() && value != "completed")
+                {
+                    None
+                } else {
+                    Some("completed")
+                };
+                if let Some(status) = status {
+                    out.push(json!({"type": format!("response.{kind}.{status}"), "output_index": index, "item_id": id}));
+                }
+            }
+            out.push(
+                json!({"type": "response.output_item.done", "output_index": index, "item": raw}),
+            );
+            state.completed_response_items.push((index, raw));
+            out
+        }
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             ensure_responses_created(state)
@@ -417,6 +500,27 @@ fn encode_responses_stream(
     }
 }
 
+// Close a text segment before an MCP item so later text gets its own output item.
+fn close_responses_text(state: &mut StreamTranslationState, status: &str) -> Vec<Value> {
+    if !state.response_text_started {
+        return Vec::new();
+    }
+    let Some(index) = state.response_text_output_index.take() else {
+        return Vec::new();
+    };
+    state.response_text_started = false;
+    let text = std::mem::take(&mut state.response_text);
+    let id = responses_item_id(state, "msg", index);
+    let part = json!({"type": "output_text", "text": text, "annotations": [], "logprobs": []});
+    let item = json!({"type": "message", "id": id, "role": "assistant", "status": status, "content": [part]});
+    state.completed_response_items.push((index, item.clone()));
+    vec![
+        json!({"type": "response.output_text.done", "item_id": id, "output_index": index, "content_index": 0, "text": text, "logprobs": []}),
+        json!({"type": "response.content_part.done", "item_id": id, "output_index": index, "content_index": 0, "part": part}),
+        json!({"type": "response.output_item.done", "output_index": index, "item": item}),
+    ]
+}
+
 // Emits final OpenAI Responses completion events from accumulated state.
 fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished {
@@ -434,39 +538,8 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
     let mut out = open_held_reasoning(state, None);
     out.extend(ensure_responses_created(state));
-    if state.response_text_started
-        && let Some(output_index) = state.response_text_output_index
-    {
-        let item_id = responses_item_id(state, "msg", output_index);
-        out.push(json!({
-            "type": "response.output_text.done",
-            "item_id": item_id,
-            "output_index": output_index,
-            "content_index": 0,
-            "text": state.response_text,
-            "logprobs": [],
-        }));
-        out.push(json!({
-            "type": "response.content_part.done",
-            "item_id": item_id,
-            "output_index": output_index,
-            "content_index": 0,
-            "part": {"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []},
-        }));
-        out.push(json!({
-            "type": "response.output_item.done",
-            "output_index": output_index,
-            "item": {
-                "type": "message",
-                "id": item_id,
-                "role": "assistant",
-                "status": status,
-                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
-            },
-        }));
-    }
-
-    let mut final_items: Vec<(usize, Value)> = Vec::new();
+    out.extend(close_responses_text(state, status));
+    let mut final_items = std::mem::take(&mut state.completed_response_items);
     let mut reasoning_items: Vec<(usize, usize)> = state
         .response_reasoning
         .iter()
@@ -519,21 +592,6 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         }));
         final_items.push((output_index, item));
     }
-    if state.response_text_started
-        && let Some(output_index) = state.response_text_output_index
-    {
-        final_items.push((
-            output_index,
-            json!({
-                "type": "message",
-                "id": responses_item_id(state, "msg", output_index),
-                "role": "assistant",
-                "status": status,
-                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
-            }),
-        ));
-    }
-
     for tool in state.tool_states.values() {
         if !tool.started {
             continue;

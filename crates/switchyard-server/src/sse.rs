@@ -199,6 +199,29 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn responses_failed_is_forwarded_and_terminates_the_stream() -> TestResult {
+        let failed = json!({
+            "type": "response.failed",
+            "response": {"id": "resp_1", "error": {"code": "server_error", "message": "boom"}}
+        });
+        let events: RawEventStream = Box::pin(stream::iter(vec![
+            Err(LlmStreamError::Upstream(failed.clone())),
+            Ok(json!({"type": "response.completed"})),
+        ]));
+        let response = frame_stream(
+            events,
+            WireFormat::OpenAiResponses,
+            Arc::new(Redactor::default()),
+        )
+        .into_response();
+        let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await?.to_vec())?;
+        assert!(body.contains("event: response.failed\n"));
+        assert!(body.contains(&format!("data: {failed}\n")));
+        assert!(!body.contains("response.completed"));
+        Ok(())
+    }
+
     // Collects rendered warn events so the test can assert against the final
     // log sink rather than a field mid-pipeline.
     #[derive(Clone, Default)]

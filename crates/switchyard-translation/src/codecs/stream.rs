@@ -21,6 +21,16 @@ use crate::llm::Usage;
 /// Mutable state accumulated while translating one streaming response.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StreamTranslationState {
+    /// Policy for conversions that cannot preserve all streamed content.
+    #[serde(default)]
+    pub policy: crate::TranslationPolicy,
+    /// Losses reported while encoding this stream.
+    #[serde(default)]
+    pub diagnostics: Vec<crate::TranslationDiagnostic>,
+    #[serde(default)]
+    pub(crate) mcp: super::mcp_stream::McpStreamState,
+    #[serde(default)]
+    pub(crate) completed_response_items: Vec<(usize, Value)>,
     pub source: Option<FormatId>,
     pub target: Option<FormatId>,
     /// Model name observed on the source provider stream.
@@ -155,6 +165,12 @@ impl StreamTranslationState {
             target: Some(target.into()),
             ..Self::default()
         }
+    }
+
+    /// Configure streaming conversion without changing the default entry points.
+    pub fn with_policy(mut self, policy: crate::TranslationPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 }
 
@@ -324,23 +340,15 @@ pub(crate) fn validate_stream_output(
         return Ok(());
     }
     let unsupported = if source.as_str() == WireFormat::OpenAiResponses.as_str() {
-        event["type"]
-            .as_str()
-            .is_some_and(|kind| kind.starts_with("response.mcp_"))
-            || event
-                .get("item")
-                .into_iter()
-                .chain(event["response"]["output"].as_array().into_iter().flatten())
-                .any(|item| {
-                    item["type"].as_str().is_some_and(|kind| {
-                        super::responses::is_native_output(kind)
-                            || super::responses::is_mcp_item(kind)
-                    })
-                })
-    } else if source.as_str() == WireFormat::AnthropicMessages.as_str() {
-        event["content_block"]["type"]
-            .as_str()
-            .is_some_and(|kind| kind.starts_with("mcp_"))
+        event
+            .get("item")
+            .into_iter()
+            .chain(event["response"]["output"].as_array().into_iter().flatten())
+            .any(|item| {
+                item["type"]
+                    .as_str()
+                    .is_some_and(super::responses::is_native_output)
+            })
     } else {
         false
     };
@@ -377,7 +385,10 @@ pub(crate) fn encode_response_stream_event(
         let has_decode_error = normalized
             .iter()
             .any(|chunk| matches!(chunk, LlmResponseChunk::DecodeError { .. }));
-        if &source == target && !has_decode_error {
+        if &source == target
+            && !has_decode_error
+            && state.policy.preservation != crate::PreservationPolicy::Disabled
+        {
             // Exact replay bypasses the target encoder's emitted JSON, but the encoder must
             // still observe every normalized chunk. Otherwise `finish` starts from empty state:
             // a clean EOF after a nonterminal provider event can omit or synthesize malformed

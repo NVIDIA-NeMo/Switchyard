@@ -85,7 +85,9 @@ pub(crate) async fn buffer_response(
             }
             Ok(BufferedResponse {
                 events: Some(events),
-                agg: accumulator.finish(),
+                agg: accumulator
+                    .try_finish()
+                    .map_err(|source| LibsyError::client_call(executor.to_string(), source))?,
                 metadata,
                 upstream_headers,
             })

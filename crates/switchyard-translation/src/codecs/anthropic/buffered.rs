@@ -707,7 +707,7 @@ fn required_mcp_string(block: &Map<String, Value>, key: &str, kind: &str) -> Res
 }
 
 // Decodes one Anthropic content block into one or more IR blocks.
-fn decode_anthropic_content_block(
+pub(crate) fn decode_anthropic_content_block(
     block: &Map<String, Value>,
     _role: Role,
     generated_counter: usize,

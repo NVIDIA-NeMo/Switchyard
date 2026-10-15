@@ -34,7 +34,7 @@ use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
     exact_preserved_request, exact_preserved_response, is_responses_builtin_tool_item, json_string,
-    push_lossy, stable_id, string_value, validate_request_capabilities,
+    push_lossy, stable_id, string_value, unused_stable_id, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Responses payloads.
@@ -1094,7 +1094,7 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Option<McpToolset> {
     })
 }
 
-fn decode_mcp_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
+pub(crate) fn decode_mcp_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
     let normalized = || -> Option<Vec<ContentBlock>> {
         let server_name = item.get("server_label")?.as_str()?.to_owned();
         let id = item.get("id")?.as_str()?.to_owned();
@@ -1218,15 +1218,11 @@ fn encode_mcp_content(
                             continue;
                         }
                         DeterministicIdPolicy::GenerateStable { prefix } => {
-                            let mut index = 0;
-                            loop {
-                                let id = stable_id(&format!("{prefix}_mcpl"), index);
-                                if !id_counts.contains_key(&id) {
-                                    id_counts.insert(id.clone(), 1);
-                                    break id;
-                                }
-                                index += 1;
-                            }
+                            let id = unused_stable_id(&format!("{prefix}_mcpl"), 0, |id| {
+                                id_counts.contains_key(id)
+                            });
+                            id_counts.insert(id.clone(), 1);
+                            id
                         }
                     },
                 };

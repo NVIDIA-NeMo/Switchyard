@@ -26,7 +26,8 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
         state: &mut StreamTranslationState,
         event: &Value,
     ) -> Vec<LlmResponseChunk> {
-        decode_anthropic_stream(state, event)
+        super::super::mcp_stream::decode_anthropic(state, event)
+            .unwrap_or_else(|| decode_anthropic_stream(state, event))
     }
 
     fn encode_event(
@@ -34,7 +35,12 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
         state: &mut StreamTranslationState,
         event: LlmResponseChunk,
     ) -> Vec<Value> {
-        encode_anthropic_stream(state, event)
+        super::super::mcp_stream::encode(
+            state,
+            event,
+            WireFormat::AnthropicMessages,
+            encode_anthropic_stream,
+        )
     }
 
     fn observe_replayed_event(
@@ -47,7 +53,9 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
             .iter()
             .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }));
         for chunk in normalized {
-            drop(encode_anthropic_stream(state, chunk));
+            if !super::super::mcp_stream::observe_replay(state, &chunk) {
+                drop(encode_anthropic_stream(state, chunk));
+            }
         }
 
         match raw.get("type").and_then(Value::as_str) {
@@ -60,7 +68,13 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
     }
 
     fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
-        finish_anthropic_stream(state)
+        let mut out = super::super::mcp_stream::finish(
+            state,
+            WireFormat::AnthropicMessages,
+            encode_anthropic_stream,
+        );
+        out.extend(finish_anthropic_stream(state));
+        out
     }
 }
 
@@ -75,6 +89,11 @@ fn decode_anthropic_stream(
         }];
     };
     match object.get("type").and_then(Value::as_str) {
+        Some("message_delta" | "message_stop") if super::super::mcp_stream::incomplete(state) => {
+            vec![LlmResponseChunk::DecodeError {
+                message: "Anthropic message ended before MCP block completion".into(),
+            }]
+        }
         Some("message_start") => {
             state.saw_message_start = true;
             let message = object.get("message").and_then(Value::as_object);
@@ -171,6 +190,50 @@ fn encode_anthropic_stream(
         return Vec::new();
     }
     match event {
+        LlmResponseChunk::McpCallDelta { .. } | LlmResponseChunk::McpContentBlockStart { .. } => {
+            Vec::new()
+        }
+        LlmResponseChunk::McpContentBlockComplete { block, .. } => {
+            let crate::ContentBlock::Unknown { raw, .. } = *block else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            if !state.emitted_message_start {
+                out.extend(encode_anthropic_stream(
+                    state,
+                    LlmResponseChunk::MessageStart {
+                        id: state.message_id.clone(),
+                        model: state.model.clone(),
+                    },
+                ));
+            }
+            if state.text_block_started {
+                if let Some(index) = state.text_block_index {
+                    out.push(json!({"type": "content_block_stop", "index": index}));
+                }
+                state.text_block_started = false;
+            }
+            out.extend(close_anthropic_reasoning_block(state));
+            out.extend(close_anthropic_tool_blocks(state));
+            let index = state.next_content_index;
+            state.next_content_index += 1;
+            state.emitted_content_block = true;
+            if raw["type"] == "mcp_tool_use" {
+                let mut start = raw.clone();
+                start["input"] = json!({});
+                out.push(
+                    json!({"type": "content_block_start", "index": index, "content_block": start}),
+                );
+                out.push(json!({"type": "content_block_delta", "index": index,
+                    "delta": {"type": "input_json_delta", "partial_json": crate::util::json_string(&raw["input"])}}));
+            } else {
+                out.push(
+                    json!({"type": "content_block_start", "index": index, "content_block": raw}),
+                );
+            }
+            out.push(json!({"type": "content_block_stop", "index": index}));
+            out
+        }
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             if state.emitted_message_start {
@@ -283,26 +346,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
 
     out.extend(close_anthropic_reasoning_block(state));
 
-    for tool in state.tool_states.values_mut() {
-        if tool.started {
-            if let Some(index) = tool.content_index {
-                out.push(json!({"type": "content_block_stop", "index": index}));
-            }
-            tool.started = false;
-        }
-    }
-
-    state.active_anthropic_tool = None;
-    for index in std::mem::take(&mut state.deferred_anthropic_tools) {
-        out.extend(encode_anthropic_tool_delta(state, index, None, None, None));
-        if let Some(tool) = state.tool_states.get_mut(&index) {
-            if let Some(content_index) = tool.content_index {
-                out.push(json!({"type": "content_block_stop", "index": content_index}));
-            }
-            tool.started = false;
-        }
-        state.active_anthropic_tool = None;
-    }
+    out.extend(close_anthropic_tool_blocks(state));
 
     if !state.emitted_content_block {
         out.push(json!({
@@ -330,6 +374,33 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     }
     out.push(json!({"type": "message_stop"}));
     state.finished = true;
+    out
+}
+
+// Anthropic requires each tool block to close before the next content block opens.
+fn close_anthropic_tool_blocks(state: &mut StreamTranslationState) -> Vec<Value> {
+    let mut out = Vec::new();
+    for tool in state.tool_states.values_mut() {
+        if tool.started {
+            if let Some(index) = tool.content_index {
+                out.push(json!({"type": "content_block_stop", "index": index}));
+            }
+            tool.started = false;
+        }
+    }
+
+    state.active_anthropic_tool = None;
+    for index in std::mem::take(&mut state.deferred_anthropic_tools) {
+        out.extend(encode_anthropic_tool_delta(state, index, None, None, None));
+        if let Some(tool) = state.tool_states.get_mut(&index) {
+            if let Some(content_index) = tool.content_index {
+                out.push(json!({"type": "content_block_stop", "index": content_index}));
+            }
+            tool.started = false;
+        }
+        state.active_anthropic_tool = None;
+    }
+
     out
 }
 

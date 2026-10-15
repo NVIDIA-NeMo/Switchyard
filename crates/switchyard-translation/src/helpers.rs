@@ -116,6 +116,8 @@ pub type RawEventStream =
 /// `target_model`); `None` falls back to the id observed on the source stream.
 /// The target stream codec is resolved once and reused per chunk; terminal events
 /// (`message_stop` / `response.completed`) come from `finish`.
+/// Error frames, including Responses `response.failed`, return
+/// [`LlmStreamError::Upstream`] with the original event and terminate the stream.
 pub fn encode_stream(
     chunks: LlmResponseStream,
     target: WireFormat,
@@ -165,13 +167,16 @@ pub fn encode_stream_with_extensions(
             let event = item.map_err(LlmStreamError::Client)?;
             let mut encoded =
                 encode_response_stream_event(&mut state, codec.as_ref(), &target_format, event);
+            if state.errored {
+                warn_on_diagnostics(target, &state.diagnostics);
+            }
             for value in &mut encoded {
                 stamp_streamed_response_model(value, target, served_model_for_events.as_deref());
                 crate::codex_namespaces::restore_qualified_tool_names(value, &origins);
             }
             // Argument deltas for a freeform tool cannot be expressed on the wire; the
             // rewritten completed item carries the input instead.
-            let mut encoded: Vec<Value> = encoded
+            let encoded: Vec<Value> = encoded
                 .into_iter()
                 .filter_map(|mut value| {
                     crate::codex_custom_tools::restore_custom_tool_calls_in_event(
@@ -182,20 +187,22 @@ pub fn encode_stream_with_extensions(
                     .then_some(value)
                 })
                 .collect();
-            let terminal = encoded.pop();
             for value in encoded {
-                yield value;
+                if is_stream_error_event(target, &value) {
+                    Err(LlmStreamError::Upstream(value))?;
+                } else {
+                    yield value;
+                }
             }
-            match (state.errored, terminal) {
-                (false, Some(value)) => yield value,
-                (true, Some(value)) => Err(LlmStreamError::Upstream(value))?,
-                (true, None) => Err(LlmStreamError::Client(LlmClientError::ResponseTranslation(
+            if state.errored {
+                Err(LlmStreamError::Client(LlmClientError::ResponseTranslation(
                     "stream ended after an error without a terminal event".to_string(),
-                )))?,
-                _ => ()
+                )))?;
             }
         }
-        for mut value in codec.finish(&mut state) {
+        let terminal_events = codec.finish(&mut state);
+        warn_on_diagnostics(target, &state.diagnostics);
+        for mut value in terminal_events {
             stamp_streamed_response_model(
                 &mut value,
                 target,
@@ -207,12 +214,31 @@ pub fn encode_stream_with_extensions(
                 &custom_tools,
                 &mut custom_state,
             ) {
-                yield value;
+                if is_stream_error_event(target, &value) {
+                    Err(LlmStreamError::Upstream(value))?;
+                } else {
+                    yield value;
+                }
             }
+        }
+        if state.errored {
+            Err(LlmStreamError::Client(LlmClientError::ResponseTranslation(
+                "stream ended after an error without a terminal event".to_string(),
+            )))?;
         }
     };
 
     Ok(Box::pin(events))
+}
+
+fn is_stream_error_event(format: WireFormat, event: &Value) -> bool {
+    match format {
+        WireFormat::OpenAiChat => event["error"].is_object(),
+        WireFormat::OpenAiResponses => {
+            matches!(event["type"].as_str(), Some("error" | "response.failed"))
+        }
+        WireFormat::AnthropicMessages => event["type"] == "error",
+    }
 }
 
 // The raw-response helper promises that the caller sees the model that served the
@@ -347,6 +373,9 @@ where
             }
         }
 
+        if !saw_error && crate::codecs::mcp_stream::incomplete(&state) {
+            Err(LlmClientError::ResponseTranslation("MCP stream ended before block completion".into()))?;
+        }
         if !saw_terminal && !saw_error {
             Err(LlmClientError::ResponseTranslation(format!(
                 "{source} stream ended before a terminal event"
@@ -628,6 +657,44 @@ mod tests {
 
     // A clean stop stays entirely on the data channel, so a consumer that appends a
     // format-level success sentinel only does so for a turn that actually completed.
+    #[test]
+    fn encode_stream_reports_a_tool_error_detected_at_eof() -> Result<(), BoxError> {
+        let chunks = stream::iter([
+            Ok(LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "Before".into(),
+            }
+            .into()),
+            Ok(LlmResponseChunk::ToolCallDelta {
+                index: 1,
+                id: Some("call_1".into()),
+                name: None,
+                arguments_delta: Some("{}".into()),
+            }
+            .into()),
+        ])
+        .boxed();
+        let results = block_on(
+            encode_stream(chunks, WireFormat::AnthropicMessages, None)?.collect::<Vec<_>>(),
+        );
+        assert!(results.iter().any(|result| {
+            result
+                .as_ref()
+                .is_ok_and(|event| event["delta"]["text"] == "Before")
+        }));
+        let Some(Err(LlmStreamError::Upstream(event))) = results.last() else {
+            return Err(format!("expected a terminal tool error, got {results:?}").into());
+        };
+        assert_eq!(event["type"], "error");
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(!results.iter().any(|result| {
+            result
+                .as_ref()
+                .is_ok_and(|event| event["type"] == "message_stop")
+        }));
+        Ok(())
+    }
+
     #[test]
     fn encode_stream_keeps_a_normal_stop_off_the_error_channel() -> Result<(), BoxError> {
         let chunks: LlmResponseStream = stream::iter(vec![
