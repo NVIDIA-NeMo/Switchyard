@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use libsy::RoutingOutcome;
 use serde_json::Value;
-use switchyard_llm_client::TranslatingLlmClient;
-use switchyard_protocol::{ModelId, WireFormat};
+use switchyard_llm_client::{RequestSettings, TranslatingLlmClient};
+use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::config;
 use crate::{ModelCapabilities, Route, RunnerError};
@@ -64,6 +64,25 @@ impl Runner {
     /// Use [`Self::load`] when the deployment is stored in a file.
     pub fn from_toml(source: &str) -> Result<Self, RunnerError> {
         config::runner_from_toml(source)
+    }
+
+    /// Loads routing and target settings with host-owned model clients.
+    ///
+    /// The factory receives each named client's per-model request settings once.
+    /// Hosts apply [`RequestSettings::prepare_request_body`] before provider calls.
+    /// Return distinct clients for groups with separate provider continuation state.
+    /// `base_url` is optional; transport settings, typed decision clients, and
+    /// `fallback_client` are rejected. Auxiliary operations are unavailable, and
+    /// capability enforcement remains host-owned. Endpoint descriptions require
+    /// a configured `base_url`. Factory errors stop loading.
+    pub fn from_toml_with_clients(
+        source: &str,
+        mut factory: impl FnMut(
+            &str,
+            BTreeMap<ModelId, RequestSettings>,
+        ) -> Result<Arc<dyn RoutedLlmClient>, RunnerError>,
+    ) -> Result<Self, RunnerError> {
+        config::runner_from_toml_with_clients(source, &mut factory)
     }
 
     /// Loads routes whose only completion-side effect is model selection.

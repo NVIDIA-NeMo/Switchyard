@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    SystemOneClient, TranslatingLlmClient,
+    RequestSettings, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -62,6 +62,9 @@ pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> 
 
 type RunnerResult<T> = Result<T, RunnerError>;
 
+type HostClientFactory<'a> = dyn FnMut(&str, BTreeMap<ModelId, RequestSettings>) -> RunnerResult<Arc<dyn RoutedLlmClient>>
+    + 'a;
+
 pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
     let path = path.as_ref();
     let source = fs::read_to_string(path).map_err(|error| {
@@ -82,7 +85,48 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
-    config.build()
+    config.build(None)
+}
+
+pub(crate) fn runner_from_toml_with_clients(
+    source: &str,
+    factory: &mut HostClientFactory<'_>,
+) -> RunnerResult<Runner> {
+    let table: toml::Table = toml::from_str(source).map_err(|error| {
+        RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
+    })?;
+    // Check presence before omitted transport fields receive defaults.
+    if let Some(clients) = table.get("llm_clients").and_then(toml::Value::as_table) {
+        for (name, client) in clients {
+            for field in [
+                "api_key_env",
+                "forward_auth",
+                "extra_headers",
+                "max_retries",
+                "failure_cooldown_ms",
+                "timeout_ms",
+                "context_discovery",
+            ] {
+                if client.get(field).is_some() {
+                    return Err(RunnerError::configuration(format!(
+                        "llm client {name}: {field} is owned by the host client"
+                    )));
+                }
+            }
+        }
+    }
+    let config: DeploymentConfig = table.try_into().map_err(|error| {
+        RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
+    })?;
+    if config.fallback_client.is_some()
+        || !config.decision_clients.is_empty()
+        || !config.decision_targets.is_empty()
+    {
+        return Err(RunnerError::configuration(
+            "host clients do not support fallback_client or typed decision clients",
+        ));
+    }
+    config.build(Some(factory))
 }
 
 pub(crate) fn model_selection_from_toml(source: &str) -> RunnerResult<Runner> {
@@ -103,7 +147,7 @@ pub(crate) fn model_selection_from_toml(source: &str) -> RunnerResult<Runner> {
         RunnerError::configuration_source(message, error)
     })?;
     config.validate_model_selection()?;
-    config.build()
+    config.build(None)
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,12 +281,12 @@ impl DeploymentConfig {
             target: name.to_string(),
             model: target.id.clone(),
             format: client.format.wire_format(),
-            base_url: client.base_url.as_str().to_string(),
+            base_url: client.base_url.as_ref()?.as_str().to_string(),
             extra_body: target.extra_body.clone(),
         })
     }
 
-    fn build(self) -> RunnerResult<Runner> {
+    fn build(self, mut factory: Option<&mut HostClientFactory<'_>>) -> RunnerResult<Runner> {
         if self.schema_version != SUPPORTED_SCHEMA_VERSION {
             return Err(RunnerError::configuration(format!(
                 "unsupported schema_version {}; expected {SUPPORTED_SCHEMA_VERSION}",
@@ -298,7 +342,37 @@ impl DeploymentConfig {
         }
 
         let mut provider_api_keys = Vec::new();
-        let clients = self.build_clients(&mut provider_api_keys)?;
+        let settings = self.build_request_settings(&mut provider_api_keys, factory.is_some())?;
+        let mut native_clients = BTreeMap::new();
+        let mut clients = BTreeMap::new();
+        for (name, settings) in settings {
+            let client = if let Some(factory) = factory.as_deref_mut() {
+                factory(&name, settings)?
+            } else {
+                let models = settings
+                    .into_iter()
+                    .map(|(model, settings)| {
+                        let backend = build_backend(
+                            &name,
+                            &self.llm_clients[&name],
+                            settings.extra_body,
+                            settings.omit_body_fields,
+                            settings.reasoning_effort,
+                        )?;
+                        Ok(ModelConfig::new(model, backend, None))
+                    })
+                    .collect::<RunnerResult<Vec<_>>>()?;
+                let mut client = TranslatingLlmClient::new(&models)
+                    .map_err(|error| RunnerError::configuration(error.to_string()))?;
+                if !self.llm_clients[&name].fallback_on_rate_limit {
+                    client = client.without_rate_limit_cooldown();
+                }
+                let client = Arc::new(client);
+                native_clients.insert(name.clone(), Arc::clone(&client));
+                client as Arc<dyn RoutedLlmClient>
+            };
+            clients.insert(name, client);
+        }
         let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;
         for (name, target) in &self.decision_targets {
             validate_value("decision target name", name)?;
@@ -355,16 +429,17 @@ impl DeploymentConfig {
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
-                && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
+                && let Some(probe) =
+                    self.build_model_properties_probe(&vgr.local_target, &native_clients)
             {
                 model_properties_probes.insert(config.id.clone(), probe);
             }
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients, &decision_clients)?;
             let anthropic_auxiliary_target =
-                self.build_anthropic_auxiliary_target(config, &clients);
+                self.build_anthropic_auxiliary_target(config, &native_clients);
             let responses_auxiliary_target =
-                self.build_responses_auxiliary_target(config, &clients);
+                self.build_responses_auxiliary_target(config, &native_clients);
             let decision_targets = config
                 .routing_target_names()
                 .into_iter()
@@ -389,25 +464,24 @@ impl DeploymentConfig {
         Ok(runner)
     }
 
-    fn build_clients(
+    fn build_request_settings(
         &self,
         provider_api_keys: &mut Vec<String>,
-    ) -> RunnerResult<BTreeMap<String, Arc<TranslatingLlmClient>>> {
-        let mut models_by_client = self
+        has_host_clients: bool,
+    ) -> RunnerResult<BTreeMap<String, BTreeMap<ModelId, RequestSettings>>> {
+        let mut settings_by_client = self
             .llm_clients
             .keys()
-            .map(|name| (name.clone(), Vec::new()))
-            .collect::<BTreeMap<String, Vec<ModelConfig>>>();
+            .map(|name| (name.clone(), BTreeMap::new()))
+            .collect::<BTreeMap<String, BTreeMap<ModelId, RequestSettings>>>();
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
-            let backend = build_backend(
-                name,
-                client_config,
-                &BTreeMap::new(),
-                &BTreeSet::new(),
-                None,
-            )?;
+            if has_host_clients {
+                continue;
+            }
+            let backend =
+                build_backend(name, client_config, BTreeMap::new(), BTreeSet::new(), None)?;
             let (Backend::OpenAiChat(config)
             | Backend::OpenAiResponses(config)
             | Backend::Anthropic(config)) = backend;
@@ -422,7 +496,7 @@ impl DeploymentConfig {
                     target.llm_client
                 ))
             })?;
-            let model_configs = models_by_client
+            let settings = settings_by_client
                 .get_mut(&target.llm_client)
                 .ok_or_else(|| {
                     RunnerError::configuration("validated llm client was not initialized")
@@ -439,29 +513,17 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            model_configs.push(ModelConfig::new(
+            settings.insert(
                 target.id.clone(),
-                build_backend(
-                    &target.llm_client,
-                    client_config,
-                    &target.extra_body,
-                    &target.omit_body_fields,
-                    target.reasoning_effort.clone(),
-                )?,
-                None,
-            ));
+                RequestSettings {
+                    wire_format: client_config.format.wire_format(),
+                    extra_body: target.extra_body.clone(),
+                    omit_body_fields: target.omit_body_fields.clone(),
+                    reasoning_effort: target.reasoning_effort.clone(),
+                },
+            );
         }
-
-        let mut clients = BTreeMap::new();
-        for (name, model_configs) in models_by_client {
-            let mut client = TranslatingLlmClient::new(&model_configs)
-                .map_err(|error| RunnerError::configuration(error.to_string()))?;
-            if !self.llm_clients[&name].fallback_on_rate_limit {
-                client = client.without_rate_limit_cooldown();
-            }
-            clients.insert(name, Arc::new(client));
-        }
-        Ok(clients)
+        Ok(settings_by_client)
     }
 
     fn build_decision_clients(
@@ -517,7 +579,7 @@ impl DeploymentConfig {
         &self,
         route_name: &str,
         route: &RouteConfig,
-        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        clients: &BTreeMap<String, Arc<dyn RoutedLlmClient>>,
         decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<(ClientRouter, Option<CallerAuthKind>)> {
         let TargetPromptPolicy {
@@ -567,10 +629,15 @@ impl DeploymentConfig {
                 let target_auth = client_config.format.caller_auth_kind();
                 has_mixed_families |= caller_auth.is_some_and(|kind| kind != target_auth);
                 caller_auth = Some(target_auth);
-                forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
+                forwarding_origins.insert(
+                    client_config
+                        .http_base_url(&target.llm_client)?
+                        .0
+                        .origin()
+                        .ascii_serialization(),
+                );
             }
-            let client: Arc<dyn RoutedLlmClient> = client.clone();
-            by_model.insert(target.id.clone(), client);
+            by_model.insert(target.id.clone(), Arc::clone(client));
         }
         // Only forwarding clients count: an api_key_env client sends the server's own key.
         // Forwarding clients must share one credential family unless they all use the same
@@ -675,7 +742,7 @@ impl DeploymentConfig {
                 "fallback_client references unknown llm client {name}"
             ))
         })?;
-        Ok(Some(config.base_url.as_str().to_string()))
+        Ok(Some(config.http_base_url(name)?.as_str().to_string()))
     }
 
     fn build_model_properties_probe(
@@ -791,7 +858,7 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
 #[serde(deny_unknown_fields)]
 struct LlmClientConfig {
     format: ClientFormat,
-    base_url: HttpBaseUrl,
+    base_url: Option<HttpBaseUrl>,
     /// Opt-in context discovery for VGR's local target. Unset disables discovery.
     context_discovery: Option<ContextDiscovery>,
     api_key_env: Option<String>,
@@ -808,6 +875,16 @@ struct LlmClientConfig {
     failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
+}
+
+impl LlmClientConfig {
+    fn http_base_url(&self, name: &str) -> RunnerResult<&HttpBaseUrl> {
+        self.base_url.as_ref().ok_or_else(|| {
+            RunnerError::configuration(format!(
+                "llm client {name}: base_url is required for HTTP clients"
+            ))
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -880,8 +957,8 @@ impl ClientFormat {
 fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
-    extra_body: &BTreeMap<String, Value>,
-    omit_body_fields: &BTreeSet<String>,
+    extra_body: BTreeMap<String, Value>,
+    omit_body_fields: BTreeSet<String>,
     reasoning_effort: Option<String>,
 ) -> RunnerResult<Backend> {
     if config.max_retries > MAX_CONFIGURED_RETRIES {
@@ -905,12 +982,12 @@ fn build_backend(
         .map(|variable| read_api_key(&format!("llm client {client_name}"), variable))
         .transpose()?;
     let http = HttpBackendConfig {
-        base_url: config.base_url.as_str().to_string(),
+        base_url: config.http_base_url(client_name)?.as_str().to_string(),
         api_key,
         forward_auth: config.forward_auth,
         extra_headers: config.extra_headers.clone(),
-        extra_body: extra_body.clone(),
-        omit_body_fields: omit_body_fields.clone(),
+        extra_body,
+        omit_body_fields,
         reasoning_effort,
         max_retries: config.max_retries,
         failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
@@ -2050,8 +2127,8 @@ confidence_threshold = 0.5
         let backend = build_backend(
             "primary",
             client,
-            &target.extra_body,
-            &target.omit_body_fields,
+            target.extra_body.clone(),
+            target.omit_body_fields.clone(),
             None,
         )?;
 
@@ -2089,8 +2166,8 @@ confidence_threshold = 0.5
         let backend = build_backend(
             "primary",
             client,
-            &target.extra_body,
-            &target.omit_body_fields,
+            target.extra_body.clone(),
+            target.omit_body_fields.clone(),
             None,
         )?;
 
@@ -2109,7 +2186,7 @@ confidence_threshold = 0.5
                 "format = \"openai_chat\"\nbase_url = \"https://example.test/v1\"\n{setting}"
             );
             let config: LlmClientConfig = toml::from_str(&source).expect("valid deadline config");
-            let backend = build_backend("test", &config, &BTreeMap::new(), &BTreeSet::new(), None);
+            let backend = build_backend("test", &config, BTreeMap::new(), BTreeSet::new(), None);
             if expected == Some(0) {
                 assert!(backend.is_err());
             } else {
