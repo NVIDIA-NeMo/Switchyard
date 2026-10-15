@@ -13,7 +13,7 @@ use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 mod decision;
 use decision::DecisionClassifier;
-pub use decision::DecisionJudgeConfig;
+pub use decision::{DecisionJudgeConfig, DecisionPolicy, DecisionRule};
 
 use super::escalation;
 use super::fall_through::FallThrough;
@@ -314,7 +314,7 @@ fn capability_evidence(
 pub struct TaskClassifierConfig {
     /// The judge's prediction contract and routing policy.
     pub judge: CapabilityJudgeConfig,
-    /// Routes to the capable tier on judge client failures and deadlines. Defaults to true.
+    /// Uses fallback routing on judge client failures and deadlines. Defaults to true.
     pub fail_open: bool,
     /// How often the classifier re-decides this session's target.
     pub classify_trigger: ClassifyTrigger,
@@ -330,7 +330,7 @@ pub struct TaskClassifierConfig {
 pub enum CapabilityJudgeConfig {
     /// A structured LLM verdict with a solve probability and capability boundary.
     Llm(LlmCapabilityConfig),
-    /// A Choice score for the capable candidate succeeding where the efficient one fails.
+    /// Candidate probabilities evaluated by an ordered routing policy.
     Decision(DecisionJudgeConfig),
 }
 
@@ -706,7 +706,7 @@ impl LlmTaskClassifier {
                 .with_evidence(capability_evidence),
             ),
             CapabilityJudgeConfig::Decision(judge) => {
-                Arc::new(DecisionClassifier::new(judge, input, config.fail_open)?)
+                Arc::new(DecisionClassifier::new(judge, input, config.fail_open))
             }
         };
         Self::from_classifier(
@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_judge_routes_on_relative_advantage() -> Result<()> {
+    async fn decision_judge_routes_on_ordered_policy() -> Result<()> {
         use crate::{Call, RuntimeModels, drive};
         use serde_json::json;
         use std::collections::BTreeMap;
@@ -1299,18 +1299,36 @@ mod tests {
         };
 
         let settings = DecisionJudgeConfig {
-            cutoff: 0.4,
+            policy: DecisionPolicy {
+                rules: vec![DecisionRule {
+                    candidate: "a".into(),
+                    cutoff: 0.4,
+                }],
+                fallback: "b".into(),
+            },
             instructions: None,
             candidates: BTreeMap::from([
                 ("a".into(), "capable".into()),
                 ("b".into(), "efficient".into()),
-                ("c".into(), "third".into()),
             ]),
             evidence: json!({
                 "candidate_descriptions": {"a": "Profile A", "b": "Profile B", "c": "Profile C"},
                 "reference_cases": [{"task": "Independent example", "observed_solved": {"a": true, "b": null, "c": false}}],
                 "summaries": [],
             }),
+        };
+        let ordered_policy = DecisionPolicy {
+            rules: vec![
+                DecisionRule {
+                    candidate: "a".into(),
+                    cutoff: 0.6,
+                },
+                DecisionRule {
+                    candidate: "c".into(),
+                    cutoff: 0.2,
+                },
+            ],
+            fallback: "b".into(),
         };
         let mut request = classify_session_request();
         request.llm_request.messages.push(Message {
@@ -1341,24 +1359,31 @@ mod tests {
             ("above", 0.45, true, Some("capable")),
             ("equal", 0.4, true, Some("efficient")),
             ("below", 0.39, false, Some("efficient")),
-            ("missing answer", 0.0, true, Some("capable")),
-            ("no distribution", 0.0, true, Some("capable")),
-            ("wrong type", 0.0, true, Some("capable")),
-            ("out of range", 1.1, true, Some("capable")),
-            ("nonfinite", f64::NAN, false, Some("capable")),
-            ("provider error", 0.0, true, Some("capable")),
+            ("missing answer", 0.0, true, Some("efficient")),
+            ("no distribution", 0.0, true, Some("efficient")),
+            ("wrong type", 0.0, true, Some("efficient")),
+            ("out of range", 1.1, true, Some("efficient")),
+            ("nonfinite", f64::NAN, false, Some("efficient")),
+            ("provider error", 0.0, true, Some("efficient")),
             ("provider error", 0.0, false, None),
-            ("dropped reply", 0.0, true, Some("capable")),
-            ("missing candidate", 0.0, true, None),
+            ("dropped reply", 0.0, true, Some("efficient")),
+            ("ordered first", 0.65, true, Some("capable")),
+            ("ordered second", 0.6, false, Some("third")),
+            ("ordered fallback", 0.6, false, Some("efficient")),
+            ("ordered no distribution", 0.0, true, Some("efficient")),
+            ("ordered provider error", 0.0, true, Some("efficient")),
+            ("ordered provider error", 0.0, false, None),
+            ("ordered invalid", f64::NAN, true, Some("efficient")),
         ] {
             let mut config = settings.clone();
-            if name == "missing candidate" {
-                config.candidates.remove("a");
+            let ordered = name.starts_with("ordered");
+            if ordered {
+                config.policy = ordered_policy.clone();
+                config.candidates.insert("c".into(), "third".into());
             }
             if name == "below" {
-                config.instructions = Some(
-                    json!({"policy": "Judge capable-only success using the supplied evidence."}),
-                );
+                config.instructions =
+                    Some(json!({"policy": "Choose a candidate using the supplied evidence."}));
             }
             let override_instructions = config.instructions.clone();
             let router: Arc<dyn Algorithm> =
@@ -1384,15 +1409,17 @@ mod tests {
                     calls.fetch_add(1, Ordering::SeqCst);
                     assert_eq!(call.model, "judge");
                     assert_eq!(call.request.model, Some("judge".into()));
-                    assert_eq!(
-                        call.request.context,
-                        json!({
-                            "task": expected_task,
-                            "candidates": ["a", "b", "c"],
-                            "comparison": {"capable": "a", "efficient": "b"},
-                            "evidence": settings.evidence,
-                        })
-                    );
+                    let labels = if ordered {
+                        vec!["a", "b", "c"]
+                    } else {
+                        vec!["a", "b"]
+                    };
+                    let context = json!({
+                        "task": expected_task,
+                        "candidates": labels,
+                        "evidence": settings.evidence,
+                    });
+                    assert_eq!(call.request.context, context);
                     assert_eq!(call.request.questions.len(), 1);
                     let question = &call.request.questions["route"];
                     let switchyard_protocol::DecisionKind::Choice { options } = &question.kind
@@ -1404,16 +1431,14 @@ mod tests {
                             .iter()
                             .map(|option| option.id.as_str())
                             .collect::<Vec<_>>(),
-                        ["advantage", "no_advantage"]
+                        labels
                     );
                     if let Some(instructions) = override_instructions {
                         assert_eq!(&question.instructions, instructions);
                     } else {
-                        for key in ["setting", "evidence", "comparison", "boundary", "policy"] {
-                            assert!(question.instructions[key].as_str().is_some());
-                        }
+                        assert!(question.instructions.as_str().is_some());
                     }
-                    if name == "provider error" {
+                    if name.ends_with("provider error") {
                         return call
                             .respond(std::future::ready(Err(LibsyError::client_call(
                                 "judge",
@@ -1429,11 +1454,19 @@ mod tests {
                         DecisionValue::Boolean(BooleanEstimate::Value(true))
                     } else {
                         DecisionValue::Choice {
-                            selected: "no_advantage".into(),
-                            probabilities: (name != "no distribution").then(|| {
+                            selected: "b".into(),
+                            probabilities: (!name.ends_with("no distribution")).then(|| {
+                                if ordered {
+                                    let third = if name == "ordered fallback" { 0.2 } else { 0.3 };
+                                    return BTreeMap::from([
+                                        ("a".into(), Probability(score)),
+                                        ("b".into(), Probability(1.0 - score - third)),
+                                        ("c".into(), Probability(third)),
+                                    ]);
+                                }
                                 BTreeMap::from([
-                                    ("advantage".into(), Probability(score)),
-                                    ("no_advantage".into(), Probability(1.0 - score)),
+                                    ("a".into(), Probability(score)),
+                                    ("b".into(), Probability(1.0 - score)),
                                 ])
                             }),
                         }
@@ -1458,24 +1491,23 @@ mod tests {
                     .await
                 }
             };
-            let models = Arc::new(RuntimeModels::new(runtime_models()));
+            let mut runtime = runtime_models();
+            if ordered {
+                runtime.remove(&Category::Capable);
+                runtime.remove(&Category::Efficient);
+                runtime
+                    .get_mut(&Category::Any)
+                    .unwrap()
+                    .push("third".into());
+            }
+            let models = Arc::new(RuntimeModels::new(runtime));
             let result = drive(router.clone(), request.clone(), models.clone(), &serve).await;
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                usize::from(name != "missing candidate"),
-                "{name}"
-            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{name}");
             let Some(expected) = expected else {
-                if name == "missing candidate" {
-                    assert!(
-                        matches!(result, Err(LibsyError::AlgorithmError { message }) if message.contains("candidate is missing"))
-                    );
-                } else {
-                    assert!(
-                        matches!(result, Err(LibsyError::ClientCall { .. })),
-                        "{name}"
-                    );
-                }
+                assert!(
+                    matches!(result, Err(LibsyError::ClientCall { .. })),
+                    "{name}"
+                );
                 continue;
             };
             let outcome = result?;
@@ -1486,14 +1518,24 @@ mod tests {
                 .metadata
                 .and_then(|metadata| metadata.evidence)
                 .expect("routing evidence");
-            if matches!(name, "above" | "equal" | "below") {
+            if matches!(
+                name,
+                "above"
+                    | "equal"
+                    | "below"
+                    | "ordered first"
+                    | "ordered second"
+                    | "ordered fallback"
+            ) {
+                assert_eq!(evidence["verdict"], "ordered_cutoffs");
                 assert_eq!(evidence["source"], "decision_classifier");
-                assert_eq!(evidence["verdict"], "relative_advantage");
-                assert_eq!(evidence["threshold"], settings.cutoff);
-                assert_eq!(evidence["score"], score);
+                if name == "above" {
+                    assert_eq!(evidence["threshold"], settings.policy.rules[0].cutoff);
+                    assert_eq!(evidence["target"], "a");
+                }
             } else {
                 let reason = match name {
-                    "provider error" => "client_error",
+                    name if name.ends_with("provider error") => "client_error",
                     "dropped reply" => "call_error",
                     _ => "invalid_verdict",
                 };
@@ -1512,7 +1554,7 @@ mod tests {
         }
         for cutoff in [-0.1, 1.1, f64::NAN] {
             let mut config = settings.clone();
-            config.cutoff = cutoff;
+            config.policy.rules[0].cutoff = cutoff;
             assert!(
                 LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
@@ -1522,6 +1564,16 @@ mod tests {
                 })
                 .is_err()
             );
+        }
+        for field in ["candidate", "fallback", "rules"] {
+            let mut config = settings.clone();
+            let policy = &mut config.policy;
+            match field {
+                "candidate" => policy.rules[0].candidate = "missing".into(),
+                "fallback" => policy.fallback = "missing".into(),
+                _ => policy.rules.clear(),
+            }
+            assert!(config.validate().is_err());
         }
         let mut duplicate = settings.clone();
         duplicate

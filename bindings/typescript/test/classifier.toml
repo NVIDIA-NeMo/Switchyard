@@ -37,6 +37,9 @@ classify_trigger = "every_request"
 fail_open = false
 
 [routes.planner.decision]
-cutoff = 0.5
 candidates = { a = "complex", b = "standard" }
 evidence = { candidates = { a = "More capable software engineering model for difficult design and debugging", b = "Lower-cost planning model for ordinary software engineering tasks" } }
+
+[routes.planner.decision.policy]
+rules = [{ candidate = "a", cutoff = 0.5 }]
+fallback = "b"
