@@ -16,6 +16,7 @@ name = "_switchyard_rust"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+async-trait.workspace = true
 futures.workspace = true
 http.workspace = true
 switchyard-libsy.workspace = true
@@ -25,5 +26,8 @@ pythonize = "0.28.0"
 serde.workspace = true
 serde_json.workspace = true
 switchyard-protocol.workspace = true
+switchyard-llm-client.workspace = true
+switchyard-runner.workspace = true
 switchyard-server.workspace = true
+switchyard-translation.workspace = true
 tokio.workspace = true
