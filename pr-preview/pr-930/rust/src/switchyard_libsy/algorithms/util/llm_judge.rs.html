@@ -600,7 +600,7 @@
 <a href=#600 id=600 data-nosnippet>600</a>
 <a href=#601 id=601 data-nosnippet>601</a>        <span class="kw">let </span>serve = <span class="kw">async </span>{
 <a href=#602 id=602 data-nosnippet>602</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="prelude-val">Ok</span>(Step::CallModel(call))) = steps.next().<span class="kw">await </span>{
-<a href=#603 id=603 data-nosnippet>603</a>                <span class="kw">let _ </span>= call.respond(reply);
+<a href=#603 id=603 data-nosnippet>603</a>                <span class="kw">let _ </span>= call.respond(std::future::ready(reply)).<span class="kw">await</span>;
 <a href=#604 id=604 data-nosnippet>604</a>            }
 <a href=#605 id=605 data-nosnippet>605</a>        };
 <a href=#606 id=606 data-nosnippet>606</a>        <span class="kw">let </span>(classification, ()) =
