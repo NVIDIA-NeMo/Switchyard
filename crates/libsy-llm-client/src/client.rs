@@ -993,7 +993,7 @@ fn apply_extra_headers(mut builder: RequestBuilder, backend: &Backend) -> Reques
 }
 
 // Borrow settings so native HTTP clients and host clients share preparation without cloning config.
-fn prepare_request_body(
+pub(crate) fn prepare_request_body(
     request: &LlmRequest,
     model: &ModelId,
     wire_format: WireFormat,
