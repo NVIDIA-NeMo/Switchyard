@@ -413,11 +413,12 @@ impl DeploymentConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let client = Arc::new(
-                TranslatingLlmClient::new(&model_configs)
-                    .map_err(|error| RunnerError::configuration(error.to_string()))?,
-            );
-            clients.insert(name, client);
+            let mut client = TranslatingLlmClient::new(&model_configs)
+                .map_err(|error| RunnerError::configuration(error.to_string()))?;
+            if !self.llm_clients[&name].fallback_on_rate_limit {
+                client = client.without_rate_limit_cooldown();
+            }
+            clients.insert(name, Arc::new(client));
         }
         Ok(clients)
     }
@@ -555,6 +556,17 @@ impl DeploymentConfig {
             prompts,
             routing_answer_target,
             &completion_targets,
+        )
+        .without_rate_limit_fallback(
+            route
+                .routing_target_names()
+                .into_iter()
+                .filter_map(|name| {
+                    let target = &self.targets[name];
+                    (!self.llm_clients[&target.llm_client].fallback_on_rate_limit)
+                        .then(|| target.id.clone())
+                })
+                .collect(),
         );
         Ok((router, caller_auth))
     }
@@ -725,6 +737,8 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    #[serde(default = "default_fallback_on_rate_limit")]
+    fallback_on_rate_limit: bool,
     /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
     #[serde(default = "default_failure_cooldown_ms")]
     failure_cooldown_ms: u64,
@@ -862,6 +876,10 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
 // A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
+}
+
+const fn default_fallback_on_rate_limit() -> bool {
+    true
 }
 
 const fn default_failure_cooldown_ms() -> u64 {

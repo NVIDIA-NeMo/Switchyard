@@ -140,6 +140,17 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    if model == "model/rate-limited" {
+        return (
+            if prompt == "unavailable" {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            },
+            Json(json!({"error": {"message": "quota exhausted", "code": "usage_limit"}})),
+        )
+            .into_response();
+    }
     if model == "model/classifier" {
         let mut pending = HashSet::new();
         for message in body["messages"].as_array().into_iter().flatten() {
@@ -5443,5 +5454,80 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some("model/a")
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rate_limit_fallback_policy() -> TestResult {
+    for (policy, forward_auth, prompt, is_terminal) in [
+        ("", false, "hello", false),
+        ("", true, "hello", false),
+        ("fallback_on_rate_limit = true", false, "hello", false),
+        ("fallback_on_rate_limit = false", false, "hello", true),
+        ("fallback_on_rate_limit = false", true, "hello", true),
+        (
+            "fallback_on_rate_limit = false",
+            false,
+            "unavailable",
+            false,
+        ),
+    ] {
+        let upstream = MockUpstream::start().await?;
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{base_url}"
+forward_auth = {forward_auth}
+{policy}
+max_retries = 1
+failure_cooldown_ms = 60000
+[llm_clients.secondary]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets]
+first = {{ id = "model/rate-limited", llm_client = "primary" }}
+second = {{ id = "model/fallback", llm_client = "secondary" }}
+[routes.test]
+id = "{ROUTE_MODEL}"
+type = "random"
+targets = ["first", "second"]
+weights = [1000, 1]
+seed = 17
+"#,
+            base_url = upstream.base_url,
+        ))?);
+        let mut expected_calls = Vec::new();
+        // The second request exercises cooldown as well as streaming HTTP errors.
+        for stream in [false, true] {
+            let response = send_with_headers(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": ROUTE_MODEL, "stream": stream,
+                    "messages": [{"role": "user", "content": prompt}]
+                })),
+                &[("authorization", "Bearer test-caller")],
+            )
+            .await?;
+            if !stream || is_terminal || forward_auth {
+                expected_calls.extend(["model/rate-limited"; 2]);
+            }
+            if is_terminal {
+                assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS);
+                assert_eq!(response.json()?["error"]["code"], "usage_limit");
+            } else {
+                assert_eq!(response.status, StatusCode::OK);
+                expected_calls.push("model/fallback");
+            }
+            assert_eq!(
+                upstream.models().await,
+                expected_calls,
+                "{policy}, forward_auth={forward_auth}, {prompt}, stream={stream}"
+            );
+        }
+    }
     Ok(())
 }
