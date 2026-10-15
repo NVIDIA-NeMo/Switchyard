@@ -42,6 +42,7 @@ impl RoutingLog {
         Ok(Self(file))
     }
 
+    /// Writes one record for a finished call as a single JSON line.
     pub(crate) fn append(
         &mut self,
         context: RoutingLogContext,
@@ -124,6 +125,7 @@ pub(crate) struct AgentIdentity {
 }
 
 impl AgentIdentity {
+    /// Copies the agent fields from the request metadata.
     fn from_metadata(metadata: &Metadata) -> Self {
         Self {
             agent_id: metadata.agent_id.clone(),
@@ -297,10 +299,12 @@ impl SessionStatsSnapshot {
     }
 }
 
+/// Lets serde leave out a `false` flag, so it is written only when set.
 fn is_false(flag: &bool) -> bool {
     !flag
 }
 
+/// Returns a header value only when it is present, non-empty, and valid text.
 fn nonempty_header<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(name)
@@ -348,7 +352,7 @@ mod tests {
         );
     }
 
-    // Appends one record for `metadata` and returns it as JSON.
+    /// Appends one record for `metadata` and returns it as JSON.
     fn logged_record(metadata: &Metadata) -> serde_json::Value {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("routing.jsonl");
