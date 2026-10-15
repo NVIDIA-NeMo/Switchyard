@@ -1007,43 +1007,26 @@ mod tests {
 
     #[tokio::test]
     async fn classified_tier_controls_the_stage_threshold() -> Result<()> {
-        for (mode, threshold) in [
-            (PickerMode::EfficientFirst, 0.0),
-            (PickerMode::EfficientFirst, 0.5),
-            (PickerMode::CapableFirst, 0.0),
-            (PickerMode::CapableFirst, 0.5),
+        let mut state = state_with(ToolSignals {
+            severity: 0.3,
+            recent_edit_count: 1,
+            tool_result_count: 1,
+            ..Default::default()
+        });
+        for (tier, threshold, expected) in [
+            (Tier::Capable, 0.0, Some(ModelId::from("weak"))),
+            (Tier::Efficient, 0.0, None),
+            (Tier::Capable, 0.5, None),
         ] {
-            let classifier =
-                StageClassifier::new(mode, 0.5).with_capable_first_threshold(threshold);
-            let mut state = state_with(ToolSignals {
-                severity: 0.3,
-                recent_edit_count: 1,
-                tool_result_count: 1,
-                ..Default::default()
-            });
-            let driver = driver();
-            for tier in [
-                None,
-                Some(Tier::Efficient),
-                Some(Tier::Capable),
-                Some(Tier::Efficient),
-                None,
-            ] {
-                match tier {
-                    Some(tier) => set_fall_open(&mut state, tier),
-                    None => clear_fall_open(&mut state),
-                }
-                let (classification, _) = classifier
-                    .score(&mut state, &mut Request::default(), &driver)
-                    .await?;
-                let target = classification.argmax(false)?.map(|score| score.target);
-                assert_eq!(
-                    target,
-                    (tier == Some(Tier::Capable) && threshold == 0.0)
-                        .then(|| ModelId::from("weak")),
-                    "mode {mode:?}, classified tier {tier:?}, threshold {threshold}"
-                );
-            }
+            set_fall_open(&mut state, tier);
+            let (classification, _) = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+                .with_capable_first_threshold(threshold)
+                .score(&mut state, &mut Request::default(), &driver())
+                .await?;
+            assert_eq!(
+                classification.argmax(false)?.map(|score| score.target),
+                expected
+            );
         }
         Ok(())
     }

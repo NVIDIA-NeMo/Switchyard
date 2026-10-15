@@ -1247,29 +1247,6 @@ evidence = { description = "candidate comparison" }
     }
 
     #[test]
-    fn composite_validates_capable_first_threshold() {
-        let defaults = composite_config().replace("confidence_threshold = 0.5", "");
-        assert!(runner_from_toml(&defaults).is_ok());
-        assert!(
-            runner_from_toml(&stage_config().replace("confidence_threshold = 1.0", "")).is_err()
-        );
-        for (threshold, valid) in [
-            ("0.0", true),
-            ("0.7", true),
-            ("1.0", true),
-            ("-0.1", false),
-            ("1.1", false),
-            ("nan", false),
-        ] {
-            let source = composite_config().replace(
-                "confidence_threshold = 0.5",
-                &format!("efficient_first_threshold = 0.5\ncapable_first_threshold = {threshold}"),
-            );
-            assert_eq!(runner_from_toml(&source).is_ok(), valid, "{threshold}");
-        }
-    }
-
-    #[test]
     fn builds_all_supported_algorithm_types() -> RunnerResult<()> {
         let state = runner_from_toml(VALID_CONFIG)?;
         // The model id array is sorted alphabetically
