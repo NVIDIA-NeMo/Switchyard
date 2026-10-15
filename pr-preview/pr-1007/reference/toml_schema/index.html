@@ -2845,11 +2845,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 </table>
 <p>For decision classifier configuration, see
 <a href="../../routing_algorithms/composite_routing/#decision-model-classifier">Decision model classifier</a>.
-The same decision settings are accepted by the optional <code>stage_router</code> classifier.
-<code>decision.criteria</code> supplies two custom Choice descriptions keyed by candidate label;
-it requires <code>decision.instructions</code> and exactly the two labels in <code>decision.candidates</code>.
-It is optional and also works with standalone task routes.
-See <a href="../../routing_algorithms/llm_classifier_routing/#use-a-decision-model">custom decision questions</a>.</p>
+The same decision settings are accepted by the optional <code>stage_router</code> classifier.</p>
 <p>The tier is retained per session. A deployment that sends no session ID needs
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
 instead. The outer <code>[routes.&lt;name&gt;.classifier]</code> table is required. The nested
