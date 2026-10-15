@@ -2830,9 +2830,9 @@ configuration. Today a classifier sets the tier a stage router falls open to whe
 <a href="../../routing_algorithms/composite_routing/#decision-model-classifier">Decision model classifier</a>.
 The same decision settings are accepted by the optional <code>stage_router</code> classifier.
 <code>decision.criteria</code> supplies two custom Choice descriptions keyed by candidate label;
-it requires <code>decision.instructions</code>. <code>decision.task_text_only = true</code> sends only
-the opening user text in <code>state.task</code>. Both are optional and also work with standalone
-task routes. See <a href="../../routing_algorithms/llm_classifier_routing/#use-a-decision-model">custom decision questions</a>.</p>
+it requires <code>decision.instructions</code> and exactly the two labels in <code>decision.candidates</code>.
+It is optional and also works with standalone task routes.
+See <a href="../../routing_algorithms/llm_classifier_routing/#use-a-decision-model">custom decision questions</a>.</p>
 <p>The tier is retained per session. A deployment that sends no session ID needs
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
 instead. The outer <code>[routes.&lt;name&gt;.classifier]</code> table is required. The nested

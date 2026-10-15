@@ -915,10 +915,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-the-llm-decision-works" class="md-nav__link">
+  <a href="#how-the-decision-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How the LLM decision works
+        How the decision works
       
     </span>
   </a>
@@ -1580,10 +1580,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-the-llm-decision-works" class="md-nav__link">
+  <a href="#how-the-decision-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How the LLM decision works
+        How the decision works
       
     </span>
   </a>
@@ -1723,7 +1723,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <p>The same classifier also supports <a href="../escalation_router_routing/">escalation</a>
 and <a href="#custom-multi-target-routing">custom routing</a> across two or more targets.</p>
 <p>For a task-level decision-model experiment, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f747665c5496d1a8b2ee47237626fc9a5c04f73b/benchmark/TB21_JEV_TASK_ROUTER_REPORT.md">Jev Terminal-Bench 2.1 results</a>,
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8e94ba31d7088fbb4131b5ec390bf8f4d53c520b/benchmark/TB21_JEV_TASK_ROUTER_REPORT.md">Jev Terminal-Bench 2.1 results</a>,
 including separate train/test scores, cost accounting, and limits.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
@@ -1767,36 +1767,20 @@ first user message share an affinity key. Prefer an explicit
 identifiers sent to the upstream provider. The route's <code>id</code>, <code>smart</code>, is the
 model name clients send to Switchyard.</p>
 <h2 id="use-a-decision-model">Use a decision model<a class="headerlink" href="#use-a-decision-model" title="Permanent link">&para;</a></h2>
-<p>A capability route can use a System One decision target as its judge. Configure
-<code>decision</code> instead of the LLM-only <code>base_threshold</code>, <code>threshold_step</code>, and <code>prompt</code>
-fields. See <a href="../composite_routing/#decision-model-classifier">decision client and target configuration</a>.</p>
-<p>By default, the Choice options are <code>advantage</code> (capable succeeds and efficient
-fails) and <code>no_advantage</code> (the complement). Custom <code>instructions</code> replaces the
-packaged instructions. To supply your own Choice options as well, set <code>criteria</code>
-using the same two labels as <code>candidates</code>:</p>
+<p>For a <a href="../composite_routing/#decision-model-classifier">decision model judge</a>,
+optional <code>criteria</code> replaces <code>advantage</code> / <code>no_advantage</code> with your own choices.
+Supply custom instructions and exactly the two labels in <code>candidates</code>:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[routes.smart.decision]</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">cutoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.05</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">candidates</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">candidate_a</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">candidate_b</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="w"> </span><span class="p">}</span>
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">evidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">task_text_only</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">instructions</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">setting</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Compare the task requirements with the candidates&#39; capabilities.&quot;</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">criteria</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">candidate_a</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;A has a specific advantage that justifies its cost.&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">candidate_b</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Otherwise prefer B.&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">instructions</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">setting</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Compare the task requirements with the candidates&#39; capabilities.&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">criteria</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">candidate_a</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;A has a specific advantage that justifies its cost.&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">candidate_b</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Otherwise prefer B.&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
-<p>The router selects capable when its candidate's probability is strictly above
-<code>cutoff</code>; ties select efficient. It does not use the provider's winning option
-or confidence. Choose the cutoff from evaluations with your question and models.
-Custom criteria requires custom instructions and exactly two known candidate labels.
-Criteria descriptions and instructions can contain structured JSON values.</p>
-<p><code>task_text_only = true</code> sends <code>{"task": "opening user text"}</code> as the entire
-decision state. Text blocks are joined with newlines; non-text blocks are omitted.
-System instructions, later messages, evidence, and candidate metadata are omitted.
-An opening user message with text is required. This is useful when the question
-already contains all candidate descriptions. Otherwise, the default state contains
-the selected conversation messages, candidate labels, comparison, and evidence.
-<code>recent_turn_window</code> does not affect text-only task input.</p>
-<p>Use <code>classify_trigger = "new_session"</code> on the route to hold one choice for a whole
-task. Send a distinct <code>x-switchyard-session-id</code> for each task.</p>
-<h2 id="how-the-llm-decision-works">How the LLM decision works<a class="headerlink" href="#how-the-llm-decision-works" title="Permanent link">&para;</a></h2>
+<p>The router selects capable when its candidate's probability exceeds <code>cutoff</code>;
+ties select efficient. Instructions and criteria descriptions support structured
+JSON. Task context, evidence, and fallback behavior stay unchanged.</p>
+<h2 id="how-the-decision-works">How the decision works<a class="headerlink" href="#how-the-decision-works" title="Permanent link">&para;</a></h2>
 <p>The classifier target returns a structured verdict containing:</p>
 <ul>
 <li><code>p_solve</code>: the estimated probability that the weak model completes the task.</li>
@@ -1843,7 +1827,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f747665c5496d1a8b2ee47237626fc9a5c04f73b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8e94ba31d7088fbb4131b5ec390bf8f4d53c520b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
