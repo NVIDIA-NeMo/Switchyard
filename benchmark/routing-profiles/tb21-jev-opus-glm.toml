@@ -3,9 +3,10 @@
 #
 # Jev task selection adapted from the Terminal-Bench 2.1 capability rubric.
 # One route per session: A is Opus 4.8, B is GLM 5.2.
-# Switchyard uses its default advantage/no_advantage Choice question and sends
-# task messages and candidate metadata. Criteria below are part of the instructions.
-# The 0.05 cutoff is a starting value, not calibrated for this adapted question.
+# The Choice question uses candidate_a/candidate_b and sends task messages and
+# candidate metadata. Criteria below are part of the instructions.
+# The 0.05 rule cutoff needs re-evaluation for candidate-choice scores; it is not
+# interchangeable with a relative-advantage cutoff.
 # Completion endpoints use OpenRouter rather than the experiment's
 # Bedrock/Inference Hub baselines. Re-evaluate before comparing with the results.
 # Recorded replay results are shown in the repository README.
@@ -57,9 +58,12 @@ recent_turn_window = 0
 fail_open = false
 
 [routes.switchyard.decision]
-cutoff = 0.05
 candidates = { candidate_a = "opus", candidate_b = "glm" }
 evidence = {}
+
+[routes.switchyard.decision.policy]
+rules = [{ candidate = "candidate_a", cutoff = 0.05 }]
+fallback = "candidate_b"
 
 [routes.switchyard.decision.instructions]
 setting = "Select one anonymous coding agent, A or B, to execute the entire terminal task in `task`. Both use the same tools and time budget. Full success means satisfying all required artifacts and behavior under the final verifier. There is no mid-task model switching or second attempt by the other agent."

@@ -75,7 +75,7 @@ pub enum ClassifierPolicyConfig {
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassifierMode {
-    /// Judges the request first, then serves the strong or weak target.
+    /// Judges the request, using a tier pair or an ordered decision policy.
     Capability,
     /// Serves the weak target first and judges the finished turn, moving to the
     /// strong target once the session latches.
@@ -103,8 +103,8 @@ enum LlmClassifierModeConfig {
 struct CapabilityClassifierRouteConfig {
     classifier_target: String,
     fail_open: bool,
-    strong_target: String,
-    weak_target: String,
+    strong_target: Option<String>,
+    weak_target: Option<String>,
     judge: CapabilityJudgeRouteConfig,
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
@@ -121,7 +121,7 @@ impl CapabilityClassifierRouteConfig {
         let judge = match config.judge {
             CapabilityJudgeRouteConfig::Llm(judge) => CapabilityJudgeConfig::Llm(judge),
             CapabilityJudgeRouteConfig::Decision(judge) => {
-                for target in [&config.strong_target, &config.weak_target] {
+                for target in config.strong_target.iter().chain(&config.weak_target) {
                     if !judge.candidates.values().any(|name| name == target) {
                         return Err(AlgorithmConfigError::new(format!(
                             "route {route_name}: decision.candidates must include target {target}"
@@ -803,12 +803,15 @@ impl AlgorithmSpec {
                 ..
             } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::LlmClassifier { config, .. } => match config.classifier_mode() {
-                ClassifierMode::Capability => config
-                    .weak_target
-                    .iter()
-                    .chain(&config.strong_target)
-                    .map(String::as_str)
-                    .collect(),
+                ClassifierMode::Capability => match &config.decision {
+                    Some(judge) => judge.candidates.values().map(String::as_str).collect(),
+                    _ => config
+                        .weak_target
+                        .iter()
+                        .chain(&config.strong_target)
+                        .map(String::as_str)
+                        .collect(),
+                },
                 ClassifierMode::Escalation => config
                     .strong_target
                     .iter()
@@ -1106,15 +1109,31 @@ fn classifier_runtime_model_names(
     config: LlmClassifierModeConfig,
 ) -> HashMap<Category, Vec<String>> {
     match config {
-        LlmClassifierModeConfig::Capability(config) => category_models([
-            (Category::Judge, vec![config.classifier_target]),
-            (Category::Efficient, vec![config.weak_target.clone()]),
-            (Category::Capable, vec![config.strong_target.clone()]),
-            (
-                Category::Any,
-                vec![config.weak_target, config.strong_target],
-            ),
-        ]),
+        LlmClassifierModeConfig::Capability(config) => {
+            let any = match &config.judge {
+                CapabilityJudgeRouteConfig::Decision(judge) => {
+                    judge.candidates.values().cloned().collect()
+                }
+                _ => config
+                    .weak_target
+                    .iter()
+                    .chain(&config.strong_target)
+                    .cloned()
+                    .collect(),
+            };
+            category_models([
+                (Category::Judge, vec![config.classifier_target]),
+                (
+                    Category::Efficient,
+                    config.weak_target.into_iter().collect(),
+                ),
+                (
+                    Category::Capable,
+                    config.strong_target.into_iter().collect(),
+                ),
+                (Category::Any, any),
+            ])
+        }
         LlmClassifierModeConfig::Escalation(config) => category_models([
             (Category::Judge, vec![config.classifier_target]),
             (Category::Efficient, vec![config.weak_target.clone()]),
@@ -1204,6 +1223,7 @@ impl LlmClassifierRouteConfig {
 
         match selected_mode {
             ClassifierMode::Capability => {
+                let is_decision = decision.is_some();
                 if escalation.is_some() {
                     return Err(classifier_field_error(
                         route_name,
@@ -1248,16 +1268,24 @@ impl LlmClassifierRouteConfig {
                     CapabilityClassifierRouteConfig {
                         classifier_target: classifier_target.clone(),
                         fail_open: fail_open.unwrap_or(true),
-                        strong_target: required_classifier_field(
-                            route_name,
-                            "strong_target",
-                            strong_target,
-                        )?,
-                        weak_target: required_classifier_field(
-                            route_name,
-                            "weak_target",
-                            weak_target,
-                        )?,
+                        strong_target: if is_decision {
+                            strong_target.clone()
+                        } else {
+                            Some(required_classifier_field(
+                                route_name,
+                                "strong_target",
+                                strong_target,
+                            )?)
+                        },
+                        weak_target: if is_decision {
+                            weak_target.clone()
+                        } else {
+                            Some(required_classifier_field(
+                                route_name,
+                                "weak_target",
+                                weak_target,
+                            )?)
+                        },
                         judge,
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,

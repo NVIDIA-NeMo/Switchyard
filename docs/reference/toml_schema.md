@@ -90,8 +90,9 @@ The Rust runner collects streams used during routing before the algorithm
 continues, preserving provider events for replay. After the configured retries,
 an HTTP client failure stops routing unless the call enables recovery.
 Capability classifiers and advisor gates default to `fail_open = true`.
-A capability classifier routes to the capable tier on judge failures, including
-deadlines. An advisor returns the buffered executor turn when its consult fails.
+An LLM capability judge routes to the capable tier on client failures, including
+deadlines. A decision judge selects `decision.policy.fallback` instead.
+An advisor returns the buffered executor turn when its consult fails.
 Set `fail_open = false` to stop the request on these failures.
 Answer calls keep their usual error behavior.
 
@@ -275,7 +276,7 @@ checkpoint = "/models/router.pt"
 ### `llm_classifier`
 
 Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
-`max_output_tokens` applies to all three.
+`max_output_tokens` applies to LLM judges in all three modes.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
@@ -289,15 +290,20 @@ Capability mode classifies before serving. See
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `strong_target` | Yes | — | Capable tier. |
-| `weak_target` | Yes | — | Efficient tier. |
-| `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
-| `fail_open` | No | `true` | Capability mode only. When `true`, judge client failures and deadlines route to the capable tier and record fail-open evidence. When `false`, they stop the request. Invalid verdicts use the capable tier with either setting. |
+| `strong_target` | For LLM judges | — | Capable tier. Optional with a decision judge. |
+| `weak_target` | For LLM judges | — | Efficient tier. Optional with a decision judge. |
+| `base_threshold` | For LLM judges | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. Omit with `decision`. |
+| `decision` | No | unset | Decision judge settings: candidate mappings, ordered policy rules, and an explicit fallback. See [ordered decision cutoffs](../routing_algorithms/llm_classifier_routing.md#decision-models-with-ordered-cutoffs). |
+| `fail_open` | No | `true` | When `true`, judge client failures and deadlines use the fallback and record fail-open evidence. When `false`, they stop the request. Invalid verdicts use the fallback with either setting. |
 | `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
+
+LLM capability judges use the capable tier as their fallback. Decision judges use
+`decision.policy.fallback`. With `decision`, omit LLM-only settings such as
+`base_threshold`, `threshold_step`, `prompt`, and `max_output_tokens`.
 
 Escalation mode serves the weak target first and judges the completed turn. See
 [Escalation-Router Routing](../routing_algorithms/escalation_router_routing.md).
@@ -428,7 +434,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. |
-| `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
+| `classifier.fail_open` | No | `true` | On client failure, LLM judges retain the last classified tier or default to efficient. Decision judges select `decision.policy.fallback`. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
 | `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
@@ -450,13 +456,16 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 For decision classifier configuration, see
 [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier).
 The same decision settings are accepted by the optional `stage_router` classifier.
+Decision judges require `decision.policy` with ordered rules and an explicit fallback.
+Standalone task routes support N-way selection. See
+[ordered decision cutoffs](../routing_algorithms/llm_classifier_routing.md#decision-models-with-ordered-cutoffs).
+Stage-backed policies must keep their destinations within the configured tier pair.
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message
 instead. The outer `[routes.<name>.classifier]` table is required. The nested
 `[routes.<name>.stage]` table accepts neither `picker` nor a second `classifier`.
-The outer classifier supplies the default tier. A turn the classifier cannot
-reach falls open to the efficient tier.
+The outer classifier supplies the default tier.
 
 ### `advisor`
 

@@ -57,6 +57,78 @@ The target table names are local references. Their `id` values are the model
 identifiers sent to the upstream provider. The route's `id`, `smart`, is the
 model name clients send to Switchyard.
 
+## Decision models with ordered cutoffs
+
+A decision judge can route among N candidates using an ordered policy. Configure
+a [decision client and target](composite_routing.md#decision-model-classifier),
+then use a route such as this with three existing completion targets:
+
+```toml
+[routes.task]
+id = "task"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "judge"
+classify_trigger = "new_session"
+fail_open = false
+
+[routes.task.decision]
+candidates = { premium = "strong", balanced = "medium", fast = "weak" }
+evidence = { description = "Describe each candidate's capabilities and operating conditions here." }
+
+[routes.task.decision.policy]
+rules = [
+  { candidate = "premium", cutoff = 0.6 },
+  { candidate = "balanced", cutoff = 0.35 },
+]
+fallback = "fast"
+```
+
+`judge` is a decision target; `strong`, `medium`, and `weak` are completion target
+table names. Rule candidate and fallback values refer to candidate labels.
+All candidates enter the standalone route's runtime model pool. No
+`strong_target` or `weak_target` fields are required with this policy.
+
+The first rule whose candidate score strictly exceeds its cutoff selects that
+candidate. Equality continues to the next rule; no match selects `fast`. The
+provider's selected option and confidence do not override the rules. Choice
+probabilities express a judgment among the declared candidates, not calibrated
+task-success probabilities. Evaluate your cutoffs on your workload.
+
+`decision.policy` is required for both two-model and N-way routing. The judge
+receives a Choice question over the candidate labels. Free-form structured
+`instructions` and `evidence` are passed through; omitting instructions uses the
+default candidate-selection prompt.
+
+The former `decision.cutoff` form and `advantage`/`no_advantage` question are
+removed. Migrate to explicit rules and a fallback, update custom instructions to
+use candidate labels, and re-evaluate cutoffs: candidate-choice scores have a
+different meaning from relative-advantage scores.
+
+An unavailable or invalid verdict selects the policy fallback. Provider errors
+return an error when `fail_open = false`; when true, they select the fallback.
+Use a session ID with `new_session` to retain the selected model. Stage and
+composite classifiers may use ordered rules only when every destination remains
+within their configured capable/efficient tier pair.
+
+Python exposes the same policy as a mapping:
+
+```python
+from switchyard.libsy import TaskClassifierConfig
+
+config = TaskClassifierConfig.decision(
+    candidates={"premium": "model-a", "balanced": "model-b", "fast": "model-c"},
+    evidence={"description": "Candidate capability descriptions."},
+    policy={
+        "rules": [
+            {"candidate": "premium", "cutoff": 0.6},
+            {"candidate": "balanced", "cutoff": 0.35},
+        ],
+        "fallback": "fast",
+    },
+)
+```
+
 ## How the decision works
 
 The classifier target returns a structured verdict containing:

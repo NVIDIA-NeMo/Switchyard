@@ -105,17 +105,27 @@ target = "judge"
 classify_trigger = "user_turn"
 
 [routes.switchyard.classifier.decision]
-cutoff = 0.4
 candidates = { a = "strong", b = "weak" }
 evidence = { description = "Add task-relevant evidence comparing a and b." }
+
+[routes.switchyard.classifier.decision.policy]
+rules = [{ candidate = "a", cutoff = 0.4 }]
+fallback = "b"
 ```
 
 Both candidates must be completion targets. The judge must be a decision target.
-The classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
-Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
+The judge scores the candidate labels. The first rule whose score strictly exceeds
+its cutoff selects that candidate. Here `probabilities.a > 0.4` selects capable;
+otherwise the fallback selects efficient. Calibrate cutoffs for your tasks and models.
+Omit LLM-only settings such as
 `base_threshold`, `threshold_step` and `prompt` when using a decision model.
-On judge failure, the default is to retain the last classified tier or use
-efficient for a new session. Set `classifier.fail_open = false` to return the error.
+Missing or invalid scores select the policy fallback. Provider errors also select
+it when `classifier.fail_open` is true; set it to false to return the error.
+Policy destinations must stay within the stage router's configured tier pair.
+
+`decision.policy` is required. The former `decision.cutoff` form and
+`advantage`/`no_advantage` question are removed. Candidate-choice scores have a
+different meaning, so re-evaluate old cutoffs when migrating.
 
 ## Sessions
 
