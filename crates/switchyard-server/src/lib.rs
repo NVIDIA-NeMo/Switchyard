@@ -63,7 +63,7 @@ pub const DEFAULT_LISTEN_BACKLOG: u32 = 65_535;
 /// Default time allowed for active requests to finish during shutdown.
 pub const DEFAULT_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Maximum buffered JSON request size accepted by the LLM endpoints.
+/// Default maximum buffered JSON request size accepted by the LLM endpoints.
 pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 const HEADER_SELECTED_MODEL: &str = "x-model-router-selected-model";
@@ -168,6 +168,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+    max_request_body_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -225,7 +226,19 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
+            max_request_body_bytes: DEFAULT_MAX_REQUEST_BODY_BYTES,
         })
+    }
+
+    /// Sets the maximum buffered JSON request size, including encoded media.
+    pub fn with_max_request_body_bytes(mut self, max_bytes: usize) -> ServerResult<Self> {
+        if max_bytes == 0 {
+            return Err(ServerError::new(
+                "max_request_body_bytes must be greater than zero",
+            ));
+        }
+        self.max_request_body_bytes = max_bytes;
+        Ok(self)
     }
 
     /// Enables durable per-request routing records at `path`.
@@ -526,7 +539,7 @@ fn primary_llm_routes() -> Router<ServerState> {
 // Applies the serving limits and request timing shared by both public router constructors.
 fn finish_router(router: Router<ServerState>, state: ServerState) -> Router {
     router
-        .layer(DefaultBodyLimit::max(DEFAULT_MAX_REQUEST_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(state.max_request_body_bytes))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             redaction::redact_response,
@@ -1271,10 +1284,16 @@ fn sanitize_routing_header_value(value: &str) -> Option<String> {
 }
 
 fn algorithm_error(error: LibsyError) -> Response {
-    let LibsyError::ClientCall { source, .. } = &error else {
-        return server_error(error.to_string());
-    };
-    client_error(source)
+    match &error {
+        LibsyError::InvalidRequest { message } => error_response(
+            StatusCode::BAD_REQUEST,
+            message,
+            "invalid_request_error",
+            "invalid_request_error",
+        ),
+        LibsyError::ClientCall { source, .. } => client_error(source),
+        _ => server_error(error.to_string()),
+    }
 }
 
 fn runner_error(error: RunnerError) -> Response {

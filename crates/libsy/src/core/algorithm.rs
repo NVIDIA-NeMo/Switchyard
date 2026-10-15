@@ -25,7 +25,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{
-    Category, DecisionRequest, DecisionResponse, ModelId, Request, Response,
+    Category, DecisionRequest, DecisionResponse, LlmClientError, ModelId, Request, Response,
 };
 
 use crate::{DriverError, LibsyError, Result, observability};
@@ -124,6 +124,7 @@ impl CallModel {
     /// Run host work until it completes or the algorithm stops waiting for this call.
     /// Dropping the waiting [`Driver::call_model`] future drops `work` and returns `Ok(())`.
     /// Errors stop the host's run unless [`Self::recover_errors`] is enabled.
+    /// Invalid client requests always stop the run.
     /// Use `std::future::ready(result)` for an already available response.
     /// A delivered response stream owns its subsequent lifetime.
     pub async fn respond(mut self, work: impl Future<Output = Result<Response>>) -> Result<()> {
@@ -136,7 +137,14 @@ impl CallModel {
         if self.reply.as_ref().is_some_and(oneshot::Sender::is_closed) {
             return Ok(());
         }
-        if !self.recover_errors
+        let invalid_request = matches!(
+            &result,
+            Err(LibsyError::ClientCall {
+                source: LlmClientError::InvalidRequest { .. },
+                ..
+            })
+        );
+        if (!self.recover_errors || invalid_request)
             && let Err(error) = result
         {
             return self.fail(error);

@@ -120,11 +120,42 @@ for the server merge behavior.
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
 | `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
+| `judge_max_images` | unset | Capability/custom modes: omit to preserve all images in the selected messages; `0` excludes images from the judge; `N > 0` rejects judge input exceeding `N` images, including images in tool results. Accepted images keep their original order. The answer request is unchanged. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+
+### Control images shown to the judge
+
+Capability and custom classifiers forward images from the selected messages.
+Set `judge_max_images` on the route to limit that input:
+
+- Unset: keep all selected images.
+- `0`: replace images with text markers.
+- A positive number: reject input above that limit (HTTP 400), even with fail-open enabled.
+
+The limit is shared across selected messages and nested tool results. It applies
+when the judge runs and leaves the answer request unchanged. It does not select,
+resize, or reorder images. Escalation mode uses a text summary and rejects this setting.
+
+Video blocks are separate. For a text-only judge receiving image or video requests,
+configure its target:
+
+```toml
+[targets.judge.media]
+max_images = 0
+video = "omit"
+```
+
+For a vision judge, the same table can resize images or extract video frames.
+Its `max_images` also counts the frames requested by `video_max_frames`. See the
+[media settings](../../crates/libsy-llm-client/MEDIA.md) for a judge/answer example.
+
+Use `classify_trigger = "every_request"` for independent image requests. The
+optional message-hash affinity key uses only text, so identical questions about
+different images must not share that key.
 
 ### Override the classifier prompt
 

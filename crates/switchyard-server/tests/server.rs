@@ -1436,6 +1436,64 @@ async fn accepts_requests_larger_than_the_axum_default_body_limit() -> TestResul
     Ok(())
 }
 
+#[tokio::test]
+async fn request_body_limit_is_configurable_and_local_to_each_server() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?;
+    assert!(state.clone().with_max_request_body_bytes(0).is_err());
+    let body = serde_json::to_vec(&json!({
+        "model": ROUTE_MODEL, "messages": [{"role":"user", "content":"hello"}]
+    }))?;
+    for router in [build_llm_router, build_switchyard_router] {
+        for (limit, expected) in [
+            (body.len() - 1, StatusCode::PAYLOAD_TOO_LARGE),
+            (body.len(), StatusCode::OK),
+        ] {
+            let app = router(state.clone().with_max_request_body_bytes(limit)?);
+            let response = send_raw_json(
+                &app,
+                "/v1/chat/completions",
+                body.clone(),
+                Some("application/json"),
+            )
+            .await?;
+            assert_eq!(response.status, expected);
+        }
+    }
+    // Padding crosses the ingress limit without making the mock provider handle large media.
+    let mut large_body = body;
+    large_body.resize(DEFAULT_MAX_REQUEST_BODY_BYTES + 1, b' ');
+    let raised = build_switchyard_router(
+        state
+            .clone()
+            .with_max_request_body_bytes(128 * 1024 * 1024)?,
+    );
+    assert_eq!(
+        send_raw_json(
+            &raised,
+            "/v1/chat/completions",
+            large_body.clone(),
+            Some("application/json")
+        )
+        .await?
+        .status,
+        StatusCode::OK
+    );
+    let default = build_switchyard_router(state);
+    assert_eq!(
+        send_raw_json(
+            &default,
+            "/v1/chat/completions",
+            large_body,
+            Some("application/json")
+        )
+        .await?
+        .status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    Ok(())
+}
+
 fn load_test_config(toml: &str) -> TestResult<ServerState> {
     let mut config = tempfile::Builder::new()
         .prefix("switchyard-server-config-")
@@ -2588,6 +2646,110 @@ selector = "/decision/target"
             ["target"]["enum"],
         json!(["fast", "balanced", "reasoning", "premium"])
     );
+    Ok(())
+}
+
+/// Both judge modes limit their own images while forwarding the complete answer request.
+#[tokio::test]
+async fn classifier_image_limits_preserve_answer_images() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let images = json!([
+        {"type": "text", "text": "Compare these images."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,b2xk", "detail": "low"}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,bmV3", "detail": "high"}}
+    ]);
+    for (custom, target_media) in [(false, false), (true, false), (false, true), (true, true)] {
+        for limit in [None, Some(0), Some(1), Some(2)] {
+            let mode = if custom {
+                r#"mode = "custom"
+models = { judge = ["classifier"], weak = ["weak"], premium = ["premium"], any = ["weak", "premium"] }
+default_target = "weak"
+response_schema = '{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["weak","premium"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}'
+policy = { type = "target_selector", selector = "/decision/target" }"#
+            } else {
+                "mode = \"capability\"\nclassifier_target = \"classifier\"\nstrong_target = \"premium\"\nweak_target = \"weak\"\nbase_threshold = 0.5"
+            };
+            let limit_field = if target_media {
+                "max_images"
+            } else {
+                "judge_max_images"
+            };
+            let setting = limit
+                .map(|n| format!("{limit_field} = {n}"))
+                .unwrap_or_default();
+            let (route_limit, target_limit) = if target_media {
+                (String::new(), format!(", media = {{ {setting} }}"))
+            } else {
+                (setting, String::new())
+            };
+            let state = load_test_config(&format!(
+                r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+classifier = {{ id = "model/classifier", llm_client = "upstream"{target_limit} }}
+weak = {{ id = "model/weak", llm_client = "upstream" }}
+premium = {{ id = "model/premium", llm_client = "upstream" }}
+[routes.vision]
+id = "vision"
+type = "llm_classifier"
+prompt = "route to premium"
+{mode}
+{route_limit}
+"#,
+                upstream.base_url
+            ))?;
+            let app = build_switchyard_router(state);
+            upstream.calls.lock().await.clear();
+            let response = send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": "vision", "messages": [{"role": "user", "content": images}]
+                })),
+            )
+            .await?;
+            let calls = upstream.calls.lock().await;
+            if limit == Some(1) {
+                assert_eq!(response.status, StatusCode::BAD_REQUEST);
+                assert!(
+                    response.json()?["error"]["message"]
+                        .to_string()
+                        .contains(limit_field)
+                );
+                assert!(calls.is_empty());
+                continue;
+            }
+            assert_eq!(response.status, StatusCode::OK);
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0]["model"], "model/classifier");
+            let judge = &calls[0]["messages"][1]["content"];
+            if limit == Some(0) {
+                let omitted = if target_media {
+                    "[image omitted]"
+                } else {
+                    "[Image omitted from judge input.]"
+                };
+                if target_media {
+                    assert_eq!(
+                        judge,
+                        &json!([images[0], {"type":"text","text":omitted}, {"type":"text","text":omitted}])
+                    );
+                } else {
+                    assert_eq!(
+                        judge,
+                        &format!("Compare these images.\n{omitted}\n{omitted}")
+                    );
+                }
+            } else {
+                assert_eq!(judge, &images);
+            }
+            assert_eq!(calls[1]["messages"][0]["content"], images);
+        }
+    }
     Ok(())
 }
 

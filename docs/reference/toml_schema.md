@@ -151,6 +151,7 @@ such clients.
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
 | `omit_body_fields` | No | `[]` | Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's `format`, so use that format's field names, for example `reasoning_effort` on `openai_chat` or `reasoning` on `openai_responses`. Switchyard applies `extra_body` and `reasoning_effort` after the removal, so either can set a removed field again. |
 | `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate `llm_clients` entries (same endpoint, different name). |
+| `media` | No | unset | Per-target image resizing, video format, frame sampling, and preparation limits. See the [media settings](../../crates/libsy-llm-client/MEDIA.md). |
 
 Within one route, callable targets with the same model ID must use the same `llm_client`.
 This includes completion targets and targets used for judging or classification. Switchyard rejects
@@ -275,6 +276,7 @@ Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
 | `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+| `judge_max_images` | No | unset | Capability/custom modes only. `0` omits images from the judge; `N > 0` rejects judge input exceeding `N` images across selected messages and nested tool results. Images are not sampled or reordered. Unset preserves all images. Does not resize images or change the answer request. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
 
 Capability mode classifies before serving. See

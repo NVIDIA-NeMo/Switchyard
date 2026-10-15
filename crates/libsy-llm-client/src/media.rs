@@ -1,0 +1,658 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Prepare media in an owned outgoing provider body without modifying the routing request.
+
+mod decode;
+mod fetch;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use dynamo_multimodal::fetch::MediaFetcher;
+use futures_util::future::BoxFuture;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use switchyard_protocol::WireFormat;
+use tokio::sync::Semaphore;
+
+/// Representation expected by the target endpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoMode {
+    /// Leave the encoded video block unchanged.
+    #[default]
+    Passthrough,
+    /// Replace video with timestamped JPEG frames.
+    Frames,
+    /// Emit a Chat Completions `video_url` block.
+    VideoUrl,
+    /// Emit a Gemini-on-Hub Chat `file` block with a video MIME type.
+    File,
+    /// Replace videos with a text marker, without downloading them.
+    Omit,
+}
+
+/// Optional per-target media settings. All limits apply independently to each call.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaConfig {
+    /// Downscale still images to fit this edge, preserving aspect ratio. Never upscale.
+    pub image_max_edge: Option<u32>,
+    /// Maximum images and extracted frames per call; excess input is rejected.
+    /// Unset is unlimited; zero omits images and extracted frames.
+    pub max_images: Option<usize>,
+    /// Target video representation.
+    pub video: VideoMode,
+    /// Maximum uniform samples per video, including clip endpoints; one sample uses the first frame.
+    pub video_max_frames: usize,
+    /// Maximum edge for extracted video frames. Never upscale.
+    pub frame_max_edge: u32,
+    /// Maximum downloaded or decoded inline bytes per locally processed media source.
+    pub max_input_bytes: usize,
+    /// Maximum combined bytes of locally prepared images before base64 encoding.
+    pub max_output_bytes: usize,
+    /// Deadline for all preparation, including downloads, queueing, and decoding.
+    pub timeout_ms: u64,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            image_max_edge: None,
+            max_images: None,
+            video: VideoMode::Passthrough,
+            video_max_frames: 4,
+            frame_max_edge: 640,
+            max_input_bytes: 32 * 1024 * 1024,
+            max_output_bytes: 32 * 1024 * 1024,
+            timeout_ms: 30_000,
+        }
+    }
+}
+
+impl MediaConfig {
+    /// Validate bounds and native video compatibility at client construction time.
+    pub(crate) fn validate(&self, format: WireFormat) -> Result<()> {
+        if self
+            .image_max_edge
+            .is_some_and(|edge| !(1..=4096).contains(&edge))
+            || !(1..=4096).contains(&self.frame_max_edge)
+            || !(1..=64).contains(&self.video_max_frames)
+            || self.max_images.is_some_and(|count| count > 128)
+            || !(1..=256 * 1024 * 1024).contains(&self.max_input_bytes)
+            || !(1..=256 * 1024 * 1024).contains(&self.max_output_bytes)
+            || !(1..=300_000).contains(&self.timeout_ms)
+        {
+            return Err(MediaError::Invalid(
+                "invalid media limits: edges 1..4096, frames 1..64, images 0..128, bytes 1..256MiB, timeout 1..300000ms",
+            ));
+        }
+        if matches!(self.video, VideoMode::VideoUrl | VideoMode::File)
+            && format != WireFormat::OpenAiChat
+        {
+            return Err(MediaError::Invalid(
+                "video_url and file media modes require an openai_chat target",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Media failures contain no input URLs, credentials, or encoded media.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum MediaError {
+    /// The complete preparation deadline expired.
+    #[error("media preparation timed out")]
+    Timeout,
+    /// Invalid media, endpoint settings, or resource limit.
+    #[error("{0}")]
+    Invalid(&'static str),
+    /// Image decode or encode failure.
+    #[error("image decoding or encoding failed")]
+    Image(#[from] image::ImageError),
+}
+
+/// Result of media preparation.
+type Result<T> = std::result::Result<T, MediaError>;
+
+/// Per-target media preparation with a client-wide decoding limit.
+pub(crate) struct MediaProcessor {
+    config: MediaConfig,
+    fetcher: MediaFetcher,
+    slots: Arc<Semaphore>,
+}
+
+impl MediaProcessor {
+    /// Prepare an outgoing body. On error discard the body; changes may be partial.
+    /// Only message content is traversed. Tools, JSON arguments, and other controls are retained.
+    pub(crate) async fn prepare(&self, body: &mut Value, format: WireFormat) -> Result<()> {
+        let config = &self.config;
+        if let Some(limit) = config.max_images.filter(|limit| *limit > 0) {
+            let count: usize = ["input", "messages", "system"]
+                .iter()
+                .filter_map(|key| body.get(key).and_then(Value::as_array))
+                .flatten()
+                .map(|item| image_count(item, config))
+                .sum();
+            if count > limit {
+                return Err(MediaError::Invalid(
+                    "media exceeds max_images; select fewer images or reduce video_max_frames",
+                ));
+            }
+        }
+        tokio::time::timeout(Duration::from_millis(config.timeout_ms), async {
+            let mut budget = Budget {
+                blocks: 64,
+                bytes: config.max_output_bytes,
+            };
+            for key in ["input", "messages", "system"] {
+                if let Some(Value::Array(items)) = body.get_mut(key) {
+                    self.prepare_items(items, format, &mut budget).await?;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| MediaError::Timeout)?
+    }
+
+    fn prepare_items<'a>(
+        &'a self,
+        items: &'a mut Vec<Value>,
+        format: WireFormat,
+        budget: &'a mut Budget,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let config = &self.config;
+            let mut output = Vec::with_capacity(items.len());
+            for mut item in std::mem::take(items) {
+                if matches!(
+                    item["type"].as_str(),
+                    Some("image_url" | "input_image" | "image")
+                ) {
+                    if config.max_images == Some(0) {
+                        output.push(text_part(format, "[image omitted]"));
+                        continue;
+                    }
+                    if let Some(edge) = config.image_max_edge {
+                        let source = image_url(&item)
+                            .ok_or(MediaError::Invalid("image source cannot be resized"))?;
+                        budget.consume_block()?;
+                        let bytes = self.load(source).await?;
+                        let (mime, encoded) =
+                            decode::resize(bytes, edge, self.slots.clone()).await?;
+                        budget.consume_bytes(encoded.len())?;
+                        // Retain detail/cache hints and other fields on existing image blocks.
+                        replace_image_source(&mut item, &data_uri(mime, &encoded))?;
+                    }
+                } else if is_video(&item) {
+                    match config.video {
+                        VideoMode::Passthrough => {}
+                        VideoMode::Omit => item = text_part(format, "[video omitted]"),
+                        VideoMode::VideoUrl | VideoMode::File => {
+                            budget.consume_block()?;
+                            let (url, mime) = video_source(&item)
+                                .ok_or(MediaError::Invalid("unrecognized video source"))?;
+                            if config.video == VideoMode::VideoUrl && item["type"] != "video_url" {
+                                item = json!({"type":"video_url", "video_url":{"url":url}});
+                            } else if config.video == VideoMode::File && item["type"] != "file" {
+                                let key = if url.starts_with("data:") {
+                                    "file_data"
+                                } else {
+                                    "file_id"
+                                };
+                                item = json!({"type":"file", "file":{key:url,"format":mime}});
+                            }
+                        }
+                        VideoMode::Frames => {
+                            let count = config.video_max_frames;
+                            if config.max_images == Some(0) {
+                                output.push(text_part(format, "[video frames omitted]"));
+                                continue;
+                            }
+                            budget.consume_block()?;
+                            let (url, _) = video_source(&item)
+                                .ok_or(MediaError::Invalid("unrecognized video source"))?;
+                            let bytes = self.load(url).await?;
+                            let frames = decode::frames(
+                                bytes,
+                                count,
+                                config.frame_max_edge,
+                                self.slots.clone(),
+                                budget.bytes,
+                            )
+                            .await?;
+                            output.push(text_part(
+                                format,
+                                "[video frames; times are sample positions in seconds]",
+                            ));
+                            for (time, jpeg) in frames {
+                                budget.consume_bytes(jpeg.len())?;
+                                output
+                                    .push(text_part(format, &format!("[video sample {time:.3}s]")));
+                                output.push(image_part(format, &data_uri("image/jpeg", &jpeg)));
+                            }
+                            continue;
+                        }
+                    }
+                }
+                if let Some(key) = child_content_key(&item)
+                    && let Some(Value::Array(children)) = item.get_mut(key)
+                {
+                    self.prepare_items(children, format, budget).await?;
+                }
+                output.push(item);
+            }
+            *items = output;
+            Ok(())
+        })
+    }
+}
+
+struct Budget {
+    blocks: usize,
+    bytes: usize,
+}
+impl Budget {
+    fn consume_block(&mut self) -> Result<()> {
+        self.blocks = self.blocks.checked_sub(1).ok_or(MediaError::Invalid(
+            "too many media sources; maximum 64 per call",
+        ))?;
+        Ok(())
+    }
+    fn consume_bytes(&mut self, bytes: usize) -> Result<()> {
+        self.bytes = self.bytes.checked_sub(bytes).ok_or(MediaError::Invalid(
+            "prepared media exceeds max_output_bytes",
+        ))?;
+        Ok(())
+    }
+}
+
+fn image_count(item: &Value, config: &MediaConfig) -> usize {
+    if matches!(
+        item["type"].as_str(),
+        Some("image_url" | "input_image" | "image")
+    ) {
+        return 1;
+    }
+    if is_video(item) && config.video == VideoMode::Frames {
+        return config.video_max_frames;
+    }
+    child_content_key(item)
+        .and_then(|key| item.get(key).and_then(Value::as_array))
+        .map_or(0, |children| {
+            children.iter().map(|item| image_count(item, config)).sum()
+        })
+}
+
+fn child_content_key(item: &Value) -> Option<&'static str> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("function_call_output") => Some("output"),
+        Some("message" | "tool_result") => Some("content"),
+        None if item.get("role").is_some() => Some("content"),
+        _ => None,
+    }
+}
+
+fn image_url(item: &Value) -> Option<String> {
+    match item.get("type")?.as_str()? {
+        "image_url" | "input_image" => item["image_url"]
+            .as_str()
+            .or_else(|| item["image_url"]["url"].as_str())
+            .map(str::to_owned),
+        "image" => source_url(&item["source"], "image/png").map(|(url, _)| url),
+        _ => None,
+    }
+}
+
+fn source_url(source: &Value, default_mime: &str) -> Option<(String, String)> {
+    let mime = source["media_type"]
+        .as_str()
+        .unwrap_or(default_mime)
+        .to_owned();
+    let url = match source["type"].as_str() {
+        Some("url") => source["url"].as_str()?.to_owned(),
+        Some("base64") => format!("data:{mime};base64,{}", source["data"].as_str()?),
+        _ => return None,
+    };
+    Some((url, mime))
+}
+
+fn is_video(item: &Value) -> bool {
+    matches!(
+        item["type"].as_str(),
+        Some("video_url" | "input_video" | "video")
+    ) || (item["type"] == "file"
+        && item["file"]["format"]
+            .as_str()
+            .is_some_and(|mime| mime.starts_with("video/")))
+}
+
+fn video_source(item: &Value) -> Option<(String, String)> {
+    if item["type"] == "video" {
+        return source_url(&item["source"], "video/mp4");
+    }
+    if item["type"] == "file" {
+        let file = &item["file"];
+        return Some((
+            file["file_data"]
+                .as_str()
+                .or_else(|| file["file_id"].as_str())?
+                .to_owned(),
+            file["format"].as_str()?.to_owned(),
+        ));
+    }
+    let mime = item["media_type"].as_str().unwrap_or("video/mp4");
+    if let Some(url) = item["video_url"]
+        .as_str()
+        .or_else(|| item["video_url"]["url"].as_str())
+    {
+        let inferred = if let Some(mime) = item["media_type"].as_str() {
+            mime.to_owned()
+        } else if let Some((mime, _)) = url
+            .strip_prefix("data:")
+            .and_then(|rest| rest.split_once(';'))
+        {
+            mime.to_owned()
+        } else {
+            let parsed = url::Url::parse(url).ok();
+            match parsed
+                .as_ref()
+                .map(|url| url.path().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some(path) if path.ends_with(".webm") => "video/webm".to_owned(),
+                Some(path) if path.ends_with(".mov") => "video/quicktime".to_owned(),
+                Some(path) if path.ends_with(".mkv") => "video/x-matroska".to_owned(),
+                _ => mime.to_owned(),
+            }
+        };
+        return Some((url.to_owned(), inferred));
+    }
+    let source = &item["video"];
+    let mime = source["media_type"].as_str().unwrap_or(mime);
+    Some((
+        format!("data:{mime};base64,{}", source["data"].as_str()?),
+        mime.to_owned(),
+    ))
+}
+
+fn data_uri(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", STANDARD.encode(bytes))
+}
+
+fn text_part(format: WireFormat, text: &str) -> Value {
+    json!({"type": if format == WireFormat::OpenAiResponses { "input_text" } else { "text" }, "text":text})
+}
+
+fn image_part(format: WireFormat, url: &str) -> Value {
+    match format {
+        WireFormat::OpenAiChat => json!({"type":"image_url","image_url":{"url":url}}),
+        WireFormat::OpenAiResponses => json!({"type":"input_image","image_url":url}),
+        WireFormat::AnthropicMessages => {
+            let (header, data) = url.split_once(',').expect("generated data URI");
+            let mime = header
+                .trim_start_matches("data:")
+                .trim_end_matches(";base64");
+            json!({"type":"image","source":{"type":"base64","media_type":mime,"data":data}})
+        }
+    }
+}
+
+fn replace_image_source(item: &mut Value, url: &str) -> Result<()> {
+    match item["type"].as_str() {
+        Some("image_url") if item["image_url"].is_object() => item["image_url"]["url"] = url.into(),
+        Some("image_url" | "input_image") => item["image_url"] = url.into(),
+        Some("image") => {
+            item["source"] = image_part(WireFormat::AnthropicMessages, url)["source"].take()
+        }
+        _ => return Err(MediaError::Invalid("unrecognized image source")),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use image::{ImageFormat, Rgba, RgbaImage};
+
+    use super::*;
+
+    fn processor(config: MediaConfig) -> MediaProcessor {
+        MediaProcessor::new(config, Arc::new(Semaphore::new(2))).unwrap()
+    }
+
+    fn still_image() -> String {
+        let image = RgbaImage::from_pixel(80, 40, Rgba([255, 0, 0, 128]));
+        let mut png = Cursor::new(Vec::new());
+        image.write_to(&mut png, ImageFormat::Png).unwrap();
+        data_uri("image/png", png.get_ref())
+    }
+
+    #[tokio::test]
+    async fn resizing_retains_alpha_aspect_ratio_and_provider_fields() {
+        for format in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            let image = image_part(format, &still_image());
+            let key = if format == WireFormat::OpenAiResponses {
+                "input"
+            } else {
+                "messages"
+            };
+            let mut body = json!({key:[{"role":"user","content":[image]}],"tools":[{"input_schema":{"example":{"type":"image_url","image_url":{"url":"https://private.invalid"}}}}],"temperature":0.3,"custom_provider_control":true});
+            body[key][0]["content"][0]["cache_control"] = json!({"type":"ephemeral"});
+            let original = body.clone();
+            processor(MediaConfig {
+                image_max_edge: Some(20),
+                ..Default::default()
+            })
+            .prepare(&mut body, format)
+            .await
+            .unwrap();
+            let item = &body[key][0]["content"][0];
+            let url = image_url(item).unwrap();
+            let bytes = STANDARD.decode(url.split_once(',').unwrap().1).unwrap();
+            let resized = image::load_from_memory(&bytes).unwrap();
+            assert_eq!((resized.width(), resized.height()), (20, 10));
+            assert_eq!(resized.to_rgba8().get_pixel(0, 0)[3], 128);
+            assert_eq!(body["tools"], original["tools"]);
+            assert_eq!(item["cache_control"], json!({"type":"ephemeral"}));
+            assert_eq!(body["custom_provider_control"], true);
+            assert_eq!(body["temperature"], 0.3);
+            let result = processor(MediaConfig {
+                image_max_edge: Some(20),
+                max_output_bytes: 1,
+                ..Default::default()
+            })
+            .prepare(&mut body, format)
+            .await;
+            assert!(matches!(
+                result,
+                Err(MediaError::Invalid(
+                    "prepared media exceeds max_output_bytes"
+                ))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn image_limit_is_shared_across_messages_and_nested_tool_results() {
+        let original = json!({"messages":[
+            {"role":"user","content":[{"type":"image_url","image_url":{"url":"https://invalid/old"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image_url","image_url":{"url":"https://invalid/new"}}]}]}
+        ]});
+        for limit in [None, Some(0), Some(1), Some(2)] {
+            let mut body = original.clone();
+            let result = processor(MediaConfig {
+                max_images: limit,
+                ..Default::default()
+            })
+            .prepare(&mut body, WireFormat::OpenAiChat)
+            .await;
+            if limit == Some(1) {
+                assert!(
+                    matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
+                );
+                assert_eq!(body, original);
+            } else {
+                result.unwrap();
+                if limit == Some(0) {
+                    assert_eq!(body["messages"][0]["content"][0]["text"], "[image omitted]");
+                    assert_eq!(
+                        body["messages"][1]["content"][0]["content"][0]["text"],
+                        "[image omitted]"
+                    );
+                } else {
+                    assert_eq!(body, original);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_image_limit_omits_media_before_fetching_or_source_validation() {
+        for video in [VideoMode::Omit, VideoMode::Frames] {
+            let mut body = json!({"messages":[{"role":"user","content":[
+                {"type":"text","text":"question"},
+                {"type":"image_url","image_url":{"url":"https://127.0.0.1/private"}},
+                {"type":"video_url","video_url":{"url":"https://127.0.0.1/private"}},
+                {"type":"video_url","video_url":{"unsupported_id":"unused"}}
+            ]}]});
+            processor(MediaConfig {
+                max_images: Some(0),
+                video,
+                image_max_edge: Some(384),
+                ..Default::default()
+            })
+            .prepare(&mut body, WireFormat::OpenAiChat)
+            .await
+            .unwrap();
+            let content = &body["messages"][0]["content"];
+            assert_eq!(content[0]["text"], "question");
+            assert_eq!(content[1]["text"], "[image omitted]");
+            let marker = if video == VideoMode::Omit {
+                "[video omitted]"
+            } else {
+                "[video frames omitted]"
+            };
+            assert_eq!(content[2]["text"], marker);
+            assert_eq!(content[3]["text"], marker);
+        }
+    }
+
+    #[tokio::test]
+    async fn native_video_conversion_preserves_source_mime_and_same_format_options() {
+        for (block, url, mime) in [
+            (
+                json!({"type":"video_url","video_url":{"url":"https://example.com/a.webm","fps":2}}),
+                "https://example.com/a.webm",
+                "video/webm",
+            ),
+            (
+                json!({"type":"video_url","video_url":{"url":"data:video/mp4;base64,AQID"}}),
+                "data:video/mp4;base64,AQID",
+                "video/mp4",
+            ),
+            (
+                json!({"type":"input_video","video_url":"https://example.com/opaque.mov","media_type":"video/webm"}),
+                "https://example.com/opaque.mov",
+                "video/webm",
+            ),
+        ] {
+            let original = json!({"messages":[{"role":"user","content":[block]}]});
+            for video in [VideoMode::Passthrough, VideoMode::VideoUrl, VideoMode::File] {
+                let mut body = original.clone();
+                processor(MediaConfig {
+                    video,
+                    ..Default::default()
+                })
+                .prepare(&mut body, WireFormat::OpenAiChat)
+                .await
+                .unwrap();
+                let item = &body["messages"][0]["content"][0];
+                match video {
+                    VideoMode::Passthrough => assert_eq!(body, original),
+                    VideoMode::VideoUrl => {
+                        assert_eq!(item["video_url"]["url"], url);
+                        if block["type"] == "video_url" {
+                            assert_eq!(body, original);
+                        }
+                    }
+                    VideoMode::File => {
+                        assert_eq!(item["file"]["format"], mime);
+                        assert_eq!(
+                            item["file"][if url.starts_with("data:") {
+                                "file_data"
+                            } else {
+                                "file_id"
+                            }],
+                            url
+                        );
+                        processor(MediaConfig {
+                            video: VideoMode::VideoUrl,
+                            ..Default::default()
+                        })
+                        .prepare(&mut body, WireFormat::OpenAiChat)
+                        .await
+                        .unwrap();
+                        assert_eq!(body["messages"][0]["content"][0]["video_url"]["url"], url);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn image_limit_counts_video_frames_before_fetching() {
+        let original = json!({"messages":[{"role":"user","content":[
+            {"type":"image_url","image_url":{"url":"https://127.0.0.1/image"}},
+            {"type":"video_url","video_url":{"url":"https://127.0.0.1/video"}}
+        ]}]});
+        let mut body = original.clone();
+        let result = processor(MediaConfig {
+            max_images: Some(3),
+            video: VideoMode::Frames,
+            video_max_frames: 3,
+            ..Default::default()
+        })
+        .prepare(&mut body, WireFormat::OpenAiChat)
+        .await;
+        assert!(
+            matches!(result, Err(MediaError::Invalid(message)) if message.contains("max_images"))
+        );
+        assert_eq!(body, original);
+    }
+
+    #[tokio::test]
+    async fn preparation_deadline_includes_worker_queueing() {
+        let slots = Arc::new(Semaphore::new(2));
+        let busy_target = MediaProcessor::new(MediaConfig::default(), slots.clone()).unwrap();
+        let _permits = busy_target
+            .slots
+            .clone()
+            .acquire_many_owned(2)
+            .await
+            .unwrap();
+        let waiting_target = MediaProcessor::new(
+            MediaConfig {
+                image_max_edge: Some(20),
+                timeout_ms: 5,
+                ..Default::default()
+            },
+            slots,
+        )
+        .unwrap();
+        let mut body = json!({"input":[{"role":"user","content":[image_part(WireFormat::OpenAiResponses, &still_image())]}]});
+        let result = waiting_target
+            .prepare(&mut body, WireFormat::OpenAiResponses)
+            .await;
+        assert!(matches!(result, Err(MediaError::Timeout)));
+    }
+}

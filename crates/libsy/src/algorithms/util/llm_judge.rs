@@ -28,6 +28,10 @@ use switchyard_protocol::{LlmClientError, Request, Response};
 
 /// Builds the classifier-specific message view presented to a structured judge.
 pub(crate) trait ClassifierInput: Send + Sync {
+    fn validate_request(&self, _request: &Request) -> Result<()> {
+        Ok(())
+    }
+
     fn build_messages(&self, state: &State, request: &Request) -> Vec<Message>;
 }
 
@@ -155,6 +159,10 @@ where
 {
     type Verdict = D::Verdict;
 
+    fn validate_request(&self, request: &Request) -> Result<()> {
+        self.input.validate_request(request)
+    }
+
     fn build_request(&self, state: &State, request: &Request) -> Request {
         let messages = self.input.build_messages(state, request);
         Request {
@@ -186,6 +194,11 @@ where
 /// Builds and parses requests for one algorithm-specific LLM judge.
 pub trait Judge: Send + Sync {
     type Verdict: DeserializeOwned + Send + Sync;
+
+    /// Reject invalid input before calling the judge or applying verdict fallback.
+    fn validate_request(&self, _request: &Request) -> Result<()> {
+        Ok(())
+    }
 
     fn build_request(&self, state: &State, request: &Request) -> Request;
 
@@ -361,6 +374,7 @@ where
                 message: "no models available for category Judge".to_string(),
             });
         }
+        self.judge.validate_request(request)?;
         let verdict = self.verdict(state, request, driver, judge_models).await;
         let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
         if let Some(evidence) = self

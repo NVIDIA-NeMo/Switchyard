@@ -14,6 +14,13 @@ pub type Result<T> = std::result::Result<T, LibsyError>;
 /// Failures surfaced while selecting a route, driving an algorithm, or serving a model call.
 #[derive(Debug, Error)]
 pub enum LibsyError {
+    /// Request content violates the algorithm's input constraints.
+    #[error("{message}")]
+    InvalidRequest {
+        /// Description of the invalid input.
+        message: String,
+    },
+
     /// A named target was not present in the configured target set.
     #[error("target {target:?} was not found")]
     TargetNotFound {
