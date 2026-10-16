@@ -135,6 +135,8 @@ pub struct StageRouterConfig {
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
     pub confidence_threshold: f64,
+    /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
+    pub capable_first_threshold: f64,
     /// Trailing tool results the signals are computed over. `None` uses
     /// [`DEFAULT_RECENT_WINDOW`].
     pub recent_window: Option<usize>,
@@ -162,6 +164,7 @@ impl StageRouterConfig {
         Self {
             mode,
             confidence_threshold,
+            capable_first_threshold: 0.0,
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
             capable_hold_turns: 2,
@@ -210,19 +213,22 @@ impl Algorithm for StageRouter {
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
 pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough<State>> {
-    if !(0.0..=1.0).contains(&config.confidence_threshold) {
-        return Err(LibsyError::AlgorithmError {
-            message: format!(
-                "confidence_threshold must be between 0 and 1, got {}",
-                config.confidence_threshold
-            ),
-        });
+    for (name, threshold) in [
+        ("confidence_threshold", config.confidence_threshold),
+        ("capable_first_threshold", config.capable_first_threshold),
+    ] {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!("{name} must be between 0 and 1, got {threshold}"),
+            });
+        }
     }
     config.tool_semantics.validate()?;
     let default_tier = config.mode.default_tier();
     let fall_open = FallOpen { default_tier };
 
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
+        .with_capable_first_threshold(config.capable_first_threshold)
         .with_capable_hold_turns(config.capable_hold_turns);
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);

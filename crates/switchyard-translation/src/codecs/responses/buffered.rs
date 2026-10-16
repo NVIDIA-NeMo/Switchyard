@@ -26,7 +26,7 @@ use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
     MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -114,7 +114,10 @@ impl FormatCodec for OpenAiResponsesCodec {
         let mut tool_namespaces = Map::new();
         let mut custom_tools = Map::new();
         request.tools =
-            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools);
+            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools)
+                .into_iter()
+                .map(Tool::from)
+                .collect();
         // Responses-lite clients (Codex with a GPT-5 model) carry the tool definitions inside
         // `input` as an `additional_tools` developer item instead of top-level `tools`. Those
         // definitions are the request's tools; the item itself is kept verbatim so the request
@@ -126,11 +129,15 @@ impl FormatCodec for OpenAiResponsesCodec {
                     && item.get("type").and_then(Value::as_str) == Some("additional_tools")
                     && let Some(tools) = item.get("tools").and_then(Value::as_array)
                 {
-                    request.tools.extend(decode_responses_tools(
-                        Some(&Value::Array(tools.clone())),
-                        &mut tool_namespaces,
-                        &mut custom_tools,
-                    ));
+                    request.tools.extend(
+                        decode_responses_tools(
+                            Some(&Value::Array(tools.clone())),
+                            &mut tool_namespaces,
+                            &mut custom_tools,
+                        )
+                        .into_iter()
+                        .map(Tool::from),
+                    );
                     additional_tools.extend(tools.iter().cloned());
                 }
             }
@@ -240,7 +247,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                     &request.tools,
                     crate::codex_namespaces::tool_namespaces(&request.extensions),
                     crate::codex_custom_tools::custom_tools(&request.extensions),
-                ),
+                )?,
             );
         }
         if let Some(choice) = &request.tool_choice
@@ -1631,6 +1638,11 @@ fn encode_responses_content(
                     blocks.push(json!({"type": "input_text", "text": file_source_text(source)}));
                 }
             },
+            ContentBlock::Mcp(_) => {
+                return Err(TranslationError::LossyConversion(
+                    "MCP history encoding is not implemented".into(),
+                ));
+            }
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
                     diagnostics,
@@ -1694,13 +1706,18 @@ fn responses_file_part(source: &FileSource) -> Option<Value> {
 // A Responses client understands Codex containers, so a tool whose name this
 // request qualified is regrouped under the container it came from.
 fn encode_responses_tools(
-    tools: &[ToolDefinition],
+    tools: &[Tool],
     namespaces: Option<&Map<String, Value>>,
     custom_tools: Option<&Map<String, Value>>,
-) -> Value {
+) -> Result<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
     for tool in tools {
+        let tool = tool.function().ok_or_else(|| {
+            TranslationError::LossyConversion(
+                "MCP and provider tool encoding is not implemented".into(),
+            )
+        })?;
         // A freeform tool goes back out exactly as the client defined it.
         if let Some(custom) = custom_tools.and_then(|custom| custom.get(&tool.name)) {
             out.push(custom.clone());
@@ -1745,7 +1762,7 @@ fn encode_responses_tools(
             "tools": children,
         }));
     }
-    Value::Array(out)
+    Ok(Value::Array(out))
 }
 
 // Encodes normalized tool choice into Responses JSON.

@@ -188,6 +188,13 @@ fn decode_responses_stream(
             event
                 .get("delta")
                 .and_then(Value::as_str)
+                // The decoder reads a custom call's input only from its completed item.
+                .filter(|_| {
+                    !state
+                        .tool_states
+                        .get(&(output_index as usize))
+                        .is_some_and(|tool| tool.decoded_custom_call)
+                })
                 .map(|delta| {
                     state.decoded_tool_call = true;
                     // Recorded so `response.output_item.done`, which repeats
@@ -269,7 +276,7 @@ fn decode_responses_stream(
                 for (position, item) in items.iter().enumerate() {
                     if let Some(item) = item.as_object() {
                         out.extend(decode_responses_completed_item(item, position, state));
-                        if matches!(out.last(), Some(LlmResponseChunk::StreamError { .. })) {
+                        if matches!(out.last(), Some(LlmResponseChunk::DecodeError { .. })) {
                             return out;
                         }
                     }
@@ -670,15 +677,14 @@ fn decode_responses_output_item_added(
         .or_else(|| item.get("id"))
         .and_then(Value::as_str);
     let name = item.get("name").and_then(Value::as_str);
-    state
-        .tool_states
-        .entry(index)
-        .or_default()
-        .has_decoded_identity |=
+    let tool = state.tool_states.entry(index).or_default();
+    tool.has_decoded_identity |=
         id.is_some_and(|id| !id.is_empty()) && name.is_some_and(|name| !name.is_empty());
+    let custom = item_type == Some("custom_tool_call");
+    tool.decoded_custom_call |= custom;
     // A freeform call's `input` becomes the single `input` argument; it is only complete on
     // the done event, so nothing is emitted for it here beyond id and name.
-    let arguments_delta = if item_type == Some("custom_tool_call") {
+    let arguments_delta = if custom {
         None
     } else {
         item.get("arguments")
@@ -687,12 +693,7 @@ fn decode_responses_output_item_added(
             .map(ToOwned::to_owned)
     };
     if let Some(arguments) = arguments_delta.as_deref() {
-        state
-            .tool_states
-            .entry(index)
-            .or_default()
-            .decoded_arguments
-            .push_str(arguments);
+        tool.decoded_arguments.push_str(arguments);
     }
     vec![LlmResponseChunk::ToolCallDelta {
         index,
@@ -789,13 +790,14 @@ fn decode_responses_completed_item(
     Vec::new()
 }
 
-// A snapshot may extend streamed content, but cannot retract content already sent.
+// A snapshot may extend streamed content, but cannot retract content already sent. A
+// conflict is invalid provider data, so it is a `DecodeError`.
 fn snapshot_suffix(
     decoded: &mut String,
     snapshot: &str,
 ) -> Result<Option<String>, LlmResponseChunk> {
     let Some(suffix) = snapshot.strip_prefix(decoded.as_str()) else {
-        return Err(LlmResponseChunk::StreamError {
+        return Err(LlmResponseChunk::DecodeError {
             message: "Responses snapshot conflicts with streamed content".to_string(),
         });
     };

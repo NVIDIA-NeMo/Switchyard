@@ -16,6 +16,9 @@ Harbor directly at the upstream provider.
 For a small automated MMLU-Redux example using NeMo Gym instead of Harbor, see
 [Evaluate Switchyard routing with NeMo Gym](nemo_gym/README.md).
 
+For task-level decision-model routing, see the
+[Jev routing profile](routing-profiles/tb21-jev-opus-glm.toml).
+
 ## Prerequisites
 
 From the repo root:
