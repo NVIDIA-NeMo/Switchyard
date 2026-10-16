@@ -66,17 +66,15 @@ impl Runner {
         config::runner_from_toml(source)
     }
 
-    /// Loads routing and target settings with host-owned model clients.
+    /// Loads TOML routes with host-owned model clients.
     ///
-    /// The factory receives each named client's per-model request settings once.
+    /// Calls `factory` once per named client with its per-model request settings.
     /// Hosts apply [`RequestSettings::prepare_request_body`] before provider calls.
-    /// Return distinct clients for groups with separate provider continuation state.
-    /// `base_url` is optional; transport settings, typed decision clients, and
-    /// `fallback_client` are rejected. Auxiliary operations are unavailable, and
-    /// capability enforcement remains host-owned. Factory errors stop loading.
+    /// Use distinct clients for independent provider continuation state.
     ///
-    /// A `base_url` is not needed to execute or select models. Without one for
-    /// a selected target or fallback, [`Self::describe_decision`] returns `None`.
+    /// Rejects native transport settings, typed decision clients, and `fallback_client`.
+    /// Auxiliary operations are unavailable; the host enforces capabilities.
+    /// `base_url` is optional, but required for [`Self::describe_decision`].
     pub fn from_toml_with_clients(
         source: &str,
         mut factory: impl FnMut(
