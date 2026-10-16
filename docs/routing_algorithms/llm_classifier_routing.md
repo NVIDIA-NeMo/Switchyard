@@ -224,6 +224,50 @@ name works.
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.
 
+### Judge-selected handoff notes
+
+A custom classifier can select a note from a local text database in the same
+verdict that selects the target. The note uses the same append behavior as
+stage-router handoff notes.
+
+Create a TOML file mapping IDs to note text:
+
+```toml
+compile_failure = "Read the compiler error and fix the first failing operation."
+repeated_failure = """
+Review the previous attempts before trying another change.
+Explain what the new attempt tests.
+"""
+```
+
+Add a nullable string field, such as `note`, to your `response_schema`, then
+configure its JSON Pointer and the database path:
+
+```toml
+[routes.smart.policy.handoff_notes]
+selector = "/note"
+db_path = "notes.toml"
+```
+
+Switchyard loads the file at startup and adds the ID-to-text mapping to the
+judge's prompt. A verdict such as
+`{"decision":{"target":"fast"},"note":"compile_failure"}` appends the stored
+text to the outgoing request. The verdict must pass schema validation and select
+a configured target. A null, missing, or unknown note ID adds no note; a verdict
+that fails validation follows the classifier's existing fallback behavior.
+
+`classify_trigger` also controls note selection. A retained target bypasses the
+judge and adds no note. `every_request` may select the same note on later
+requests. Relative database paths resolve beside the deployment TOML file when
+using `Runner::load`; string-based configuration resolves them from the working
+directory. Reload the deployment to pick up file edits.
+
+For a fixed answer model with judge-selected notes, use a single `models.any`
+target. See the complete [route example](../../examples/classifier-handoff-notes.toml)
+and [note database](../../examples/handoff-notes.toml). Set their client URL and
+model IDs for your provider. Custom classifiers inside composite and sub-agent
+routes accept the same policy settings.
+
 ### Forecast and policy assumptions
 
 The packaged prompt forecasts whole-task success for a generic efficient agent.

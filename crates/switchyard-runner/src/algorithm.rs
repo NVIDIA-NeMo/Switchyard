@@ -14,10 +14,10 @@ use libsy::{
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
     DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
-    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
-    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
-    Vgr, VgrConfig,
+    HandoffNoteSelector, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
+    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels,
+    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -68,7 +68,20 @@ pub enum ClassifierPolicyConfig {
     TargetSelector {
         /// JSON Pointer to the name, such as `/decision/target`.
         selector: String,
+        /// File-backed notes selected by another field in the same verdict.
+        #[serde(default)]
+        handoff_notes: Option<HandoffNoteDatabase>,
     },
+}
+
+/// A TOML file mapping note IDs to text, loaded with the route configuration.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffNoteDatabase {
+    /// JSON Pointer to the selected note ID, such as `/note`.
+    pub selector: String,
+    /// Database path. Relative paths resolve beside a file-loaded deployment.
+    pub db_path: PathBuf,
 }
 
 /// Which of the three `llm_classifier` behaviors a route uses.
@@ -85,9 +98,35 @@ pub enum ClassifierMode {
 }
 
 impl ClassifierPolicyConfig {
-    fn into_libsy(self) -> CustomClassifierPolicy {
+    fn into_libsy(self) -> AlgorithmResult<CustomClassifierPolicy> {
         match self {
-            Self::TargetSelector { selector } => CustomClassifierPolicy::target_selector(selector),
+            Self::TargetSelector {
+                selector,
+                handoff_notes,
+            } => {
+                let mut policy = CustomClassifierPolicy::target_selector(selector);
+                if let Some(config) = handoff_notes {
+                    let source = std::fs::read_to_string(&config.db_path).map_err(|error| {
+                        AlgorithmConfigError::with_source(
+                            format!("failed to read handoff notes {}", config.db_path.display()),
+                            error,
+                        )
+                    })?;
+                    let notes: BTreeMap<String, String> =
+                        toml::from_str(&source).map_err(|_| {
+                            AlgorithmConfigError::new(format!(
+                                "handoff notes {} must be a TOML mapping of IDs to text",
+                                config.db_path.display()
+                            ))
+                        })?;
+                    let notes =
+                        HandoffNoteSelector::new(config.selector, notes).map_err(|error| {
+                            AlgorithmConfigError::with_source("invalid handoff notes", error)
+                        })?;
+                    policy = policy.with_handoff_notes(notes);
+                }
+                Ok(policy)
+            }
         }
     }
 }
@@ -722,7 +761,7 @@ impl StageClassifierConfig {
         let mut config = CustomClassifierConfig::new(
             required_classifier_field(route_name, "prompt", &self.prompt)?,
             schema,
-            required_classifier_field(route_name, "policy", &self.policy)?.into_libsy(),
+            required_classifier_field(route_name, "policy", &self.policy)?.into_libsy()?,
         );
         config.classify_trigger = self.classify_trigger;
         config.message_hash_fallback = self.message_hash_fallback;
@@ -733,6 +772,39 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
+    pub(crate) fn resolve_note_paths(&mut self, base: &std::path::Path) {
+        let (policy, subagents) = match self {
+            Self::LlmClassifier { config } => (Some(&mut config.policy), None),
+            Self::Composite {
+                classifier,
+                subagents,
+                ..
+            } => (Some(&mut classifier.policy), subagents.as_mut()),
+            Self::StageRouter {
+                classifier,
+                subagents,
+                ..
+            } => (
+                classifier.as_mut().map(|c| &mut c.policy),
+                subagents.as_mut(),
+            ),
+            Self::Passthrough { subagents, .. } => (None, subagents.as_mut()),
+            _ => (None, None),
+        };
+        let nested = match subagents {
+            Some(SubagentRouteConfig::LlmClassifier(config)) => Some(&mut config.policy),
+            _ => None,
+        };
+        for policy in policy.into_iter().chain(nested).filter_map(Option::as_mut) {
+            let ClassifierPolicyConfig::TargetSelector { handoff_notes, .. } = policy;
+            if let Some(notes) = handoff_notes
+                && notes.db_path.is_relative()
+            {
+                notes.db_path = base.join(&notes.db_path);
+            }
+        }
+    }
+
     /// Whether this configuration only selects a model, with state owned by the caller.
     pub(crate) fn supports_model_selection(&self) -> bool {
         match self {
@@ -1420,7 +1492,7 @@ fn build_subagent_router_config(
             let mut classifier_config = CustomClassifierConfig::new(
                 config.prompt,
                 response_schema,
-                config.policy.into_libsy(),
+                config.policy.into_libsy()?,
             );
             classifier_config.recent_turn_window = config.recent_turn_window;
             classifier_config.max_output_tokens = config.max_output_tokens;
@@ -1564,7 +1636,7 @@ fn build_algorithm(
                     let mut classifier_config = CustomClassifierConfig::new(
                         config.prompt,
                         response_schema,
-                        config.policy.into_libsy(),
+                        config.policy.into_libsy()?,
                     );
                     classifier_config.classify_trigger = config.classify_trigger;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;

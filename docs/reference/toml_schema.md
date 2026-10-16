@@ -340,6 +340,8 @@ how one route chooses between more than two models.
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
 | `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
+| `policy.handoff_notes.selector` | When using notes | — | JSON Pointer to a note ID in the same validated verdict, such as `/note`. Use a nullable string field in `response_schema`. |
+| `policy.handoff_notes.db_path` | When using notes | — | TOML file mapping IDs to note text, loaded at startup. Relative paths resolve beside a file-loaded deployment. The judge sees this mapping; a selected ID appends its text using the handoff-note helper. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |

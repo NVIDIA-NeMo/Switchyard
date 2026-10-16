@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://localhost:8000/v1"
+
+[targets.answer]
+id = "model/answer"
+llm_client = "local"
+
+[targets.judge]
+id = "model/judge"
+llm_client = "local"
+
+[routes.notes]
+id = "switchyard/notes"
+type = "llm_classifier"
+mode = "custom"
+default_target = "any"
+classify_trigger = "every_request"
+recent_turn_window = 8
+max_output_tokens = 128
+prompt = "Choose a useful handoff note for the next turn, or null. Always set target to any."
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "target": {"type": "string", "enum": ["any"]},
+    "note": {"type": ["string", "null"]}
+  },
+  "required": ["target", "note"],
+  "additionalProperties": false
+}
+'''
+models = { any = ["answer"], judge = ["judge"] }
+
+[routes.notes.policy]
+type = "target_selector"
+selector = "/target"
+
+[routes.notes.policy.handoff_notes]
+selector = "/note"
+db_path = "handoff-notes.toml"

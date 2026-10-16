@@ -70,7 +70,7 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
             error,
         )
     })?;
-    runner_from_toml(&source).map_err(|error| {
+    runner_from_toml_at(&source, path.parent()).map_err(|error| {
         RunnerError::configuration_source(
             format!("invalid server config {}: {error}", path.display()),
             error,
@@ -79,9 +79,18 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
 }
 
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
-    let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
+    runner_from_toml_at(source, None)
+}
+
+fn runner_from_toml_at(source: &str, base: Option<&Path>) -> RunnerResult<Runner> {
+    let mut config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
+    if let Some(base) = base {
+        for route in config.routes.values_mut() {
+            route.algorithm.resolve_note_paths(base);
+        }
+    }
     config.build()
 }
 
