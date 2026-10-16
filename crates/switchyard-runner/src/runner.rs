@@ -5,10 +5,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use libsy::RoutingOutcome;
 use serde_json::Value;
-use switchyard_protocol::{ModelId, WireFormat};
+use switchyard_llm_client::RequestSettings;
+use switchyard_protocol::{ModelId, RoutedLlmClient, WireFormat};
 
 use crate::config;
 use crate::{ModelCapabilities, Route, RunnerError};
@@ -54,6 +56,25 @@ impl Runner {
     /// Use [`Self::load`] when the deployment is stored in a file.
     pub fn from_toml(source: &str) -> Result<Self, RunnerError> {
         config::runner_from_toml(source)
+    }
+
+    /// Loads TOML routes with host-owned model clients.
+    ///
+    /// Calls `factory` once per named client with its per-model request settings.
+    /// Hosts apply [`RequestSettings::prepare_request_body`] before provider calls.
+    /// Use distinct clients for independent provider continuation state.
+    ///
+    /// Rejects native transport settings, typed decision clients, and `fallback_client`.
+    /// Auxiliary operations are unavailable; the host enforces capabilities.
+    /// `base_url` is optional, but required for [`Self::describe_decision`].
+    pub fn from_toml_with_clients(
+        source: &str,
+        mut factory: impl FnMut(
+            &str,
+            BTreeMap<ModelId, RequestSettings>,
+        ) -> Result<Arc<dyn RoutedLlmClient>, RunnerError>,
+    ) -> Result<Self, RunnerError> {
+        config::runner_from_toml_with_clients(source, &mut factory)
     }
 
     /// Loads routes whose only completion-side effect is model selection.
@@ -114,7 +135,11 @@ impl Runner {
         self.fallback_base_url.as_deref()
     }
 
-    /// Resolves an outcome to configured target names and non-secret client settings.
+    /// Resolves a routing outcome to target names and non-secret HTTP endpoint settings.
+    ///
+    /// Returns `None` if the route is unknown, the outcome selects no models, or any
+    /// selected target or fallback lacks an endpoint description with a valid URL.
+    /// [`Route::decide`] returns routing outcomes without requiring this metadata.
     pub fn describe_decision(
         &self,
         model: &ModelId,
