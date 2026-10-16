@@ -166,7 +166,7 @@ impl LlmResponse {
                         push_checked_chunk(&mut accumulator, chunk)?;
                     }
                 }
-                accumulator.try_finish()
+                Ok(accumulator.finish())
             }
         }
     }
@@ -403,11 +403,11 @@ pub enum LlmResponseChunk {
 /// [`StreamError`](LlmResponseChunk::StreamError) chunks are ignored here; use
 /// [`LlmResponse::into_agg`] when they must become errors.
 ///
-/// MCP streams retain block order. Other streams group reasoning, text, then tool calls.
-/// [`try_finish`](Self::try_finish) produces one assistant output. Prefer
+/// Folding is lossy for multiple outputs: text and reasoning indices are ignored,
+/// and [`finish`](Self::finish) produces one assistant output. Prefer
 /// [`LlmResponse::into_agg`] when stream errors must be surfaced.
 ///
-/// Drive it by `push`-ing each chunk in order, then call [`try_finish`](Self::try_finish).
+/// Drive it by `push`-ing each chunk in order, then call [`finish`](Self::finish).
 #[derive(Default)]
 pub struct ResponseAccumulator {
     id: Option<String>,
@@ -597,24 +597,9 @@ impl ResponseAccumulator {
         }
     }
 
-    /// Finish aggregation, rejecting an MCP block whose completion never arrived.
-    pub fn try_finish(self) -> Result<AggLlmResponse, LlmClientError> {
-        if !self.pending_mcp.is_empty() {
-            return Err(LlmClientError::ResponseTranslation(
-                "MCP stream ended before call arguments completed".into(),
-            ));
-        }
-        Ok(self.finish_unchecked())
-    }
-
-    /// Build an aggregate without checking for incomplete MCP blocks.
-    /// Unfinished blocks may appear as placeholders; use [`Self::try_finish`] to reject them.
-    #[deprecated(note = "Use try_finish() to reject incomplete MCP content")]
-    pub fn finish(self) -> AggLlmResponse {
-        self.finish_unchecked()
-    }
-
-    fn finish_unchecked(mut self) -> AggLlmResponse {
+    /// Build the buffered response. Content is ordered reasoning, then text, then
+    /// tool calls (by ascending delta index) — a single assistant output.
+    pub fn finish(mut self) -> AggLlmResponse {
         let mut calls = Vec::new();
         for call in self.tool_calls.into_values() {
             let block = ContentBlock::ToolCall(ToolCall {
@@ -727,7 +712,7 @@ mod tests {
         for chunk in chunks {
             accumulator.push(chunk);
         }
-        accumulator.try_finish().expect("complete test stream")
+        accumulator.finish()
     }
 
     #[test]
@@ -809,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_mcp_blocks_fail_aggregation() {
+    fn incomplete_mcp_blocks_remain_in_aggregation() {
         for start in [
             LlmResponseChunk::McpContentBlockStart { index: 0 },
             LlmResponseChunk::McpCallDelta {
@@ -822,18 +807,14 @@ mod tests {
         ] {
             let mut accumulator = ResponseAccumulator::new();
             accumulator.push(start.clone());
-            assert!(matches!(
-                accumulator.try_finish(),
-                Err(LlmClientError::ResponseTranslation(_))
-            ));
+            let aggregate = accumulator.finish();
+            assert_eq!(aggregate.outputs[0].content.len(), 1);
             let response = LlmResponse::Stream(Box::pin(stream::iter([
                 Ok(start.into()),
                 Ok(LlmResponseChunk::MessageStop { reason: None }.into()),
             ])));
-            assert!(matches!(
-                block_on(response.into_agg()),
-                Err(LlmClientError::ResponseTranslation(_))
-            ));
+            let recovered = block_on(response.into_agg()).expect("infallible MCP aggregation");
+            assert_eq!(recovered.outputs[0].content, aggregate.outputs[0].content);
         }
     }
 

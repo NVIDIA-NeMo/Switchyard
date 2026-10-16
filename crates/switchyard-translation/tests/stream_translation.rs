@@ -1736,7 +1736,7 @@ fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestRes
             accumulator.push(chunk);
         }
     }
-    let aggregate = accumulator.try_finish()?;
+    let aggregate = accumulator.finish();
 
     assert_eq!(
         aggregate.outputs[0].stop_reason,
@@ -1800,7 +1800,7 @@ fn responses_buffered_and_streamed_outputs_match() -> TestResult {
         }
     }
 
-    assert_eq!(buffered.outputs, accumulator.try_finish()?.outputs);
+    assert_eq!(buffered.outputs, accumulator.finish().outputs);
     Ok(())
 }
 
@@ -3488,7 +3488,7 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
             }
             assert_eq!(
                 expected.outputs,
-                accumulator.try_finish()?.outputs,
+                accumulator.finish().outputs,
                 "{target:?}: {mode}"
             );
         }
