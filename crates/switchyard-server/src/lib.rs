@@ -1482,7 +1482,7 @@ async fn models(State(state): State<ServerState>) -> Json<Value> {
     let mut models: Vec<_> = state.runner.models().collect();
     let probes = models
         .iter_mut()
-        .filter(|model| model.algorithm == "vgr" && model.capabilities.context_window.is_none())
+        .filter(|model| model.capabilities.context_window.is_none())
         .map(|model| async {
             model.capabilities.context_window =
                 discover_context_window(&state.runner, model.id).await;
