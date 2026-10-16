@@ -106,8 +106,10 @@ each request as a file in a private directory the helper creates, and the helper
 answers with one JSON line on stdout. Every request includes the Claude session
 ID, passed to the Runner as request metadata. The helper owns no model-completion
 connection or listening socket. It exits when its directory is removed, on SIGTERM, or
-when its parent process ends. A three-second deadline bounds each decision;
-failed decisions leave the original model request intact.
+when its parent process ends. Startup has a three-second deadline. Each decision
+has a separate three-second deadline covering the request write and reply;
+failed decisions leave the original model request intact. Request files are
+published and consumed in order so concurrent hooks cannot reorder routing state.
 The plugin tests use a fake helper to cover reuse, off and on, session changes,
 stale answers, timeouts, crashes, manual controls, subagent isolation, and stream
 forwarding. `test_package.py` drives the real helper for repeated escalation and

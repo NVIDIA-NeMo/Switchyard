@@ -48,6 +48,14 @@ let status = WAITING;
 let generation = 0;
 let nativeModel;
 const preferenceKey = "switchyard.enabled:";
+let preferenceWrites = Promise.resolve();
+
+function savePreference($, session, value) {
+  const saved = preferenceWrites.then(() => $.store.set(preferenceKey + session, value));
+  preferenceWrites = saved.catch(() => {});
+  return saved;
+}
+
 // One helper and Runner for this plugin runtime, including while routing is off.
 let life;
 
@@ -88,7 +96,7 @@ function handleLine(l, line) {
 
 function launch($, config) {
   $.ui.status("Switchyard Auto · starting Runner with fresh routing state");
-  const l = { pending: new Map(), nextId: 0, closed: false, dir: undefined, stderr: "" };
+  const l = { pending: new Map(), writes: Promise.resolve(), nextId: 0, closed: false, dir: undefined, stderr: "" };
   l.ready = new Promise((resolve, reject) => { l.resolveReady = resolve; l.rejectReady = reject; });
   l.ready.catch(() => {});
   // Mods cannot load compiled code, and a child's stdin closes after one write. The
@@ -171,8 +179,14 @@ async function decide($, messages, g, session) {
     const id = ++l.nextId;
     const answer = new Promise((resolve, reject) => l.pending.set(id, { resolve, reject }));
     answer.catch(() => {});
-    await $.fs.write(`${l.dir}/req-${id}.json`, `${JSON.stringify({ session_id: session, messages })}\n`);
-    return await within($, DECISION_MS, answer, "Switchyard decision timed out");
+    // Publish in ID order, even if filesystem calls from two hooks complete out of order.
+    const write = l.writes.then(() => {
+      if (l.closed || isStale(g, session)) throw staleError();
+      return $.fs.write(`${l.dir}/req-${id}.json`, `${JSON.stringify({ session_id: session, messages })}\n`);
+    });
+    l.writes = write.catch(() => {});
+    const [, decision] = await within($, DECISION_MS, Promise.all([write, answer]), "Switchyard decision timed out");
+    return decision;
   } catch (error) {
     // A silent or broken helper is replaced by a fresh one on the next request. A stale
     // request leaves the helper alone: it is gone, or belongs to newer work.
@@ -197,23 +211,27 @@ function disable($, model) {
   enabled = false;
   status = `Switchyard off · Claude selected ${model}; /switchyard on to resume`;
   invalidate();
-  return $.store.set(preferenceKey + sessionId, false);
+  return savePreference($, sessionId, false);
 }
 
 // Claude does not fire session.start after /clear, /resume or /branch, so every
 // hook checks that the session is the one this state belongs to.
 async function sync($) {
   const id = await $.session.id();
-  if (id === sessionId) return;
+  if (id === sessionId) return true;
+  const started = generation;
   const model = await $.session.model();
   const preference = await $.store.get(preferenceKey + id);
+  if (id !== await $.session.id()) return false;
   // Another hook may have synced meanwhile; resetting again would undo its /switchyard off.
-  if (id === sessionId) return;
+  if (id === sessionId) return true;
+  if (started !== generation) return false;
   invalidate();
   sessionId = id;
   enabled = preference !== false;
   status = enabled ? WAITING : "Switchyard off";
   nativeModel = model;
+  return true;
 }
 
 export function register(on) {
@@ -223,8 +241,7 @@ export function register(on) {
       void controller($);
     }
     await $.command.register({ name: "switchyard", description: "Switchyard routing: on, off, or status" });
-    await sync($);
-    $.ui.status(status);
+    if (await sync($)) $.ui.status(status);
     return next(e);
   });
 
@@ -243,12 +260,12 @@ export function register(on) {
     if (action !== "on" && action !== "off" && action !== "status") {
       return { text: "Usage: /switchyard [on|off|status]" };
     }
-    await sync($);
+    if (!await sync($)) return { text: status };
     if (action === "off") {
       enabled = false;
       status = "Switchyard off";
       invalidate();
-      await $.store.set(preferenceKey + sessionId, false);
+      await savePreference($, sessionId, false);
     } else if (action === "on") {
       if (!enabled) {
         const started = generation;
@@ -261,7 +278,9 @@ export function register(on) {
           generation += 1;
           nativeModel = model;
           status = WAITING;
-          await $.store.set(preferenceKey + sessionId, true);
+          const enabledAt = generation;
+          await savePreference($, session, true);
+          if (isStale(enabledAt, session)) return { text: status };
         }
       }
       // Start the helper now so a failure shows in the status. It stays if running.
@@ -284,11 +303,14 @@ export function register(on) {
   });
 
   on("command.run", { command: "model" }, async ($, e, next) => {
-    await sync($);
+    if (!await sync($)) return next(e);
+    const started = generation;
+    const session = sessionId;
     const before = await $.session.model();
     const result = await next(e);
     const after = await $.session.model();
-    if (e.args.trim() || before !== after) {
+    const id = await $.session.id();
+    if (id === session && !isStale(started, session) && (e.args.trim() || before !== after)) {
       await disable($, after);
       $.ui.status(status);
     }
@@ -302,7 +324,7 @@ export function register(on) {
     let started = generation;
     let session = sessionId;
     try {
-      await sync($);
+      if (!await sync($)) throw staleError();
       started = generation;
       session = sessionId;
       if (enabled) {
@@ -317,6 +339,7 @@ export function register(on) {
         nativeModel = current;
         if (enabled && !isStale(started, session)) {
           const messages = routingMessages(await $.session.messages());
+          if (session !== await $.session.id() || next.signal.aborted) throw staleError();
           if (!messages.length) throw new Error("No routing context available");
           const model = selectedModel(await decide($, messages, started, session));
           // Read the session as it is now: a picker or SDK change needs no hook of ours.
@@ -332,7 +355,7 @@ export function register(on) {
         }
       }
     } catch (error) {
-      if (!isStale(started, session) && !next.signal.aborted) {
+      if (!error.stale && !isStale(started, session) && !next.signal.aborted) {
         status = `Switchyard unavailable · keeping ${e.model}: ${error.message}`;
         $.ui.status(status);
       }

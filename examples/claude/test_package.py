@@ -234,6 +234,23 @@ def main():
             assert h.proc.pid == pid and h.proc.poll() is None
         h.close()
 
+        # A slow first write must not let a later decision advance the session first.
+        h = helpers()
+        try:
+            first = h.send("{")
+            time.sleep(0.1)
+            second = h.send(json.dumps({"session_id": h.session, "messages": tail(0)}))
+            time.sleep(0.1)
+            (h.dir / f"req-{first}.json").write_text(json.dumps({
+                "session_id": h.session,
+                "messages": PROMPT + tool("ordered-failure", "Bash", "out of memory", True),
+            }))
+            answers = [h.line(), h.line()]
+            assert [a["id"] for a in answers] == [first, second], answers
+            assert [a["model"] for a in answers] == ["claude-opus-5-5"] * 2, answers
+        finally:
+            h.close()
+
         # A bad request gets an error answer and the helper keeps serving.
         h = helpers()
         assert h.ask([{"role": "nobody"}])["error"] == "Invalid routing messages"

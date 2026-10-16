@@ -14,7 +14,13 @@ function setup(on, options = {}) {
   const helpers = [];
   const removed = [];
   const clock = mock.clock(on);
-  mock.store(on, options.store ?? {});
+  const stored = new Map(Object.entries(options.store ?? {}));
+  on("store.get", ($, e) => ({ value: stored.get(e.key) }));
+  on("store.set", async ($, e) => {
+    await options.storeSet?.(e, clock);
+    stored.set(e.key, e.value);
+    return { value: null };
+  });
   mock.env(on, { SWITCHYARD_CONFIG: "/tmp/switchyard-test.toml" });
   on("ui.status", ($, e) => { statuses.push(e.text); return { value: null }; });
   let nativeModel = input.model;
@@ -48,7 +54,9 @@ function setup(on, options = {}) {
       return { value: { code: null, signal: "SIGTERM" } };
     }
   });
-  on("fs.write", ($, e) => {
+  on("fs.write", async ($, e) => {
+    await open("write");
+    await options.write?.(e, clock);
     const helper = helpers.find((h) => e.path.startsWith(`${h.dir}/`));
     const id = Number(/req-(\d+)\.json$/.exec(e.path)?.[1]);
     const body = JSON.parse(e.text);
@@ -69,13 +77,16 @@ function setup(on, options = {}) {
     if (options.failCompletion) throw new Error("completion failed");
     return { turnId: e.turnId, index: e.index, answer: "hello", toolUses: [], stopReason: "end_turn", usage: null };
   });
-  on("command.run", { command: "model" }, () => ({ text: "model selected" }));
+  on("command.run", { command: "model" }, async () => {
+    await open("modelCommand");
+    return { text: "model selected" };
+  });
   on("session.start", ($, e) => ({ cwd: e.cwd }));
   on("session.end", ($, e) => ({ sessionId: e.sessionId }));
   on("command.register", ($, e) => ({ value: { command: e.name } }));
   const alive = () => helpers.filter((h) => h.alive).length;
   return {
-    sent, clock, statuses, helpers, removed, alive, gate,
+    sent, clock, statuses, helpers, removed, alive, gate, stored,
     setModel: (model) => { nativeModel = model; },
     setSession: (id) => { session = id; },
   };
@@ -541,4 +552,89 @@ test("reload restores off without starting a helper", async ($, on) => {
   expect(helpers.length).toBe(0);
   expect(sent).toEqual([input]);
   expect((await ask($, "status")).text).toBe("Switchyard off");
+});
+
+test("a session change during initialization cannot submit another session's history", async ($, on) => {
+  const { clock, helpers, gate, setSession } = setup(on);
+  await boot($);
+  setSession("session-b");
+  const releaseOld = gate("model");
+  const old = step($);
+  await clock.settle();
+  setSession("session-c");
+  const releaseNew = gate("model");
+  releaseNew();
+  await ask($, "off");
+  releaseOld();
+  await old;
+  expect(helpers.length).toBe(0);
+  expect((await ask($, "status")).text).toBe("Switchyard off");
+});
+
+test("a late model command cannot disable a different session", async ($, on) => {
+  const { clock, gate, setSession } = setup(on);
+  await boot($);
+  const release = gate("modelCommand");
+  const old = $.command.run({ command: "model", args: "sonnet" });
+  await clock.settle();
+  setSession("session-b");
+  await ask($, "status");
+  release();
+  await old;
+  expect((await ask($, "status")).text).toBe("Switchyard Auto · waiting for a request");
+});
+
+test("a delayed on preference cannot overwrite off or start a helper afterward", async ($, on) => {
+  const { clock, helpers, stored } = setup(on, { storeSet: async (e, clock) => {
+    if (e.value) await clock.sleep(100);
+  } });
+  await ask($, "off");
+  const enabling = ask($, "on");
+  await clock.settle();
+  const disabling = ask($, "off");
+  await clock.settle();
+  await clock.advance(100);
+  await Promise.all([enabling, disabling]);
+  expect(helpers.length).toBe(0);
+  expect(stored.get("switchyard.enabled:session-a")).toBe(false);
+});
+
+test("the decision timeout also bounds writing the request", async ($, on) => {
+  const { clock, sent, helpers, gate } = setup(on);
+  const release = gate("write");
+  const pending = step($);
+  await clock.settle();
+  await clock.advance(3000);
+  const timedOut = sent.length === 1;
+  release();
+  await clock.settle();
+  await pending;
+  expect(timedOut).toBe(true);
+  expect(sent).toEqual([input]);
+  expect(helpers[0].alive).toBe(false);
+});
+
+test("concurrent submissions publish request files in decision order", async ($, on) => {
+  const { clock, helpers } = setup(on, { write: async (e, clock) => {
+    if (e.path.endsWith("req-1.json")) await clock.sleep(100);
+  } });
+  const first = step($);
+  await clock.settle();
+  const second = step($, { ...input, index: 1 });
+  await clock.settle();
+  await clock.advance(100);
+  await Promise.all([first, second]);
+  expect(helpers.length).toBe(1);
+  expect(helpers[0].requests.map((r) => r.id)).toEqual([1, 2]);
+});
+
+test("a session switch while reading history cannot update the previous session's Runner state", async ($, on) => {
+  const { clock, helpers, gate, setSession } = setup(on);
+  const release = gate("messages");
+  const pending = step($);
+  await clock.settle();
+  setSession("session-b");
+  release();
+  await pending;
+  expect(helpers.length).toBe(0);
 });

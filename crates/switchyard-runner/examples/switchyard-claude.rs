@@ -84,7 +84,8 @@ async fn serve() -> Result<(), String> {
             };
             for (id, path) in requests {
                 let Some(request) = read_request(&path, id, &mut failed_parses)? else {
-                    continue;
+                    // Preserve decision order while the earliest file is still being written.
+                    break;
                 };
                 let answer = tokio::select! {
                     answer = decide(&runner, &request.session_id, request.messages) => answer,

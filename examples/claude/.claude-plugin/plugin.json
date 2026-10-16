@@ -1,6 +1,6 @@
 {
   "name": "switchyard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Select Claude models with Switchyard while Claude Code runs the conversation.",
   "author": { "name": "NVIDIA" },
   "license": "Apache-2.0"
