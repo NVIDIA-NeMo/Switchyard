@@ -83,15 +83,15 @@ pub fn encode_aggregated_response_with_extensions(
             &DEFAULT_TRANSLATION_POLICY,
         )?
         .body;
-    if let (Some(model), Value::Object(object)) = (served_model, &mut body) {
+    if wire_format != WireFormat::BedrockConverse
+        && let (Some(model), Value::Object(object)) = (served_model, &mut body)
+    {
         object.insert("model".to_string(), Value::String(model.to_string()));
     }
     Ok(body)
 }
 
-/// A stream of wire-format event objects in one format — the unframed body of an
-/// SSE response. The serving layer frames each `Value` (e.g. as an SSE
-/// `data:`/`event:` block).
+/// A stream of unframed provider JSON events. The host supplies SSE or AWS EventStream framing.
 pub type RawEventStream =
     Pin<Box<dyn Stream<Item = std::result::Result<Value, LlmStreamError>> + Send>>;
 
@@ -192,7 +192,7 @@ pub fn encode_stream_with_extensions(
                 &custom_tools,
                 &mut custom_state,
             ) {
-                yield value;
+                if state.errored { Err(LlmStreamError::Upstream(value))?; } else { yield value; }
             }
         }
     };
@@ -223,12 +223,55 @@ fn stamp_streamed_response_model(
                 response.insert("model".to_string(), Value::String(served_model.to_string()));
             }
         }
+        WireFormat::BedrockConverse => {}
         WireFormat::AnthropicMessages => {
             if let Some(message) = event.get_mut("message").and_then(Value::as_object_mut) {
                 message.insert("model".to_string(), Value::String(served_model.to_string()));
             }
         }
     }
+}
+
+/// Decodes already de-framed provider JSON events into neutral stream events.
+///
+/// The host validates and removes the carrier framing. Bedrock requires both
+/// `messageStop` and the final usage `metadata`; an incomplete stream fails at EOF.
+pub fn decode_event_stream<S>(
+    events: S,
+    source: WireFormat,
+) -> std::result::Result<LlmResponseStream, LlmClientError>
+where
+    S: Stream<Item = std::result::Result<Value, LlmClientError>> + Send + 'static,
+{
+    let format: FormatId = source.into();
+    let codec = StreamCodecRegistry::with_builtins()
+        .codec(format.clone())
+        .map_err(|e| LlmClientError::ResponseTranslation(e.to_string()))?;
+    let mut state = StreamTranslationState {
+        source: Some(format.clone()),
+        ..Default::default()
+    };
+    let stream = try_stream! {
+        futures::pin_mut!(events);
+        let mut terminal = false;
+        while let Some(event) = events.next().await {
+            let value = event?;
+            let normalized = codec.decode_event(&mut state, &value);
+            terminal |= if source == WireFormat::BedrockConverse {
+                crate::codecs::bedrock::stream::saw_terminal(&state)
+            } else { sse::is_terminal_event(source, &value) };
+            let failed = normalized.iter().any(|chunk| matches!(chunk,
+                crate::LlmResponseChunk::DecodeError { .. } | crate::LlmResponseChunk::StreamError { .. }));
+            yield LlmResponseStreamEvent::preserved(format.clone(), value, normalized);
+            if failed { return; }
+        }
+        if !terminal {
+            Err(LlmClientError::ResponseTranslation(
+                "provider event stream ended before its terminal event".into(),
+            ))?;
+        }
+    };
+    Ok(Box::pin(stream))
 }
 
 /// Decodes provider SSE bytes into normalized stream events.
@@ -248,6 +291,12 @@ pub fn decode_stream<S>(
 where
     S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
 {
+    if source == WireFormat::BedrockConverse {
+        return Err(LlmClientError::Configuration {
+            message: "Bedrock requires de-framed AWS EventStream JSON; use decode_event_stream"
+                .into(),
+        });
+    }
     let marker = sse::done_marker(source);
     let source_format: FormatId = source.into();
     // The source is always a built-in wire format, so this lookup cannot fail; a
