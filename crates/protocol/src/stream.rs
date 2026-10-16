@@ -5,7 +5,7 @@
 //! their stream envelope ([`LlmResponseStreamEvent`]), and the streamed response
 //! ([`LlmResponse`]) that carries either a live stream or the terminal [`AggLlmResponse`].
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::pin::Pin;
 
 use futures::{Stream, StreamExt};
@@ -403,8 +403,8 @@ pub enum LlmResponseChunk {
 /// [`StreamError`](LlmResponseChunk::StreamError) chunks are ignored here; use
 /// [`LlmResponse::into_agg`] when they must become errors.
 ///
-/// Folding is lossy for multiple outputs: text and reasoning indices are ignored,
-/// and [`finish`](Self::finish) produces one assistant output. Prefer
+/// Folding ignores text and reasoning indices and groups content by type.
+/// [`finish`](Self::finish) produces one assistant output. Prefer
 /// [`LlmResponse::into_agg`] when stream errors must be surfaced.
 ///
 /// Drive it by `push`-ing each chunk in order, then call [`finish`](Self::finish).
@@ -412,66 +412,38 @@ pub enum LlmResponseChunk {
 pub struct ResponseAccumulator {
     id: Option<String>,
     model: Option<String>,
-    content: Vec<ContentBlock>,
-    last_text: Option<(usize, usize)>,
-    positions: BTreeMap<(BlockKind, usize), usize>,
+    text: String,
+    reasoning: Option<String>,
+    reasoning_details: Vec<Value>,
     tool_calls: BTreeMap<usize, PartialToolCall>,
-    pending_mcp: BTreeSet<usize>,
-    has_mcp: bool,
+    mcp_blocks: BTreeMap<usize, McpBlockState>,
     usage: Usage,
     stop_reason: Option<StopReason>,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum BlockKind {
-    Reasoning,
-    Mcp,
 }
 
 /// A tool call being assembled from streamed [`LlmResponseChunk::ToolCallDelta`]s.
 #[derive(Default)]
 struct PartialToolCall {
-    position: usize,
     id: Option<String>,
     name: Option<String>,
     arguments: String,
+}
+
+#[derive(Default)]
+enum McpBlockState {
+    #[default]
+    Started,
+    Call {
+        server_name: String,
+        call: PartialToolCall,
+    },
+    Complete(Vec<ContentBlock>),
 }
 
 impl ResponseAccumulator {
     /// A fresh accumulator with no chunks applied.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    fn position(&mut self, kind: BlockKind, index: usize, block: ContentBlock) -> usize {
-        *self.positions.entry((kind, index)).or_insert_with(|| {
-            let position = self.content.len();
-            self.content.push(block);
-            position
-        })
-    }
-
-    fn push_reasoning(&mut self, index: usize, text: String, details: Vec<Value>) {
-        let position = self.position(
-            BlockKind::Reasoning,
-            index,
-            ContentBlock::Reasoning {
-                text: String::new(),
-                signature: None,
-                details: Vec::new(),
-            },
-        );
-        if let ContentBlock::Reasoning {
-            text: existing,
-            details: retained,
-            ..
-        } = &mut self.content[position]
-        {
-            existing.push_str(&text);
-            for detail in details {
-                push_reasoning_detail(retained, detail);
-            }
-        }
     }
 
     /// Apply one chunk. Later `MessageStart`/`Usage`/`MessageStop` fields overwrite
@@ -486,28 +458,20 @@ impl ResponseAccumulator {
                     self.model = model;
                 }
             }
-            LlmResponseChunk::TextDelta { index, text } => {
-                // Append common text deltas directly, but retain intervening block boundaries.
-                if self.last_text.is_some_and(|(source_index, position)| {
-                    source_index == index && position + 1 == self.content.len()
-                }) && let Some(ContentBlock::Text { text: existing }) = self.content.last_mut()
-                {
-                    existing.push_str(&text);
-                } else {
-                    self.last_text = Some((index, self.content.len()));
-                    self.content.push(ContentBlock::Text { text });
+            LlmResponseChunk::TextDelta { text, .. } => self.text.push_str(&text),
+            LlmResponseChunk::ReasoningDelta { text, .. } => {
+                self.reasoning
+                    .get_or_insert_with(String::new)
+                    .push_str(&text);
+            }
+            LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
+                for detail in details {
+                    push_reasoning_detail(&mut self.reasoning_details, detail);
                 }
-            }
-            LlmResponseChunk::ReasoningDelta { index, text } => {
-                self.push_reasoning(index, text, Vec::new());
-            }
-            LlmResponseChunk::ReasoningDetailsDelta {
-                index,
-                details,
-                text,
-            } => {
-                if !text.is_empty() || !details.is_empty() {
-                    self.push_reasoning(index, text, details);
+                if !text.is_empty() {
+                    self.reasoning
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
                 }
             }
             LlmResponseChunk::ToolCallDelta {
@@ -516,18 +480,7 @@ impl ResponseAccumulator {
                 name,
                 arguments_delta,
             } => {
-                let call = self.tool_calls.entry(index).or_insert_with(|| {
-                    let position = self.content.len();
-                    self.content.push(ContentBlock::ToolCall(ToolCall {
-                        id: String::new(),
-                        name: String::new(),
-                        arguments: Value::Null,
-                    }));
-                    PartialToolCall {
-                        position,
-                        ..Default::default()
-                    }
-                });
+                let call = self.tool_calls.entry(index).or_default();
                 if id.is_some() {
                     call.id = id;
                 }
@@ -539,54 +492,47 @@ impl ResponseAccumulator {
                 }
             }
             LlmResponseChunk::McpContentBlockStart { index } => {
-                self.has_mcp = true;
-                self.pending_mcp.insert(index);
-                self.position(
-                    BlockKind::Mcp,
-                    index,
-                    ContentBlock::Text {
-                        text: String::new(),
-                    },
-                );
+                self.mcp_blocks.entry(index).or_default();
             }
             LlmResponseChunk::McpCallDelta {
                 index,
                 id,
                 server_name,
                 name,
-                ..
+                arguments_delta,
             } => {
-                self.has_mcp = true;
-                self.pending_mcp.insert(index);
-                self.position(
-                    BlockKind::Mcp,
-                    index,
-                    ContentBlock::Mcp(McpContent::Call {
-                        server_name: server_name.unwrap_or_default(),
-                        call: ToolCall {
-                            id: id.unwrap_or_default(),
-                            name: name.unwrap_or_default(),
-                            arguments: Value::Null,
-                        },
-                    }),
-                );
+                let block = self.mcp_blocks.entry(index).or_default();
+                if matches!(block, McpBlockState::Started) {
+                    *block = McpBlockState::Call {
+                        server_name: String::new(),
+                        call: PartialToolCall::default(),
+                    };
+                }
+                if let McpBlockState::Call {
+                    server_name: server,
+                    call,
+                } = block
+                {
+                    if let Some(server_name) = server_name {
+                        *server = server_name;
+                    }
+                    if id.is_some() {
+                        call.id = id;
+                    }
+                    if name.is_some() {
+                        call.name = name;
+                    }
+                    if let Some(delta) = arguments_delta {
+                        call.arguments.push_str(&delta);
+                    }
+                }
             }
             LlmResponseChunk::McpContentBlockComplete { index, block } => {
-                let block = *block;
-                self.has_mcp = true;
-                if self.pending_mcp.contains(&index)
-                    || !matches!(block, ContentBlock::Mcp(McpContent::Result(_)))
-                {
-                    self.pending_mcp.remove(&index);
-                    if let Some(&position) = self.positions.get(&(BlockKind::Mcp, index)) {
-                        self.content[position] = block;
-                    } else {
-                        self.positions
-                            .insert((BlockKind::Mcp, index), self.content.len());
-                        self.content.push(block);
-                    }
-                } else {
-                    self.content.push(block);
+                let state = self.mcp_blocks.entry(index).or_default();
+                match state {
+                    // A provider item can contain both a call and its result.
+                    McpBlockState::Complete(blocks) => blocks.push(*block),
+                    _ => *state = McpBlockState::Complete(vec![*block]),
                 }
             }
             LlmResponseChunk::Usage(usage) => self.usage = usage,
@@ -597,76 +543,55 @@ impl ResponseAccumulator {
         }
     }
 
-    /// Build the buffered response. Content is ordered reasoning, then text, then
-    /// tool calls (by ascending delta index) — a single assistant output.
-    pub fn finish(mut self) -> AggLlmResponse {
-        let mut calls = Vec::new();
+    /// Build one assistant output: reasoning, text, ordinary tool calls, then MCP blocks.
+    /// Tool calls and MCP blocks are each ordered by ascending source index.
+    /// Unfinished MCP calls retain their partial data; starts without content are omitted.
+    pub fn finish(self) -> AggLlmResponse {
+        let mut content = Vec::new();
+        if self.reasoning.is_some() || !self.reasoning_details.is_empty() {
+            content.push(ContentBlock::Reasoning {
+                text: self.reasoning.unwrap_or_default(),
+                signature: None,
+                // An announcement whose payload never arrived is a stream-level hint only.
+                details: self
+                    .reasoning_details
+                    .into_iter()
+                    .filter(|detail| !is_reasoning_id_announcement(detail))
+                    .collect(),
+            });
+        }
+        if !self.text.is_empty() {
+            content.push(ContentBlock::Text { text: self.text });
+        }
         for call in self.tool_calls.into_values() {
-            let block = ContentBlock::ToolCall(ToolCall {
+            content.push(ContentBlock::ToolCall(ToolCall {
                 id: call.id.unwrap_or_default(),
                 name: call.name.unwrap_or_default(),
                 arguments: parse_tool_arguments(&call.arguments),
-            });
-            if self.has_mcp {
-                self.content[call.position] = block;
-            } else {
-                calls.push(block);
-            }
+            }));
         }
-        for block in &mut self.content {
-            if let ContentBlock::Reasoning { details, .. } = block {
-                details.retain(|detail| !is_reasoning_id_announcement(detail));
-            }
-        }
-        if !self.has_mcp {
-            // Preserve the established aggregation order for ordinary streams. MCP
-            // conversations need the original block order to keep calls and results in place.
-            let mut text = String::new();
-            let mut reasoning = String::new();
-            let mut details = Vec::new();
-            let mut has_reasoning = false;
-            for block in self.content {
-                match block {
-                    ContentBlock::Text { text: fragment } => {
-                        if text.is_empty() {
-                            text = fragment;
-                        } else {
-                            text.push_str(&fragment);
-                        }
-                    }
-                    ContentBlock::Reasoning {
-                        text,
-                        details: incoming,
-                        ..
-                    } => {
-                        has_reasoning = true;
-                        reasoning.push_str(&text);
-                        for detail in incoming {
-                            push_reasoning_detail(&mut details, detail);
-                        }
-                    }
-                    _ => {}
+        for block in self.mcp_blocks.into_values() {
+            match block {
+                McpBlockState::Started => {}
+                McpBlockState::Call { server_name, call } => {
+                    content.push(ContentBlock::Mcp(McpContent::Call {
+                        server_name,
+                        call: ToolCall {
+                            id: call.id.unwrap_or_default(),
+                            name: call.name.unwrap_or_default(),
+                            arguments: parse_tool_arguments(&call.arguments),
+                        },
+                    }));
                 }
+                McpBlockState::Complete(blocks) => content.extend(blocks),
             }
-            self.content = Vec::new();
-            if has_reasoning {
-                self.content.push(ContentBlock::Reasoning {
-                    text: reasoning,
-                    details,
-                    signature: None,
-                });
-            }
-            if !text.is_empty() {
-                self.content.push(ContentBlock::Text { text });
-            }
-            self.content.extend(calls);
         }
         AggLlmResponse {
             id: self.id,
             model: self.model,
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
-                content: self.content,
+                content,
                 url_citations: Vec::new(),
                 stop_reason: self.stop_reason,
             }],
@@ -734,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_completion_keeps_its_reserved_position_and_separate_result() {
+    fn mcp_completions_replace_partial_calls_and_follow_source_indices() {
         let call = ContentBlock::Mcp(McpContent::Call {
             server_name: "inventory".into(),
             call: ToolCall {
@@ -748,6 +673,12 @@ mod tests {
             content: vec![ContentBlock::Text { text: "12".into() }],
             is_error: Some(false),
         }));
+        let listing = ContentBlock::Mcp(McpContent::Listing {
+            server_name: "inventory".into(),
+            id: None,
+            tools: Vec::new(),
+            error: None,
+        });
         let response = fold(vec![
             LlmResponseChunk::TextDelta {
                 index: 0,
@@ -773,18 +704,20 @@ mod tests {
                 index: 1,
                 block: Box::new(result.clone()),
             },
+            LlmResponseChunk::McpContentBlockComplete {
+                index: 0,
+                block: Box::new(listing.clone()),
+            },
             LlmResponseChunk::MessageStop { reason: None },
         ]);
         assert_eq!(
             response.outputs[0].content,
             vec![
                 ContentBlock::Text {
-                    text: "Before".into()
+                    text: "BeforeAfter".into()
                 },
+                listing,
                 call,
-                ContentBlock::Text {
-                    text: "After".into()
-                },
                 result,
             ]
         );
@@ -794,32 +727,55 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_mcp_blocks_remain_in_aggregation() {
-        for start in [
-            LlmResponseChunk::McpContentBlockStart { index: 0 },
-            LlmResponseChunk::McpCallDelta {
-                index: 0,
-                id: None,
-                server_name: None,
-                name: None,
-                arguments_delta: Some("{}".into()),
-            },
+    fn mcp_starts_are_empty_and_partial_calls_retain_received_data() {
+        assert!(
+            fold(vec![LlmResponseChunk::McpContentBlockStart { index: 0 }]).outputs[0]
+                .content
+                .is_empty()
+        );
+        for (first, last, expected) in [
+            ("{\"sku\":", "\"widget\"}", json!({"sku": "widget"})),
+            ("{\"sku\":", "", json!("{\"sku\":")),
+            ("", "", json!({})),
         ] {
-            let mut accumulator = ResponseAccumulator::new();
-            accumulator.push(start.clone());
-            let aggregate = accumulator.finish();
-            assert_eq!(aggregate.outputs[0].content.len(), 1);
-            let response = LlmResponse::Stream(Box::pin(stream::iter([
-                Ok(start.into()),
-                Ok(LlmResponseChunk::MessageStop { reason: None }.into()),
-            ])));
-            let recovered = block_on(response.into_agg()).expect("infallible MCP aggregation");
-            assert_eq!(recovered.outputs[0].content, aggregate.outputs[0].content);
+            let chunks = vec![
+                LlmResponseChunk::McpContentBlockStart { index: 0 },
+                LlmResponseChunk::McpCallDelta {
+                    index: 0,
+                    id: Some("call_1".into()),
+                    server_name: None,
+                    name: None,
+                    arguments_delta: Some(first.into()),
+                },
+                LlmResponseChunk::McpContentBlockStart { index: 0 },
+                LlmResponseChunk::McpCallDelta {
+                    index: 0,
+                    id: None,
+                    server_name: Some("inventory".into()),
+                    name: Some("lookup".into()),
+                    arguments_delta: Some(last.into()),
+                },
+            ];
+            let response = LlmResponse::Stream(Box::pin(stream::iter(
+                chunks.into_iter().map(|chunk| Ok(chunk.into())),
+            )));
+            let recovered = block_on(response.into_agg()).expect("partial MCP call");
+            assert_eq!(
+                recovered.outputs[0].content,
+                vec![ContentBlock::Mcp(McpContent::Call {
+                    server_name: "inventory".into(),
+                    call: ToolCall {
+                        id: "call_1".into(),
+                        name: "lookup".into(),
+                        arguments: expected
+                    },
+                })]
+            );
         }
     }
 
     #[test]
-    fn synthetic_mcp_stream_preserves_mixed_content_boundaries() {
+    fn synthetic_mcp_stream_aggregates_in_fixed_content_order() {
         let reasoning = |text: &str| ContentBlock::Reasoning {
             text: text.into(),
             signature: None,
@@ -856,7 +812,17 @@ mod tests {
         };
         let recovered = block_on(LlmResponse::Stream(response.clone().into_stream()).into_agg())
             .expect("complete mixed stream");
-        assert_eq!(recovered.outputs[0].content, response.outputs[0].content);
+        assert_eq!(
+            recovered.outputs[0].content,
+            vec![
+                reasoning("FirstSecond"),
+                ContentBlock::Text {
+                    text: "BeforeAfter".into()
+                },
+                response.outputs[0].content[3].clone(),
+                response.outputs[0].content[2].clone(),
+            ]
+        );
     }
 
     #[test]
