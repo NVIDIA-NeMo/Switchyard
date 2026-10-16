@@ -720,40 +720,49 @@ impl LlmTaskClassifier {
     }
 
     fn build_custom(default_target: Category, config: CustomClassifierConfig) -> Result<Self> {
+        Self::from_classifier(
+            Self::custom_classifier(&config, false)?,
+            ClassifierRouteConfig {
+                default_target,
+                classify_trigger: config.classify_trigger,
+                message_hash_fallback: config.message_hash_fallback,
+            },
+        )
+    }
+
+    /// The judge face alone, for composite's own trigger and retained tier.
+    pub(crate) fn custom_classifier(
+        config: &CustomClassifierConfig,
+        fail_open: bool,
+    ) -> Result<Arc<dyn Classifier<State>>> {
         config.validate()?;
-        let CustomClassifierConfig {
-            prompt,
-            response_schema,
-            policy,
-            classify_trigger,
-            message_hash_fallback,
-            recent_turn_window,
-            max_output_tokens,
-        } = config;
-        let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
-        let policy = match policy {
+        let contract =
+            ClassifierContract::from_inner_schema(&config.prompt, config.response_schema.clone())?;
+        let policy = match &config.policy {
             CustomClassifierPolicy::TargetSelector { selector } => {
                 CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector)?)
             }
         };
-        let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
+        let classifier = JudgeClassifier::new(
             StructuredJudge::new(
-                TaskInput { recent_turn_window },
+                TaskInput {
+                    recent_turn_window: config.recent_turn_window,
+                },
                 contract,
                 JsonSchemaDecoder::new(),
-                JudgeRuntimeConfig::new(max_output_tokens)?,
+                JudgeRuntimeConfig::new(config.max_output_tokens)?,
             ),
             policy,
-        ));
-
-        Self::from_classifier(
-            classifier,
-            ClassifierRouteConfig {
-                default_target,
-                classify_trigger,
-                message_hash_fallback,
-            },
         )
+        .with_error_recovery(fail_open);
+        let classifier = if fail_open {
+            classifier.with_evidence(|_, verdict| {
+                verdict.map(|_| serde_json::json!({"source": "llm-classifier"}))
+            })
+        } else {
+            classifier
+        };
+        Ok(Arc::new(classifier))
     }
 
     fn build_escalation(

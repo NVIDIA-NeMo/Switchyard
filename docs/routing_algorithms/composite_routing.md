@@ -59,6 +59,31 @@ nor a second `classifier`. The outer classifier supplies the default tier.
 Custom `tool_semantics` remain stage-local and have the same additive behavior as
 on a standalone stage route.
 
+## Custom LLM classifier
+
+To select a tier directly with your own prompt, keep the stage block and use:
+
+```toml
+[routes.switchyard.classifier]
+mode = "custom"
+target = "judge"
+classify_trigger = "user_turn"
+max_output_tokens = 64
+fail_open = true
+prompt = 'Choose efficient unless capable offers a concrete advantage for this task. Return JSON with decision.target set to efficient or capable.'
+response_schema = '''
+{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["efficient","capable"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}
+'''
+policy = { type = "target_selector", selector = "/decision/target" }
+```
+
+The schema is validated locally. The selector names a tier, and the existing
+stage targets supply its model. With `fail_open = true` (the default), a missing
+or invalid verdict or a client failure retains the previous tier, or uses efficient
+for a new session. With `fail_open = false`, these errors propagate instead.
+Capability thresholds and decision-model
+settings cannot be combined with `mode = "custom"`.
+
 ## Decision model classifier
 
 Use a decision target as the classifier. Keep the stage block above

@@ -13,7 +13,9 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
-use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
+use super::llm_class::{
+    CustomClassifierConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
+};
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
 use super::util::stage::{Tier, set_fall_open};
@@ -142,13 +144,48 @@ impl CompositeRouter {
         let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
             config: judge_config,
         })?;
+        Self::with_judge(
+            Arc::new(judge),
+            trigger,
+            message_hash_fallback,
+            config.stage,
+        )
+    }
+
+    /// Uses a custom-schema judge selecting the `efficient` or `capable` category.
+    /// Other categories abstain, retaining the previous tier. The stage router
+    /// continues routing within the turn. `fail_open` recovers from client failures.
+    pub fn with_custom_classifier(
+        judge: CustomClassifierConfig,
+        stage: StageRouterConfig,
+        fail_open: bool,
+    ) -> Result<Self> {
+        if judge.classify_trigger == ClassifyTrigger::EveryRequest {
+            return Err(LibsyError::AlgorithmError {
+                message: "composite: classify_trigger must be user_turn or new_session".to_string(),
+            });
+        }
+        Self::with_judge(
+            LlmTaskClassifier::custom_classifier(&judge, fail_open)?,
+            judge.classify_trigger,
+            judge.message_hash_fallback,
+            stage,
+        )
+    }
+
+    fn with_judge(
+        judge: Arc<dyn Classifier<State>>,
+        trigger: ClassifyTrigger,
+        message_hash_fallback: bool,
+        stage: StageRouterConfig,
+    ) -> Result<Self> {
         let setter = TierSetter {
-            judge: Arc::new(judge),
+            judge,
             trigger,
             message_hash_fallback,
             tiers: Mutex::new(HashMap::new()),
         };
-        let route = build_stage_route(config.stage)?
+        let route = build_stage_route(stage)?
             .with_name(COMPOSITE)
             .with_processor(Arc::new(setter));
         Ok(Self { route })
