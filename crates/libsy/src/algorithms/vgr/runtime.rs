@@ -12,9 +12,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use switchyard_protocol::{
-    AggLlmResponse, ContentBlock, LlmClientError, ModelId, Request, Response, StopReason,
-};
+use switchyard_protocol::{AggLlmResponse, ContentBlock, ModelId, Request, Response, StopReason};
 
 use super::config::{ServingMode, VgrConfig};
 use super::decide::{self, AgenticRun, Route, Signals, Tri};
@@ -35,6 +33,7 @@ pub(super) struct VgrState {
     pub(super) turn_latched: bool,
     pub(super) turn_started: Option<u32>,
     pub(super) handoff_sent: bool,
+    pub(super) local_served: bool,
 }
 
 struct RequestContext<'a> {
@@ -161,6 +160,7 @@ impl Classifier<VgrState> for VgrClassifier {
                 ));
             }
             log(driver, "turn_verification_complete", None, Route::Local);
+            state.local_served = true;
             return Ok((decisive(local), Some(buffered.into_response())));
         }
 
@@ -180,6 +180,7 @@ impl Classifier<VgrState> for VgrClassifier {
             ));
         }
         log(driver, "decided", Some(caps.branch), Route::Local);
+        state.local_served = true;
         Ok((decisive(local), Some(buffered.into_response())))
     }
 }
@@ -224,11 +225,15 @@ impl VgrClassifier {
         state: &mut VgrState,
         unverified_final: Option<&str>,
     ) {
-        if !self.config.agentic_handoff || state.handoff_sent || !text::has_tool_trajectory(request)
+        if !self.config.agentic_handoff
+            || state.handoff_sent
+            || !state.local_served
+            || !text::has_tool_trajectory(request)
         {
             return;
         }
         state.handoff_sent = true;
+        state.local_served = false;
         let note = handoff_note(unverified_final);
         append_note(request, &note);
     }
@@ -408,17 +413,7 @@ impl VgrClassifier {
                 .map_err(|source| LibsyError::client_call(target.clone(), source))
         })
         .await;
-        Some(outcome.unwrap_or_else(|_| {
-            Err(LibsyError::client_call(
-                target.clone(),
-                LlmClientError::Timeout {
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "VGR verifier exceeded the decision deadline",
-                    )),
-                },
-            ))
-        }))
+        outcome.ok()
     }
 
     fn remaining(&self, started: Instant) -> Option<Duration> {

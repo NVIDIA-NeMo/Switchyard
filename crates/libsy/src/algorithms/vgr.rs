@@ -51,12 +51,12 @@ impl Vgr {
                 .with_release_on_user_turn()
                 .with_latch_only([cloud.clone()]),
         );
-        let route = FallThrough::new_with_state().with_name("vgr");
         let classifier = Arc::new(runtime::VgrClassifier {
             breaker: safety::CircuitBreaker::new(config.breaker),
             config,
         });
-        let route = route
+        let route = FallThrough::new_with_state()
+            .with_name("vgr")
             .with_processor(turn_affinity.clone())
             .with_classifier(turn_affinity)
             .with_classifier(classifier);

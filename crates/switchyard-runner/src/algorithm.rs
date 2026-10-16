@@ -553,7 +553,7 @@ pub struct VgrRouteConfig {
     pub local_turn_budget_seconds: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VgrModeConfig {
     #[default]

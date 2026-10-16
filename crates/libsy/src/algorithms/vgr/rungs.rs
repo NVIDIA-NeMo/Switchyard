@@ -14,7 +14,7 @@ use switchyard_protocol::{
 use super::TaskType;
 use super::decide::Tri;
 use super::text::{Turn, char_len, clip_mid, content_text, redact};
-use crate::algorithms::util::escalation::message_text;
+use crate::algorithms::util::transcript::message_text;
 
 pub(super) const DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 512;
 pub(super) const LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;

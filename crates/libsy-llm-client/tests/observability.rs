@@ -1387,6 +1387,35 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
     Ok(())
 }
 
+#[tokio::test]
+async fn answered_routing_call_keeps_its_execution_phase() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "answered-routing-call";
+    const MODEL: &str = "answer-from-routing";
+
+    switchyard_llm_client::run(
+        Arc::new(RoutingCallAlgo {
+            name: ALGO.to_string(),
+            target: MODEL.into(),
+        }),
+        ClientRouter::single(Arc::new(UsageClient {
+            usage: Usage::default(),
+        })),
+        request_with_metadata("answered-routing-session", "answered-routing-correlation"),
+        Arc::new(RuntimeModels::default()),
+        None,
+    )
+    .await?;
+
+    let span = find_span(&store.spans(), "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        span.fields.get("switchyard.call_phase").map(String::as_str),
+        Some("routing")
+    );
+    Ok(())
+}
+
 /// A streamed response keeps the client span available until terminal usage arrives.
 struct StreamingUsageClient;
 
@@ -1872,7 +1901,7 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
 #[tokio::test]
 async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (_store, exporter, provider, _, _) = telemetry();
+    let (store, exporter, provider, _, _) = telemetry();
     let before = flushed_metrics(exporter, provider);
     let total_requests_before =
         u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
@@ -1886,6 +1915,13 @@ async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_
         run_classifier("classifier", "weak", "strong", client, classifier_request()).await?;
 
     assert_eq!(selected_model, "weak");
+
+    let spans = store.spans();
+    let span = find_span(&spans, "libsy.client_call", "selected_model", "weak");
+    assert_eq!(
+        span.fields.get("switchyard.call_phase").map(String::as_str),
+        Some("completion")
+    );
 
     let snapshots = flushed_metrics(exporter, provider);
     assert_eq!(

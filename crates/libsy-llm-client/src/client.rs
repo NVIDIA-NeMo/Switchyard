@@ -290,9 +290,6 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::Anthropic(_)) {
             strip_anthropic_incompatible_fields(&mut body);
             strip_unsigned_thinking_blocks(&mut body);
-            if nvidia_inference_api_backend(backend) {
-                strip_anthropic_tool_strict(&mut body);
-            }
         }
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
@@ -300,6 +297,9 @@ impl TranslatingLlmClient {
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
         if matches!(backend, Backend::Anthropic(_)) {
+            if nvidia_inference_api_backend(backend) {
+                strip_anthropic_tool_strict(&mut body);
+            }
             enable_anthropic_prompt_caching(&mut body);
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
@@ -2274,6 +2274,66 @@ mod tests {
                 WireFormat::AnthropicMessages,
             )
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nvidia_anthropic_requests_strip_strict_from_extra_body()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut backend = config(&format!(
+            "http://inference-api.nvidia.com:{}",
+            server.address().port()
+        ));
+        backend.extra_body.insert(
+            "tools".into(),
+            json!([{
+                "name": "lookup",
+                "input_schema": {"type": "object", "properties": {}},
+                "strict": true
+            }]),
+        );
+        let mut client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        client.client = reqwest::Client::builder()
+            .no_proxy()
+            .resolve("inference-api.nvidia.com", *server.address())
+            .build()?;
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "claude",
+                    "max_tokens": 7,
+                    "messages": [{"role": "user", "content": "hi"}]
+                }),
+                None,
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
+            )
+            .await?;
+
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body)?;
+        assert_eq!(body["tools"][0]["name"], "lookup");
+        assert!(body["tools"][0].get("strict").is_none());
         Ok(())
     }
 

@@ -1,12 +1,14 @@
 # Verification-Gated Routing
 
-Verification-Gated Routing (VGR) generates a candidate on a local tier, gathers
-bounded evidence about that exact candidate, and serves it only when the policy
-licenses a local commit. All other outcomes use the cloud tier.
+Verification-Gated Routing (VGR) generates a candidate on a local tier. For a
+final answer, it gathers bounded evidence about that exact candidate and serves
+it only when the policy allows it. All other final-answer outcomes use the cloud
+tier. Missing context, unavailable verifiers, malformed verdicts, and expired
+decision deadlines fail closed to cloud for final answers.
 
-Tool-calling turns continue on the local tier without being mistaken for a
-terminal answer. Missing context, unavailable verifiers, malformed verdicts,
-and expired decision deadlines fail closed to cloud.
+Tool-calling turns continue on the local tier unless the turn judge provides
+evidence to escalate. An unavailable or inconclusive turn judge leaves the tool
+turn on the local tier. A local endpoint failure triggers cloud fallback.
 
 ## Configure a route
 
@@ -45,11 +47,12 @@ agentic_handoff = true
 local_turn_budget_seconds = 600
 ```
 
-`agentic_handoff` tells the cloud tier, once per user turn, that it is taking
-over unverified tool-using work, including the local tier's unchecked final
-message. The handoff adds a notice while preserving the conversation's existing
-messages and content. `local_turn_budget_seconds` escalates a user turn once
-the local tier has spent that much wall-clock time on it.
+`agentic_handoff` tells the cloud tier when it takes over tool-using work that
+the local tier previously served. The notice can include the local tier's
+unchecked final message. It is sent at most once per user turn, and only after
+new local work has been served since the previous handoff. The handoff preserves
+the conversation's existing messages and content. `local_turn_budget_seconds`
+escalates a user turn once the local tier has spent that much wall-clock time on it.
 
 ## Serving modes
 
