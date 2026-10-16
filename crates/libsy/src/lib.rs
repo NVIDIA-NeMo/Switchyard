@@ -48,3 +48,6 @@ pub use algorithms::util::stage::{
 };
 
 mod observability;
+
+mod privacy_preflight;
+pub use privacy_preflight::{PrivacyAssessment, PrivacyPreflight};
