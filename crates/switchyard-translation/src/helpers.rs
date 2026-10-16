@@ -10,8 +10,7 @@ use std::pin::Pin;
 use std::sync::LazyLock;
 
 use async_stream::try_stream;
-use futures::io::AsyncBufReadExt;
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt};
 use serde_json::Value;
 use switchyard_protocol::LlmClientError;
 
@@ -241,13 +240,20 @@ fn stamp_streamed_response_model(
 /// The decoder tracks the source format's protocol-specific terminal event. If
 /// EOF arrives without that required event, the stream yields a deferred
 /// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
+/// The byte limit applies to each event, not to the complete stream.
 pub fn decode_stream<S>(
     bytes: S,
     source: WireFormat,
+    max_event_bytes: usize,
 ) -> std::result::Result<LlmResponseStream, LlmClientError>
 where
     S: Stream<Item = std::result::Result<Vec<u8>, LlmClientError>> + Send + 'static,
 {
+    if max_event_bytes == 0 {
+        return Err(LlmClientError::Configuration {
+            message: "max_response_bytes must be at least 1".to_string(),
+        });
+    }
     let marker = sse::done_marker(source);
     let source_format: FormatId = source.into();
     // The source is always a built-in wire format, so this lookup cannot fail; a
@@ -255,65 +261,74 @@ where
     let codec = StreamCodecRegistry::with_builtins()
         .codec(source_format.clone())
         .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-    // Adapt the byte-chunk stream into an async line reader. The BufReader
-    // reassembles data split across network chunks (including multi-byte UTF-8),
-    // and `lines()` yields one SSE field line at a time. The stream is boxed to
-    // an `io::Error` item so `into_async_read`'s error bound resolves cleanly. The
-    // source error is boxed intact rather than stringified, so
-    // `llm_client_error_from_io` can recover its original variant on the way out.
-    let io_bytes: Pin<Box<dyn Stream<Item = std::io::Result<Vec<u8>>> + Send>> =
-        Box::pin(bytes.map(|item| item.map_err(std::io::Error::other)));
-    let lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
-
     let mut state = StreamTranslationState {
         source: Some(source_format.clone()),
         ..StreamTranslationState::default()
     };
-    let mut frame = String::new();
+    let mut frame = Vec::new();
+    let mut line_start = 0;
     let mut saw_terminal = false;
     let mut saw_error = false;
     let stream = Box::pin(try_stream! {
-        futures::pin_mut!(lines);
-        while let Some(line) = lines.next().await {
-            let line = line.map_err(llm_client_error_from_io)?;
-            // A blank line (allowing a bare CR for CRLF streams) ends the frame.
-            if line.trim_end().is_empty() {
-                let parsed = sse::parse_json_sse_frame(&frame, marker)
-                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
-                frame.clear();
-                match parsed {
-                    sse::SseFrame::Empty => {}
-                    sse::SseFrame::Done => {
-                        saw_terminal |= source != WireFormat::AnthropicMessages;
-                        break;
+        futures::pin_mut!(bytes);
+        'body: while let Some(chunk) = bytes.next().await {
+            let chunk = chunk?;
+            let mut offset = 0;
+            while offset < chunk.len() {
+                let Some(relative_newline) = chunk[offset..].iter().position(|byte| *byte == b'\n') else {
+                    append_sse_bytes(&mut frame, &chunk[offset..], max_event_bytes, line_start)?;
+                    break;
+                };
+                let newline = offset + relative_newline;
+                append_sse_bytes(&mut frame, &chunk[offset..newline], max_event_bytes, line_start)?;
+                let line = std::str::from_utf8(&frame[line_start..]).map_err(|error| {
+                    LlmClientError::InvalidResponse {
+                        source: Box::new(error),
                     }
-                    sse::SseFrame::Data(value) => {
-                        saw_terminal |= sse::is_terminal_event(source, &value);
-                        let normalized = codec.decode_event(&mut state, &value);
-                        saw_error |= normalized.iter().any(|chunk| matches!(
-                            chunk,
-                            LlmResponseChunk::DecodeError { .. }
-                                | LlmResponseChunk::StreamError { .. }
-                        ));
-                        yield LlmResponseStreamEvent::preserved(
-                            source_format.clone(),
-                            value,
-                            normalized,
-                        );
+                })?;
+                // A blank line (allowing a bare CR for CRLF streams) ends the frame.
+                if line.trim_end().is_empty() {
+                    frame.truncate(line_start);
+                    let parsed = parse_sse_frame(&frame, marker)?;
+                    frame.clear();
+                    line_start = 0;
+                    match parsed {
+                        sse::SseFrame::Empty => {}
+                        sse::SseFrame::Done => {
+                            saw_terminal |= source != WireFormat::AnthropicMessages;
+                            break 'body;
+                        }
+                        sse::SseFrame::Data(value) => {
+                            saw_terminal |= sse::is_terminal_event(source, &value);
+                            let normalized = codec.decode_event(&mut state, &value);
+                            saw_error |= normalized.iter().any(|chunk| matches!(
+                                chunk,
+                                LlmResponseChunk::DecodeError { .. }
+                                    | LlmResponseChunk::StreamError { .. }
+                            ));
+                            yield LlmResponseStreamEvent::preserved(
+                                source_format.clone(),
+                                value,
+                                normalized,
+                            );
+                        }
                     }
+                } else {
+                    append_sse_bytes(&mut frame, b"\n", max_event_bytes, line_start)?;
+                    line_start = frame.len();
                 }
-            } else {
-                frame.push_str(&line);
-                frame.push('\n');
+                offset = newline + 1;
             }
         }
 
         // A non-standard upstream might omit the final blank line; parse a trailing
         // complete frame instead of losing its last chunk.
         #[allow(clippy::collapsible_if)]
-        if !frame.trim_end().is_empty() {
-            let parsed = sse::parse_json_sse_frame(&frame, marker)
-                .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
+        if frame.len() > max_event_bytes && frame[line_start..] == *b"\r" {
+            frame.truncate(line_start);
+        }
+        if !frame.is_empty() {
+            let parsed = parse_sse_frame(&frame, marker)?;
             match parsed {
                 sse::SseFrame::Done => {
                     saw_terminal |= source != WireFormat::AnthropicMessages;
@@ -341,20 +356,34 @@ where
     Ok(stream)
 }
 
-// Recover transport errors wrapped for `AsyncRead`; other reader failures are
-// invalid upstream responses.
-fn llm_client_error_from_io(error: std::io::Error) -> LlmClientError {
-    let kind = error.kind();
-    let message = error.to_string();
-    match error.into_inner() {
-        Some(source) => match source.downcast::<LlmClientError>() {
-            Ok(error) => *error,
-            Err(source) => LlmClientError::InvalidResponse { source },
-        },
-        None => LlmClientError::InvalidResponse {
-            source: Box::new(std::io::Error::new(kind, message)),
-        },
+// A CR at the start of a new line may be the blank CRLF separator. It is
+// discarded at the newline, so do not charge it against the event limit.
+fn append_sse_bytes(
+    frame: &mut Vec<u8>,
+    bytes: &[u8],
+    max_event_bytes: usize,
+    line_start: usize,
+) -> std::result::Result<(), LlmClientError> {
+    let possible_separator = frame.len() == line_start && bytes == b"\r";
+    if bytes.len() > max_event_bytes.saturating_sub(frame.len()) && !possible_separator {
+        return Err(LlmClientError::UpstreamResponseTooLarge {
+            limit: max_event_bytes,
+        });
     }
+    frame.extend_from_slice(bytes);
+    Ok(())
+}
+
+// Validates frame UTF-8 before handing its fields to the shared SSE parser.
+fn parse_sse_frame(
+    frame: &[u8],
+    marker: Option<&str>,
+) -> std::result::Result<sse::SseFrame, LlmClientError> {
+    let frame = std::str::from_utf8(frame).map_err(|error| LlmClientError::InvalidResponse {
+        source: Box::new(error),
+    })?;
+    sse::parse_json_sse_frame(frame, marker)
+        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))
 }
 
 #[cfg(test)]
@@ -380,7 +409,17 @@ mod tests {
         bytes: impl Stream<Item = Result<Vec<u8>, LlmClientError>> + Send + 'static,
         source: WireFormat,
     ) -> Result<Vec<LlmResponseStreamEvent>, LlmClientError> {
-        block_on(decode_stream(bytes, source)?.collect::<Vec<_>>())
+        block_on(decode_stream(bytes, source, usize::MAX)?.collect::<Vec<_>>())
+            .into_iter()
+            .collect()
+    }
+
+    fn decode_all_with_limit(
+        bytes: impl Stream<Item = Result<Vec<u8>, LlmClientError>> + Send + 'static,
+        source: WireFormat,
+        max_event_bytes: usize,
+    ) -> Result<Vec<LlmResponseStreamEvent>, LlmClientError> {
+        block_on(decode_stream(bytes, source, max_event_bytes)?.collect::<Vec<_>>())
             .into_iter()
             .collect()
     }
@@ -734,7 +773,7 @@ mod tests {
             let frame = format!("data: {provider_event}\n\n").into_bytes();
             async move { Ok::<Vec<u8>, LlmClientError>(frame) }
         });
-        let decoded = decode_stream(bytes, WireFormat::OpenAiChat)?;
+        let decoded = decode_stream(bytes, WireFormat::OpenAiChat, usize::MAX)?;
         let replayed =
             block_on(encode_stream(decoded, WireFormat::OpenAiChat, None)?.collect::<Vec<_>>())
                 .into_iter()
@@ -802,7 +841,7 @@ mod tests {
     #[test]
     fn decode_stream_reassembles_frames_split_across_chunks() -> Result<(), BoxError> {
         // A multi-byte codepoint and the frame boundaries are split across
-        // one-byte chunks; the BufReader must reassemble them losslessly.
+        // one-byte chunks; the decoder must reassemble them losslessly.
         let payload = json!({"choices": [{"delta": {"content": "café"}}]});
         let sse = format!("data: {payload}\n\ndata: [DONE]\n\n");
         let bytes = stream::iter(
@@ -813,6 +852,124 @@ mod tests {
         let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
         assert_eq!(text_of(&chunks), "café");
         Ok(())
+    }
+
+    #[test]
+    fn limited_stream_accepts_an_event_at_the_exact_boundary() -> Result<(), BoxError> {
+        let payload = json!({"choices": [{"delta": {"content": "exact"}}]});
+        let event = format!("data: {payload}\n");
+        let limit = event.len();
+        let bytes = stream::once({
+            let sse = format!("{event}\ndata: [DONE]\n\n").into_bytes();
+            async move { Ok::<Vec<u8>, LlmClientError>(sse) }
+        });
+
+        let events = decode_all_with_limit(bytes, WireFormat::OpenAiChat, limit)?;
+        assert_eq!(text_of(&events), "exact");
+        Ok(())
+    }
+
+    #[test]
+    fn limited_stream_accepts_crlf_event_at_the_exact_boundary() -> Result<(), BoxError> {
+        let payload = json!({"choices": [{"delta": {"content": "exact"}}]});
+        let event = format!("data: {payload}\r\n");
+        let limit = event.len();
+        let sse = format!("{event}\r\ndata: [DONE]\r\n\r\n");
+        let bytes = stream::iter(
+            sse.into_bytes()
+                .into_iter()
+                .map(|byte| Ok::<Vec<u8>, LlmClientError>(vec![byte])),
+        );
+
+        let events = decode_all_with_limit(bytes, WireFormat::OpenAiChat, limit)?;
+        assert_eq!(text_of(&events), "exact");
+        Ok(())
+    }
+
+    #[test]
+    fn limited_stream_rejects_crlf_event_one_byte_over() -> Result<(), BoxError> {
+        let payload = json!({"choices": [{"delta": {"content": "large"}}]});
+        let event = format!("data: {payload}\r\n");
+        let limit = event.len() - 1;
+        let bytes = stream::iter(
+            format!("{event}\r\n")
+                .into_bytes()
+                .into_iter()
+                .map(|byte| Ok::<Vec<u8>, LlmClientError>(vec![byte])),
+        );
+
+        let error = decode_all_with_limit(bytes, WireFormat::OpenAiChat, limit)
+            .expect_err("CRLF event above the configured limit must fail");
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamResponseTooLarge { limit: actual } if actual == limit
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn limited_stream_rejects_an_event_one_byte_over() -> Result<(), BoxError> {
+        let payload = json!({"choices": [{"delta": {"content": "large"}}]});
+        let event = format!("data: {payload}\n");
+        let limit = event.len() - 1;
+        let bytes = stream::once({
+            let sse = format!("{event}\n").into_bytes();
+            async move { Ok::<Vec<u8>, LlmClientError>(sse) }
+        });
+
+        let error = decode_all_with_limit(bytes, WireFormat::OpenAiChat, limit)
+            .expect_err("event above the configured limit must fail");
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamResponseTooLarge { limit: actual } if actual == limit
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn limited_stream_rejects_an_oversized_event_split_across_chunks() -> Result<(), BoxError> {
+        let payload = json!({"choices": [{"delta": {"content": "split"}}]});
+        let event = format!("data: {payload}\n\n");
+        let limit = event.len() - 2;
+        let bytes = stream::iter(
+            event
+                .into_bytes()
+                .into_iter()
+                .map(|byte| Ok::<Vec<u8>, LlmClientError>(vec![byte])),
+        );
+
+        let error = decode_all_with_limit(bytes, WireFormat::OpenAiChat, limit)
+            .expect_err("split event above the configured limit must fail");
+        assert!(matches!(
+            error,
+            LlmClientError::UpstreamResponseTooLarge { limit: actual } if actual == limit
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn limited_stream_does_not_cap_the_complete_stream() -> Result<(), BoxError> {
+        let event = format!(
+            "data: {}\n",
+            json!({"choices": [{"delta": {"content": "x"}}]})
+        );
+        let limit = event.len();
+        let mut sse = format!("{event}\n").repeat(100);
+        sse.push_str("data: [DONE]\n\n");
+        let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse.into_bytes()) });
+
+        let events = decode_all_with_limit(bytes, WireFormat::OpenAiChat, limit)?;
+        assert_eq!(text_of(&events), "x".repeat(100));
+        Ok(())
+    }
+
+    #[test]
+    fn limited_stream_rejects_zero_before_reading() {
+        let bytes = stream::empty::<Result<Vec<u8>, LlmClientError>>();
+        let Err(error) = decode_stream(bytes, WireFormat::OpenAiChat, 0) else {
+            panic!("zero must not disable the limit");
+        };
+        assert!(matches!(error, LlmClientError::Configuration { .. }));
     }
 
     #[test]
@@ -832,7 +989,8 @@ mod tests {
         // Preserve valid content before surfacing premature EOF as the terminal stream error.
         let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n".to_vec();
         let bytes = stream::once(async move { Ok::<Vec<u8>, LlmClientError>(sse) });
-        let results = block_on(decode_stream(bytes, WireFormat::OpenAiChat)?.collect::<Vec<_>>());
+        let results =
+            block_on(decode_stream(bytes, WireFormat::OpenAiChat, usize::MAX)?.collect::<Vec<_>>());
 
         let Some(Ok(first)) = results.first() else {
             return Err("expected the partial event".into());
@@ -905,7 +1063,8 @@ mod tests {
                 source: Box::new(std::io::Error::other("upstream exploded")),
             }),
         ]);
-        let results = block_on(decode_stream(bytes, WireFormat::OpenAiChat)?.collect::<Vec<_>>());
+        let results =
+            block_on(decode_stream(bytes, WireFormat::OpenAiChat, usize::MAX)?.collect::<Vec<_>>());
         let Some(Err(error)) = results.last() else {
             panic!("expected the source error");
         };
@@ -917,7 +1076,8 @@ mod tests {
     fn decode_stream_classifies_invalid_sse_json() -> Result<(), BoxError> {
         let bytes =
             stream::once(async { Ok::<Vec<u8>, LlmClientError>(b"data: {invalid}\n\n".to_vec()) });
-        let results = block_on(decode_stream(bytes, WireFormat::OpenAiChat)?.collect::<Vec<_>>());
+        let results =
+            block_on(decode_stream(bytes, WireFormat::OpenAiChat, usize::MAX)?.collect::<Vec<_>>());
         let Some(Err(error)) = results.last() else {
             panic!("expected invalid SSE JSON to fail");
         };
