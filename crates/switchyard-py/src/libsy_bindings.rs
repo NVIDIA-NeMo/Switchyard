@@ -18,7 +18,7 @@ use switchyard_libsy::{
     DecisionJudgeConfig, DeescalationConfig, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
     LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter,
-    StageRouterConfig, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    StageRouterConfig, State, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
@@ -911,7 +911,7 @@ impl PyAlgorithm {
         }
         let stream = {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-            Arc::clone(&self.inner).run_stream(request, Arc::new(runtime_models))
+            Arc::clone(&self.inner).run_stream(request, Arc::new(runtime_models), State::default())
         };
         Ok(PyRunStream {
             inner: Arc::new(Mutex::new(stream)),
@@ -941,6 +941,7 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 request,
                 response,
                 metadata,
+                state: _,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {

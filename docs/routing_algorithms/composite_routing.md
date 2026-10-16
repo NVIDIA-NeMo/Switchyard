@@ -124,6 +124,13 @@ conversation keeps its own. A client that sends no session ID can set
 `classifier.message_hash_fallback = true`, which keys on the first user message
 instead. Conversations that open with the same text then share a tier.
 
+Rust code that calls `Algorithm::run_stream` directly can store the tier
+itself. Pass the stored `State` to `run_stream`, save `RoutingOutcome.state`
+after each turn, and send no session ID. With a session ID, the router uses its
+own session state and returns the passed `State` unchanged. `switchyard-server`
+starts each request with an empty `State`, so server clients still send
+`x-switchyard-session-id`.
+
 ## Example use
 
 An interactive coding agent in auto-mode. The classifier reads the user turn and

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use libsy::{
     AffinityRouter, Algorithm, Classifier, Driver, Event, LibsyError, Processor, RoutingOutcome,
+    State,
 };
 use switchyard_protocol::{ContentBlock, Message, ModelId, Request, Role};
 use tokio::sync::Mutex;
@@ -148,7 +149,7 @@ impl Algorithm for PrefillRouterAlgo {
         driver: Driver,
         mut request: Request,
     ) -> libsy::Result<RoutingOutcome> {
-        let mut state = ();
+        let mut state = State::default();
         if let Some(target) = self
             .affinity
             .score(&mut state, &mut request, &driver)
@@ -197,7 +198,7 @@ impl Algorithm for PrefillRouterAlgo {
                 self.default_target.clone()
             }
         };
-        let mut state = ();
+        let mut state = State::default();
         self.affinity
             .process(
                 &mut state,

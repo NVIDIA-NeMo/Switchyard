@@ -18,7 +18,7 @@ use super::llm_class::{
 };
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
-use super::util::stage::{Tier, set_fall_open};
+use super::util::stage::{Tier, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::Classifier;
 use crate::core::processor::{Event, Processor};
@@ -34,7 +34,7 @@ const COMPOSITE: &str = "composite";
 /// session ID when `message_hash_fallback` is on. The retained tier is replayed
 /// into state on every request so the cascade below reads it.
 struct TierSetter {
-    judge: Arc<dyn Classifier<State>>,
+    judge: Arc<dyn Classifier>,
     trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     default_tier: Tier,
@@ -52,12 +52,14 @@ impl TierSetter {
 
     /// Two requests for one identity can both pass this and both judge, since a
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
-    fn is_due(&self, identity: Option<&RoutingIdentity>, request: &Request) -> bool {
+    fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
         match self.trigger {
             ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
-            // Unkeyed requests cannot be told apart, so every one is a new session.
+            // Unkeyed requests with no carried tier cannot be told apart, so every one
+            // is a new session.
             ClassifyTrigger::NewSession => {
                 identity.is_none_or(|identity| !self.tiers.lock().contains_key(identity))
+                    && fall_open_tier(state).is_none()
             }
             // Rejected by the constructor, and only in the enum for the standalone route.
             ClassifyTrigger::EveryRequest => true,
@@ -77,13 +79,13 @@ impl TierSetter {
 }
 
 #[async_trait]
-impl Processor<State> for TierSetter {
+impl Processor for TierSetter {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         let Event::Request { request, driver } = event else {
             return Ok(());
         };
         let identity = retention_key(request, self.message_hash_fallback);
-        if self.is_due(identity.as_ref(), request) {
+        if self.is_due(identity.as_ref(), state, request) {
             let (classification, _) = self.judge.score(state, request, driver).await?;
             if let Some(winner) = classification.argmax(false)?
                 && let Some(tier) = Self::tier_for(winner.category)
@@ -103,7 +105,9 @@ impl Processor<State> for TierSetter {
         }
         // Either not this request's turn or the judge had no verdict, so the last
         // tier stands rather than dropping back to the picker default.
-        if let Some(tier) = identity.and_then(|identity| self.tiers.lock().get(&identity).copied())
+        if let Some(tier) = identity
+            .and_then(|identity| self.tiers.lock().get(&identity).copied())
+            .or_else(|| fall_open_tier(state))
         {
             set_fall_open(state, tier);
             driver.set_evidence_if_empty(serde_json::json!({"source": "retained"}));
@@ -130,7 +134,7 @@ pub struct CompositeRouterConfig {
 
 /// Runs a stage router with a tier the judge picks.
 pub struct CompositeRouter {
-    route: FallThrough<State>,
+    route: FallThrough,
 }
 
 impl CompositeRouter {
@@ -257,13 +261,17 @@ mod tests {
     }
 
     fn router() -> Result<Arc<CompositeRouter>> {
+        router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    fn router_with_trigger(classify_trigger: ClassifyTrigger) -> Result<Arc<CompositeRouter>> {
         Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
             judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold: 0.5,
                     ..LlmCapabilityConfig::default()
                 }),
-                classify_trigger: ClassifyTrigger::UserTurn,
+                classify_trigger,
                 ..Default::default()
             }),
             stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
@@ -528,6 +536,36 @@ mod tests {
             1,
             "a tool step is not a new user turn"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn caller_state_carries_the_judged_tier_without_a_session_id() -> Result<()> {
+        for trigger in [ClassifyTrigger::UserTurn, ClassifyTrigger::NewSession] {
+            let recorder = Arc::new(Recorder::default());
+            *recorder.judge_p_solve.lock() = 0.1;
+            let router = router_with_trigger(trigger)?;
+            let run = |request, state| {
+                crate::core::testing::test_drive_with_state(
+                    router.clone(),
+                    request,
+                    runtime_models(),
+                    state,
+                    recorder.serve(),
+                )
+            };
+
+            let first = run(unkeyed(user_turn_request()), State::default()).await?;
+            assert_eq!(first.selected_model_id()?, &ModelId::from("strong"));
+
+            let continued = run(unkeyed(turn_request(false)), first.state).await?;
+            assert_eq!(continued.selected_model_id()?, &ModelId::from("strong"));
+            assert_eq!(
+                continued.metadata.and_then(|m| m.evidence),
+                Some(serde_json::json!({"source": "retained"}))
+            );
+            assert_eq!(recorder.judge_calls(), 1, "{trigger:?}");
+        }
         Ok(())
     }
 }

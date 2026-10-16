@@ -45,9 +45,9 @@ pub use algorithms::vgr::{
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).
 pub use algorithms::util::stage::{
-    CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
-    PickerMode, ScoreResult, StageClassifier, Tier, clear_fall_open, dimensions_from_signal,
-    pick_tier, score_signal, set_fall_open,
+    CodingAgentDimensions, DecisionSource, HandoffNoteConfig, PickOutcome, PickerMode, ScoreResult,
+    StageClassifier, Tier, clear_fall_open, dimensions_from_signal, pick_tier, score_signal,
+    set_fall_open,
 };
 
 mod observability;
