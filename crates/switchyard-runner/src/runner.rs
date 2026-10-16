@@ -5,9 +5,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use libsy::RoutingOutcome;
 use serde_json::Value;
+use switchyard_llm_client::TranslatingLlmClient;
 use switchyard_protocol::{ModelId, WireFormat};
 
 use crate::config;
@@ -18,6 +21,7 @@ pub struct Runner {
     routes: Vec<(ModelId, Route)>,
     fallback_base_url: Option<String>,
     provider_api_keys: Vec<String>,
+    model_properties_probes: BTreeMap<ModelId, ModelPropertiesProbe>,
 }
 
 /// Borrowed model metadata returned while listing routes.
@@ -43,6 +47,12 @@ pub struct DecisionTarget {
     pub extra_body: BTreeMap<String, Value>,
 }
 
+pub(crate) struct ModelPropertiesProbe {
+    pub(crate) model: ModelId,
+    pub(crate) format: WireFormat,
+    pub(crate) client: Arc<TranslatingLlmClient>,
+}
+
 impl Runner {
     /// Loads and validates a version-1 deployment TOML file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, RunnerError> {
@@ -56,6 +66,15 @@ impl Runner {
         config::runner_from_toml(source)
     }
 
+    /// Loads routes whose only completion-side effect is model selection.
+    ///
+    /// Accepts auto, passthrough, and capability classifiers with per-request decisions.
+    /// Completion request overrides and forwarded authentication are rejected;
+    /// the caller owns completion dispatch and session state.
+    pub fn from_toml_for_model_selection(source: &str) -> Result<Self, RunnerError> {
+        config::model_selection_from_toml(source)
+    }
+
     /// Builds a runner from named routes in caller-provided order.
     /// Pre-condition: There must be at least one route.
     pub fn new(routes: Vec<(ModelId, Route)>) -> Self {
@@ -63,6 +82,7 @@ impl Runner {
             routes,
             fallback_base_url: None,
             provider_api_keys: Vec::new(),
+            model_properties_probes: BTreeMap::new(),
         }
     }
 
@@ -83,6 +103,14 @@ impl Runner {
         self
     }
 
+    pub(crate) fn with_model_properties_probes(
+        mut self,
+        probes: BTreeMap<ModelId, ModelPropertiesProbe>,
+    ) -> Self {
+        self.model_properties_probes = probes;
+        self
+    }
+
     /// Returns the route registered for a model.
     pub fn route(&self, model: &str) -> Option<&Route> {
         self.routes
@@ -98,6 +126,16 @@ impl Runner {
             algorithm: route.algorithm_name(),
             capabilities: route.capabilities(),
         })
+    }
+
+    /// Reads one route's configured local backend properties without exposing its credentials.
+    pub async fn model_properties(&self, model: &str, timeout: Duration) -> Option<Value> {
+        let probe = self.model_properties_probes.get(model)?;
+        probe
+            .client
+            .get_model_properties(&probe.model, probe.format, timeout)
+            .await
+            .ok()
     }
 
     /// Returns the validated API root used for unmatched HTTP requests.

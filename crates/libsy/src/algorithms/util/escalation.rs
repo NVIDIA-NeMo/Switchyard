@@ -9,13 +9,14 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use switchyard_protocol::{Category, ContentBlock, InstructionBlock, Message, Role};
+use switchyard_protocol::{Category, InstructionBlock, Message, Role};
 
 use super::classifier_contract::{ClassifierContract, ClassifierContractConfig, validate_prompt};
 use super::llm_judge::{
     ClassifierInput, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig, SerdeDecoder,
     StructuredJudge,
 };
+use super::transcript::{collect_text, message_text};
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Score};
 use crate::core::state::State;
@@ -94,8 +95,9 @@ impl DeescalationConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EscalationJudgeConfig {
-    /// Consecutive escalate verdicts required before a turn moves to the capable tier, which
-    /// is also the turn that latches the session. Any decline clears the streak.
+    /// Consecutive fresh-evidence verdicts in the same category required before a turn moves to
+    /// the capable tier, which is also the turn that latches the session. Any decline or stale
+    /// evidence clears the streak.
     /// `1` escalates on the first verdict; the router's main cost dial.
     /// `2` or higher needs a session id, since the streak is retained per session.
     pub confirmations: u32,
@@ -157,15 +159,39 @@ impl EvaluationPhase {
     }
 }
 
-/// The judge's verdict. The schema also requires a `reason`, which makes the judge state its
-/// case and measurably sharpens the verdict. Routing reads only the boolean; the reason is
-/// kept solely so an operator can see why the judge held or escalated when the
-/// `switchyard_libsy::algorithms::util::escalation` target is enabled at `debug`.
+/// Bounded trouble pattern used to correlate escalation confirmations across turns.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum EscalationCategory {
+    None,
+    Repetition,
+    FalseProgress,
+    Drift,
+    Desperation,
+    CapabilityGap,
+}
+
+impl EscalationCategory {
+    /// Stable state and telemetry label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Repetition => "repetition",
+            Self::FalseProgress => "false_progress",
+            Self::Drift => "drift",
+            Self::Desperation => "desperation",
+            Self::CapabilityGap => "capability_gap",
+        }
+    }
+}
+
+/// The judge's typed verdict, including the evidence needed to confirm a stable pattern.
 #[derive(Deserialize)]
 pub(crate) struct EscalationVerdict {
-    escalate: bool,
-    #[serde(default)]
-    reason: String,
+    pub(crate) escalate: bool,
+    pub(crate) category: EscalationCategory,
+    pub(crate) new_evidence: bool,
+    pub(crate) reason: String,
 }
 
 /// Builds the condensed trajectory presented to the escalation judge.
@@ -307,33 +333,6 @@ pub(crate) fn conversation_turn(request: &Request) -> usize {
         .count()
 }
 
-/// Flattens a message to plain text, tool calls and tool results included.
-///
-/// [`Message::text_content`] is deliberately not used here: it keeps only text and refusal
-/// blocks, which would erase exactly the repeated-command signal the judge's loop detection
-/// relies on.
-fn message_text(message: &Message) -> String {
-    let mut parts = Vec::new();
-    collect_text(&message.content, &mut parts);
-    parts.join(" ")
-}
-
-/// Appends the judge-relevant text of each block, descending into tool results.
-fn collect_text(content: &[ContentBlock], parts: &mut Vec<String>) {
-    for block in content {
-        match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
-                parts.push(text.clone());
-            }
-            ContentBlock::ToolCall(call) => {
-                parts.push(format!("tool_call {}({})", call.name, call.arguments));
-            }
-            ContentBlock::ToolResult(result) => collect_text(&result.content, parts),
-            _ => {}
-        }
-    }
-}
-
 /// Keeps the head and tail of `text` within `limit` characters.
 ///
 /// The head gets two thirds of the surviving budget: for a trajectory judge the command or
@@ -378,7 +377,7 @@ fn summarize_for_judge(
 
     for instruction in instructions {
         let mut parts = Vec::new();
-        collect_text(&instruction.content, &mut parts);
+        collect_text(&instruction.content, &mut parts, &[]);
         instruction_anchors.push(format!(
             "[{}] {}",
             role_label(instruction.role),
@@ -497,8 +496,7 @@ pub(crate) fn request_at_turn(session_id: Option<&str>, turn: usize) -> Request 
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-    use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
+    use switchyard_protocol::{ContentBlock, Message, Role};
 
     use super::*;
     use crate::algorithms::util::llm_judge::Judge;
@@ -614,38 +612,6 @@ mod tests {
                 .push(Message::text(Role::Assistant, "this turn's reply"));
             assert_eq!(conversation_turn(&judged), turn);
         }
-    }
-
-    #[test]
-    fn message_text_keeps_tool_calls_and_results() {
-        let call = Message {
-            role: Role::Assistant,
-            content: vec![
-                ContentBlock::Text {
-                    text: "running it".to_string(),
-                },
-                ContentBlock::ToolCall(ToolCall {
-                    id: "call-1".to_string(),
-                    name: "bash".to_string(),
-                    arguments: json!({"cmd": "ls"}),
-                }),
-            ],
-        };
-        let text = message_text(&call);
-        assert!(text.contains("running it"), "{text}");
-        assert!(text.contains(r#"tool_call bash({"cmd":"ls"})"#), "{text}");
-
-        let result = Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
-                tool_call_id: "call-1".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "no such file".to_string(),
-                }],
-                is_error: Some(true),
-            })],
-        };
-        assert_eq!(message_text(&result), "no such file");
     }
 
     #[test]

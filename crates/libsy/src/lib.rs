@@ -6,7 +6,8 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, CallModel, Driver, RoutingOutcome, RuntimeModels, Step, StepStream, drive,
+    Algorithm, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels, Step,
+    StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::outcome_metadata::OutcomeMetadata;
@@ -18,10 +19,10 @@ pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
-pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
+pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{
-    CustomClassifierConfig, CustomClassifierPolicy, LlmClassifierConfig, LlmTaskClassifier,
-    TaskClassifierConfig,
+    CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
@@ -37,13 +38,16 @@ pub use algorithms::util::escalation::{DeescalationConfig, EscalationJudgeConfig
 pub use algorithms::util::prompts::append_note;
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
+pub use algorithms::vgr::{
+    ACTIVE_APPROVAL, BreakerConfig, KillSwitch, ServingMode, Targets as VgrTargets, Vgr, VgrConfig,
+};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).
 pub use algorithms::util::stage::{
-    CodingAgentDimensions, DECISION_SOURCE_KEY, DecisionSource, HandoffNoteConfig, PickOutcome,
-    PickerMode, ScoreResult, StageClassifier, Tier, clear_fall_open, dimensions_from_signal,
-    pick_tier, score_signal, set_fall_open,
+    CodingAgentDimensions, DecisionSource, HandoffNoteConfig, PickOutcome, PickerMode, ScoreResult,
+    StageClassifier, Tier, clear_fall_open, dimensions_from_signal, pick_tier, score_signal,
+    set_fall_open,
 };
 
 mod observability;

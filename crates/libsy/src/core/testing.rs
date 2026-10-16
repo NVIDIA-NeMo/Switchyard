@@ -19,11 +19,12 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use switchyard_protocol::{
-    Category, LlmClientError, LlmResponse, ModelId, Request, Response, text_response,
+    Category, DecisionResponse, LlmClientError, LlmResponse, ModelId, Request, Response,
+    text_response,
 };
 
-use crate::core::algorithm::{Algorithm, CallModel, Driver, RuntimeModels};
-use crate::{LibsyError, Result};
+use crate::core::algorithm::{Algorithm, Call, CallDecision, Driver, RuntimeModels};
+use crate::{LibsyError, Result, RoutingOutcome, State};
 
 /// Builds one runtime model category for a test.
 pub(crate) fn category_models(
@@ -93,16 +94,54 @@ pub(crate) async fn test_drive_with_models(
     Ok((selected_model, response))
 }
 
+/// Drive one request from caller `state` and return the routing outcome, which carries the
+/// updated state.
+pub(crate) async fn test_drive_with_state(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    models: impl Into<RuntimeModels>,
+    state: State,
+    serve: impl Serve,
+) -> Result<RoutingOutcome> {
+    let serve = Arc::new(serve);
+    crate::core::algorithm::drive_with_state(
+        algorithm,
+        request,
+        Arc::new(models.into()),
+        state,
+        move |call| fulfill(Arc::clone(&serve), call),
+    )
+    .await
+}
+
+pub(crate) async fn serve_decision(call: CallDecision) -> Result<()> {
+    let response = DecisionResponse {
+        id: None,
+        model: Some(call.model.clone()),
+        answers: Default::default(),
+        usage: Default::default(),
+    };
+    call.respond(std::future::ready(Ok(response))).await
+}
+
 /// Serve one call and fulfill its promise, mapping failures the way a host does so
 /// error-shape assertions match production.
-async fn fulfill(serve: Arc<impl Serve>, call: CallModel) -> Result<()> {
+async fn fulfill(serve: Arc<impl Serve>, call: Call) -> Result<()> {
+    let mut call = match call {
+        Call::Model(call) => *call,
+        Call::Decision(call) => return serve_decision(*call).await,
+    };
     let request = call.request.clone();
     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
-    let result = serve
-        .serve(target.clone(), request)
-        .await
-        .map_err(|source| LibsyError::client_call(target, source));
-    call.respond(result)
+    // Test clients return failures to routing policies, including policies under test.
+    call.recover_errors = true;
+    call.respond(async {
+        serve
+            .serve(target.clone(), request)
+            .await
+            .map_err(|source| LibsyError::client_call(target, source))
+    })
+    .await
 }
 
 /// Answers with the selected model name as the completion — what most routing tests need,

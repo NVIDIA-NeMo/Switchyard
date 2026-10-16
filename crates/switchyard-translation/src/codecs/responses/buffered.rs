@@ -16,6 +16,7 @@ use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
     ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
 };
+use crate::codecs::structured_output::{decode_openai_schema_enforcement, encode_openai_format};
 use crate::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -25,7 +26,7 @@ use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
     MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -50,6 +51,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         let sanitized = strip_codex_compaction_markers(body);
         let body = sanitized.as_ref().unwrap_or(body);
         let mut diagnostics = Vec::new();
+        let response_format = decode_responses_text_format(body.get("text"));
         let mut request = LlmRequest {
             model: body
                 .get("model")
@@ -58,7 +60,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                 .map(ToOwned::to_owned),
             output: OutputParams {
                 max_output_tokens: body.get("max_output_tokens").and_then(Value::as_u64),
-                response_format: decode_responses_text_format(body.get("text")),
+                is_schema_enforced: decode_openai_schema_enforcement(response_format.as_ref()),
+                response_format,
             },
             reasoning: ReasoningParams {
                 effort: body
@@ -111,7 +114,10 @@ impl FormatCodec for OpenAiResponsesCodec {
         let mut tool_namespaces = Map::new();
         let mut custom_tools = Map::new();
         request.tools =
-            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools);
+            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools)
+                .into_iter()
+                .map(Tool::from)
+                .collect();
         // Responses-lite clients (Codex with a GPT-5 model) carry the tool definitions inside
         // `input` as an `additional_tools` developer item instead of top-level `tools`. Those
         // definitions are the request's tools; the item itself is kept verbatim so the request
@@ -123,11 +129,15 @@ impl FormatCodec for OpenAiResponsesCodec {
                     && item.get("type").and_then(Value::as_str) == Some("additional_tools")
                     && let Some(tools) = item.get("tools").and_then(Value::as_array)
                 {
-                    request.tools.extend(decode_responses_tools(
-                        Some(&Value::Array(tools.clone())),
-                        &mut tool_namespaces,
-                        &mut custom_tools,
-                    ));
+                    request.tools.extend(
+                        decode_responses_tools(
+                            Some(&Value::Array(tools.clone())),
+                            &mut tool_namespaces,
+                            &mut custom_tools,
+                        )
+                        .into_iter()
+                        .map(Tool::from),
+                    );
                     additional_tools.extend(tools.iter().cloned());
                 }
             }
@@ -170,10 +180,10 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn encode_request(
         &self,
         request: &LlmRequest,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         if let Some(body) =
-            exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, _policy)
+            exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, policy)
         {
             return Ok(EncodedRequest {
                 body,
@@ -181,7 +191,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             });
         }
         let mut diagnostics = Vec::new();
-        validate_request_capabilities(request, &mut diagnostics, _policy)?;
+        validate_request_capabilities(request, &mut diagnostics, policy)?;
         let mut body = Map::new();
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
@@ -204,7 +214,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             encode_responses_input(
                 &request.messages,
                 &mut diagnostics,
-                _policy,
+                policy,
                 crate::codex_namespaces::tool_namespaces(&request.extensions),
                 &crate::codex_custom_tools::custom_tool_names(&request.extensions),
                 crate::codex_custom_tools::custom_call_outputs(&request.extensions),
@@ -237,7 +247,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                     &request.tools,
                     crate::codex_namespaces::tool_namespaces(&request.extensions),
                     crate::codex_custom_tools::custom_tools(&request.extensions),
-                ),
+                )?,
             );
         }
         if let Some(choice) = &request.tool_choice
@@ -251,10 +261,12 @@ impl FormatCodec for OpenAiResponsesCodec {
         if let Some(max_output_tokens) = request.output.max_output_tokens {
             body.insert("max_output_tokens".to_string(), json!(max_output_tokens));
         }
-        if let Some(response_format) = &request.output.response_format {
+        if let Some(response_format) =
+            encode_openai_format(&request.output, &mut diagnostics, policy)?
+        {
             body.insert(
                 "text".to_string(),
-                json!({"format": encode_responses_text_format(response_format)}),
+                json!({"format": encode_responses_text_format(&response_format)}),
             );
         }
         // An Anthropic request's raw reasoning is its `thinking` object, which Responses
@@ -298,7 +310,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         }
         copy_responses_request_extensions(&mut body, &request.extensions.fields);
 
-        let body = embed_preservation(Value::Object(body), &request.preservation, _policy);
+        let body = embed_preservation(Value::Object(body), &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })
     }
 
@@ -1626,6 +1638,11 @@ fn encode_responses_content(
                     blocks.push(json!({"type": "input_text", "text": file_source_text(source)}));
                 }
             },
+            ContentBlock::Mcp(_) => {
+                return Err(TranslationError::LossyConversion(
+                    "MCP history encoding is not implemented".into(),
+                ));
+            }
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
                     diagnostics,
@@ -1689,13 +1706,18 @@ fn responses_file_part(source: &FileSource) -> Option<Value> {
 // A Responses client understands Codex containers, so a tool whose name this
 // request qualified is regrouped under the container it came from.
 fn encode_responses_tools(
-    tools: &[ToolDefinition],
+    tools: &[Tool],
     namespaces: Option<&Map<String, Value>>,
     custom_tools: Option<&Map<String, Value>>,
-) -> Value {
+) -> Result<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
     for tool in tools {
+        let tool = tool.function().ok_or_else(|| {
+            TranslationError::LossyConversion(
+                "MCP and provider tool encoding is not implemented".into(),
+            )
+        })?;
         // A freeform tool goes back out exactly as the client defined it.
         if let Some(custom) = custom_tools.and_then(|custom| custom.get(&tool.name)) {
             out.push(custom.clone());
@@ -1740,7 +1762,7 @@ fn encode_responses_tools(
             "tools": children,
         }));
     }
-    Value::Array(out)
+    Ok(Value::Array(out))
 }
 
 // Encodes normalized tool choice into Responses JSON.

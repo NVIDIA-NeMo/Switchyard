@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::core::algorithm::Driver;
+use crate::core::state::State;
 use crate::{LibsyError, Result};
 use async_trait::async_trait;
 use switchyard_protocol::{Category, ModelId, Request, Response};
@@ -74,7 +75,7 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
 
 /// Scores targets from the current request and the composition's state.
 #[async_trait]
-pub trait Classifier<S = ()>: Send + Sync {
+pub trait Classifier: Send + Sync {
     /// Score the classifier's targets given the current state and request.
     ///
     /// `driver` lets a classifier inspect runtime models and offload model calls.
@@ -86,7 +87,7 @@ pub trait Classifier<S = ()>: Send + Sync {
     /// only read it.
     async fn score(
         &self,
-        state: &mut S,
+        state: &mut State,
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)>;
@@ -180,14 +181,16 @@ mod tests {
     struct RecordingClassifier;
 
     #[async_trait]
-    impl Classifier<bool> for RecordingClassifier {
+    impl Classifier for RecordingClassifier {
         async fn score(
             &self,
-            state: &mut bool,
+            state: &mut State,
             request: &mut Request,
             _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
-            *state = true;
+            state
+                .extra
+                .insert("ran".to_string(), crate::core::state::StateValue::Count(1));
             let target = request.model_id().unwrap_or(ModelId::from("auto"));
             Ok((
                 Classification::Scores(vec![Score {
@@ -202,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_reads_request_and_mutates_state() -> Result<()> {
-        let mut state = false;
+        let mut state = State::default();
         let mut request = Request {
             llm_request: text_request(Some("strong".to_string()), "hi"),
             raw_request: None,
@@ -215,7 +218,10 @@ mod tests {
             classification.argmax(false)?.map(|s| s.target),
             Some(ModelId::from("strong"))
         );
-        assert!(state);
+        assert_eq!(
+            state.extra.get("ran"),
+            Some(&crate::core::state::StateValue::Count(1))
+        );
         Ok(())
     }
 
@@ -226,7 +232,7 @@ mod tests {
     impl Classifier for RewritingClassifier {
         async fn score(
             &self,
-            _state: &mut (),
+            _state: &mut State,
             request: &mut Request,
             _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
@@ -244,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_rewrites_the_request_in_place() -> Result<()> {
-        let mut state = ();
+        let mut state = State::default();
         let mut request = Request {
             llm_request: text_request(Some("auto".to_string()), "hi"),
             raw_request: None,

@@ -27,5 +27,12 @@ The routing input begins with one of these router-generated markers:
   success, or a context compaction. A strong-tier turn that merely reads
   files or plans is not by itself evidence that the trouble is resolved.
 
+  In this phase the router reads only `escalate`. Fill the other fields
+  consistently anyway: when retaining, set `category` to the trouble
+  pattern that caused the escalation and `new_evidence` to true only when
+  the newest strong-tier turn or its tool output shows that trouble is
+  still active; when releasing, return `category: "none"` and
+  `new_evidence: false`.
+
 The router, not the judge, applies confirmation counts and decides when
 to change tiers. Judge only the phase named in the routing input.

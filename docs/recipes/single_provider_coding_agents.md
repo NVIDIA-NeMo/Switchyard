@@ -26,22 +26,24 @@ Save as `codex-routing.toml`:
 ```toml
 schema_version = 1
 
-[llm_clients.chatgpt]
+[llm_clients.chatgpt_backend]
 format = "openai_responses"
 base_url = "https://chatgpt.com/backend-api/codex"
 forward_auth = true
 
 [targets.capable]
-id = "gpt-5.6-sol"
-llm_client = "chatgpt"
+id = "gpt-6-sol"
+llm_client = "chatgpt_backend"
 
 [targets.efficient]
-id = "gpt-5.6-luna"
-llm_client = "chatgpt"
+id = "gpt-6-luna"
+llm_client = "chatgpt_backend"
+extra_body = { store = false, stream = true }
+omit_body_fields = ["max_output_tokens"]
 
-[targets.judge]
-id = "gpt-5.6-terra"
-llm_client = "chatgpt"
+[targets.terra]
+id = "gpt-6-luna"
+llm_client = "chatgpt_backend"
 extra_body = { store = false, stream = true }
 omit_body_fields = ["max_output_tokens"]
 
@@ -50,7 +52,7 @@ id = "switchyard"
 type = "composite"
 
 [routes.switchyard.classifier]
-target = "judge"
+target = "terra"
 base_threshold = 0.5
 classify_trigger = "user_turn"
 

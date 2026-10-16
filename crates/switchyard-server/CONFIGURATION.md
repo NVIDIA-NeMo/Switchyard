@@ -32,6 +32,47 @@ outside normal assistant `content`.
 To support another wire format, add its `ClientFormat` variant and explicit construction match in
 `../switchyard-runner/src/config.rs`. Add a client type only when a second implementation exists.
 
+## Use a decision model as the capability judge
+
+With `quality` and `economy` already defined as LLM targets:
+
+```toml
+[decision_clients.jev]
+format = "system_one"
+endpoint = "https://api.typesafe.ai/v1/systemone"
+api_key_env = "TYPESAFE_API_KEY"
+timeout_ms = 5000
+
+[decision_targets.judge]
+id = "jev-latest"
+decision_client = "jev"
+
+[routes.capability]
+id = "switchyard/capability"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "judge"
+strong_target = "quality"
+weak_target = "economy"
+
+[routes.capability.decision]
+cutoff = 0.4
+candidates = { a = "quality", b = "economy" }
+evidence = { candidates = { a = "Higher-quality model", b = "Lower-cost model" } }
+```
+
+- `endpoint` is the full System One URL. Set the named key environment variable
+  before startup; caller credentials are not forwarded to the decision provider.
+- Candidate labels must cover both tiers. Extra candidates add context, not routes.
+  Supply evidence from your evaluations and choose a cutoff using those results.
+- `decision.instructions` can replace the default relative-advantage instructions.
+  It must preserve the meaning of `advantage` and `no_advantage`. Evidence is passed unchanged.
+- The capable tier is selected only when its advantage score exceeds `cutoff`.
+  Client failures and deadlines use the capable tier by default; set `fail_open = false`
+  on the route to propagate those errors.
+- Decision targets cannot serve final answers. Both normal requests and `/v1/decision`
+  use this configuration. Omit `decision` to keep the existing LLM judge settings.
+
 ## Add an algorithm
 
 1. Implement and export the algorithm from `libsy`.

@@ -1,13 +1,15 @@
 # Switchyard dev server
 
-```curl --insecure -s 'https://switchyard-dev.nvidia.com/v1/chat/completions' -H 'Content-Type: application/json' -d '{"messages":[{"content":"Hello from Switchyard","role":"user"}],"model":"switchyard/passthrough","max_tokens": 4096}'```
+```curl --insecure -s 'https://switchyard-dev.nvidia.com/v1/chat/completions' -H 'Content-Type: application/json' -d '{"messages":[{"content":"Hello from Switchyard","role":"user"}],"model":"switchyard/auto","max_tokens": 4096}'```
 
 It has the following endpoints connected to Inference Hub:
+. `switchyard/auto`: Composite. Decision model as classifier (Mercury Decide), then Stage on tool call signals.
 * `switchyard/noop`
 * `switchyard/passthrough` -> nvidia/openai/gpt-oss-20b
 * `switchyard/random` -> oss-20b (above) and nvidia_dynamo/deepseek-ai/deepseek-v4-flash-nvfp4-elb
 * `switchyard/stage` -> nvidia/zai-org/glm-5.2 and aws/anthropic/bedrock-claude-opus-4-8
 * `switchyard/classifier` -> same models as stage
+* `codex-auto-review` -> same model as `switchyard/passthrough`, for Codex "Approve for me" reviews
 
 If you have an NVIDIA UNIX account and Silverfort I think you can ssh to it, ping for details. There's a `/home/README` with the infos once you're in.
 
