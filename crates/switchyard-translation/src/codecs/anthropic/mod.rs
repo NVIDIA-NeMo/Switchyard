@@ -12,6 +12,7 @@ mod stream;
 pub(crate) use buffered::decode_anthropic_content_block;
 
 pub use buffered::AnthropicMessagesCodec;
+pub(crate) use buffered::responses_mcp_error;
 pub use stream::AnthropicMessagesStreamCodec;
 
 pub(crate) const MCP_LAYOUTS_KEY: &str = "switchyard_anthropic_mcp_layouts";

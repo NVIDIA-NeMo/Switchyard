@@ -8,18 +8,30 @@ depend on provider SDKs, HTTP servers, Python, or FFI bindings.
 
 ## MCP support
 
-Buffered translation supports MCP server definitions, tool listings, and successful text calls
-between Responses and Anthropic. Responses calls with errors, approval links, or unfinished status
-keep their provider JSON for same-format replay. Approval request and response items also stay
-provider-specific.
+Buffered translation supports MCP server definitions, tool listings, calls, and results between
+Responses and Anthropic. Definitions with only an extra `server_description` can become Anthropic
+connections: permissive policy omits the description with a diagnostic, while strict policy rejects
+that loss. Unsupported authentication, approval settings, and tunnel connections stay provider-specific.
 
-When translating to Responses, an Anthropic MCP call with a failed or non-text result is rejected
-under `LossyConversionPolicy::Reject`. With `AllowWithDiagnostics`, the call and result are dropped
-and a diagnostic is returned. Other conversation content is kept. The convenience encoders used
-by the client and server log these diagnostics because their return values contain only the body.
-The same policy applies to Responses MCP listings sent to Anthropic: listings with IDs, errors,
-or tool annotations are rejected under `Reject` and dropped with a diagnostic under
-`AllowWithDiagnostics`.
+When translating listings to Anthropic, permissive policy drops listing IDs and tool annotations
+but retains the tool names, descriptions, and schemas. Strict policy rejects these losses. Discovery
+errors still cause the listing to be dropped under permissive policy, since Anthropic cannot represent
+a failed discovery. On the return trip, Responses requires a listing ID. The default ID policy generates
+a unique replacement; `DeterministicIdPolicy::Preserve` instead rejects or drops a listing without an ID.
+
+Responses accepts one output string for an MCP call. Multiple Anthropic text blocks are joined with
+blank lines and a diagnostic. Mixed results retain text and report omitted non-text content; results
+with only unsupported content are dropped. Strict policy rejects these losses.
+
+Failed text results become Responses `mcp_call` items with `mcp_tool_execution_error` errors and Anthropic results with
+`is_error: true`. Responses protocol and HTTP error details, and structured execution-error content,
+are retained as JSON text in Anthropic results under permissive policy, with a diagnostic for the
+changed representation. Strict policy rejects that change. Calls with approval links or unfinished
+status and approval request/response items remain provider-specific. Native Responses error items
+retain their original JSON for same-format replay.
+
+The convenience encoders used by the client and server log loss diagnostics because their return
+values contain only the body.
 
 Streaming translation supports MCP calls and results between Responses and Anthropic, including
 argument deltas, completed-item snapshots, and conversion through a buffered aggregate. Anthropic
@@ -32,12 +44,10 @@ The queue has no fixed memory limit. If a call's result never arrives, later con
 until the stream ends; memory use grows with that content. At termination, the loss policy decides
 whether to drop a completed call without a result or reject the conversion.
 
-Streaming uses the same conversion limits as buffered translation. Anthropic cannot retain
-Responses listing IDs, errors, or tool annotations. Responses cannot retain Anthropic failed or
-non-text results. Approval items remain provider-specific, and Chat Completions cannot represent
-MCP content. `StreamTranslationState::with_policy` selects rejection or dropping unsupported
-content with diagnostics; the default allows dropping. Diagnostics remain available on the state,
-and convenience encoders log them.
+Streaming uses the same conversion rules and loss policies as buffered translation. Approval items
+remain provider-specific, and Chat Completions cannot represent MCP content.
+`StreamTranslationState::with_policy` selects rejection or conversion with diagnostics; the default
+allows losses. Diagnostics remain available on the state, and convenience encoders log them.
 
 Aggregation uses `ResponseAccumulator::try_finish()` to reject unfinished MCP blocks. The unchecked
 `finish()` method is deprecated. Synthetic streams assign text and reasoning indexes per content

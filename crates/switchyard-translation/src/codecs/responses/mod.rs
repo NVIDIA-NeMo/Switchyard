@@ -9,6 +9,7 @@ mod stream;
 pub use buffered::OpenAiResponsesCodec;
 pub(crate) use buffered::can_encode_mcp;
 pub(crate) use buffered::decode_mcp_item;
+pub(crate) use buffered::mcp_without_description;
 pub use stream::OpenAiResponsesStreamCodec;
 
 pub(crate) fn is_mcp_item(kind: &str) -> bool {

@@ -3873,11 +3873,11 @@ fn mcp_stream_listings_and_losses_follow_policy() -> TestResult {
     assert_eq!(items[0]["type"], "mcp_list_tools");
     assert_eq!(items[1]["type"], "mcp_list_tools");
     assert_ne!(items[0]["id"], items[1]["id"]);
-    let failed_call = anthropic_mcp_frames(&[
+    let unsupported_call = anthropic_mcp_frames(&[
         json!({"type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {}}),
-        json!({"type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": true, "content": "unavailable"}),
+        json!({"type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": true, "content": [{"type":"image","source":{"type":"url","url":"https://example.invalid/error.png"}}]}),
         json!({"type": "mcp_tool_use", "id": "call_2", "name": "lookup", "server_name": "inventory", "input": {}}),
-        json!({"type": "mcp_tool_result", "tool_use_id": "call_2", "is_error": true, "content": "unavailable"}),
+        json!({"type": "mcp_tool_result", "tool_use_id": "call_2", "is_error": true, "content": [{"type":"image","source":{"type":"url","url":"https://example.invalid/error.png"}}]}),
         json!({"type": "text", "text": "After"}),
     ]);
     for (source, target, input, losses) in [
@@ -3896,7 +3896,7 @@ fn mcp_stream_listings_and_losses_follow_policy() -> TestResult {
         (
             WireFormat::AnthropicMessages,
             WireFormat::OpenAiResponses,
-            &failed_call,
+            &unsupported_call,
             2,
         ),
     ] {
@@ -3934,12 +3934,25 @@ fn mcp_stream_listings_and_losses_follow_policy() -> TestResult {
                             .any(|event| event["item"]["id"] == "msg_switchyard")
                     );
                 }
+                let folded = fold_mcp_frames(target, &output)?;
+                let content = &folded.outputs[0].content;
                 assert_eq!(
-                    fold_mcp_frames(target, &output)?.outputs[0].content,
-                    vec![switchyard_translation::ContentBlock::Text {
+                    content.last(),
+                    Some(&switchyard_translation::ContentBlock::Text {
                         text: "After".into()
-                    }]
+                    })
                 );
+                if target == WireFormat::AnthropicMessages {
+                    assert_eq!(content.len(), 3);
+                    assert!(content[..2].iter().all(|block| matches!(
+                        block,
+                        switchyard_translation::ContentBlock::Mcp(
+                            switchyard_translation::McpContent::Listing { id: None, .. }
+                        )
+                    )));
+                } else {
+                    assert_eq!(content.len(), 1);
+                }
             }
         }
     }
@@ -4226,5 +4239,42 @@ fn mcp_streams_keep_ordinary_tools_in_order_and_emit_before_the_response_ends() 
     );
     let aggregate = fold_mcp_frames(WireFormat::AnthropicMessages, &output)?;
     assert_eq!(aggregate.outputs[0].content.len(), 5);
+    Ok(())
+}
+
+#[test]
+fn mcp_failed_calls_stream_in_both_formats() -> TestResult {
+    let blocks = vec![
+        json!({"type":"mcp_tool_use","id":"call_1","name":"lookup","server_name":"inventory","input":{}}),
+        json!({"type":"mcp_tool_result","tool_use_id":"call_1","is_error":true,"content":"Failed"}),
+        json!({"type":"text","text":"After"}),
+    ];
+    let frames = anthropic_mcp_frames(&blocks);
+    let (responses, state) = translate_mcp_frames(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &frames,
+        true,
+        common::strict_normalized_policy(),
+    )?;
+    assert!(!state.errored);
+    assert!(state.diagnostics.is_empty());
+    assert_eq!(
+        responses.last().unwrap()["response"]["output"][0]["error"],
+        json!({"type":"mcp_tool_execution_error","content":"Failed"})
+    );
+    let (anthropic, state) = translate_mcp_frames(
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &responses,
+        true,
+        common::strict_normalized_policy(),
+    )?;
+    assert!(!state.errored, "{anthropic:?}");
+    assert!(state.diagnostics.is_empty());
+    assert_eq!(
+        fold_mcp_frames(WireFormat::AnthropicMessages, &anthropic)?.outputs,
+        fold_mcp_frames(WireFormat::AnthropicMessages, &frames)?.outputs
+    );
     Ok(())
 }

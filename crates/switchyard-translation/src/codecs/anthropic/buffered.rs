@@ -956,6 +956,89 @@ fn message_is_tool_result_only(message: &Message) -> bool {
             .all(|block| matches!(block, ContentBlock::ToolResult(_)))
 }
 
+// Preserve native Responses errors as opaque items until crossing into Anthropic.
+// Protocol and HTTP error details become JSON text because Anthropic has only is_error.
+pub(crate) fn responses_mcp_error(raw: &Value) -> Option<(Vec<Value>, bool)> {
+    let item = raw.as_object()?;
+    if raw["type"] != "mcp_call"
+        || item.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "type"
+                    | "id"
+                    | "server_label"
+                    | "name"
+                    | "arguments"
+                    | "output"
+                    | "error"
+                    | "approval_request_id"
+                    | "status"
+            )
+        })
+        || item
+            .get("approval_request_id")
+            .is_some_and(|value| !value.is_null())
+        || item
+            .get("status")
+            .is_some_and(|value| !value.is_null() && value != "failed" && value != "completed")
+    {
+        return None;
+    }
+    let id = raw["id"].as_str().filter(|value| !value.is_empty())?;
+    let name = raw["name"].as_str().filter(|value| !value.is_empty())?;
+    let server = raw["server_label"]
+        .as_str()
+        .filter(|value| !value.is_empty())?;
+    let arguments: Value = serde_json::from_str(raw["arguments"].as_str()?).ok()?;
+    if !arguments.is_object() {
+        return None;
+    }
+    let error = raw["error"].as_object()?;
+    let (mut content, mut is_lossy) = match error.get("type")?.as_str()? {
+        "mcp_tool_execution_error" if error.len() == 2 => {
+            let content = error.get("content")?;
+            if let Some(text) = content.as_str() {
+                (vec![json!({"type": "text", "text": text})], false)
+            } else if let Some(blocks) = content.as_array().filter(|blocks| {
+                blocks.iter().all(|block| {
+                    block.as_object().is_some_and(|block| block.len() == 2)
+                        && block["type"] == "text"
+                        && block["text"].is_string()
+                })
+            }) {
+                (blocks.clone(), false)
+            } else {
+                (
+                    vec![json!({"type": "text", "text": json_string(content)})],
+                    true,
+                )
+            }
+        }
+        "mcp_protocol_error" | "http_error"
+            if error.len() == 3
+                && raw["error"]["code"].is_number()
+                && raw["error"]["message"].is_string() =>
+        {
+            (
+                vec![json!({"type": "text", "text": json_string(&raw["error"])})],
+                true,
+            )
+        }
+        _ => return None,
+    };
+    if let Some(output) = item.get("output").filter(|value| !value.is_null()) {
+        content.insert(0, json!({"type": "text", "text": output.as_str()?}));
+        is_lossy = true;
+    }
+    Some((
+        vec![
+            json!({"type": "mcp_tool_use", "id": id, "name": name, "server_name": server, "input": arguments}),
+            json!({"type": "mcp_tool_result", "tool_use_id": id, "is_error": true, "content": content}),
+        ],
+        is_lossy,
+    ))
+}
+
 // Encodes content while applying lossy-conversion policy to unknown blocks.
 fn encode_anthropic_content_with_policy(
     content: &[ContentBlock],
@@ -971,6 +1054,12 @@ fn encode_anthropic_content_with_policy(
                     && super::is_provider_tool_block(raw) =>
             {
                 blocks.push(raw.clone());
+            }
+            ContentBlock::Unknown { provider, raw }
+                if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                    && raw["type"] == "mcp_call" =>
+            {
+                blocks.extend(encode_one_anthropic_block(block, diagnostics, policy)?);
             }
             ContentBlock::Unknown { provider, raw } => {
                 reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)?;
@@ -1090,6 +1179,19 @@ fn encode_one_anthropic_block(
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Vec<Value>> {
+    if let ContentBlock::Unknown { provider, raw } = block
+        && provider.as_str() == WireFormat::OpenAiResponses.as_str()
+        && let Some((converted, is_lossy)) = responses_mcp_error(raw)
+    {
+        if is_lossy {
+            push_lossy(
+                diagnostics,
+                policy,
+                "Responses MCP error fields are retained as text in the Anthropic result",
+            )?;
+        }
+        return Ok(converted);
+    }
     Ok(match block {
         ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
             vec![json!({"type": "text", "text": text})]
@@ -1110,17 +1212,38 @@ fn encode_one_anthropic_block(
             tools,
             error,
         }) => {
-            if id.is_some()
-                || error.is_some()
-                || tools.iter().any(|tool| tool.annotations.is_some())
-            {
+            if error.is_some() {
                 push_lossy(
                     diagnostics,
                     policy,
-                    "Anthropic MCP listings cannot represent IDs, errors, or tool annotations",
+                    "Anthropic MCP listings cannot represent discovery errors; failed listing dropped",
                 )?;
                 return Ok(Vec::new());
             }
+            if id.is_some() {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic MCP listings omit the listing ID",
+                )?;
+            }
+            if tools.iter().any(|tool| tool.annotations.is_some()) {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Anthropic MCP listings omit tool annotations",
+                )?;
+            }
+            let tools: Vec<_> = tools
+                .iter()
+                .map(|tool| {
+                    let mut value = json!({"name": tool.name, "input_schema": tool.input_schema});
+                    if let Some(description) = &tool.description {
+                        value["description"] = json!(description);
+                    }
+                    value
+                })
+                .collect();
             vec![json!({
                 "type": "mcp_tool_listing", "mcp_server_name": server_name, "tools": tools,
             })]
@@ -1561,7 +1684,15 @@ fn encode_tools(
     let mut out = Vec::new();
     let mut servers = Vec::new();
     for (index, tool) in tools.iter().enumerate() {
-        match tool {
+        let converted = super::super::responses::mcp_without_description(tool).map(Tool::Mcp);
+        if converted.is_some() {
+            push_lossy(
+                diagnostics,
+                policy,
+                "Anthropic MCP definitions omit server_description",
+            )?;
+        }
+        match converted.as_ref().unwrap_or(tool) {
             Tool::Function(definition) => {
                 let mut item = Map::new();
                 item.insert("name".into(), json!(definition.name));

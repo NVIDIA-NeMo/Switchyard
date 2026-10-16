@@ -123,14 +123,17 @@ fn anthropic_mcp_listings_round_trip_in_responses_and_history() -> TestResult {
                     .any(|diagnostic| diagnostic.message.contains("MCP listings"))
             );
         }
-        assert_eq!(response_output.body["content"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            response_output.body["content"].as_array().unwrap().len(),
+            if field == "error" { 2 } else { 3 }
+        );
         assert_eq!(
             request_output.body["messages"][0]["content"],
             response_output.body["content"]
         );
         assert_eq!(
             response_output.body["content"][0]["mcp_server_name"],
-            "empty"
+            if field == "error" { "empty" } else { "renamed" }
         );
     }
     Ok(())
@@ -1653,7 +1656,7 @@ fn successful_calls_translate_through_anthropic_and_require_adjacent_results() -
         &strict_normalized_policy(),
     )?;
     assert_eq!(back.body["output"], json!([mcp_call()]));
-    for mutation in 0..4 {
+    for mutation in 0..3 {
         let mut changed = decoded.clone();
         let content = &mut changed.outputs[0].content;
         match mutation {
@@ -1666,13 +1669,7 @@ fn successful_calls_translate_through_anthropic_and_require_adjacent_results() -
                     text: "Between".into(),
                 },
             ),
-            2 => content.extend(content.clone()),
-            _ => {
-                let ContentBlock::Mcp(McpContent::Result(result)) = &mut content[1] else {
-                    unreachable!()
-                };
-                result.is_error = Some(true);
-            }
+            _ => content.extend(content.clone()),
         }
         assert!(matches!(
             engine.encode_response(
@@ -1803,7 +1800,10 @@ fn mcp_response_ir_edits_do_not_restore_cached_history() -> TestResult {
 fn unrepresentable_anthropic_mcp_results_obey_loss_policy() -> TestResult {
     let engine = TranslationEngine::default();
     for (is_error, content) in [
-        (true, json!([{"type": "text", "text": "Lookup failed"}])),
+        (
+            true,
+            json!([{"type": "image", "source": {"type": "url", "url": "https://example.com/error.png"}}]),
+        ),
         (
             false,
             json!([{"type": "image", "source": {"type": "url", "url": "https://example.com/result.png"}}]),
@@ -1834,7 +1834,7 @@ fn unrepresentable_anthropic_mcp_results_obey_loss_policy() -> TestResult {
             translated
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.message.contains("successful text result"))
+                .any(|diagnostic| diagnostic.message.contains("non-text content"))
         );
         let decoded = engine
             .decode_response(
@@ -2045,5 +2045,137 @@ fn anthropic_nested_mcp_content_obeys_loss_policy() -> TestResult {
         encoded_request.body["messages"][0]["content"],
         encoded_response.body["content"]
     );
+    Ok(())
+}
+
+#[test]
+fn mcp_partial_results_retain_text_and_failure_state() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (content, is_error, expected_text, lossy) in [
+        (
+            json!([{"type":"text","text":"first"}, {"type":"text","text":"second"}]),
+            false,
+            "first\n\nsecond",
+            true,
+        ),
+        (
+            json!([{"type":"text","text":"first"}, {"type":"image","source":{"type":"url","url":"https://example.invalid/image.png"}}]),
+            false,
+            "first",
+            true,
+        ),
+        (json!("Failed"), true, "Failed", false),
+    ] {
+        let body = json!({"type":"message","role":"assistant","model":"route","content":[
+            {"type":"mcp_tool_use","id":"call_1","server_name":"inventory","name":"lookup","input":{}},
+            {"type":"mcp_tool_result","tool_use_id":"call_1","is_error":is_error,"content":content}
+        ]});
+        let result = engine.translate_response(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &normalized_policy(),
+        )?;
+        let item = &result.body["output"][0];
+        assert_eq!(item["type"], "mcp_call");
+        assert_eq!(item["id"], "call_1");
+        if is_error {
+            assert_eq!(
+                item["error"],
+                json!({"type":"mcp_tool_execution_error","content":expected_text})
+            );
+            assert!(item["output"].is_null());
+            let back = engine.translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &result.body,
+                &strict_normalized_policy(),
+            )?;
+            assert_eq!(back.body["content"][1]["is_error"], true);
+            assert_eq!(back.body["content"][1]["content"][0]["text"], expected_text);
+        } else {
+            assert_eq!(item["output"], expected_text);
+        }
+        assert_eq!(!result.diagnostics.is_empty(), lossy);
+        assert_eq!(
+            engine
+                .translate_response(
+                    WireFormat::AnthropicMessages,
+                    WireFormat::OpenAiResponses,
+                    &body,
+                    &strict_normalized_policy()
+                )
+                .is_err(),
+            lossy
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_mcp_error_details_survive_as_failed_anthropic_results() -> TestResult {
+    let engine = TranslationEngine::default();
+    for error in [
+        json!({"type":"mcp_protocol_error","code":-32600,"message":"Invalid request"}),
+        json!({"type":"http_error","code":503,"message":"Unavailable"}),
+        json!({"type":"mcp_tool_execution_error","content":{"detail":"Tool failed"}}),
+    ] {
+        let mut call = mcp_call();
+        call["error"] = error.clone();
+        call["output"] = Value::Null;
+        call["status"] = json!("failed");
+        let response = mcp_response(json!([call]));
+        assert_eq!(
+            engine
+                .translate_response(
+                    WireFormat::OpenAiResponses,
+                    WireFormat::OpenAiResponses,
+                    &response,
+                    &strict_normalized_policy()
+                )?
+                .body["output"],
+            response["output"]
+        );
+        assert!(
+            engine
+                .translate_response(
+                    WireFormat::OpenAiResponses,
+                    WireFormat::AnthropicMessages,
+                    &response,
+                    &strict_normalized_policy()
+                )
+                .is_err()
+        );
+        let translated = engine.translate_response(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &response,
+            &normalized_policy(),
+        )?;
+        let blocks = &translated.body["content"];
+        assert_eq!(blocks[0]["type"], "mcp_tool_use");
+        assert_eq!(blocks[1]["tool_use_id"], call["id"]);
+        assert_eq!(blocks[1]["is_error"], true);
+        let details: Value =
+            serde_json::from_str(blocks[1]["content"][0]["text"].as_str().unwrap())?;
+        assert_eq!(
+            details,
+            if error["type"] == "mcp_tool_execution_error" {
+                error["content"].clone()
+            } else {
+                error
+            }
+        );
+        assert_eq!(translated.diagnostics.len(), 1);
+        let mut request = mcp_request(mcp_definition());
+        request["input"] = response["output"].clone();
+        let translated_request = engine.translate_request(
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+            &request,
+            &normalized_policy(),
+        )?;
+        assert_eq!(translated_request.body["messages"][0]["content"], *blocks);
+    }
     Ok(())
 }

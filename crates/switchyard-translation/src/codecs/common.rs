@@ -327,7 +327,12 @@ fn is_unsupported_tool(tool: &Tool, request: &LlmRequest, target: WireFormat) ->
             WireFormat::OpenAiResponses => !super::responses::can_encode_mcp(mcp),
             WireFormat::OpenAiChat => true,
         },
-        Tool::Provider { provider, .. } => provider.as_str() != target.as_str(),
+        Tool::Provider { provider, .. } => {
+            provider.as_str() != target.as_str()
+                && !(target == WireFormat::AnthropicMessages
+                    && super::responses::mcp_without_description(tool)
+                        .is_some_and(|mcp| super::anthropic::can_encode_mcp(&mcp, request)))
+        }
     }
 }
 
@@ -558,6 +563,9 @@ fn is_unsupported_tool_content(block: &ContentBlock, target: WireFormat) -> bool
         ContentBlock::Mcp(_) => target == WireFormat::OpenAiChat,
         ContentBlock::Unknown { provider, raw } => {
             provider.as_str() != target.as_str()
+                && !(target == WireFormat::AnthropicMessages
+                    && provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                    && super::anthropic::responses_mcp_error(raw).is_some())
                 && (is_mcp_content(block)
                     || (provider.as_str() == WireFormat::AnthropicMessages.as_str()
                         && super::anthropic::is_provider_tool_block(raw)))

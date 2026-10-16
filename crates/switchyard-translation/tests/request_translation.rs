@@ -5284,7 +5284,6 @@ fn opaque_definitions_replay_whole_and_drop_associated_foreign_history() -> Test
         json!({"tunnel_id": "tunnel_1"}),
         json!({"connector_id": "connector_drive"}),
         json!({"headers": {"X-Api-Key": "synthetic-secret"}}),
-        json!({"server_description": "Private inventory"}),
         json!({"allowed_tools": {"read_only": true, "tool_names": ["lookup"]}}),
         json!({"require_approval": {"never": {"tool_names": ["lookup"]}}}),
         json!({"allowed_callers": ["code_interpreter"]}),
@@ -5609,5 +5608,87 @@ fn anthropic_mcp_renames_do_not_borrow_another_servers_layout() -> TestResult {
         engine.encode_request(format, &request, &strict_normalized_policy()),
         Err(TranslationError::LossyConversion(_))
     ));
+    Ok(())
+}
+
+#[test]
+fn mcp_server_description_does_not_remove_connection_or_history() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut tool = mcp_definition();
+    tool["server_description"] = json!("Inventory tools");
+    let mut body = mcp_request(tool);
+    body["input"] = json!([mcp_call()]);
+    let translated = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &body,
+        &normalized_policy(),
+    )?;
+    assert_eq!(translated.body["mcp_servers"][0]["name"], "inventory");
+    assert_eq!(
+        translated.body["messages"][0]["content"][0]["type"],
+        "mcp_tool_use"
+    );
+    assert!(
+        translated
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("server_description"))
+    );
+    assert!(
+        engine
+            .translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &body,
+                &strict_normalized_policy()
+            )
+            .is_err()
+    );
+    let replay = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiResponses,
+        &body,
+        &normalized_policy(),
+    )?;
+    assert_eq!(replay.body["tools"], body["tools"]);
+    Ok(())
+}
+
+#[test]
+fn mcp_listing_history_survives_without_its_original_id() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut body = mcp_request(mcp_definition());
+    body["input"] = json!([mcp_listing(), mcp_call()]);
+    let anthropic = engine.translate_request(
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &body,
+        &normalized_policy(),
+    )?;
+    let listing = &anthropic.body["messages"][0]["content"][0];
+    assert_eq!(listing["type"], "mcp_tool_listing");
+    assert_eq!(listing["mcp_server_name"], "inventory");
+    assert!(listing.get("id").is_none());
+    assert!(listing["tools"][0].get("annotations").is_none());
+    assert_eq!(
+        listing["tools"][0]["input_schema"],
+        body["input"][0]["tools"][0]["input_schema"]
+    );
+    let returned = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::OpenAiResponses,
+        &anthropic.body,
+        &normalized_policy(),
+    )?;
+    assert_eq!(returned.body["input"][0]["type"], "mcp_list_tools");
+    assert_eq!(returned.body["input"][0]["tools"], listing["tools"]);
+    assert!(
+        returned.body["input"][0]["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert_ne!(returned.body["input"][0]["id"], body["input"][0]["id"]);
+    assert_eq!(returned.body["input"][1], body["input"][1]);
     Ok(())
 }

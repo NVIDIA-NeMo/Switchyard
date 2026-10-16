@@ -49,9 +49,9 @@ async fn child_method() -> TestResult {
     let response = switchyard_translation::decode_aggregated_response(
         &json!({
             "type": "message", "role": "assistant", "content": [
-                {"type": "mcp_tool_use", "id": "call_1", "server_name": "inventory", "name": "lookup", "input": {}},
+                {"type": "mcp_tool_use", "id": "call_1", "server_name": "inventory", "name": "lookup", "input": [MCP_TOKEN]},
                 {"type": "mcp_tool_result", "tool_use_id": "call_1", "is_error": true, "content": MCP_TOKEN},
-                {"type": "mcp_tool_use", "id": "call_2", "server_name": "inventory", "name": "lookup", "input": {}},
+                {"type": "mcp_tool_use", "id": "call_2", "server_name": "inventory", "name": "lookup", "input": [MCP_TOKEN]},
                 {"type": "mcp_tool_result", "tool_use_id": "call_2", "is_error": true, "content": MCP_TOKEN},
                 {"type": "text", "text": "Retained"}
             ]
@@ -285,9 +285,7 @@ async fn ensure_credentials_are_not_leaked() -> TestResult {
     assert_eq!(
         stderr
             .lines()
-            .filter(|line| line.contains(
-                "Responses MCP calls require object arguments and a successful text result"
-            ))
+            .filter(|line| line.contains("Responses MCP calls require object arguments"))
             .count(),
         1,
         "multiple response losses should produce one warning"

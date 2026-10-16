@@ -1094,6 +1094,22 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Option<McpToolset> {
     })
 }
 
+// Keep the complete provider definition for native replay; only the Anthropic
+// encoder may discard this descriptive field under its loss policy.
+pub(crate) fn mcp_without_description(tool: &Tool) -> Option<McpToolset> {
+    let Tool::Provider { provider, raw } = tool else {
+        return None;
+    };
+    if provider.as_str() != WireFormat::OpenAiResponses.as_str() || raw["type"] != "mcp" {
+        return None;
+    }
+    let mut fields = raw.as_object()?.clone();
+    if !fields.remove("server_description")?.is_string() {
+        return None;
+    }
+    decode_mcp_tool(&fields)
+}
+
 pub(crate) fn decode_mcp_item(item: &Map<String, Value>) -> Vec<ContentBlock> {
     let normalized = || -> Option<Vec<ContentBlock>> {
         let server_name = item.get("server_label")?.as_str()?.to_owned();
@@ -1239,11 +1255,6 @@ fn encode_mcp_content(
                     continue;
                 };
                 blocks.next();
-                let output = match result.content.as_slice() {
-                    [] => Some(""),
-                    [ContentBlock::Text { text }] => Some(text.as_str()),
-                    _ => None,
-                };
                 if id_counts.get(&call.id).copied().unwrap_or_default() > 1 {
                     push_lossy(
                         diagnostics,
@@ -1252,18 +1263,54 @@ fn encode_mcp_content(
                     )?;
                     continue;
                 }
-                if result.is_error == Some(true) || !call.arguments.is_object() || output.is_none()
-                {
+                if !call.arguments.is_object() {
                     push_lossy(
                         diagnostics,
                         policy,
-                        "Responses MCP calls require object arguments and a successful text result",
+                        "Responses MCP calls require object arguments",
                     )?;
                     continue;
                 }
+                let texts: Vec<_> = result
+                    .content
+                    .iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Text { text } = block {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if texts.len() != result.content.len() {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses MCP results omit non-text content",
+                    )?;
+                    if texts.is_empty() {
+                        continue;
+                    }
+                }
+                if texts.len() > 1 {
+                    push_lossy(
+                        diagnostics,
+                        policy,
+                        "Responses MCP results merge text blocks with blank lines",
+                    )?;
+                }
+                let text = texts.join("\n\n");
+                let (output, error) = if result.is_error == Some(true) {
+                    (
+                        Value::Null,
+                        json!({"type": "mcp_tool_execution_error", "content": text}),
+                    )
+                } else {
+                    (json!(text), Value::Null)
+                };
                 json!({"type": "mcp_call", "id": call.id, "server_label": server_name,
                     "name": call.name, "arguments": json_string(&call.arguments), "output": output,
-                    "error": null, "approval_request_id": null})
+                    "error": error, "approval_request_id": null})
             }
             ContentBlock::Mcp(McpContent::Result(_)) => {
                 push_lossy(
