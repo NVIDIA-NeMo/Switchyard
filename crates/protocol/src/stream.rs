@@ -214,10 +214,9 @@ impl AggLlmResponse {
     /// downstream expects `LlmResponse::Stream` — for instance when `stream: true` was
     /// requested and the algorithm had to aggregate before it could return.
     ///
-    /// Refusals, ordinary tool results, media, files, unknown blocks, response extensions,
-    /// and preservation metadata have no synthetic representation.
-    /// Text, reasoning, and complete-block indexes identify blocks across all outputs.
-    /// Ordinary tool-call indexes use their own sequence.
+    /// This conversion is lossy: only text, reasoning, tool-call content, and MCP activity
+    /// have a synthetic chunk representation. Refusals, ordinary tool results, media, files,
+    /// unknown blocks, response extensions, and preservation metadata are omitted.
     pub fn into_stream(self) -> LlmResponseStream {
         let mut chunks: Vec<LlmResponseChunk> = Vec::new();
         chunks.push(LlmResponseChunk::MessageStart {
