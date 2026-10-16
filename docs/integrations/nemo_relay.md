@@ -8,21 +8,21 @@ deployment through Relay's
 
 ## Upstream Error Compatibility
 
-The plugin requires NeMo Relay `>=0.10.0, <1.0.0`.
+The plugin requires NeMo Relay `>=0.10.1, <1.0.0` and uses the
+`nemo-relay-plugin` 0.10.1 SDK.
 
-Relay 0.10.0 still has a native-plugin error propagation issue. With the
-Switchyard plugin enabled, an unmanaged upstream 403 can become a generic
-400 for a non-streaming request. Unmanaged models are requested model names
-that do not match a configured Switchyard route. For example, if the route
-is `switchyard/core` and its target is `azure/openai/gpt-5.5`, requesting the
-target name directly delegates the request to Relay.
+For a known provider HTTP error status from 400 through 599, Switchyard
+returns `HTTP <status>: Switchyard route execution failed` through the Relay
+SDK. The provider's error body remains private. Failures without a valid HTTP
+error status keep the generic message `Switchyard route execution failed`
+and existing Relay error handling.
 
-This issue was also present in older Relay versions. See
-[NeMo Relay PR #1109](https://github.com/NVIDIA/NeMo-Relay/pull/1109).
-Send unmanaged traffic through a separate Relay instance with the plugin
-disabled when you need to preserve upstream errors. The compatibility range
-states which hosts can load the plugin. It does not guarantee that upstream
-errors retain their original status and details.
+Relay preserves this status for buffered responses. Its native streaming path
+can send HTTP 200 before provider setup finishes. A later setup failure cannot
+change that status and keeps the existing stream-error behavior. Failures after
+streaming begins also keep their existing behavior.
+Requests for model names outside the configured Switchyard routes continue
+through Relay.
 
 ## Why Use Switchyard with NeMo Relay?
 
@@ -171,7 +171,7 @@ and how it
 
 !!! note "Relay compatibility"
 
-    The plugin requires `relay = ">=0.10.0, <1.0.0"` and native plugin API `1`.
+    The plugin requires `relay = ">=0.10.1, <1.0.0"` and native plugin API `1`.
     The packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
     is the source of truth.

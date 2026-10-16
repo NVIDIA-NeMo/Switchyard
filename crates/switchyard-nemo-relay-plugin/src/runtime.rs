@@ -293,14 +293,10 @@ impl SwitchyardRuntime {
                     take_observations(&observations),
                     &metadata,
                 );
-                self.route_execution_error_mark(
-                    &mut events,
-                    &error.execution_error_summary(),
-                    None,
-                    outcome_fields,
-                );
+                let summary = error.execution_error_summary();
+                self.route_execution_error_mark(&mut events, &summary, None, outcome_fields);
                 Execution {
-                    result: Err("Switchyard route execution failed".into()),
+                    result: Err(route_execution_error_message(&summary)),
                     events,
                 }
             }
@@ -624,6 +620,16 @@ fn relay_stream_error(error: LlmStreamError) -> String {
             stream_error_summary(&error, None).kind.as_str()
         ),
     }
+}
+
+// Keep provider bodies private and report only HTTP error statuses accepted by Relay.
+fn route_execution_error_message(summary: &RouteErrorSummary) -> String {
+    const MESSAGE: &str = "Switchyard route execution failed";
+
+    summary
+        .upstream_status
+        .and_then(|status| nemo_relay_plugin::http_error_message(status, MESSAGE).ok())
+        .unwrap_or_else(|| MESSAGE.to_owned())
 }
 
 fn route_execution_error_mark(
@@ -1050,6 +1056,166 @@ mod tests {
             let response = execution.result.expect("target call should succeed");
             assert_eq!(response["object"], "response");
             assert_eq!(response["model"], "target/model");
+        }
+    }
+
+    #[test]
+    fn route_execution_errors_without_valid_status_keep_the_generic_message() {
+        let mut summary =
+            RunnerError::Client(LlmClientError::General("provider response body".into()))
+                .execution_error_summary();
+        for status in [None, Some(0), Some(200), Some(399), Some(600), Some(999)] {
+            summary.upstream_status = status;
+            assert_eq!(
+                route_execution_error_message(&summary),
+                "Switchyard route execution failed",
+                "status: {status:?}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn route_execution_errors_preserve_http_status_before_response() {
+        let private_body = "provider response body";
+        for (status, body, expected_status, category) in [
+            (400, private_body, Some(400), "upstream_http"),
+            (401, private_body, Some(401), "upstream_http"),
+            (403, private_body, Some(403), "upstream_http"),
+            (404, private_body, Some(404), "upstream_http"),
+            (500, private_body, Some(500), "upstream_http"),
+            (503, private_body, Some(503), "upstream_http"),
+            (599, private_body, Some(599), "upstream_http"),
+            (
+                400,
+                "maximum context length: provider response body",
+                None,
+                "context_window_exceeded",
+            ),
+        ] {
+            for streaming in [false, true] {
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .and(path("/v1/chat/completions"))
+                    .and(body_partial_json(json!({"model": "target/model"})))
+                    .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let deployment = json!({
+                    "schema_version": 1,
+                    "llm_clients": {"target": {
+                        "format": "openai_chat",
+                        "base_url": format!("{}/v1", server.uri()),
+                        "max_retries": 0,
+                    }},
+                    "targets": {"default": {"id": "target/model", "llm_client": "target"}},
+                    "routes": {"default": {
+                        "id": "switchyard/default", "type": "passthrough", "target": "default",
+                    }},
+                });
+                let runtime = SwitchyardRuntime::new(SwitchyardConfig {
+                    priority: 0,
+                    switchyard_config_path: None,
+                    switchyard_config: Some(deployment.as_object().unwrap().clone()),
+                })
+                .expect("runtime should load");
+                let request = runtime
+                    .decode_request(
+                        WireFormat::OpenAiChat,
+                        RelayRequest {
+                            headers: Map::new(),
+                            content: json!({
+                                "model": "switchyard/default",
+                                "messages": [{"role": "user", "content": "hello"}],
+                                "stream": streaming,
+                            }),
+                        },
+                        streaming,
+                    )
+                    .expect("request should decode");
+                let (error, events) = if streaming {
+                    let execution = runtime
+                        .execute_stream(
+                            WireFormat::OpenAiChat,
+                            request,
+                            Arc::new(|_| panic!("failed setup must not emit stream events")),
+                        )
+                        .await;
+                    (
+                        execution.result.err().expect("setup should fail"),
+                        execution.events,
+                    )
+                } else {
+                    let execution = runtime
+                        .execute_buffered(WireFormat::OpenAiChat, request)
+                        .await;
+                    (
+                        execution.result.expect_err("request should fail"),
+                        execution.events,
+                    )
+                };
+                let requests = server
+                    .received_requests()
+                    .await
+                    .expect("requests should be recorded");
+                assert_eq!(requests.len(), 1);
+                let upstream_request: Json =
+                    requests[0].body_json().expect("request should be JSON");
+                assert_eq!(
+                    upstream_request["stream"].as_bool().unwrap_or(false),
+                    streaming
+                );
+                let expected_message = expected_status.map_or_else(
+                    || "Switchyard route execution failed".to_owned(),
+                    |status| format!("HTTP {status}: Switchyard route execution failed"),
+                );
+                assert_eq!(
+                    error, expected_message,
+                    "status={status}, streaming={streaming}"
+                );
+                assert!(!format!("{error} {events:?}").contains(private_body));
+                let failure_marks = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        RoutingEvent::Mark(mark) if mark.name == "switchyard.routing.error" => {
+                            Some(mark)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(failure_marks.len(), 1);
+                assert_eq!(failure_marks[0].data["category"], category);
+                assert_eq!(failure_marks[0].data["phase"], "before_response");
+                assert_eq!(
+                    failure_marks[0].data["upstream_status"],
+                    json!(expected_status)
+                );
+                let failure_metrics = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        RoutingEvent::Metric(metric)
+                            if metric.name == "switchyard.routing.failures" =>
+                        {
+                            Some(metric)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(failure_metrics.len(), 1);
+                let mut attributes = json!({
+                    "failure_kind": "route_execution",
+                    "category": category,
+                    "phase": "before_response",
+                });
+                if let Some(status) = expected_status {
+                    attributes["upstream_status"] = json!(status);
+                }
+                assert_eq!(failure_metrics[0].measurements[0].value, json!(1));
+                assert_eq!(
+                    failure_metrics[0].measurements[0].attributes,
+                    Some(attributes)
+                );
+            }
         }
     }
 

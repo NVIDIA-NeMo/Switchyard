@@ -58,11 +58,13 @@ class PackageBundleTest(unittest.TestCase):
                 self.assertEqual({path.name for path in output.iterdir()}, expected)
                 manifest = (output / "relay-plugin.toml").read_text(encoding="utf-8")
                 self.assertIn(f'artifact = "{library.name}"', manifest)
-                self.assertIn('relay = ">=0.10.0, <1.0.0"', manifest)
+                self.assertIn('relay = ">=0.10.1, <1.0.0"', manifest)
                 self.assertIn(hashlib.sha256(library.read_bytes()).hexdigest(), manifest)
                 self.assertNotIn("<platform-library-file>", manifest)
                 self.assertNotIn("<artifact-sha256>", manifest)
-                self.assertEqual(self.archive_members(archive), {f"{PACKAGE_NAME}/{name}" for name in expected})
+                self.assertEqual(
+                    self.archive_members(archive), {f"{PACKAGE_NAME}/{name}" for name in expected}
+                )
 
     def test_rejects_archive_inside_output_before_materializing_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
