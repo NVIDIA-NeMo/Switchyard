@@ -10,14 +10,13 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-The plugin requires NeMo Relay `>=0.10.0, <1.0.0`. It uses the published
-`nemo-relay-plugin` 0.10.0 SDK from crates.io. The workspace lockfile records
+The plugin requires NeMo Relay `>=0.10.1, <1.0.0`. It uses the published
+`nemo-relay-plugin` 0.10.1 SDK from crates.io. The workspace lockfile records
 the exact SDK version used to build the plugin.
 
-Relay 0.10.0 can lose upstream error status and details when this native
-plugin is enabled, including for models outside its configured routes.
-Send unmanaged traffic through a separate Relay instance with the plugin
-disabled when you need to preserve upstream errors. See the
+Routed failures use Relay's HTTP-error format for known provider statuses
+from 400 through 599. Provider error bodies remain private. Client-visible
+status preservation depends on when Relay sends response headers. See the
 [upstream error compatibility note](../../docs/integrations/nemo_relay.md#upstream-error-compatibility).
 
 ### Install a released bundle
