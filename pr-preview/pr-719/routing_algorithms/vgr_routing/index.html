@@ -1511,12 +1511,14 @@
 
 
 <h1 id="verification-gated-routing">Verification-Gated Routing<a class="headerlink" href="#verification-gated-routing" title="Permanent link">&para;</a></h1>
-<p>Verification-Gated Routing (VGR) generates a candidate on a local tier, gathers
-bounded evidence about that exact candidate, and serves it only when the policy
-licenses a local commit. All other outcomes use the cloud tier.</p>
-<p>Tool-calling turns continue on the local tier without being mistaken for a
-terminal answer. Missing context, unavailable verifiers, malformed verdicts,
-and expired decision deadlines fail closed to cloud.</p>
+<p>Verification-Gated Routing (VGR) generates a candidate on a local tier. For a
+final answer, it gathers bounded evidence about that exact candidate and serves
+it only when the policy allows it. All other final-answer outcomes use the cloud
+tier. Missing context, unavailable verifiers, malformed verdicts, and expired
+decision deadlines fail closed to cloud for final answers.</p>
+<p>Tool-calling turns continue on the local tier unless the turn judge provides
+evidence to escalate. An unavailable or inconclusive turn judge leaves the tool
+turn on the local tier. A local endpoint failure triggers cloud fallback.</p>
 <h2 id="configure-a-route">Configure a route<a class="headerlink" href="#configure-a-route" title="Permanent link">&para;</a></h2>
 <p>Declare local, cloud, and optional verifier targets using the normal deployment
 schema, then reference their target names:</p>
