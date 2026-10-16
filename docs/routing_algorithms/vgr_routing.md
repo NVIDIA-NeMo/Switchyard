@@ -72,6 +72,14 @@ new local work has been served since the previous handoff. The handoff preserves
 the conversation's existing messages and content. `local_turn_budget_seconds`
 escalates a user turn once the local tier has spent that much wall-clock time on it.
 
+On the integration branch, experimental `compact_handoff = true` also condenses
+the local history into a cached digest when handing off. It requires
+`agentic_handoff = true` and is off by default. Later requests reuse the digest
+only when their original history prefix matches; a new user turn clears it.
+The digest is lossy: user updates and tool output are clipped, and non-text
+content is replaced with a marker. This behavior remains separate from the
+reviewed VGR changes on `main` and has no matched cache or task-success evaluation.
+
 ## Serving modes
 
 - `off` skips candidate generation and serves cloud. This is the default.

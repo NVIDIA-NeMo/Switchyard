@@ -64,6 +64,8 @@ pub struct VgrConfig {
     /// Tells the capable tier, once per user turn, that it inherits unverified
     /// tool-using work.
     pub agentic_handoff: bool,
+    /// Condenses local history at handoff. Requires `agentic_handoff`.
+    pub compact_handoff: bool,
     /// Wall-clock budget for the local tier within one user turn, including the
     /// client's tool execution.
     pub local_turn_budget: Option<Duration>,
@@ -87,11 +89,17 @@ impl VgrConfig {
             local_supports_images: false,
             confirmed_recovery_min_clean_tail: None,
             agentic_handoff: false,
+            compact_handoff: false,
             local_turn_budget: None,
         }
     }
 
     pub(super) fn validate(&self) -> Result<()> {
+        if self.compact_handoff && !self.agentic_handoff {
+            return Err(LibsyError::AlgorithmError {
+                message: "compact_handoff requires agentic_handoff".into(),
+            });
+        }
         if self.targets.local == self.targets.cloud {
             return Err(LibsyError::AlgorithmError {
                 message: "vgr requires distinct local and cloud model IDs".into(),
@@ -127,6 +135,15 @@ impl VgrConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_requires_handoff_for_direct_callers() {
+        let mut config = VgrConfig::new("local".into(), "cloud".into());
+        config.compact_handoff = true;
+        assert!(super::super::Vgr::new(config.clone()).is_err());
+        config.agentic_handoff = true;
+        assert!(super::super::Vgr::new(config).is_ok());
+    }
 
     #[test]
     fn direct_callers_must_use_distinct_local_and_cloud_ids() {

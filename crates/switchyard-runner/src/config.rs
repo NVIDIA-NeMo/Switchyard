@@ -1213,7 +1213,13 @@ task_typing = false
         assert!(runner.route("switchyard/vgr").is_some());
 
         let compact = format!("{}\ncompact_handoff = true\n", vgr_config());
-        assert!(error_message(&compact).contains("unknown field `compact_handoff`"));
+        assert!(error_message(&compact).contains("compact_handoff requires agentic_handoff"));
+        let compact = format!("{compact}\nagentic_handoff = true\n");
+        assert!(
+            runner_from_toml(&compact)?
+                .route("switchyard/vgr")
+                .is_some()
+        );
 
         let identical_ids =
             vgr_config().replace("local_target = \"weak\"", "local_target = \"strong\"");

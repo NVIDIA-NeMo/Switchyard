@@ -505,6 +505,77 @@ async fn latched_sessions_do_not_repeat_the_handoff_on_later_user_turns() -> Res
 }
 
 #[tokio::test]
+async fn compact_handoff_replays_the_digest_before_retained_cloud_routing() -> Result<()> {
+    let route = route(|config| {
+        config.agentic_handoff = true;
+        config.compact_handoff = true;
+    })?;
+    assert_eq!(
+        drive(
+            &route,
+            session(vec![Message::text(Role::User, "fix the build")]),
+            Arc::new(Calls::default()),
+            complete_call,
+            0.0,
+        )
+        .await?,
+        "local"
+    );
+    let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let local_calls = Arc::new(AtomicUsize::new(0));
+    for follow_up in [false, true] {
+        let mut messages = vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ];
+        if follow_up {
+            messages.extend([call("cloud-1"), result("cloud-1", "cloud output")]);
+        }
+        let sent = Arc::clone(&sent);
+        let local_calls = Arc::clone(&local_calls);
+        let (selected, _) = test_drive_with_models(
+            Arc::clone(&route),
+            session(messages),
+            category_models(Category::Any, &["local", "cloud"]),
+            move |target: ModelId, request: Request| {
+                let sent = Arc::clone(&sent);
+                let local_calls = Arc::clone(&local_calls);
+                async move {
+                    Ok(match target.as_str() {
+                        "local" => {
+                            local_calls.fetch_add(1, Ordering::Relaxed);
+                            reply("the build passes")
+                        }
+                        "judge" => scored(0.0),
+                        "cloud" => {
+                            sent.lock().push(request.llm_request.messages);
+                            reply("cloud answer")
+                        }
+                        _ => reply("no"),
+                    })
+                }
+            },
+        )
+        .await?;
+        assert_eq!(selected, "cloud");
+    }
+    assert_eq!(local_calls.load(Ordering::Relaxed), 1);
+    let sent = sent.lock();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].len(), 1);
+    assert_eq!(sent[1].len(), 3);
+    assert_eq!(sent[0][0], sent[1][0]);
+    let digest = sent[0][0].text_content("").unwrap_or_default();
+    assert!(digest.contains("<condensed_history>"));
+    assert!(digest.contains("the build passes"));
+    assert!(digest.contains("Routing notice"));
+    assert_eq!(sent[1][1], call("cloud-1"));
+    assert_eq!(sent[1][2], result("cloud-1", "cloud output"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> Result<()> {
     let route = route(|config| config.agentic_handoff = true)?;
     assert_eq!(
