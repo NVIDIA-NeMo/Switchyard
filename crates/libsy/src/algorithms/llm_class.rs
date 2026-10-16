@@ -580,7 +580,7 @@ impl JudgePolicy for CustomPolicyRuntime {
 }
 
 /// Builds the affinity router a trigger calls for, if any.
-fn affinity_router(
+pub(crate) fn affinity_router(
     trigger: ClassifyTrigger,
     message_hash_fallback: bool,
 ) -> Option<Arc<AffinityRouter>> {
