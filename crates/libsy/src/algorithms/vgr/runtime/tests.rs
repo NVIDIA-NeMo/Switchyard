@@ -257,6 +257,47 @@ fn recovering_classifier() -> super::VgrClassifier {
 }
 
 #[tokio::test]
+async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
+    use std::time::{Duration, Instant};
+
+    use crate::core::algorithm::{Driver, RuntimeModels, Step};
+
+    let mut config = VgrConfig::new(ModelId::new("local"), ModelId::new("cloud"));
+    config.deadline = Duration::from_millis(100);
+    config.breaker.threshold = 1;
+    config.breaker.cooldown = Duration::from_secs(60);
+    assert!(config.targets.judge.is_none());
+    let classifier = super::VgrClassifier {
+        breaker: super::CircuitBreaker::new(config.breaker),
+        config,
+    };
+    let mut state = super::VgrState::default();
+    let task = session(vec![Message::text(Role::User, "list files")]);
+    let LlmResponse::Agg(proposed) = complete_call().llm_response else {
+        unreachable!();
+    };
+    let (driver, mut steps) = Driver::new("vgr", Arc::new(RuntimeModels::default()));
+    let context = super::RequestContext {
+        driver: &driver,
+        request: &task,
+        started: Instant::now(),
+    };
+    let mut judging = Box::pin(classifier.verify_turn(&context, &proposed, &mut state));
+    assert!(futures::poll!(&mut judging).is_pending());
+    let Step::CallModel(pending_call) = steps.try_recv().expect("judge call should be queued")?
+    else {
+        unreachable!();
+    };
+    assert_eq!(pending_call.models, vec![ModelId::new("local")]);
+    let escalates = judging.await;
+    drop(pending_call);
+    assert!(!escalates);
+    assert!(!state.turn_latched);
+    assert!(classifier.breaker.attempt().is_some());
+    Ok(())
+}
+
+#[tokio::test]
 async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
     use crate::core::classifier::Classifier;
     use crate::core::testing::empty_driver;

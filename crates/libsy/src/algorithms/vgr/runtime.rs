@@ -12,9 +12,7 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use switchyard_protocol::{
-    AggLlmResponse, ContentBlock, LlmClientError, ModelId, Request, Response, StopReason,
-};
+use switchyard_protocol::{AggLlmResponse, ContentBlock, ModelId, Request, Response, StopReason};
 
 use super::config::{ServingMode, VgrConfig};
 use super::decide::{self, AgenticRun, Route, Signals, Tri};
@@ -326,17 +324,7 @@ impl VgrClassifier {
                 .map_err(|source| LibsyError::client_call(target.clone(), source))
         })
         .await;
-        Some(outcome.unwrap_or_else(|_| {
-            Err(LibsyError::client_call(
-                target.clone(),
-                LlmClientError::Timeout {
-                    source: Box::new(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "VGR verifier exceeded the decision deadline",
-                    )),
-                },
-            ))
-        }))
+        outcome.ok()
     }
 
     fn remaining(&self, started: Instant) -> Option<Duration> {
