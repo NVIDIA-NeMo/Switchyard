@@ -278,7 +278,12 @@ pub(crate) fn prepare_request_tools<'a>(
             .requests
             .values()
             .any(preserved_request_has_mcp);
-    if !unsupported && (!has_mcp || can_replay_mcp_request(request, target)) {
+    // Disabled preservation cannot replay; avoid decoding a snapshot only to discard it.
+    if !unsupported
+        && (!has_mcp
+            || (policy.preservation != crate::PreservationPolicy::Disabled
+                && can_replay_mcp_request(request, target)))
+    {
         return Ok(Cow::Borrowed(request));
     }
     if unsupported {
@@ -612,7 +617,11 @@ pub(crate) fn prepare_response_tools<'a>(
             .responses
             .values()
             .any(preserved_response_has_mcp);
-    if !unsupported && (!has_mcp || can_replay_mcp_response(response, target)) {
+    if !unsupported
+        && (!has_mcp
+            || (policy.preservation != crate::PreservationPolicy::Disabled
+                && can_replay_mcp_response(response, target)))
+    {
         return Ok(Cow::Borrowed(response));
     }
     if unsupported {
@@ -831,6 +840,14 @@ mod tests {
                 prepare_response_tools(&response, target, &mut diagnostics, &policy)?,
                 Cow::Borrowed(_)
             ));
+            let disabled = preservation_check_policy();
+            let prepared = prepare_request_tools(&request, target, &mut diagnostics, &disabled)?;
+            assert!(prepared.preservation.requests.is_empty());
+            assert_eq!(prepared.tools, request.tools);
+            assert_eq!(prepared.messages, request.messages);
+            let prepared = prepare_response_tools(&response, target, &mut diagnostics, &disabled)?;
+            assert!(prepared.preservation.responses.is_empty());
+            assert_eq!(prepared.outputs, response.outputs);
             request.preservation.requests.insert(
                 other.into(),
                 engine

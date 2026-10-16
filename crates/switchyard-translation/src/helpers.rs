@@ -5,6 +5,10 @@
 //! request/response to the neutral IR, encode the IR back, and decode/encode a
 //! streamed response — so callers can translate without threading an engine and
 //! policy through every call.
+//!
+//! These helpers use the default policy, which allows lossy conversions and logs
+//! diagnostics. Strict callers must use [`TranslationEngine`] for buffered data
+//! or [`StreamTranslationState::with_policy`] with the stream codecs.
 
 use std::pin::Pin;
 use std::sync::LazyLock;

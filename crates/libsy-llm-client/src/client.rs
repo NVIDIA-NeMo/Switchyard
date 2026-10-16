@@ -500,6 +500,7 @@ impl TranslatingLlmClient {
             // Providers can return an error envelope under HTTP 200. Successful model
             // output stays unchanged, including tool results and signed content.
             if may_contain_mcp_tokens(&body, &mcp_patterns)
+                && may_be_error_envelope(&body)
                 && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
             {
                 if value.get("type").and_then(Value::as_str) == Some("error") {
@@ -921,6 +922,23 @@ fn mcp_token_patterns(body: &Value) -> Vec<String> {
     patterns
 }
 
+fn may_be_error_envelope(body: &[u8]) -> bool {
+    // Ignore content during this pass so successful bodies need no JSON tree.
+    // Parse keys normally to recognize escaped keys and ignore nested error fields.
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        #[serde(default, rename = "type")]
+        kind: Value,
+        #[serde(default)]
+        status: Value,
+    }
+    // Duplicate fields are accepted by Value but rejected by the derived struct.
+    // Let the full parser decide in that case so the precheck cannot hide errors.
+    serde_json::from_slice::<Envelope>(body)
+        .map(|envelope| envelope.kind == "error" || envelope.status == "failed")
+        .unwrap_or(true)
+}
+
 fn may_contain_mcp_tokens(body: &[u8], patterns: &[String]) -> bool {
     !patterns.is_empty()
         // JSON escapes can hide literal tokens, including in nested serialized JSON.
@@ -959,12 +977,16 @@ fn contains_escaped_mcp_tokens(text: &str, patterns: &[String]) -> bool {
             remaining = &remaining[index..];
             // Simple escapes, Unicode escapes, and UTF-16 surrogate pairs.
             let escape = [2, 6, 12].into_iter().find_map(|len| {
-                let fragment = remaining.get(..len)?;
-                let value = serde_json::from_str::<String>(&format!("\"{fragment}\"")).ok()?;
+                let fragment = remaining.as_bytes().get(..len)?;
+                let mut quoted = [0; 14];
+                quoted[0] = b'"';
+                quoted[1..=len].copy_from_slice(fragment);
+                quoted[len + 1] = b'"';
+                let value = serde_json::from_slice::<char>(&quoted[..len + 2]).ok()?;
                 Some((len, value))
             });
             if let Some((len, value)) = escape {
-                decoded.push_str(&value);
+                decoded.push(value);
                 remaining = &remaining[len..];
             } else {
                 decoded.push('\\');
@@ -3676,6 +3698,24 @@ mod tests {
         assert_eq!(body["output"][1]["content"][0]["text"], "12 widgets");
         server.verify().await;
         Ok(())
+    }
+
+    #[test]
+    fn mcp_error_envelope_detection_uses_top_level_fields() {
+        for body in [
+            r#"{"type":"error","error":{"message":"failed"}}"#,
+            r#"{"status":"failed","error":{}}"#,
+            r#"{"\u0074ype":"\u0065rror"}"#,
+            r#"{"type":"message","type":"error"}"#,
+        ] {
+            assert!(may_be_error_envelope(body.as_bytes()));
+        }
+        for body in [
+            r#"{"type":"message","content":[{"type":"error","status":"failed","text":"C:\\tmp"}]}"#,
+            r#"{"status":"completed","output":[]}"#,
+        ] {
+            assert!(!may_be_error_envelope(body.as_bytes()));
+        }
     }
 
     #[test]

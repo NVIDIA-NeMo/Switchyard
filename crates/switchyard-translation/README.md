@@ -48,6 +48,14 @@ Streaming uses the same conversion rules and loss policies as buffered translati
 remain provider-specific, and Chat Completions cannot represent MCP content.
 `StreamTranslationState::with_policy` selects rejection or conversion with diagnostics; the default
 allows losses. Diagnostics remain available on the state, and convenience encoders log them.
+The convenience encoders used by the client, server, and NeMo plugin always use this permissive
+default. Strict conversion requires the lower-level engine or stream codecs with an explicit policy.
+
+Exact MCP replay validates a single preserved target body against the current IR by decoding it.
+This adds work proportional to the conversation size. The check is skipped when preservation is
+disabled. Preserved bodies must still be checked for MCP data even after MCP content is removed
+from the IR, so an edit cannot restore old credentials or history. Public IR fields can be edited
+directly; caching this comparison would require a reliable way to detect those edits.
 
 Aggregation uses `ResponseAccumulator::try_finish()` to reject unfinished MCP blocks. The unchecked
 `finish()` method is deprecated. Synthetic streams assign text and reasoning indexes per content
