@@ -95,6 +95,18 @@ def chat(text: str = "hello") -> dict[str, Any]:
     return {"model": "coding", "messages": [{"role": "user", "content": text}]}
 
 
+def chat_frame(delta: dict[str, Any], *, stop: bool = False) -> bytes:
+    body = {
+        "id": "chatcmpl-live",
+        "object": "chat.completion.chunk",
+        "model": "provider-model",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": "stop" if stop else None}],
+    }
+    if stop:
+        body["usage"] = {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+    return f"data: {json.dumps(body, ensure_ascii=False)}\n\n".encode()
+
+
 async def test_python_clients_keep_session_and_candidate_policy() -> None:
     """A retained choice still applies each fallback's own prompt and body settings."""
     calls = []
@@ -267,43 +279,306 @@ async def test_buffered_provider_failure_uses_fallback_but_sdk_error_is_terminal
     assert calls == ["judge", "fast"]
 
 
-@pytest.mark.parametrize("target_stream", [False, True])
-async def test_buffered_runner_rejects_streaming_before_provider_call(target_stream: bool) -> None:
-    """Neither caller flags nor target defaults can start an unsupported streaming call."""
-    async def unexpected(body: dict[str, Any]) -> dict[str, Any]:
-        pytest.fail(f"unsupported stream reached provider: {body['model']}")
-
-    source = deployment(classify=False)
-    if target_stream:
-        source = source.replace("system_prompt = 'fast prompt'", "extra_body = { stream = true }")
-    runner = Runner.from_toml(source, clients={"primary": unexpected, "other": unexpected})
-    with pytest.raises((ValueError, LibsyError), match="does not support streaming"):
-        await runner.execute(chat() if target_stream else {**chat(), "stream": True})
-
-
-async def test_buffered_runner_rejects_and_closes_stream_callback_result() -> None:
-    """An unexpected provider iterator must release its transport before execution fails."""
+@pytest.mark.parametrize("format", list(WireFormat))
+async def test_fragmented_sse_translates_to_each_caller_format(format: WireFormat) -> None:
+    """Raw bytes may split UTF-8; caller events retain text, usage and a real terminal."""
     cleaned = asyncio.Event()
+    payload = (
+        chat_frame({"role": "assistant", "content": "café"})
+        + chat_frame({}, stop=True)
+        + b"data: [DONE]\n\n"
+    )
+    split = payload.index("é".encode()) + 1
 
-    class ProviderStream:
-        def __aiter__(self) -> AsyncIterator[bytes]:
-            return self
-
-        async def __anext__(self) -> bytes:
-            pytest.fail("unsupported stream was consumed")
-
-        async def aclose(self) -> None:
+    async def chunks() -> AsyncIterator[bytes]:
+        try:
+            yield payload[:split]
+            yield payload[split : split + 1]
+            yield payload[split + 1 :]
+        finally:
             cleaned.set()
 
-    async def provider(body: dict[str, Any]) -> Any:
-        return ProviderStream()
+    async def provider(body: dict[str, Any]) -> AsyncIterator[bytes]:
+        assert body["stream"] is True and body["model"] == "fast"
+        return chunks()
 
     runner = Runner.from_toml(
         deployment(classify=False), clients={"primary": provider, "other": provider}
     )
-    with pytest.raises(LibsyError, match="buffered provider JSON"):
-        await runner.execute(chat())
+    body = {"model": "coding", "input": "hello"} if format == "openai_responses" else chat()
+    if format == "anthropic_messages":
+        body["max_tokens"] = 16
+    stream = await runner.execute(
+        {**body, "stream": True}, format=format
+    )
+    assert not cleaned.is_set()
+    async with stream:
+        events = [event async for event in stream]
     assert cleaned.is_set()
+    if format == "openai_chat":
+        deltas = (
+            event["choices"][0]["delta"].get("content", "") for event in events if event["choices"]
+        )
+        assert any(
+            event["choices"] and event["choices"][0]["finish_reason"] == "stop" for event in events
+        )
+        usage = next(event["usage"] for event in events if event.get("usage"))
+        assert all(event["model"] == "fast" for event in events)
+    elif format == "openai_responses":
+        deltas = (
+            event["delta"] for event in events if event["type"] == "response.output_text.delta"
+        )
+        assert events[-1]["type"] == "response.completed"
+        assert events[-1]["response"]["model"] == "fast"
+        usage = events[-1]["response"]["usage"]
+    else:
+        deltas = (
+            event["delta"].get("text", "")
+            for event in events
+            if event["type"] == "content_block_delta"
+        )
+        assert events[-1]["type"] == "message_stop"
+        assert events[0]["message"]["model"] == "fast"
+        usage = next(event["usage"] for event in events if event["type"] == "message_delta")
+    assert "".join(deltas) == "café"
+    counts = (
+        ("prompt_tokens", "completion_tokens")
+        if format == "openai_chat"
+        else ("input_tokens", "output_tokens")
+    )
+    assert [usage[key] for key in counts] == [2, 3]
+
+
+async def test_unterminated_provider_stream_is_not_a_successful_response() -> None:
+    """A valid first frame does not make truncated upstream output complete."""
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield chat_frame({"role": "assistant", "content": "partial"})
+
+    async def provider(body: dict[str, Any]) -> AsyncIterator[bytes]:
+        return chunks()
+
+    runner = Runner.from_toml(
+        deployment(classify=False), clients={"primary": provider, "other": provider}
+    )
+    stream = await runner.execute({**chat(), "stream": True})
+    async with stream:
+        with pytest.raises(LibsyError):
+            _ = [event async for event in stream]
+
+
+@pytest.mark.parametrize("early_close", [False, True])
+async def test_provider_iterator_keeps_one_task_and_context_until_close(early_close: bool) -> None:
+    """Provider context managers must enter, resume and exit in their owning task."""
+    identity: ContextVar[str] = ContextVar("provider_identity", default="caller")
+    cleaned = asyncio.Event()
+
+    async def chunks() -> AsyncIterator[bytes]:
+        owner = asyncio.current_task()
+        token = identity.set("provider")
+        try:
+            yield chat_frame({"role": "assistant", "content": "hello"})
+            assert asyncio.current_task() is owner and identity.get() == "provider"
+            yield chat_frame({}, stop=True) + b"data: [DONE]\n\n"
+        finally:
+            assert asyncio.current_task() is owner and identity.get() == "provider"
+            identity.reset(token)
+            cleaned.set()
+
+    async def provider(body: dict[str, Any]) -> AsyncIterator[bytes]:
+        return chunks()
+
+    runner = Runner.from_toml(
+        deployment(classify=False), clients={"primary": provider, "other": provider}
+    )
+    stream = await runner.execute({**chat(), "stream": True})
+    async with stream:
+        if not early_close:
+            assert [event async for event in stream]
+    assert cleaned.is_set() and identity.get() == "caller"
+
+
+async def test_provider_timeout_remains_active_between_stream_chunks() -> None:
+    """A provider's timeout must still cancel its task after yielding the first chunk."""
+    timeout = getattr(asyncio, "timeout", None)
+    if timeout is None:
+        pytest.skip("asyncio.timeout requires Python 3.11")
+    expired = asyncio.Event()
+
+    async def chunks() -> AsyncIterator[bytes]:
+        try:
+            async with timeout(None) as deadline:
+                yield chat_frame({"role": "assistant", "content": "hello"})
+                deadline.reschedule(asyncio.get_running_loop().time())
+                await asyncio.sleep(0.01)
+                yield chat_frame({}, stop=True) + b"data: [DONE]\n\n"
+        except TimeoutError:
+            expired.set()
+            raise
+
+    async def provider(body: dict[str, Any]) -> AsyncIterator[bytes]:
+        return chunks()
+
+    runner = Runner.from_toml(
+        deployment(classify=False), clients={"primary": provider, "other": provider}
+    )
+    stream = await runner.execute({**chat(), "stream": True})
+    async with stream:
+        with pytest.raises(LibsyError, match="TimeoutError"):
+            _ = [event async for event in stream]
+    assert expired.is_set()
+
+
+@pytest.mark.parametrize("close_mode", ["idle", "pending", "cancel"])
+async def test_stream_close_waits_for_provider_cleanup_in_original_context(
+    close_mode: str,
+) -> None:
+    """Streams own their provider until EOF, close or cancellation, even after execute returns."""
+    identity: ContextVar[str] = ContextVar("stream_identity")
+    started, cleaning, finish, cleaned = (asyncio.Event() for _ in range(4))
+    seen = []
+
+    async def chunks() -> AsyncIterator[bytes]:
+        try:
+            seen.append(identity.get())
+            yield chat_frame({"role": "assistant"})
+            started.set()
+            await asyncio.Future()
+        finally:
+            cleaning.set()
+            await finish.wait()
+            seen.append(identity.get())
+            cleaned.set()
+
+    async def provider(body: dict[str, Any]) -> AsyncIterator[bytes]:
+        return chunks()
+
+    runner = Runner.from_toml(
+        deployment(classify=False), clients={"primary": provider, "other": provider}
+    )
+    token = identity.set("request")
+    try:
+        stream = await runner.execute({**chat(), "stream": True})
+    finally:
+        identity.reset(token)
+    assert not cleaned.is_set()
+    read = None
+    if close_mode != "idle":
+        await anext(stream)
+        read = asyncio.create_task(anext(stream))
+        await asyncio.wait_for(started.wait(), 2)
+    if close_mode == "cancel":
+        assert read is not None
+        read.cancel()
+        closing = read
+    else:
+        closing = asyncio.create_task(stream.aclose())
+    await asyncio.wait_for(cleaning.wait(), 2)
+    assert not closing.done()
+    finish.set()
+    if close_mode == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(closing, 2)
+    else:
+        await asyncio.wait_for(closing, 2)
+        if read is not None:
+            await asyncio.gather(read, return_exceptions=True)
+    await stream.aclose()
+    assert cleaned.is_set() and seen == ["request", "request"]
+
+
+async def test_lazy_stream_http_failure_uses_fallback() -> None:
+    """An HTTP failure before the first event keeps native fallback behavior."""
+    calls = []
+
+    async def chunks(model: str) -> AsyncIterator[bytes]:
+        if model == "fast":
+            raise UpstreamError(503, {"error": {"message": "unavailable"}})
+        yield chat_frame({"role": "assistant", "content": "fallback answer"})
+        yield chat_frame({}, stop=True) + b"data: [DONE]\n\n"
+
+    async def provider(body: dict[str, Any]) -> Any:
+        model = body["model"]
+        calls.append(model)
+        return judge_answer("openai_chat", body) if model == "judge" else chunks(model)
+
+    runner = Runner.from_toml(deployment(), clients={"primary": provider, "other": provider})
+    stream = await runner.execute({**chat(), "stream": True})
+    async with stream:
+        events = [event async for event in stream]
+    assert events and all(event["model"] == "capable" for event in events)
+    assert calls == ["judge", "fast", "capable"]
+
+
+async def test_inband_error_keeps_provider_fields_without_success_or_fallback() -> None:
+    """After text reaches the caller, a provider error is terminal, not another answer attempt."""
+    calls = []
+    error = {
+        "error": {
+            "message": "provider detail",
+            "type": "server_error",
+            "request_id": "upstream-123",
+        }
+    }
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield chat_frame({"role": "assistant", "content": "partial"})
+        yield f"data: {json.dumps(error)}\n\n".encode()
+
+    async def provider(body: dict[str, Any]) -> Any:
+        calls.append(body["model"])
+        if body["model"] == "judge":
+            return judge_answer("openai_chat", body)
+        return chunks()
+
+    runner = Runner.from_toml(deployment(), clients={"primary": provider, "other": provider})
+    stream = await runner.execute({**chat(), "stream": True})
+    async with stream:
+        events = [event async for event in stream]
+    assert events[-1]["error"] == error["error"]
+    assert not any(
+        event.get("choices") and event["choices"][0]["finish_reason"] for event in events
+    )
+    assert calls == ["judge", "fast"]
+
+
+async def test_escalation_releases_stream_transport_before_judge_call() -> None:
+    """A decoded terminal frame must release a one-connection pool before the judge runs."""
+    pool = asyncio.Semaphore(1)
+    released = asyncio.Event()
+    calls = []
+
+    async def chunks() -> AsyncIterator[bytes]:
+        try:
+            yield chat_frame({"role": "assistant", "content": "efficient answer"})
+            yield chat_frame({}, stop=True)
+            yield b"data: [DONE]\n\n"
+        finally:
+            pool.release()
+            released.set()
+
+    async def provider(body: dict[str, Any]) -> Any:
+        await pool.acquire()
+        calls.append(body["model"])
+        if body["model"] == "judge":
+            try:
+                assert released.is_set()
+                return answer(
+                    "openai_chat",
+                    "judge",
+                    '{"escalate":false,"category":"none","new_evidence":false,"reason":"progress"}',
+                )
+            finally:
+                pool.release()
+        return chunks()
+
+    source = deployment() + "\nescalation = { confirmations = 1 }"
+    runner = Runner.from_toml(source, clients={"primary": provider, "other": provider})
+    stream = await asyncio.wait_for(runner.execute({**chat(), "stream": True}), 2)
+    async with stream:
+        events = [event async for event in stream]
+    assert events and calls == ["fast", "judge"]
+    assert released.is_set() and not pool.locked()
 
 
 async def test_advisor_review_budget_keeps_host_session_headers() -> None:
