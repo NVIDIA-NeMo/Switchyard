@@ -1636,9 +1636,9 @@ on a standalone stage route.</p>
 </span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="n">policy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">type</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;target_selector&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">selector</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;/decision/target&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
 <p>The schema is validated locally. The selector names a tier, and the existing
-stage targets supply its model. With <code>fail_open = true</code> (the default), a missing
-or invalid verdict or a client failure retains the previous tier, or uses efficient
-for a new session. With <code>fail_open = false</code>, these errors propagate instead.
+stage targets supply its model. A missing or invalid verdict retains the previous
+tier, or uses efficient for a new session. Client failures do the same with
+<code>fail_open = true</code> (the default); with <code>fail_open = false</code>, client errors propagate.
 Capability thresholds and decision-model
 settings cannot be combined with <code>mode = "custom"</code>.</p>
 <h2 id="decision-model-classifier">Decision model classifier<a class="headerlink" href="#decision-model-classifier" title="Permanent link">&para;</a></h2>
