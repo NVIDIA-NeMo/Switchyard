@@ -367,6 +367,68 @@ async def test_unterminated_provider_stream_is_not_a_successful_response() -> No
             _ = [event async for event in stream]
 
 
+@pytest.mark.parametrize("early_close", [False, True])
+async def test_provider_iterator_keeps_one_task_and_context_until_close(early_close: bool) -> None:
+    """Provider context managers must enter, resume and exit in their owning task."""
+    identity: ContextVar[str] = ContextVar("provider_identity", default="caller")
+    cleaned = asyncio.Event()
+
+    async def chunks() -> AsyncIterator[bytes]:
+        owner = asyncio.current_task()
+        token = identity.set("provider")
+        try:
+            yield chat_frame({"role": "assistant", "content": "hello"})
+            assert asyncio.current_task() is owner and identity.get() == "provider"
+            yield chat_frame({}, stop=True) + b"data: [DONE]\n\n"
+        finally:
+            assert asyncio.current_task() is owner and identity.get() == "provider"
+            identity.reset(token)
+            cleaned.set()
+
+    async def provider(body: dict[str, Any]) -> AsyncIterator[bytes]:
+        return chunks()
+
+    runner = Runner.from_toml(
+        deployment(classify=False), clients={"primary": provider, "other": provider}
+    )
+    stream = await runner.execute({**chat(), "stream": True})
+    async with stream:
+        if not early_close:
+            assert [event async for event in stream]
+    assert cleaned.is_set() and identity.get() == "caller"
+
+
+async def test_provider_timeout_remains_active_between_stream_chunks() -> None:
+    """A provider's timeout must still cancel its task after yielding the first chunk."""
+    timeout = getattr(asyncio, "timeout", None)
+    if timeout is None:
+        pytest.skip("asyncio.timeout requires Python 3.11")
+    expired = asyncio.Event()
+
+    async def chunks() -> AsyncIterator[bytes]:
+        try:
+            async with timeout(None) as deadline:
+                yield chat_frame({"role": "assistant", "content": "hello"})
+                deadline.reschedule(asyncio.get_running_loop().time())
+                await asyncio.sleep(0.01)
+                yield chat_frame({}, stop=True) + b"data: [DONE]\n\n"
+        except TimeoutError:
+            expired.set()
+            raise
+
+    async def provider(body: dict[str, Any]) -> AsyncIterator[bytes]:
+        return chunks()
+
+    runner = Runner.from_toml(
+        deployment(classify=False), clients={"primary": provider, "other": provider}
+    )
+    stream = await runner.execute({**chat(), "stream": True})
+    async with stream:
+        with pytest.raises(LibsyError, match="TimeoutError"):
+            _ = [event async for event in stream]
+    assert expired.is_set()
+
+
 @pytest.mark.parametrize("close_mode", ["idle", "pending", "cancel"])
 async def test_stream_close_waits_for_provider_cleanup_in_original_context(
     close_mode: str,

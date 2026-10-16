@@ -133,7 +133,40 @@ class _Source:
     def __init__(self, inner: AsyncIterator[bytes], calls: _Calls) -> None:
         self.inner = inner
         self.calls = calls
-        self.closing: asyncio.Task[None] | None = None
+        self.reads: asyncio.Queue[asyncio.Future[bytes]] = asyncio.Queue(maxsize=1)
+        self.error: BaseException = StopAsyncIteration()
+        self.is_started = False
+        self.is_closing = False
+        # Provider context managers and deadlines must span reads in the same task.
+        self.worker = asyncio.create_task(self.run())
+
+    async def run(self) -> None:
+        self.is_started = True
+        reply = None
+        try:
+            while not self.is_closing:
+                reply = await self.reads.get()
+                chunk = await anext(self.inner)
+                if not reply.done():
+                    reply.set_result(chunk)
+                reply = None
+        except BaseException as error:
+            self.error = error
+        finally:
+            self.is_closing = True
+            try:
+                await _close_iterator(self.inner)
+            except BaseException as error:
+                self.error = error
+                raise
+            finally:
+                # Finish cleanup before an error can release the next fallback call.
+                if reply is not None and not reply.done():
+                    reply.set_exception(self.error)
+                while not self.reads.empty():
+                    pending = self.reads.get_nowait()
+                    if not pending.done():
+                        pending.set_exception(self.error)
 
     def __aiter__(self) -> _Source:
         return self
@@ -141,16 +174,24 @@ class _Source:
     async def __anext__(self) -> bytes:
         if self.calls.is_closed:
             raise asyncio.CancelledError
-        return await self.calls.wait(anext(self.inner))
+        if self.worker.done():
+            raise self.error
+        reply: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+        await self.reads.put(reply)
+        if self.worker.done() and not reply.done():
+            reply.set_exception(self.error)
+        return await self.calls.wait(reply)
 
     async def aclose(self) -> None:
         # Keep the source registered until request shutdown can join its cleanup.
-        if self.closing is None:
-            self.closing = self.calls.context.run(asyncio.create_task, _close_iterator(self.inner))
+        if not self.is_closing:
+            self.is_closing = True
+            if self.is_started:
+                self.worker.cancel()
         try:
-            await _join_close(self.closing)
+            await _join_close(self.worker)
         finally:
-            if self.closing.done():
+            if self.worker.done():
                 self.calls.iterators = [item for item in self.calls.iterators if item is not self]
 
 
@@ -202,7 +243,9 @@ class Runner:
     def from_toml(source: str, *, clients: Mapping[str, _Client]) -> Runner:
         """Load TOML; callbacks receive prepared bodies and return provider JSON or raw SSE bytes.
 
-        Client names match ``llm_clients``. The host owns transport and credentials.
+        TOML configures routing and target request policy. Client names match ``llm_clients``.
+        The host owns credentials, transport, retries, and capability enforcement.
+        Native transport settings, typed decision clients, and auxiliary endpoints are unsupported.
         Streaming callbacks return async byte iterators whose ``aclose`` releases the provider.
         Raise ``UpstreamError`` for HTTP failures or ``ContextWindowExceededError``
         from ``switchyard.libsy`` for context rejection. Other exceptions are terminal.
@@ -227,7 +270,9 @@ class Runner:
         """Execute a provider request; its model names a configured route.
 
         ``format`` identifies the caller's request and returned response format.
-        Cancellation waits for outstanding client work to finish cleanup.
+        Results contain bodies or events, not upstream response headers or HTTP status.
+        Terminal execution failures raise ``LibsyError``, without structured provider status.
+        Cancellation cancels and joins outstanding work, then closes provider streams.
         Streams yield provider-event dictionaries; use ``async with`` or ``aclose``
         when stopping early. The host frames events as SSE when serving HTTP.
         Use distinct session IDs for independent tasks; keep shared-session turns ordered.
@@ -235,6 +280,7 @@ class Runner:
         For a request with ``stream=True``::
 
             stream = await runner.execute(request, format=WireFormat.OPENAI_CHAT)
+            assert not isinstance(stream, dict)
             async with stream:
                 async for event in stream:
                     await send_sse_event(event)

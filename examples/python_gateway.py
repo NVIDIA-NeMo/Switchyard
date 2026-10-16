@@ -2,7 +2,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run a TOML route with gateway-owned clients without starting a Switchyard server."""
+"""Use TOML routing and target request settings with gateway-owned model clients.
+
+The host owns credentials, transport, and retries. Callbacks take prepared provider JSON
+and return JSON or an async iterator of raw SSE bytes; this example uses buffered JSON.
+Runner returns bodies or events without upstream headers or structured terminal HTTP
+status. This example does not start an HTTP server.
+"""
 
 import asyncio
 import json
@@ -68,6 +74,8 @@ async def main() -> None:
         format=WireFormat.OPENAI_CHAT,
         headers={"x-switchyard-session-id": "example-task"},
     )
+    if not isinstance(response, dict):
+        raise TypeError("Expected a buffered response")
     print(json.dumps(response, indent=2))
 
 
