@@ -19,7 +19,7 @@ Organization policy can prevent mods from loading at all; check
 Claude's plugin errors if no Switchyard status appears.
 
 Download the `switchyard-claude-linux-x86_64` artifact from this PR's **Claude
-plugin** CI job. Unzip the artifact, then extract its `.tar.gz` file. The tar
+plugin** workflow. Unzip the artifact, then extract its `.tar.gz` file. The tar
 archive preserves the native executable's permissions. Keep the extracted
 marketplace directory: Claude uses a local marketplace in place.
 
@@ -87,34 +87,6 @@ TOML file before starting Claude. Keep route ID `switchyard` and use full Claude
 model IDs, not aliases such as `sonnet`. Only model-selection algorithms accepted
 by `Runner::from_toml_for_model_selection` are supported. The bundled `auto`
 configuration runs entirely locally; its placeholder client is never contacted.
-
-## Development
-
-From the repository root, with Python 3 and the repository's Rust toolchain:
-
-```bash
-python3 examples/claude/package.py
-claude plugin validate dist/switchyard-claude-linux-x86_64/switchyard
-claude plugin test examples/claude
-python3 examples/claude/test_package.py dist/switchyard-claude-linux-x86_64/switchyard
-```
-
-The helper source is
-[`crates/switchyard-runner/examples/switchyard-claude.rs`](../../crates/switchyard-runner/examples/switchyard-claude.rs).
-Claude's process API closes a child's stdin after one write, so the mod sends
-each request as a file in a private directory the helper creates, and the helper
-answers with one JSON line on stdout. Every request includes the Claude session
-ID, passed to the Runner as request metadata. The helper owns no model-completion
-connection or listening socket. It exits when its directory is removed, on SIGTERM, or
-when its parent process ends. Startup has a three-second deadline. Each decision
-has a separate three-second deadline covering the request write and reply;
-failed decisions leave the original model request intact. Request files are
-published and consumed in order so concurrent hooks cannot reorder routing state.
-The plugin tests use a fake helper to cover reuse, off and on, session changes,
-stale answers, timeouts, crashes, manual controls, subagent isolation, and stream
-forwarding. `test_package.py` drives the real helper for repeated escalation and
-recovery, the retained capable-model hold, session isolation within one Runner,
-restart, bad input, and shutdown.
 
 To try the built plugin for one session:
 

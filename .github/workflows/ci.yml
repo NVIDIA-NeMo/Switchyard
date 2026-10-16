@@ -151,43 +151,6 @@ jobs:
       - run: npm --prefix examples/pi run typecheck
       - run: npm --prefix examples/pi test
 
-  claude:
-    name: Claude plugin
-    needs: changes
-    if: needs.changes.outputs.full_ci == 'true'
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.23.3'
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
-        with:
-          cache-bin: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: npm install --global @anthropic-ai/claude-code@2.1.301
-      - run: claude plugin validate examples/claude
-      - run: claude plugin test examples/claude
-      - run: python3 examples/claude/package.py
-      - name: Test the extracted package outside the checkout
-        run: |
-          tar -xzf dist/switchyard-claude-linux-x86_64.tar.gz -C "$RUNNER_TEMP"
-          claude plugin validate "$RUNNER_TEMP/switchyard-claude-linux-x86_64"
-          python3 examples/claude/test_package.py "$RUNNER_TEMP/switchyard-claude-linux-x86_64/switchyard"
-      - name: Verify installation enables routing without setup
-        env:
-          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-install
-        run: |
-          claude plugin install switchyard --marketplace "$RUNNER_TEMP/switchyard-claude-linux-x86_64"
-          cd "$RUNNER_TEMP"
-          claude -p '/switchyard status' --tools '' --strict-mcp-config --mcp-config '{"mcpServers":{}}' > switchyard-status.txt
-          grep -F 'Switchyard Auto' switchyard-status.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: switchyard-claude-linux-x86_64
-          path: dist/switchyard-claude-linux-x86_64.tar.gz
-          if-no-files-found: error
-
   typecheck:
     name: Typecheck (mypy)
     needs: changes
@@ -315,7 +278,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [changes, lint, spdx-headers, rust, node, claude, typecheck, test, litellm, slim-install-smoke]
+    needs: [changes, lint, spdx-headers, rust, node, typecheck, test, litellm, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded
