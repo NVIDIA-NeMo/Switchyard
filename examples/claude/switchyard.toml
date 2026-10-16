@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+# Claude Code owns completion transport and credentials. Auto selects locally.
+[llm_clients.claude]
+format = "anthropic_messages"
+base_url = "http://127.0.0.1:1"
+
+[targets.efficient]
+id = "claude-sonnet-5-5"
+llm_client = "claude"
+
+[targets.capable]
+id = "claude-opus-5-5"
+llm_client = "claude"
+
+[routes.claude]
+id = "switchyard"
+type = "auto"
+efficient_target = "efficient"
+capable_target = "capable"
