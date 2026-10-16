@@ -19,18 +19,6 @@ impl Algorithm for Passthrough {
         "passthrough"
     }
 
-    async fn checkpoint_session(&self, _session: &str) -> Result<crate::SessionCheckpoint> {
-        crate::SessionCheckpoint::new(self.name(), ())
-    }
-
-    async fn restore_session(
-        &self,
-        _session: &str,
-        checkpoint: &crate::SessionCheckpoint,
-    ) -> Result<()> {
-        checkpoint.decode(self.name())
-    }
-
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         let models = driver.models_for(&Category::Any).to_vec();
         // Selected is the first one. The rest are fallbacks.

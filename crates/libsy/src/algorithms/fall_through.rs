@@ -40,52 +40,6 @@ struct SessionState<S> {
 
 type SessionStates<S> = Mutex<HashMap<String, SessionState<S>>>;
 
-impl FallThrough<crate::State> {
-    pub(crate) async fn checkpoint_session(
-        &self,
-        session: &str,
-    ) -> Result<crate::SessionCheckpoint> {
-        let request = checkpoint_request(session)?;
-        let state = self
-            .session_state(&request)
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "Router does not retain session state".to_string(),
-            })?;
-        crate::SessionCheckpoint::new(&self.name, &*state.lock().await)
-    }
-
-    pub(crate) async fn restore_session(
-        &self,
-        session: &str,
-        checkpoint: &crate::SessionCheckpoint,
-    ) -> Result<()> {
-        let request = checkpoint_request(session)?;
-        let restored = checkpoint.decode(&self.name)?;
-        let state = self
-            .session_state(&request)
-            .ok_or_else(|| LibsyError::AlgorithmError {
-                message: "Router does not retain session state".to_string(),
-            })?;
-        *state.lock().await = restored;
-        Ok(())
-    }
-}
-
-fn checkpoint_request(session: &str) -> Result<Request> {
-    if session.is_empty() {
-        return Err(LibsyError::AlgorithmError {
-            message: "Session id must not be empty".to_string(),
-        });
-    }
-    Ok(Request {
-        metadata: Some(switchyard_protocol::Metadata {
-            session_id: Some(session.to_string()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })
-}
-
 /// Delete sessions that have been inactive this long. Catches sessions that did not terminate
 /// cleanly.
 /// A user resuming a deleted session is not fatal. Algorithms will be missing some context

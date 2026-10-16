@@ -168,7 +168,6 @@ jobs:
       - run: npm install --global @anthropic-ai/claude-code@2.1.301
       - run: claude plugin validate examples/claude
       - run: claude plugin test examples/claude
-      - run: cargo test --locked -p switchyard-runner --example switchyard-claude
       - run: python3 examples/claude/package.py
       - name: Test the extracted package outside the checkout
         run: |

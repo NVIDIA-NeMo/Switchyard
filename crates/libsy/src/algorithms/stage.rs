@@ -201,18 +201,6 @@ impl Algorithm for StageRouter {
         STAGE_ROUTER
     }
 
-    async fn checkpoint_session(&self, session: &str) -> Result<crate::SessionCheckpoint> {
-        self.route.checkpoint_session(session).await
-    }
-
-    async fn restore_session(
-        &self,
-        session: &str,
-        checkpoint: &crate::SessionCheckpoint,
-    ) -> Result<()> {
-        self.route.restore_session(session, checkpoint).await
-    }
-
     async fn route(
         self: Arc<Self>,
         driver: Driver,

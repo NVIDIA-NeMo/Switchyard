@@ -6,46 +6,66 @@ import { expect, mock, test } from "claude-code/testing";
 const input = { turnId: "turn", index: 0, model: "claude-sonnet-4-6", effort: "high", messageCount: 1 };
 const prompt = { role: "user", text: "Fix the tests", toolUses: [] };
 const selection = (model = "claude-opus-5-5") => ({ target: "capable", model });
-const response = (body = selection()) => ({ exitCode: 0, stdout: JSON.stringify(body), stderr: "" });
 
-function helperResponse(e) {
-  const body = JSON.parse(e.init.stdin);
-  return response({ ...selection(), version: 1, session_id: body.session_id,
-    decision_id: body.decision_id, checkpoint: { version: 1, session_id: body.session_id,
-      count: (body.checkpoint?.count ?? 0) + 1 } });
-}
-
+// Stands in for the native helper: same protocol, none of the routing.
 function setup(on, options = {}) {
   const sent = [];
-  const requests = [];
   const statuses = [];
+  const helpers = [];
+  const removed = [];
   const clock = mock.clock(on);
-  const stored = new Map(Object.entries(options.store ?? {}));
-  on("store.get", ($, e) => ({ value: stored.get(e.key) }));
-  on("store.keys", () => ({ value: [...stored.keys()] }));
-  on("store.delete", ($, e) => { stored.delete(e.key); return { value: null }; });
-  on("store.set", ($, e) => {
-    if (options.storeFailure) return { deny: "disk full" };
-    stored.set(e.key, JSON.parse(JSON.stringify(e.value)));
-    return { value: null };
-  });
-  let sessionId = "session-a";
-  let messages = options.messages ?? [prompt];
-  on("session.id", () => ({ value: sessionId }));
+  mock.store(on, options.store ?? {});
   mock.env(on, { SWITCHYARD_CONFIG: "/tmp/switchyard-test.toml" });
   on("ui.status", ($, e) => { statuses.push(e.text); return { value: null }; });
   let nativeModel = input.model;
-  on("session.model", () => ({ value: nativeModel }));
-  on("session.messages", () => ({ value: messages }));
-  on("process.run", async ($, e) => {
-    requests.push(e);
-    if (options.process) return options.process(e, clock);
-    return { value: helperResponse(e) };
+  let session = "session-a";
+  // A test sets a gate to hold the next read of the model or transcript until it opens it.
+  const gates = {};
+  const open = async (name) => { await gates[name]?.promise; };
+  const gate = (name) => {
+    let release;
+    gates[name] = { promise: new Promise((resolve) => { release = resolve; }) };
+    return release;
+  };
+  on("session.model", async () => { const value = nativeModel; await open("model"); return { value }; });
+  on("session.id", () => ({ value: session }));
+  on("session.messages", async () => { await open("messages"); return { value: options.messages ?? [prompt] }; });
+  on("process.spawn", async function* ($, e) {
+    const helper = { argv: e.argv, dir: `/tmp/switchyard-claude-${helpers.length}`, requests: [], alive: true, queue: [], wake: undefined };
+    helper.emit = (line) => { helper.queue.push(line); helper.wake?.(); };
+    helper.exit = () => { helper.alive = false; helper.wake?.(); };
+    helpers.push(helper);
+    try {
+      if (options.startup !== "silent") yield { stream: "stdout", text: `${JSON.stringify({ dir: helper.dir })}\n` };
+      while (helper.alive || helper.queue.length) {
+        if (helper.queue.length) yield helper.queue.shift();
+        else await new Promise((resolve) => { helper.wake = resolve; });
+      }
+    } finally {
+      // Also what a stream closed early ends with: the kit wants a result either way.
+      helper.alive = false;
+      // eslint-disable-next-line no-unsafe-finally
+      return { value: { code: null, signal: "SIGTERM" } };
+    }
+  });
+  on("fs.write", ($, e) => {
+    const helper = helpers.find((h) => e.path.startsWith(`${h.dir}/`));
+    const id = Number(/req-(\d+)\.json$/.exec(e.path)?.[1]);
+    const body = JSON.parse(e.text);
+    helper.requests.push({ id, ...body });
+    const answer = options.answer?.(helper, id, body) ?? { id, ...selection() };
+    if (answer !== "silent") helper.emit({ stream: "stdout", text: `${typeof answer === "string" ? answer : JSON.stringify(answer)}\n` });
+    return { value: undefined };
+  });
+  // The mod removes the helper's directory, which also ends a helper that outlived its kill.
+  on("process.run", ($, e) => {
+    removed.push(e.argv.at(-1));
+    helpers.find((h) => h.dir === e.argv.at(-1))?.exit();
+    return { value: { exitCode: 0, stdout: "", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
   });
   on("turn.step", async function* ($, e) {
     sent.push(e);
     yield { kind: "text", index: 0, text: "hello" };
-    if (options.completion) await options.completion(e, clock);
     if (options.failCompletion) throw new Error("completion failed");
     return { turnId: e.turnId, index: e.index, answer: "hello", toolUses: [], stopReason: "end_turn", usage: null };
   });
@@ -53,8 +73,12 @@ function setup(on, options = {}) {
   on("session.start", ($, e) => ({ cwd: e.cwd }));
   on("session.end", ($, e) => ({ sessionId: e.sessionId }));
   on("command.register", ($, e) => ({ value: { command: e.name } }));
-  return { sent, requests, clock, statuses, readStore: (key) => stored.get(key), setSession: (id) => { sessionId = id; },
-    setMessages: (value) => { messages = value; }, setModel: (model) => { nativeModel = model; } };
+  const alive = () => helpers.filter((h) => h.alive).length;
+  return {
+    sent, clock, statuses, helpers, removed, alive, gate,
+    setModel: (model) => { nativeModel = model; },
+    setSession: (id) => { session = id; },
+  };
 }
 
 async function drain(stream) {
@@ -67,22 +91,41 @@ async function drain(stream) {
   return { chunks, result: step.value };
 }
 
+
+// Claude fires session.start once per load, and the mod spawns every helper from the loop it starts.
+const booted = new WeakSet();
+const boot = async ($) => {
+  if (booted.has($)) return;
+  booted.add($);
+  await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
+};
+const step = async ($, e = input) => { await boot($); return drain($.turn.step(e)); };
+const ask = async ($, args) => { await boot($); return $.command.run({ command: "switchyard", args }); };
+const stale = (helper, id) => helper.emit({ stream: "stdout", text: `${JSON.stringify({ id, ...selection("claude-haiku-4-5") })}\n` });
+
 test("selects a native model, preserves effort, and passes through the stream", async ($, on) => {
-  const { sent, requests, readStore } = setup(on);
-  const output = await drain($.turn.step(input));
+  const { sent, helpers } = setup(on);
+  const output = await step($);
   expect(sent).toEqual([{ ...input, model: "claude-opus-5-5" }]);
   expect(output.chunks).toMatchObject([{ kind: "text", text: "hello" }]);
   expect(output.result.answer).toBe("hello");
-  expect(requests[0].argv[0]).toMatch(/\/bin\/switchyard-claude$/);
-  expect(requests[0].argv[1]).toBe("/tmp/switchyard-test.toml");
-  expect(requests[0].init.timeoutMs).toBe(3000);
-  expect(JSON.parse(requests[0].init.stdin).messages).toEqual([
-    { role: "user", content: [{ type: "text", text: "Fix the tests" }] },
+  expect(helpers[0].argv[0]).toMatch(/\/bin\/switchyard-claude$/);
+  expect(helpers[0].argv.slice(1)).toEqual(["/tmp/switchyard-test.toml"]);
+  expect(helpers[0].requests).toEqual([
+    { id: 1, session_id: "session-a", messages: [{ role: "user", content: [{ type: "text", text: "Fix the tests" }] }] },
   ]);
 });
 
+test("one helper serves every decision of a session", async ($, on) => {
+  const { helpers, alive } = setup(on);
+  for (let i = 0; i < 3; i++) await step($);
+  expect(helpers.length).toBe(1);
+  expect(alive()).toBe(1);
+  expect(helpers[0].requests.map((r) => r.id)).toEqual([1, 2, 3]);
+});
+
 test("passes paired tool calls and failures once, including continuation requests", async ($, on) => {
-  const { sent, requests, readStore } = setup(on, { messages: [
+  const { sent, helpers } = setup(on, { messages: [
     { role: "user", text: "", toolResults: [{ tool_use_id: "old", text: "truncated", isError: true }] },
     prompt,
     { role: "assistant", text: "Checking", toolUses: [
@@ -93,8 +136,8 @@ test("passes paired tool calls and failures once, including continuation request
     ] },
     { role: "assistant", text: "", toolUses: [] },
   ] });
-  await drain($.turn.step({ ...input, index: 1, messageCount: 5 }));
-  const messages = JSON.parse(requests[0].init.stdin).messages;
+  await step($, { ...input, index: 1, messageCount: 5 });
+  const { messages } = helpers[0].requests[0];
   expect(messages.length).toBe(3);
   expect(messages[1]).toEqual({ role: "assistant", content: [
     { type: "text", text: "Checking" },
@@ -107,236 +150,395 @@ test("passes paired tool calls and failures once, including continuation request
 });
 
 test("does not route a subagent using the parent's transcript", async ($, on) => {
-  const { sent, requests, readStore } = setup(on);
+  const { sent, helpers } = setup(on);
   const agent = { ...input, agentId: "worker" };
-  await drain($.turn.step(agent));
+  await step($, agent);
   expect(sent).toEqual([agent]);
-  expect(requests.length).toBe(0);
+  expect(helpers.length).toBe(0);
 });
 
-test("off and /model keep native selection until routing is enabled again", async ($, on) => {
-  const { sent, requests, readStore } = setup(on);
-  await $.command.run({ command: "switchyard", args: "off" });
-  await drain($.turn.step(input));
-  await $.command.run({ command: "switchyard", args: "on" });
-  await drain($.turn.step(input));
+test("off pauses routing and on reuses the same helper", async ($, on) => {
+  const { sent, helpers, removed, alive } = setup(on);
+  await step($);
+  expect((await ask($, "off")).text).toBe("Switchyard off");
+  expect(helpers[0].alive).toBe(true);
+  expect(removed).toEqual([]);
+  await ask($, "off");
+  await step($);
+  expect(helpers[0].requests.length).toBe(1);
+  await ask($, "on");
+  await ask($, "on");
+  await step($);
+  expect(helpers.length).toBe(1);
+  expect(alive()).toBe(1);
+  expect(helpers[0].requests.map((r) => r.id)).toEqual([1, 2]);
+  expect(sent.map((e) => e.model)).toEqual(["claude-opus-5-5", input.model, "claude-opus-5-5"]);
+});
+
+test("a redundant on keeps the helper and its place", async ($, on) => {
+  const { helpers } = setup(on);
+  await step($);
+  await ask($, "on");
+  await step($);
+  expect(helpers.length).toBe(1);
+  expect(helpers[0].requests.map((r) => r.id)).toEqual([1, 2]);
+});
+
+test("/model selection pauses routing and retains its helper", async ($, on) => {
+  const { sent, helpers, alive } = setup(on);
+  await step($);
   await $.command.run({ command: "model", args: "sonnet" });
-  await drain($.turn.step(input));
-  expect(sent.map((e) => e.model)).toEqual([input.model, "claude-opus-5-5", input.model]);
-  expect(requests.length).toBe(1);
-  expect((await $.command.run({ command: "switchyard", args: "status" })).text).toContain("Switchyard off");
+  expect(alive()).toBe(1);
+  await step($);
+  expect(sent[1].model).toBe(input.model);
+  expect(helpers.length).toBe(1);
+  expect((await ask($, "status")).text).toContain("Switchyard off");
 });
 
-for (const [name, process] of [
-  ["helper error", () => ({ value: { exitCode: 1, stdout: "", stderr: "Invalid config" } })],
-  ["process refusal", () => ({ deny: "unavailable" })],
-  ["deadline", () => ({ deny: "process timed out" })],
-  ["malformed JSON", () => ({ value: { ...response(), stdout: "{" } })],
-  ["missing target", () => ({ value: response({}) })],
-  ["unresolved alias", () => ({ value: response(selection("sonnet")) })],
-  ["non-Claude target", () => ({ value: response(selection("gpt-test")) })],
+test("opening and dismissing /model keeps routing and the helper", async ($, on) => {
+  const { sent, statuses, helpers } = setup(on);
+  await step($);
+  await $.command.run({ command: "model", args: "" });
+  await step($);
+  expect(sent[1].model).toBe("claude-opus-5-5");
+  expect(statuses.at(-1)).toContain("claude-opus-5-5");
+  expect(helpers.length).toBe(1);
+});
+
+test("a native model change between requests ends routing", async ($, on) => {
+  const { sent, helpers, statuses, setModel, alive } = setup(on);
+  await step($);
+  setModel("claude-haiku-4-5");
+  const changed = { ...input, model: "claude-haiku-4-5" };
+  await step($, changed);
+  expect(sent[1]).toEqual(changed);
+  expect(helpers.length).toBe(1);
+  expect(alive()).toBe(1);
+  expect(statuses.at(-1)).toContain("Switchyard off");
+});
+
+for (const transition of ["clear", "resume"]) {
+  test(`${transition} keeps the Runner and routes the new session separately`, async ($, on) => {
+    const { sent, helpers, alive, setSession, statuses } = setup(on);
+    await step($);
+    await ask($, "off");
+    await $.session.end({ reason: transition, sessionId: "session-a", resume: { id: "session-a" } });
+    expect(statuses.at(-1)).toBe("Switchyard Auto · waiting for a request");
+    setSession("session-b");
+    // session.start does not fire here, so the next request notices the new session.
+    await step($);
+    expect(sent.at(-1).model).toBe("claude-opus-5-5");
+    expect(helpers.length).toBe(1);
+    expect(helpers[0].requests.at(-1).session_id).toBe("session-b");
+    expect(alive()).toBe(1);
+  });
+}
+
+test("a session switch without session.end uses the same helper with a new ID", async ($, on) => {
+  const { helpers, alive, setSession } = setup(on);
+  await step($);
+  await ask($, "off");
+  setSession("session-b");
+  expect((await ask($, "status")).text).toBe("Switchyard Auto · waiting for a request");
+  await step($);
+  expect(helpers.map((h) => h.alive)).toEqual([true]);
+  expect(helpers[0].requests.map((r) => r.session_id)).toEqual(["session-a", "session-b"]);
+  expect(alive()).toBe(1);
+});
+
+test("session end stops the helper", async ($, on) => {
+  const { alive } = setup(on);
+  await step($);
+  await $.session.end({ reason: "other", sessionId: "session-a", resume: { id: "session-a" } });
+  expect(alive()).toBe(0);
+});
+
+test("an answer that arrives after off is discarded", async ($, on) => {
+  const { sent, clock, helpers, statuses } = setup(on, { answer: () => "silent" });
+  const pending = step($);
+  await clock.settle();
+  await ask($, "off");
+  stale(helpers[0], 1);
+  await clock.advance(10);
+  await pending;
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toBe("Switchyard off");
+});
+
+test("an answer from the previous session cannot change the next one", async ($, on) => {
+  const { sent, clock, helpers, setSession, statuses } = setup(on, { answer: () => "silent" });
+  const pending = step($);
+  await clock.settle();
+  setSession("session-b");
+  // The new session invalidates old answers while the Runner keeps both sessions.
+  const next = step($);
+  await clock.settle();
+  stale(helpers[0], 1);
+  helpers[0].emit({ stream: "stdout", text: `${JSON.stringify({ id: 2, ...selection("claude-sonnet-5-5") })}\n` });
+  await clock.advance(10);
+  await Promise.all([pending, next]);
+  expect(sent.map((e) => e.model)).toEqual([input.model, "claude-sonnet-5-5"]);
+  expect(statuses.at(-1)).toBe("Switchyard Auto · claude-sonnet-5-5");
+  expect(helpers[0].alive).toBe(true);
+});
+
+test("a decision that times out ends the helper and the next request starts a fresh one", async ($, on) => {
+  const { sent, clock, helpers, removed, statuses } = setup(on, { answer: (h) => (h === undefined ? undefined : "silent") });
+  const pending = step($);
+  await clock.settle();
+  await clock.advance(2999);
+  expect(helpers[0].alive).toBe(true);
+  await clock.advance(1);
+  await pending;
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toContain("Switchyard unavailable");
+  expect(helpers[0].alive).toBe(false);
+  expect(removed).toEqual([helpers[0].dir]);
+  expect((await ask($, "status")).text).toContain("timed out");
+});
+
+test("a helper that never starts fails within the deadline", async ($, on) => {
+  const { sent, clock, statuses, helpers, removed } = setup(on, { startup: "silent" });
+  const pending = step($);
+  await clock.settle();
+  await clock.advance(3000);
+  await pending;
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toContain("did not start");
+  expect(helpers.length).toBe(1);
+  // The helper announces itself after the deadline: it is cleaned up, not left running.
+  helpers[0].emit({ stream: "stdout", text: `${JSON.stringify({ dir: helpers[0].dir })}\n` });
+  await clock.settle();
+  expect(removed).toEqual([helpers[0].dir]);
+  expect(helpers[0].alive).toBe(false);
+});
+
+test("a helper that exits is replaced on the next request", async ($, on) => {
+  const { sent, helpers, statuses, clock } = setup(on);
+  await step($);
+  helpers[0].emit({ stream: "stderr", text: "boom\n" });
+  helpers[0].exit();
+  await clock.settle();
+  await step($);
+  expect(helpers.length).toBe(2);
+  expect(sent.map((e) => e.model)).toEqual(["claude-opus-5-5", "claude-opus-5-5"]);
+  expect(statuses.at(-1)).toContain("claude-opus-5-5");
+});
+
+test("an exit during a decision reports the helper's error", async ($, on) => {
+  const { sent, statuses } = setup(on, { answer: (h) => { h.emit({ stream: "stderr", text: "Invalid config\n" }); h.exit(); return "silent"; } });
+  await step($);
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toContain("Invalid config");
+});
+
+test("a malformed helper line ends the helper", async ($, on) => {
+  const { sent, helpers } = setup(on, { answer: () => "{" });
+  await step($);
+  expect(sent).toEqual([input]);
+  expect(helpers[0].alive).toBe(false);
+});
+
+test("a helper's own error keeps its state and the helper", async ($, on) => {
+  const { sent, helpers, statuses } = setup(on, { answer: (h, id) => (id === 1 ? { id, error: "Routing must only select a model" } : undefined) });
+  await step($);
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toContain("Routing must only select a model");
+  await step($);
+  expect(helpers.length).toBe(1);
+  expect(sent[1].model).toBe("claude-opus-5-5");
+});
+
+for (const [name, answer] of [
+  ["missing target", (h, id) => ({ id })],
+  ["unresolved alias", (h, id) => ({ id, ...selection("sonnet") })],
+  ["non-Claude target", (h, id) => ({ id, ...selection("gpt-test") })],
 ]) {
   test(`keeps Claude's model on ${name}`, async ($, on) => {
-    const { sent, statuses, readStore } = setup(on, { process });
-    await drain($.turn.step(input));
+    const { sent, statuses } = setup(on, { answer });
+    await step($);
     expect(sent).toEqual([input]);
     expect(statuses.at(-1)).toContain("Switchyard unavailable");
-    expect((await $.command.run({ command: "switchyard", args: "status" })).text).toContain("keeping");
+    expect((await ask($, "status")).text).toContain("keeping");
   });
 }
 
 test("empty context passes through once", async ($, on) => {
-  const { sent, requests, readStore } = setup(on, { messages: [] });
-  await drain($.turn.step(input));
+  const { sent, helpers } = setup(on, { messages: [] });
+  await step($);
   expect(sent).toEqual([input]);
-  expect(requests.length).toBe(0);
+  expect(helpers.length).toBe(0);
 });
 
 test("completion errors do not retry or substitute another model", async ($, on) => {
-  const { sent, readStore } = setup(on, { failCompletion: true });
+  const { sent } = setup(on, { failCompletion: true });
   let failure = "";
-  try { await drain($.turn.step(input)); } catch (error) { failure = error.message; }
+  try { await step($); } catch (error) { failure = error.message; }
   // The kit skips a throwing engine stub and reports a missing implementation.
   expect(failure).toContain("turn.step");
   expect(sent.length).toBe(1);
 });
 
-test("a manual override during a decision discards its answer", async ($, on) => {
-  const { sent, clock, readStore } = setup(on, { process: async (e, clock) => {
-    await clock.sleep(100);
-    return { value: helperResponse(e) };
-  } });
-  const step = drain($.turn.step(input));
-  await clock.settle();
-  await $.command.run({ command: "switchyard", args: "off" });
-  await clock.advance(100);
-  await step;
-  expect(sent).toEqual([input]);
-  expect((await $.command.run({ command: "switchyard", args: "status" })).text).toBe("Switchyard off");
-});
-
-test("a native model change between requests disables routing", async ($, on) => {
-  const { sent, requests, statuses, setModel, readStore } = setup(on);
-  await drain($.turn.step(input));
-  setModel("claude-haiku-4-5");
-  const changed = { ...input, model: "claude-haiku-4-5" };
-  await drain($.turn.step(changed));
-  expect(sent[1]).toEqual(changed);
-  expect(requests.length).toBe(1);
-  expect(statuses.at(-1)).toContain("Switchyard off");
-});
-
-test("opening and dismissing /model does not disable routing", async ($, on) => {
-  const { sent, statuses, readStore } = setup(on);
-  await $.command.run({ command: "model", args: "" });
-  await drain($.turn.step(input));
-  expect(sent[0].model).toBe("claude-opus-5-5");
-  expect(statuses.at(-1)).toContain("claude-opus-5-5");
-});
-
 test("startup exposes enabled status and registers controls", async ($, on) => {
-  const { statuses, readStore } = setup(on);
+  const { statuses, helpers } = setup(on);
   await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
   expect(statuses.at(-1)).toBe("Switchyard Auto · waiting for a request");
-  expect((await $.command.run({ command: "switchyard", args: "" })).text).toBe(statuses.at(-1));
+  expect((await ask($, "")).text).toBe(statuses.at(-1));
+  expect(helpers.length).toBe(0);
 });
 
-const sessionKey = (id = "session-a") => `switchyard.session.v1:${id}`;
-const savedState = (enabled = true, count = 4) => ({
-  version: 1, enabled, nativeModel: input.model, checkpoint: { version: 1, session_id: "session-a", count },
-  status: enabled ? "Switchyard Auto · claude-opus-5-5" : "Switchyard off", updatedAt: 0,
+test("off while the transcript is read starts no helper", async ($, on) => {
+  const { sent, clock, helpers, gate, alive } = setup(on);
+  const release = gate("messages");
+  const pending = step($);
+  await clock.settle();
+  await ask($, "off");
+  release();
+  await pending;
+  expect(helpers.length).toBe(0);
+  expect(alive()).toBe(0);
+  expect(sent).toEqual([input]);
+  expect((await ask($, "status")).text).toBe("Switchyard off");
 });
 
-test("completed requests carry state forward and off/on preserves it", async ($, on) => {
-  const { requests, readStore } = setup(on);
+test("off then on while old work reads the transcript leaves the new helper alone", async ($, on) => {
+  const { sent, clock, helpers, gate, statuses } = setup(on);
+  const release = gate("messages");
+  const pending = step($);
+  await clock.settle();
+  await ask($, "off");
+  await ask($, "on");
+  expect(helpers.length).toBe(1);
+  release();
+  await pending;
+  expect(helpers[0].requests).toEqual([]);
+  expect(helpers[0].alive).toBe(true);
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).not.toContain("unavailable");
+});
+
+test("a session change with no lifecycle hook discards the answer", async ($, on) => {
+  const { sent, clock, helpers, setSession, statuses } = setup(on, { answer: () => "silent" });
+  const pending = step($);
+  await clock.settle();
+  setSession("session-b");
+  helpers[0].emit({ stream: "stdout", text: `${JSON.stringify({ id: 1, ...selection() })}\n` });
+  await pending;
+  expect(sent).toEqual([input]);
+  expect(statuses).not.toContain("Switchyard Auto · claude-opus-5-5");
+});
+
+test("a native model change during a decision is honored", async ($, on) => {
+  const { sent, helpers, setModel, statuses, alive } = setup(on, { answer: (h, id) => { setModel("claude-haiku-4-5"); return { id, ...selection() }; } });
+  await step($);
+  expect(sent).toEqual([input]);
+  expect(alive()).toBe(1);
+  expect(helpers.length).toBe(1);
+  expect(statuses.at(-1)).toContain("Switchyard off · Claude selected claude-haiku-4-5");
+});
+
+test("on does not enable routing until the model is read", async ($, on) => {
+  const { sent, clock, helpers, gate, setModel } = setup(on);
+  await ask($, "off");
+  setModel("claude-haiku-4-5");
+  const haiku = { ...input, model: "claude-haiku-4-5" };
+  const release = gate("model");
+  const enabling = ask($, "on");
+  await clock.settle();
+  await step($, haiku);
+  expect(sent).toEqual([haiku]);
+  release();
+  await enabling;
+  await step($, haiku);
+  expect(sent.at(-1).model).toBe("claude-opus-5-5");
+  expect(helpers.length).toBe(1);
+});
+
+test("off cancels an earlier on while its model read is pending", async ($, on) => {
+  const { sent, clock, helpers, alive, gate, statuses } = setup(on);
+  await ask($, "off");
+  const release = gate("model");
+  const enabling = ask($, "on");
+  await clock.settle();
+  await ask($, "off");
+  release();
+  await enabling;
+  await step($);
+  expect(helpers.length).toBe(0);
+  expect(alive()).toBe(0);
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toBe("Switchyard off");
+});
+
+// The kit cannot model the host killing a child on stream.return(), so these tests cover
+// the mod's own part: no requests to an unready helper, and removal of a directory that
+// is announced after the helper was stopped.
+test("off before the helper is ready keeps it without submitting stale work", async ($, on) => {
+  const { sent, clock, helpers, removed } = setup(on, { startup: "silent" });
+  const pending = step($);
+  await clock.settle();
+  await ask($, "off");
+  helpers[0].emit({ stream: "stdout", text: `${JSON.stringify({ dir: helpers[0].dir })}\n` });
+  await clock.settle();
+  await pending;
+  expect(sent).toEqual([input]);
+  expect(helpers[0].requests).toEqual([]);
+  expect(removed).toEqual([]);
+  expect(helpers[0].alive).toBe(true);
+  await ask($, "on");
+  await step($);
+  expect(helpers.length).toBe(1);
+  expect(helpers[0].requests.length).toBe(1);
+});
+
+test("an explicit on that misses the startup deadline replaces the helper", async ($, on) => {
+  const { clock, helpers, statuses } = setup(on, { startup: "silent" });
+  await ask($, "off");
+  const enabling = ask($, "on");
+  await clock.settle();
+  await clock.advance(3000);
+  await enabling;
+  expect(statuses.at(-1)).toContain("did not start");
+  expect(helpers.length).toBe(1);
+  const retry = ask($, "on");
+  await clock.settle();
+  expect(helpers.length).toBe(2);
+  await clock.advance(3000);
+  await retry;
+});
+
+test("a helper is never spawned from a turn, which Claude can interrupt", async ($, on) => {
+  const { sent, helpers, statuses } = setup(on);
+  // No session.start has run, so nothing owns helpers beyond a single dispatch.
   await drain($.turn.step(input));
-  expect((readStore(sessionKey())).checkpoint.count).toBe(1);
-  await $.command.run({ command: "switchyard", args: "off" });
-  await drain($.turn.step({ ...input, index: 1 }));
-  await $.command.run({ command: "switchyard", args: "on" });
-  await drain($.turn.step({ ...input, index: 2 }));
-  expect(requests.length).toBe(2);
-  expect(JSON.parse(requests[1].init.stdin).checkpoint.count).toBe(1);
-  expect((readStore(sessionKey())).checkpoint.count).toBe(2);
+  expect(helpers.length).toBe(0);
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toContain("Switchyard unavailable");
 });
 
-test("a new module restores the saved session checkpoint", async ($, on) => {
-  const { requests, readStore } = setup(on, { store: { [sessionKey()]: savedState() } });
-  await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
-  await drain($.turn.step(input));
-  expect(JSON.parse(requests[0].init.stdin).checkpoint.count).toBe(4);
-  expect((readStore(sessionKey())).checkpoint.count).toBe(5);
-});
 
-test("clear starts enabled and resume restores that session's controls and checkpoint", async ($, on) => {
-  const { requests, setSession, readStore } = setup(on);
-  await drain($.turn.step(input));
-  await $.command.run({ command: "switchyard", args: "off" });
+test("resume restores controls and reuses the same Runner", async ($, on) => {
+  const { helpers, setSession } = setup(on);
+  await step($);
+  await ask($, "off");
   await $.session.end({ reason: "clear", sessionId: "session-a", resume: {} });
   setSession("session-b");
-  await drain($.turn.step({ ...input, turnId: "new-turn" }));
-  expect(JSON.parse(requests[1].init.stdin).checkpoint).toBe(null);
-  expect(JSON.parse(requests[1].init.stdin).session_id).toBe("session-b");
+  await step($);
   await $.session.end({ reason: "resume", sessionId: "session-b", resume: {} });
   setSession("session-a");
-  await drain($.turn.step(input));
-  expect(requests.length).toBe(2);
-  expect((await $.command.run({ command: "switchyard", args: "status" })).text).toBe("Switchyard off");
-  await $.command.run({ command: "switchyard", args: "on" });
-  await drain($.turn.step({ ...input, index: 1 }));
-  expect(JSON.parse(requests[2].init.stdin).checkpoint.count).toBe(1);
+  expect((await ask($, "status")).text).toBe("Switchyard off");
+  await step($);
+  expect(helpers[0].requests.length).toBe(2);
+  await ask($, "on");
+  await step($);
+  expect(helpers.length).toBe(1);
+  expect(helpers[0].requests.map((r) => r.session_id)).toEqual(["session-a", "session-b", "session-a"]);
 });
 
-test("compaction rereads current messages and retains routing state", async ($, on) => {
-  const { requests, setMessages, readStore } = setup(on);
-  await drain($.turn.step(input));
-  setMessages([{ role: "user", text: "Summary of the compacted conversation" }]);
-  await drain($.turn.step({ ...input, index: 1 }));
-  const body = JSON.parse(requests[1].init.stdin);
-  expect(body.checkpoint.count).toBe(1);
-  expect(body.messages[0].content[0].text).toBe("Summary of the compacted conversation");
-});
-
-test("abandoning a completion stream leaves the previous checkpoint untouched", async ($, on) => {
-  const { readStore } = setup(on, { store: { [sessionKey()]: savedState() } });
-  const stream = $.turn.step(input);
-  await stream.next();
-  await stream.return();
-  expect((readStore(sessionKey())).checkpoint.count).toBe(4);
-});
-
-test("a completion error leaves the checkpoint untouched", async ($, on) => {
-  const { readStore } = setup(on, { failCompletion: true, store: { [sessionKey()]: savedState() } });
-  try { await drain($.turn.step(input)); } catch (_) {}
-  expect((readStore(sessionKey())).checkpoint.count).toBe(4);
-});
-
-test("off during streaming invalidates a pending state commit", async ($, on) => {
-  const { clock, readStore } = setup(on, { completion: async (e, clock) => { await clock.sleep(100); } });
-  const step = drain($.turn.step(input));
-  await clock.settle();
-  await $.command.run({ command: "switchyard", args: "off" });
-  await clock.advance(100);
-  await step;
-  const stored = readStore(sessionKey());
-  expect(stored.enabled).toBe(false);
-  expect(stored.checkpoint).toBe(null);
-});
-
-test("a session change discards an old helper decision", async ($, on) => {
-  const { clock, sent, setSession, readStore } = setup(on, { process: async (e, clock) => {
-    await clock.sleep(100);
-    return { value: helperResponse(e) };
-  } });
-  const step = drain($.turn.step(input));
-  await clock.settle();
-  await $.session.end({ reason: "clear", sessionId: "session-a", resume: {} });
-  setSession("session-b");
-  await clock.advance(100);
-  await step;
-  expect(sent[0]).toEqual(input);
-  expect(readStore(sessionKey())).toBe(undefined);
-  expect(readStore(sessionKey("session-b"))).toBe(undefined);
-});
-
-test("subagent steps do not consume the parent checkpoint", async ($, on) => {
-  const { requests, readStore } = setup(on, { store: { [sessionKey()]: savedState() } });
-  await drain($.turn.step({ ...input, agentId: "child" }));
-  expect(requests.length).toBe(0);
-  expect((readStore(sessionKey())).checkpoint.count).toBe(4);
-});
-
-test("a native model change during routing discards the decision and disables routing", async ($, on) => {
-  const { clock, sent, setModel, readStore } = setup(on, { process: async (e, clock) => {
-    await clock.sleep(100);
-    return { value: helperResponse(e) };
-  } });
-  const step = drain($.turn.step(input));
-  await clock.settle();
-  setModel("claude-haiku-4-5");
-  await clock.advance(100);
-  await step;
-  expect(sent[0]).toEqual(input);
-  expect(readStore(sessionKey()).enabled).toBe(false);
-  expect(readStore(sessionKey()).checkpoint).toBe(null);
-  expect(readStore(sessionKey()).nativeModel).toBe("claude-haiku-4-5");
-});
-
-test("reset recovers corrupt storage without losing Claude's request", async ($, on) => {
-  const { sent, requests, readStore } = setup(on, { store: { [sessionKey()]: { version: 99 } } });
-  await drain($.turn.step(input));
-  expect(sent[0]).toEqual(input);
-  expect(requests.length).toBe(0);
-  await $.command.run({ command: "switchyard", args: "reset" });
-  await drain($.turn.step({ ...input, index: 1 }));
-  expect(JSON.parse(requests[0].init.stdin).checkpoint).toBe(null);
-});
-
-test("storage failure does not replay or fail a completed model response", async ($, on) => {
-  const { sent, statuses, readStore } = setup(on, { storeFailure: true });
-
-  const result = await drain($.turn.step(input));
-  expect(result.result.answer).toBe("hello");
-  expect(sent.length).toBe(1);
-  expect(statuses.at(-1)).toContain("state not saved");
+test("reload restores off without starting a helper", async ($, on) => {
+  const { helpers, sent } = setup(on, { store: { "switchyard.enabled:session-a": false } });
+  await step($);
+  expect(helpers.length).toBe(0);
+  expect(sent).toEqual([input]);
+  expect((await ask($, "status")).text).toBe("Switchyard off");
 });

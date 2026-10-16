@@ -1,6 +1,7 @@
 # Switchyard plugin for Claude Code
 
 Install the plugin, reload Claude's plugins, and routing starts automatically.
+Every new Claude session starts with routing on.
 Switchyard's local `auto` stage router selects Sonnet 5.5 or Opus 5.5 before each
 main-conversation request, including tool continuations. Claude Code keeps the
 conversation, tools, reasoning effort, authentication, and completion connection.
@@ -40,62 +41,51 @@ directory alone does not include the executable.
 - `Switchyard Auto · claude-sonnet-5-5` (or Opus): the latest selected model.
 - `Switchyard unavailable · keeping …`: routing failed; Claude keeps its model.
 - `/switchyard` shows details. `/switchyard off` and `/switchyard on` control the
-  current session. Off pauses routing and preserves its checkpoint; on resumes it.
-- `/switchyard reset` clears this session's checkpoint and enables routing again.
-  It does not delete Claude's conversation. Disable the plugin to turn it off
-  across sessions.
+  current session. Disable the plugin to turn it off across sessions.
+
+One plugin-owned helper keeps one Switchyard Runner alive. Routing state such
+as the capable-model hold stays in libsy's existing session storage.
+`/switchyard off` pauses routing; `/switchyard on` reuses that Runner and its state.
+Manual model overrides also pause routing without ending the helper.
+`/clear` starts a new session with routing on. Resuming a conversation in the same
+plugin runtime reuses its session ID and retained routing state, subject to
+libsy's existing session expiry. Each session's on/off preference is saved
+separately in Claude's plugin store.
+
+Replacing the plugin on reload, Claude exit, or a helper crash ends the Runner. Routing state is
+held in memory, with no checkpoints or restoration after restart. A replacement
+helper reports that it is starting with fresh routing state. Saved on/off
+preferences survive reload and restart.
+Reloading an unchanged plugin leaves its Runner alive.
+A decision that takes more than three seconds, or a helper that fails, leaves
+Claude's model in place and ends that helper. The next request starts a new one
+with fresh routing state.
 
 Changing the session model, including through the model picker or a native
 fallback, turns routing off until `/switchyard on`. An explicit `/model <name>`
 command also turns routing off. Opening and dismissing the picker leaves it on.
 Completion errors remain Claude's to handle.
+Routing advances when the Runner makes a decision. Interrupting the subsequent
+Claude completion does not roll back that decision. Late answers from before
+a toggle, model change, or session switch cannot override the current selection.
 
 `auto` starts with Sonnet and reads tool activity and failure signals. It can
 escalate to Opus for recovery and return to Sonnet as work proceeds. This is the
-existing stage router, not a separate model-based task classifier. Switching
+existing stage router, not a separate model-based task classifier. Its recent
+tool-error window is unchanged; plain chat does not necessarily age out a tool
+failure. Switching
 models can incur cache costs; this example makes no savings or quality claim.
 
 Subagents retain Claude's native model selection. The mod's transcript API reads
 the main conversation and cannot classify a subagent's private history. Routing
 uses visible text, tool arguments, results, and error flags; Claude retains the
-original images and thinking.
-
-## Session lifecycle
-
-The plugin stores a versioned libsy checkpoint under Claude's session ID. Each
-short-lived native helper restores it, runs the same stage router used by the
-server, and returns a model plus the updated checkpoint. Claude still sends the
-completion itself. There is no proxy, listener, or background routing process.
-
-A successful model step commits the checkpoint. A failed or abandoned stream,
-or a decision superseded by off/on, reset, or a session transition, cannot commit
-it. Replaying the same decision ID and input reuses the existing decision without
-consuming another recovery step. Main steps are serialized within the mod.
-
-- **New session / clear:** a new session ID starts enabled with fresh state.
-- **Resume / plugin reload / process restart:** the same session ID restores its
-  checkpoint and on/off setting from Claude's plugin store.
-- **Compaction:** tool signals are recomputed from the current transcript while
-  the router's persistent counters survive, as they do in a running server.
-- **Configuration change:** the helper detects a changed TOML fingerprint and
-  starts fresh routing state. An incompatible checkpoint fails visibly; use reset.
-
-The store retains up to 128 recent session records (pruned at plugin startup).
-Checkpoints contain routing counters and a fingerprint of the last request, not
-conversation text or credentials. One active Claude process per session ID is
-supported; concurrent processes resuming the same ID are not coordinated.
-
-The stage policy is unchanged. Its recent window counts tool results, so plain
-chat after an error can keep choosing Opus until newer tool results replace the
-failure. This policy behavior also occurs with the server.
+original images and thinking. Each decision reads the current transcript after
+resume or compaction.
 
 For optional customization, set `SWITCHYARD_CONFIG` to another complete runner
 TOML file before starting Claude. Keep route ID `switchyard` and use full Claude
 model IDs, not aliases such as `sonnet`. Only model-selection algorithms accepted
-by `Runner::from_toml_for_model_selection` and implementing session checkpoints
-are supported: auto, passthrough, and per-request capability classification.
-Composite and retaining classifiers need their own complete checkpoint support
-before this bridge can use them. The bundled `auto`
+by `Runner::from_toml_for_model_selection` are supported. The bundled `auto`
 configuration runs entirely locally; its placeholder client is never contacted.
 
 ## Development
@@ -111,12 +101,18 @@ python3 examples/claude/test_package.py dist/switchyard-claude-linux-x86_64/swit
 
 The helper source is
 [`crates/switchyard-runner/examples/switchyard-claude.rs`](../../crates/switchyard-runner/examples/switchyard-claude.rs).
-It invokes the existing runner once over stdin/stdout. A three-second deadline
-bounds routing; failed decisions leave the original model request intact.
-The helper tests compare decisions and checkpoints against a persistent Runner
-through three escalation/recovery cycles and a replaced transcript. Mod tests
-cover state restoration, clear/resume, off/on, cancellation, stale decisions,
-subagent isolation, storage failure, and stream forwarding without replay.
+Claude's process API closes a child's stdin after one write, so the mod sends
+each request as a file in a private directory the helper creates, and the helper
+answers with one JSON line on stdout. Every request includes the Claude session
+ID, passed to the Runner as request metadata. The helper owns no model-completion
+connection or listening socket. It exits when its directory is removed, on SIGTERM, or
+when its parent process ends. A three-second deadline bounds each decision;
+failed decisions leave the original model request intact.
+The plugin tests use a fake helper to cover reuse, off and on, session changes,
+stale answers, timeouts, crashes, manual controls, subagent isolation, and stream
+forwarding. `test_package.py` drives the real helper for repeated escalation and
+recovery, the retained capable-model hold, session isolation within one Runner,
+restart, bad input, and shutdown.
 
 To try the built plugin for one session:
 
