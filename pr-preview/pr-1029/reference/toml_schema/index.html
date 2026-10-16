@@ -2550,7 +2550,7 @@ how one route chooses between more than two models.</p>
 <td><code>default_target</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Group used when the judge's verdict cannot be parsed or routed. HTTP client failures stop the request after retries. Any group except <code>judge</code>, and it must contain at least one target.</td>
+<td>Fallback group for <code>target_selector</code>. The <code>handoff_note</code> policy always uses <code>policy.target</code>. HTTP client failures stop the request after retries. Any group except <code>judge</code>, and it must contain at least one target.</td>
 </tr>
 <tr>
 <td><code>prompt</code></td>
@@ -2568,17 +2568,23 @@ how one route chooses between more than two models.</p>
 <td><code>policy</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>Policy table. <code>target_selector</code> accepts a JSON Pointer such as <code>/decision/target</code>.</td>
+<td><code>type = "target_selector"</code> reads a target group from the verdict. <code>type = "handoff_note"</code> reads only a note ID and uses a fixed target from TOML.</td>
 </tr>
 <tr>
-<td><code>policy.handoff_notes.selector</code></td>
-<td style="text-align: center;">When using notes</td>
+<td><code>policy.selector</code></td>
+<td style="text-align: center;">Yes</td>
 <td>—</td>
-<td>JSON Pointer to a note ID in the same validated verdict, such as <code>/note</code>. Use a nullable string field in <code>response_schema</code>.</td>
+<td>JSON Pointer to the target group for <code>target_selector</code>, or to a nullable note ID for <code>handoff_note</code> (such as <code>/note</code>).</td>
 </tr>
 <tr>
-<td><code>policy.handoff_notes.db_path</code></td>
-<td style="text-align: center;">When using notes</td>
+<td><code>policy.target</code></td>
+<td style="text-align: center;">For <code>handoff_note</code></td>
+<td>—</td>
+<td>Fixed target name from <code>[targets]</code>, also listed in <code>models.any</code>. Used even when the judge returns no note or an invalid verdict.</td>
+</tr>
+<tr>
+<td><code>policy.db_path</code></td>
+<td style="text-align: center;">For <code>handoff_note</code></td>
 <td>—</td>
 <td>TOML file mapping IDs to note text, loaded at startup. Relative paths resolve beside a file-loaded deployment. The judge sees this mapping; a selected ID appends its text using the handoff-note helper.</td>
 </tr>
@@ -2602,8 +2608,8 @@ how one route chooses between more than two models.</p>
 </tr>
 </tbody>
 </table>
-<p>The selected JSON label must name a configured group. A label naming a target
-rather than a group, or a group you did not configure, falls back to
+<p>For <code>target_selector</code>, the selected JSON label must name a configured group.
+A label naming a target rather than a group, or a group you did not configure, falls back to
 <code>default_target</code>. <code>judge</code> is not routable.</p>
 <p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard supplies
 the schema automatically: through the structured-output request in <code>json_schema</code>

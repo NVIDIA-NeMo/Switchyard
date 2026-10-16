@@ -1751,7 +1751,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <p>The same classifier also supports <a href="../escalation_router_routing/">escalation</a>
 and <a href="#custom-multi-target-routing">custom routing</a> across two or more targets.</p>
 <p>For a task-level decision-model example with structured instructions, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e25c2f706ed17e83a07efaa801379453697f5d14/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b66ac903d4c6fda5568144b141bb852dcda63cca/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
@@ -1840,7 +1840,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e25c2f706ed17e83a07efaa801379453697f5d14/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b66ac903d4c6fda5568144b141bb852dcda63cca/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1977,9 +1977,8 @@ name works.</p>
 <p>This separation applies to every classifier mode. Prompts containing the legacy
 <code>{{RESPONSE_SCHEMA}}</code> placeholder are rejected during configuration validation.</p>
 <h3 id="judge-selected-handoff-notes">Judge-selected handoff notes<a class="headerlink" href="#judge-selected-handoff-notes" title="Permanent link">&para;</a></h3>
-<p>A custom classifier can select a note from a local text database in the same
-verdict that selects the target. The note uses the same append behavior as
-stage-router handoff notes.</p>
+<p>Use <code>policy.type = "handoff_note"</code> to add a hint to a fixed target. The target is
+specified in TOML. A separate LLM judge selects only an optional note ID.</p>
 <p>Create a TOML file mapping IDs to note text:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">compile_failure</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Read the compiler error and fix the first failing operation.&quot;</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">repeated_failure</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;&quot;&quot;</span>
@@ -1987,28 +1986,28 @@ stage-router handoff notes.</p>
 </span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="s2">Explain what the new attempt tests.</span>
 </span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="s2">&quot;&quot;&quot;</span>
 </span></code></pre></div>
-<p>Add a nullable string field, such as <code>note</code>, to your <code>response_schema</code>, then
-configure its JSON Pointer and the database path:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[routes.smart.policy.handoff_notes]</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">selector</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/note&quot;</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">db_path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;notes.toml&quot;</span>
+<p>Use a nullable <code>note</code> string in <code>response_schema</code>, then configure the policy:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[routes.notes.policy]</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;handoff_note&quot;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target&quot;</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">selector</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/note&quot;</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">db_path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;handoff-notes.toml&quot;</span>
 </span></code></pre></div>
-<p>Switchyard loads the file at startup and adds the ID-to-text mapping to the
-judge's prompt. A verdict such as
-<code>{"decision":{"target":"fast"},"note":"compile_failure"}</code> appends the stored
-text to the outgoing request. The verdict must pass schema validation and select
-a configured target. A null, missing, or unknown note ID adds no note; a verdict
-that fails validation follows the classifier's existing fallback behavior.</p>
-<p><code>classify_trigger</code> also controls note selection. A retained target bypasses the
-judge and adds no note. <code>every_request</code> may select the same note on later
-requests. Relative database paths resolve beside the deployment TOML file when
-using <code>Runner::load</code>; string-based configuration resolves them from the working
+<p><code>policy.target</code> names an entry in <code>[targets]</code> that also appears in <code>models.any</code>.
+Switchyard loads the file at startup and includes the mapping in the judge's
+prompt. A verdict such as <code>{"note":"compile_failure"}</code> appends the stored text
+using the same helper as stage-router handoff notes. A null, missing, or unknown
+note ID adds nothing. Invalid verdicts add nothing. The configured target is
+used in all these cases; the judge does not select a model.</p>
+<p><code>classify_trigger</code> controls note selection. A retained target bypasses the judge
+and adds no note. <code>every_request</code> may select the same note on later requests.
+Relative database paths resolve beside the deployment TOML file when using
+<code>Runner::load</code>; string-based configuration resolves them from the working
 directory. Reload the deployment to pick up file edits.</p>
-<p>For a fixed answer model with judge-selected notes, use a single <code>models.any</code>
-target. See the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e25c2f706ed17e83a07efaa801379453697f5d14/examples/classifier-handoff-notes.toml">route example</a>
-and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e25c2f706ed17e83a07efaa801379453697f5d14/examples/handoff-notes.toml">note database</a>. Set their client URL and
-model IDs for your provider. Custom classifiers inside composite and sub-agent
-routes accept the same policy settings.</p>
+<p>See the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b66ac903d4c6fda5568144b141bb852dcda63cca/examples/classifier-handoff-notes.toml">route example</a>
+and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b66ac903d4c6fda5568144b141bb852dcda63cca/examples/handoff-notes.toml">note database</a>. Set their client URL and
+model IDs for your provider. This policy is supported by custom <code>llm_classifier</code>
+routes, including sub-agent routes.</p>
 <h3 id="forecast-and-policy-assumptions">Forecast and policy assumptions<a class="headerlink" href="#forecast-and-policy-assumptions" title="Permanent link">&para;</a></h3>
 <p>The packaged prompt forecasts whole-task success for a generic efficient agent.
 It produces a probability and capability boundary but does not choose a route.
