@@ -625,7 +625,11 @@ pub struct StageTierConfig {
     /// The efficient tier.
     pub efficient_target: String,
     /// How much agreement a decisive pick needs, from 0 to 1.
-    pub confidence_threshold: f64,
+    #[serde(default, alias = "efficient_first_threshold")]
+    pub confidence_threshold: Option<f64>,
+    /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
+    #[serde(default)]
+    pub capable_first_threshold: f64,
     /// How many trailing tool results the signals are scored over.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
@@ -1544,7 +1548,13 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
-            let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
+            let threshold = confidence_threshold.ok_or_else(|| {
+                AlgorithmConfigError::new(format!(
+                    "stage_router route {route_name}: confidence_threshold is required"
+                ))
+            })?;
+            let mut config = StageRouterConfig::new(*picker, threshold);
+            config.capable_first_threshold = tiers.capable_first_threshold;
             config.recent_window = *recent_turn_window;
             if let Some(turns) = capable_hold_turns {
                 config.capable_hold_turns = *turns;
@@ -1585,8 +1595,11 @@ fn build_algorithm(
             stage,
             subagents,
         } => {
-            let mut stage_config =
-                StageRouterConfig::new(PickerMode::EfficientFirst, stage.confidence_threshold);
+            let mut stage_config = StageRouterConfig::new(
+                PickerMode::EfficientFirst,
+                stage.confidence_threshold.unwrap_or(0.5),
+            );
+            stage_config.capable_first_threshold = stage.capable_first_threshold;
             stage_config.recent_window = stage.recent_turn_window;
             if let Some(turns) = stage.capable_hold_turns {
                 stage_config.capable_hold_turns = turns;

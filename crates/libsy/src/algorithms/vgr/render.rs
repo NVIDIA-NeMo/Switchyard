@@ -8,7 +8,7 @@
 
 use switchyard_protocol::{ContentBlock, Request, Role};
 
-use super::text::{Turn, clip_mid, content_text, redact};
+use super::text::{Turn, clip_mid, content_text, redact, tool_result_failed};
 
 const ASSISTANT_TURN_BUDGET: usize = 1200;
 pub(super) const ATTEMPT_BUDGET: usize = 2200;
@@ -94,7 +94,7 @@ fn agentic_trajectory(request: &Request) -> Vec<String> {
                     Some(("tool call", format!("{}({})", call.name, call.arguments)))
                 }
                 ContentBlock::ToolResult(result) => Some((
-                    if result.is_error == Some(true) {
+                    if tool_result_failed(result) {
                         "tool error"
                     } else {
                         "tool result"

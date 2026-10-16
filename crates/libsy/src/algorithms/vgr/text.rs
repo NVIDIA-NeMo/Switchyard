@@ -9,7 +9,7 @@ use std::{borrow::Cow, sync::LazyLock};
 
 use regex::Regex;
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role};
+use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, ToolResult};
 
 use crate::algorithms::util::tool_signals::classify_text;
 
@@ -174,6 +174,33 @@ pub(super) struct ToolRecord {
     pub(super) clean_tail: i32,
 }
 
+/// Uses executor status and inferred failures, with a successful exit taking precedence.
+pub(super) fn tool_result_failed(result: &ToolResult) -> bool {
+    let text = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text),
+            _ => None,
+        })
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let body = serde_json::from_str::<Value>(&text).ok();
+    let object = body.as_ref().and_then(Value::as_object);
+    // The executor's own `exit_code: 0` overrules every inferred failure:
+    // harnesses send `"error": null` on success, and negative checks print
+    // error-shaped text.
+    let exit_ok = object
+        .and_then(|object| object.get("exit_code"))
+        .and_then(Value::as_i64)
+        == Some(0);
+    (result.is_error == Some(true)
+        || object.is_some_and(|object| object.contains_key("error"))
+        || classify_text(&text).0 > 0.0)
+        && !exit_ok
+}
+
 impl ToolRecord {
     pub(super) fn from_request(request: &Request) -> Self {
         let mut record = Self::default();
@@ -187,29 +214,7 @@ impl ToolRecord {
                 _ => None,
             });
         for result in results {
-            let text = result
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text),
-                    _ => None,
-                })
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join("\n");
-            let body = serde_json::from_str::<Value>(&text).ok();
-            let object = body.as_ref().and_then(Value::as_object);
-            // The executor's own `exit_code: 0` overrules every inferred failure:
-            // harnesses send `"error": null` on success, and negative checks print
-            // error-shaped text.
-            let exit_ok = object
-                .and_then(|object| object.get("exit_code"))
-                .and_then(Value::as_i64)
-                == Some(0);
-            let failed = (result.is_error == Some(true)
-                || object.is_some_and(|object| object.contains_key("error"))
-                || classify_text(&text).0 > 0.0)
-                && !exit_ok;
+            let failed = tool_result_failed(result);
             record.results = record.results.saturating_add(1);
             record.errors = record.errors.saturating_add(i32::from(failed));
             record.clean_tail = if failed {

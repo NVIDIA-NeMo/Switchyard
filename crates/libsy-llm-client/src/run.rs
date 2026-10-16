@@ -18,7 +18,7 @@
 //! [`ClientRouter`] sends native Responses state back to its provider; for Chat or Anthropic
 //! targets it retains the canonical history needed to materialize the continuation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -261,6 +261,14 @@ async fn call_first_available(
         {
             Ok(response) => return Ok(response),
             Err(error) if index + 1 == models.len() => return Err(error),
+            Err(error)
+                if clients.rate_limit_fallback_disabled.contains(target)
+                    && matches!(&error, LibsyError::ClientCall {
+                        source: LlmClientError::UpstreamHttp { status, .. }, ..
+                    } if *status == StatusCode::TOO_MANY_REQUESTS) =>
+            {
+                return Err(error);
+            }
             Err(error) => match fallback_reason(&error) {
                 Some(reason) => tracing::info!(
                     from = %target,
@@ -582,6 +590,7 @@ fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
 #[derive(Clone)]
 pub struct ClientRouter {
     inner: Arc<ClientRouting>,
+    rate_limit_fallback_disabled: Arc<HashSet<ModelId>>,
 }
 
 struct ClientRouting {
@@ -668,6 +677,7 @@ impl ClientRouter {
             .next()
             .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)));
         Self {
+            rate_limit_fallback_disabled: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
                 decision_clients,
@@ -694,6 +704,7 @@ impl ClientRouter {
         decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
     ) -> Self {
         Self {
+            rate_limit_fallback_disabled: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::Single(client),
                 decision_clients,
@@ -703,6 +714,16 @@ impl ClientRouter {
                 track_provider_state: false,
             }),
         }
+    }
+
+    /// Stop completion fallback on HTTP 429 for the given models.
+    ///
+    /// For translating clients, also use
+    /// [`TranslatingLlmClient::without_rate_limit_cooldown`](crate::TranslatingLlmClient::without_rate_limit_cooldown)
+    /// so later calls are not skipped with a generic cooldown error.
+    pub fn without_rate_limit_fallback(mut self, models: HashSet<ModelId>) -> Self {
+        self.rate_limit_fallback_disabled = Arc::new(models);
+        self
     }
 
     /// The client that serves `model`.

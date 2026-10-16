@@ -63,7 +63,7 @@ The [routing overview](docs/routing_algorithms/overview.md) retains the full cat
 
 ## Evaluation and reference
 
-![Task completion versus cost for Switchyard classification, stage, and escalation routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.png)
+![Task completion versus cost for Switchyard classification, stage, escalation, and Jev task routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.svg)
 
 Results depend on the benchmark, model pool, serving stack, and routing configuration.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
