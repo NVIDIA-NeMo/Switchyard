@@ -18,6 +18,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::runner::ModelPropertiesProbe;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
     Runner, RunnerError,
@@ -317,6 +318,7 @@ impl DeploymentConfig {
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
+        let mut model_properties_probes = BTreeMap::new();
         for (route_name, config) in &self.routes {
             let decision_judge = config.algorithm.decision_judge();
             for name in config.callable_target_names() {
@@ -352,6 +354,11 @@ impl DeploymentConfig {
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
+                && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
+            {
+                model_properties_probes.insert(config.id.clone(), probe);
+            }
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients, &decision_clients)?;
             let anthropic_auxiliary_target =
@@ -377,7 +384,8 @@ impl DeploymentConfig {
         }
         let runner = Runner::new(routes)
             .with_fallback_url(fallback_base_url)
-            .with_provider_api_keys(provider_api_keys);
+            .with_provider_api_keys(provider_api_keys)
+            .with_model_properties_probes(model_properties_probes);
         Ok(runner)
     }
 
@@ -670,6 +678,27 @@ impl DeploymentConfig {
         Ok(Some(config.base_url.as_str().to_string()))
     }
 
+    fn build_model_properties_probe(
+        &self,
+        local_target_name: &str,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<ModelPropertiesProbe> {
+        let local_target = self.targets.get(local_target_name)?;
+        let client_config = self.llm_clients.get(&local_target.llm_client)?;
+        if !matches!(
+            client_config.context_discovery,
+            Some(ContextDiscovery::LlamaCpp)
+        ) {
+            return None;
+        }
+        let client = clients.get(&local_target.llm_client)?;
+        Some(ModelPropertiesProbe {
+            model: local_target.id.clone(),
+            format: client_config.format.wire_format(),
+            client: Arc::clone(client),
+        })
+    }
+
     fn build_anthropic_auxiliary_target(
         &self,
         route: &RouteConfig,
@@ -763,6 +792,8 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
 struct LlmClientConfig {
     format: ClientFormat,
     base_url: HttpBaseUrl,
+    /// Opt-in context discovery for VGR's local target. Unset disables discovery.
+    context_discovery: Option<ContextDiscovery>,
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -777,6 +808,12 @@ struct LlmClientConfig {
     failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ContextDiscovery {
+    LlamaCpp,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1189,6 +1226,19 @@ task_typing = false
         let missing_target =
             vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
         assert!(error_message(&missing_target).contains("unknown target missing"));
+        Ok(())
+    }
+
+    #[test]
+    fn vgr_local_server_example_builds_and_rejects_unknown_discovery() -> RunnerResult<()> {
+        let example = include_str!("../../../examples/vgr-local-servers.toml");
+        let runner = runner_from_toml(example)?;
+        assert!(runner.route("switchyard/vgr").is_some());
+        let invalid = example.replace(
+            "context_discovery = \"llama_cpp\"",
+            "context_discovery = \"guess\"",
+        );
+        assert!(error_message(&invalid).contains("unknown variant `guess`"));
         Ok(())
     }
 

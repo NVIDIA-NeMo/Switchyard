@@ -203,13 +203,13 @@ async fn final_answers_commit_only_on_a_verified_clean_record() -> Result<()> {
         long.extend([call(&id), result(&id, "ok")]);
     }
     assert_eq!(
-        drive(&clean, session(long.clone()), calls.clone(), answer, 1.0).await?,
+        drive(&clean, session(long.clone()), calls.clone(), answer, 0.99).await?,
         "cloud"
     );
     assert_eq!(calls.1.load(Ordering::Relaxed), 0);
     let confirmed = route(|config| config.confirmed_recovery_min_clean_tail = Some(1))?;
     assert_eq!(
-        drive(&confirmed, session(long), calls.clone(), answer, 1.0).await?,
+        drive(&confirmed, session(long), calls.clone(), answer, 0.99).await?,
         "local"
     );
     assert_eq!(calls.1.load(Ordering::Relaxed), 1);

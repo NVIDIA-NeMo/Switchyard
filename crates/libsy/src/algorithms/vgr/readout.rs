@@ -47,8 +47,6 @@ pub(super) fn p_yes(response: &AggLlmResponse) -> Option<f64> {
     }
     match (yes, no) {
         (Some(yes), Some(no)) if yes + no > 0.0 => Some(yes / (yes + no)),
-        (Some(_), None) => Some(1.0),
-        (None, Some(_)) => Some(0.0),
         _ => None,
     }
 }
@@ -75,10 +73,8 @@ mod tests {
             {"token": ".", "logprob": -9.0}
         ]));
         assert!(score.is_some_and(|score| (score - 0.5).abs() < 1e-9));
-        assert_eq!(
-            scored(json!([{"token": "yes", "logprob": -3.0}])),
-            Some(1.0)
-        );
+        assert_eq!(scored(json!([{"token": "yes", "logprob": -3.0}])), None);
+        assert_eq!(scored(json!([{"token": "no", "logprob": -3.0}])), None);
         assert_eq!(scored(json!([{"token": "maybe", "logprob": 0.0}])), None);
         assert_eq!(p_yes(&AggLlmResponse::default()), None);
     }

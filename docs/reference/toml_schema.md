@@ -50,6 +50,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 |---|:---:|---|---|
 | `format` | Yes | — | `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | `base_url` | Yes | — | Upstream base URL. |
+| `context_discovery` | No | unset | Set to `"llama_cpp"` to enable `/props` context discovery for VGR local targets. Disabled when unset. An explicit route `context_window` takes precedence. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |

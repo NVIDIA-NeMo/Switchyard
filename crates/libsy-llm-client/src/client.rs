@@ -200,6 +200,56 @@ impl TranslatingLlmClient {
         self.backend_for(model, operation.wire_format()).is_some()
     }
 
+    /// Reads llama.cpp model properties through the backend's configured auth and headers.
+    ///
+    /// Redirects are disabled so credentials cannot move to another origin.
+    pub async fn get_model_properties(
+        &self,
+        model: &ModelId,
+        format: WireFormat,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let backend =
+            self.backend_for(model, format)
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model} has no backend for {format:?}"),
+                })?;
+        let mut url = reqwest::Url::parse(backend.base_url()).map_err(|error| {
+            LlmClientError::Configuration {
+                message: format!("model {model} has an invalid backend URL: {error}"),
+            }
+        })?;
+        let root = url.path().trim_end_matches('/');
+        let root = root
+            .strip_suffix("/chat/completions")
+            .or_else(|| root.strip_suffix("/responses"))
+            .unwrap_or(root);
+        let path = format!(
+            "{}/props",
+            root.strip_suffix("/v1")
+                .unwrap_or(root)
+                .trim_end_matches('/')
+        );
+        url.set_path(&path);
+        url.set_query(None);
+
+        let builder = self.forward_auth_client.get(url).timeout(timeout);
+        let builder = apply_extra_headers(builder, backend);
+        let response = backend
+            .apply_auth(builder)
+            .send()
+            .await
+            .map_err(convert_reqwest_error)?
+            .error_for_status()
+            .map_err(convert_reqwest_error)?;
+        response
+            .json()
+            .await
+            .map_err(|source| LlmClientError::InvalidResponse {
+                source: Box::new(source),
+            })
+    }
+
     /// Calls a model-bearing auxiliary provider operation.
     ///
     /// Returns an error when the model has no compatible backend or the upstream
@@ -1517,6 +1567,43 @@ mod tests {
             Backend::Anthropic(config(base_url)),
             None,
         )]
+    }
+
+    #[tokio::test]
+    async fn model_properties_uses_configured_auth_and_backend_path()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (base_path, props_path) in [
+            ("/v1", "/props"),
+            ("/v1/", "/props"),
+            ("/v1/chat/completions", "/props"),
+            ("/v1/responses/", "/props"),
+            ("/prefix/v1", "/prefix/props"),
+            ("/prefix/v1/chat/completions", "/prefix/props"),
+            ("/prefix/v1/responses", "/prefix/props"),
+            ("/prefix/", "/prefix/props"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(props_path))
+                .and(wiremock::matchers::header("authorization", "Bearer secret"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "default_generation_settings": {"n_ctx": 65_536}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client =
+                TranslatingLlmClient::new(&chat_map(&format!("{}{base_path}", server.uri())))?;
+            let properties = client
+                .get_model_properties(
+                    &ModelId::from("gpt"),
+                    WireFormat::OpenAiChat,
+                    Duration::from_secs(1),
+                )
+                .await?;
+            assert_eq!(properties["default_generation_settings"]["n_ctx"], 65_536);
+        }
+        Ok(())
     }
 
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {

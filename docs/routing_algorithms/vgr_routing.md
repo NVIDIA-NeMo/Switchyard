@@ -32,8 +32,26 @@ confirmed_recovery_min_clean_tail = 1
 ```
 
 `judge_target` defaults to `local_target`. `cloud_judge_target` is optional.
-The local and cloud targets must resolve to distinct model IDs. When the
-route sets `context_window`, `/v1/models` advertises that configured limit.
+The local and cloud targets must resolve to distinct model IDs. Set the route's
+`context_window` to advertise a configured limit through `/v1/models`; this works
+with any supported local service and takes precedence over discovery.
+
+Context discovery is disabled by default. For llama.cpp, set
+`context_discovery = "llama_cpp"` on the local target's `[llm_clients.<name>]`
+entry and leave the route's `context_window` unset. Switchyard then reads the
+service's `/props` response and advertises a positive context capacity when
+available. Missing or invalid properties leave the capacity unknown; routing
+continues normally. Discovery does not configure the service or load a model.
+
+See [the local-server example](../../examples/vgr-local-servers.toml)
+for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
+For Ollama and vLLM, set `context_window` to match the running service; automatic
+discovery for those servers is not implemented.
+
+The server caches the model catalog, including unavailable discovery results,
+for one minute. Discovery probes run concurrently with a two-second total budget
+per refresh. Completed discoveries are retained when that budget expires.
+
 `confirmed_recovery_min_clean_tail`, when set, lets an agentic
 run that recovered from tool errors commit locally once that many trailing tool
 results are clean and the cloud judge confirms the evidence.
