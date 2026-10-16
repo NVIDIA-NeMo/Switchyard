@@ -145,6 +145,7 @@ async fn fallback_credit_retry_child() -> TestResult {
                 extra_headers: BTreeMap::from([("anthropic-beta".to_string(), beta.to_string())]),
                 extra_body: BTreeMap::new(),
                 omit_body_fields: BTreeSet::new(),
+                omit_input_items: BTreeSet::new(),
                 reasoning_effort: None,
                 max_retries: 0,
                 failure_cooldown: std::time::Duration::ZERO,
