@@ -8,6 +8,8 @@
 //! on stdout. Each answer is one JSON line on stdout. One `Runner` serves every request,
 //! so routing state such as the capable-tier hold lasts as long as the helper.
 
+mod classifier;
+
 use std::{
     collections::HashMap,
     env,
@@ -16,6 +18,7 @@ use std::{
     os::unix::{fs::DirBuilderExt, process::parent_id},
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -88,7 +91,11 @@ async fn serve() -> Result<(), String> {
                     break;
                 };
                 let answer = tokio::select! {
-                    answer = decide(&runner, &request.session_id, request.messages) => answer,
+                    answer = decide(&runner, &request.session_id, request.messages, Arc::new(classifier::NativeClassifier {
+                        dir: dir.clone(), request_id: id, next_call: AtomicU64::new(0),
+                        cache_turn: runner.route("switchyard").is_some_and(|route| route.algorithm_name() == "composite"),
+                    })) => answer,
+                    () = cancelled(&dir, id) => Err("Routing cancelled".into()),
                     // A decision can wait on the network, so it is cancelled when the helper
                     // is told to stop or loses its parent.
                     () = abandoned(&dir, parent) => return Ok(()),
@@ -96,7 +103,7 @@ async fn serve() -> Result<(), String> {
                     _ = hangup.recv() => return Ok(()),
                 };
                 emit(&match answer {
-                    Ok(decision) => json!({ "id": id, "target": decision["target"], "model": decision["model"] }),
+                    Ok(decision) => json!({ "id": id, "target": decision["target"], "model": decision["model"], "evidence": decision["evidence"], "algorithm": decision["algorithm"] }),
                     Err(error) => json!({ "id": id, "error": error }),
                 })?;
             }
@@ -110,6 +117,14 @@ async fn serve() -> Result<(), String> {
     .await;
     let _ = fs::remove_dir_all(&dir);
     result
+}
+
+async fn cancelled(dir: &Path, id: u64) {
+    let path = dir.join(format!("cancel-{id}"));
+    while !path.exists() {
+        sleep(POLL).await;
+    }
+    let _ = fs::remove_file(path);
 }
 
 /// Resolves once the parent has died (the helper is reparented) or the mod has removed
@@ -165,7 +180,12 @@ fn read_request(
     Ok(None)
 }
 
-async fn decide(runner: &Runner, session: &str, messages: Value) -> Result<Value, String> {
+async fn decide(
+    runner: &Runner,
+    session: &str,
+    messages: Value,
+    client: Arc<classifier::NativeClassifier>,
+) -> Result<Value, String> {
     let messages = serde_json::from_value(messages).map_err(|_| "Invalid routing messages")?;
     let route = runner
         .route("switchyard")
@@ -184,7 +204,7 @@ async fn decide(runner: &Runner, session: &str, messages: Value) -> Result<Value
     };
     let mut expected = request.llm_request.clone();
     let outcome = route
-        .decide(request)
+        .decide_with_client(request, client)
         .await
         .map_err(|error| error.execution_error_summary().kind.as_str().to_owned())?;
     expected.model = outcome.request.llm_request.model.clone();
@@ -194,5 +214,8 @@ async fn decide(runner: &Runner, session: &str, messages: Value) -> Result<Value
     let decision = runner
         .describe_decision(&ModelId::from("switchyard"), &outcome)
         .ok_or("Routing selected an unresolved target")?;
-    Ok(json!({ "target": decision.selected.target, "model": decision.selected.model }))
+    Ok(
+        json!({ "target": decision.selected.target, "model": decision.selected.model,
+        "evidence": outcome.metadata.and_then(|m| m.evidence), "algorithm": route.algorithm_name() }),
+    )
 }

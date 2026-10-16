@@ -31,7 +31,9 @@ function selectedModel(body) {
 }
 
 const DECISION_MS = 3000;
-const WAITING = "Switchyard Auto · waiting for a request";
+const CLASSIFIER_MS = 10000;
+const ROUTING_MS = 15000;
+const WAITING = "Switchyard · waiting for a request";
 
 // Races a promise against a deadline on the session clock.
 function within($, ms, promise, message) {
@@ -72,6 +74,7 @@ async function close(l, $, error) {
   if (l.closed) return;
   l.closed = true;
   if (life === l) life = undefined;
+  for (const { abort } of l.classifications.values()) abort.abort();
   for (const { reject } of l.pending.values()) reject(error);
   l.pending.clear();
   l.rejectReady(error);
@@ -85,6 +88,8 @@ function handleLine(l, line) {
   if (message.dir !== undefined) {
     l.dir = message.dir;
     l.resolveReady();
+  } else if (message.classifier !== undefined) {
+    l.pending.get(message.id)?.classify(message);
   } else if (l.pending.has(message.id)) {
     const { resolve, reject } = l.pending.get(message.id);
     l.pending.delete(message.id);
@@ -95,8 +100,10 @@ function handleLine(l, line) {
 }
 
 function launch($, config) {
-  $.ui.status("Switchyard Auto · starting Runner with fresh routing state");
-  const l = { pending: new Map(), writes: Promise.resolve(), nextId: 0, closed: false, dir: undefined, stderr: "" };
+  $.ui.status("Switchyard · starting Runner with fresh routing state");
+  const l = { pending: new Map(), classifications: new Map(), writes: Promise.resolve(), nextId: 0, closed: false, dir: undefined, stderr: "" };
+  // The session owner can cancel a request even after its turn's dispatch is gone.
+  l.cancelRequest = (id) => $.fs.write(`${l.dir}/cancel-${id}`, "").catch(() => {});
   l.ready = new Promise((resolve, reject) => { l.resolveReady = resolve; l.rejectReady = reject; });
   l.ready.catch(() => {});
   // Mods cannot load compiled code, and a child's stdin closes after one write. The
@@ -171,34 +178,71 @@ async function acquire($, g, session) {
   return life ?? startHelper(g, session, config);
 }
 
-async function decide($, messages, g, session) {
+async function decide($, messages, g, session, turn, signal) {
   const l = await acquire($, g, session);
+  let id;
+  const cancel = () => l.pending.get(id)?.cancel();
   try {
     await within($, DECISION_MS, l.ready, "Switchyard helper did not start");
     if (isStale(g, session)) throw staleError();
-    const id = ++l.nextId;
-    const answer = new Promise((resolve, reject) => l.pending.set(id, { resolve, reject }));
+    id = ++l.nextId;
+    const answer = new Promise((resolve, reject) => l.pending.set(id, {
+      resolve, reject,
+      cancel: () => {
+        l.classifications.get(session)?.abort.abort();
+        // Release a pending judge without throwing away this Runner's other sessions.
+        void l.cancelRequest(id);
+        reject(staleError());
+      },
+      classify: async ({ classifier, call, cache_turn }) => {
+        try {
+          if (l.closed || isStale(g, session) || signal.aborted) throw staleError();
+          let cached = l.classifications.get(session);
+          // Retries of a user turn reuse its answer (including failure); tool
+          // continuations normally never reach the classifier at all.
+          if (!cache_turn || !cached || cached.turn !== turn) {
+            const abort = new AbortController();
+            const result = $.model.complete({ ...classifier, effort: "low", timeoutMs: CLASSIFIER_MS }, { signal: abort.signal })
+              .then((r) => r.isAnswered ? { text: r.text } : { error: r.reason })
+              .catch(() => ({ error: "Classifier unavailable" }));
+            cached = { turn, result, abort };
+            l.classifications.set(session, cached);
+          }
+          const reply = await cached.result;
+          if (l.closed || isStale(g, session) || signal.aborted) throw staleError();
+          await $.fs.write(`${l.dir}/judge-${id}-${call}.json`, JSON.stringify(reply));
+        } catch (error) {
+          if (!error.stale) l.pending.get(id)?.reject(Object.assign(error, { fromHelper: true }));
+          l.pending.get(id)?.cancel();
+        }
+      },
+    }));
     answer.catch(() => {});
+    signal.addEventListener("abort", cancel, { once: true });
+    if (signal.aborted) cancel();
     // Publish in ID order, even if filesystem calls from two hooks complete out of order.
     const write = l.writes.then(() => {
-      if (l.closed || isStale(g, session)) throw staleError();
+      if (l.closed || isStale(g, session) || signal.aborted) throw staleError();
       return $.fs.write(`${l.dir}/req-${id}.json`, `${JSON.stringify({ session_id: session, messages })}\n`);
     });
     l.writes = write.catch(() => {});
-    const [, decision] = await within($, DECISION_MS, Promise.all([write, answer]), "Switchyard decision timed out");
+    const [, decision] = await within($, ROUTING_MS, Promise.all([write, answer]), "Switchyard decision timed out");
     return decision;
   } catch (error) {
     // A silent or broken helper is replaced by a fresh one on the next request. A stale
     // request leaves the helper alone: it is gone, or belongs to newer work.
     if (!error.fromHelper && !error.stale && !isStale(g, session)) await close(l, $, error);
     throw error;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    l.pending.delete(id);
   }
 }
 
 function invalidate() {
   generation += 1;
   // Discard waiting decisions without destroying the Runner's session state.
-  for (const { reject } of life?.pending.values() ?? []) reject(staleError());
+  for (const { cancel } of life?.pending.values() ?? []) cancel();
   life?.pending.clear();
 }
 
@@ -341,7 +385,8 @@ export function register(on) {
           const messages = routingMessages(await $.session.messages());
           if (session !== await $.session.id() || next.signal.aborted) throw staleError();
           if (!messages.length) throw new Error("No routing context available");
-          const model = selectedModel(await decide($, messages, started, session));
+          const decision = await decide($, messages, started, session, e.turnId, next.signal);
+          const model = selectedModel(decision);
           // Read the session as it is now: a picker or SDK change needs no hook of ours.
           const [id, now] = [await $.session.id(), await $.session.model()];
           if (id === session && now !== current && enabled && !isStale(started, session)) {
@@ -349,7 +394,8 @@ export function register(on) {
             $.ui.status(status);
           } else if (id === session && enabled && !isStale(started, session) && !next.signal.aborted) {
             request = { ...e, model };
-            status = `Switchyard Auto · ${model}`;
+            const fallback = decision.evidence?.source === "fail_open" ? " · classifier unavailable; stage routing" : "";
+            status = `Switchyard ${decision.algorithm === "composite" ? "Composite" : "Auto"} · ${model}${fallback}`;
             $.ui.status(status);
           }
         }

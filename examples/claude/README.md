@@ -2,8 +2,9 @@
 
 Install the plugin, reload Claude's plugins, and routing starts automatically.
 Every new Claude session starts with routing on.
-Switchyard's local `auto` stage router selects Sonnet 5.5 or Opus 5.5 before each
-main-conversation request, including tool continuations. Claude Code keeps the
+Switchyard's `composite` router uses Sonnet 5.5 at low effort to classify each new
+user turn, then selects Sonnet 5.5 or Opus 5.5 before each main-conversation
+request. The stage router handles tool continuations without another classifier call. Claude Code keeps the
 conversation, tools, reasoning effort, authentication, and completion connection.
 
 The package contains the mod, a native Switchyard executable, and default
@@ -43,8 +44,10 @@ directory alone does not include the executable.
 
 ## Controls and status
 
-- `Switchyard Auto · waiting for a request`: routing is enabled.
-- `Switchyard Auto · claude-sonnet-5-5` (or Opus): the latest selected model.
+- `Switchyard · waiting for a request`: routing is enabled.
+- `Switchyard Composite · claude-sonnet-5-5` (or Opus): the latest selected model.
+- `classifier unavailable; stage routing`: the judge failed; stage routing continues
+  using the last retained tier, or Sonnet if the session has no verdict.
 - `Switchyard unavailable · keeping …`: routing failed; Claude keeps its model.
 - `/switchyard` shows details. `/switchyard off` and `/switchyard on` control the
   current session. Disable the plugin to turn it off across sessions.
@@ -63,9 +66,13 @@ held in memory, with no checkpoints or restoration after restart. A replacement
 helper reports that it is starting with fresh routing state. Saved on/off
 preferences survive reload and restart.
 Reloading an unchanged plugin leaves its Runner alive.
-A decision that takes more than three seconds, or a helper that fails, leaves
-Claude's model in place and ends that helper. The next request starts a new one
-with fresh routing state.
+Helper startup has a three-second deadline. Classifier calls have a ten-second
+deadline and use Claude's native client and existing login. The classifier sees
+the opening task and six recent conversation messages and returns at most 64 tokens. A
+failed or invalid verdict falls back to stage routing without restarting the
+Runner. Retries within one user turn reuse its classifier result, including failure.
+An unresponsive helper or a routing decision exceeding fifteen seconds leaves
+Claude's model in place and ends that helper; the next request starts a fresh Runner.
 
 Changing the session model, including through the model picker or a native
 fallback, turns routing off until `/switchyard on`. An explicit `/model <name>`
@@ -75,12 +82,19 @@ Routing advances when the Runner makes a decision. Interrupting the subsequent
 Claude completion does not roll back that decision. Late answers from before
 a toggle, model change, or session switch cannot override the current selection.
 
-`auto` starts with Sonnet and reads tool activity and failure signals. It can
-escalate to Opus for recovery and return to Sonnet as work proceeds. This is the
-existing stage router, not a separate model-based task classifier. Its recent
-tool-error window is unchanged; plain chat does not necessarily age out a tool
-failure. Switching
-models can incur cache costs; this example makes no savings or quality claim.
+The classifier sets the stage router's default tier. Tool activity can still
+escalate to Opus for recovery and return to Sonnet within the same user turn.
+Turning routing off or cancelling a turn cancels a pending classifier call and
+keeps the Runner alive. The existing stage router's recent tool-error window is
+unchanged; plain chat does not necessarily age out a tool failure.
+Classifier calls add latency and account usage at user-turn boundaries, and
+switching models can incur cache costs. This example makes no savings or quality claim.
+
+The custom prompt and JSON schema live in `switchyard.toml`. The prompt uses
+generic tier descriptions without model or harness names. The judge returns
+`{"decision":{"target":"efficient"}}` or `{"decision":{"target":"capable"}}`.
+The existing `target_selector` policy reads `/decision/target` and sets the
+stage router's default tier. Invalid verdicts use the fallback described above.
 
 Subagents retain Claude's native model selection. The mod's transcript API reads
 the main conversation and cannot classify a subagent's private history. Routing
@@ -91,8 +105,23 @@ resume or compaction.
 For optional customization, set `SWITCHYARD_CONFIG` to another complete runner
 TOML file before starting Claude. Keep route ID `switchyard` and use full Claude
 model IDs, not aliases such as `sonnet`. Only model-selection algorithms accepted
-by `Runner::from_toml_for_model_selection` are supported. The bundled `auto`
-configuration runs entirely locally; its placeholder client is never contacted.
+by `Runner::from_toml_for_model_selection` are supported. The helper uses
+`Route::decide_with_client` to send routing-time LLM calls back to the mod. Claude
+owns their transport, so configured HTTP endpoints, credentials, target overrides,
+and separate decision clients are not used by this example. The placeholder
+client endpoint is never contacted. Keep classifier settings in the route table.
+
+For the previous local-only behavior, replace the route tables with:
+
+```toml
+[routes.claude]
+id = "switchyard"
+type = "auto"
+efficient_target = "efficient"
+capable_target = "capable"
+```
+
+Keep the client and target tables above it. Auto makes no classifier calls.
 
 To try the built plugin for one session:
 

@@ -13,6 +13,7 @@ function setup(on, options = {}) {
   const statuses = [];
   const helpers = [];
   const removed = [];
+  const classifierCalls = [];
   const clock = mock.clock(on);
   const stored = new Map(Object.entries(options.store ?? {}));
   on("store.get", ($, e) => ({ value: stored.get(e.key) }));
@@ -36,6 +37,11 @@ function setup(on, options = {}) {
   on("session.model", async () => { const value = nativeModel; await open("model"); return { value }; });
   on("session.id", () => ({ value: session }));
   on("session.messages", async () => { await open("messages"); return { value: options.messages ?? [prompt] }; });
+  on("model.complete", async ($, e) => {
+    classifierCalls.push(e);
+    await open("classifier");
+    return { value: options.classifierResult ?? { isAnswered: true, text: '{"p_solve":0.9}', usage: null } };
+  });
   on("process.spawn", async function* ($, e) {
     const helper = { argv: e.argv, dir: `/tmp/switchyard-claude-${helpers.length}`, requests: [], alive: true, queue: [], wake: undefined };
     helper.emit = (line) => { helper.queue.push(line); helper.wake?.(); };
@@ -58,10 +64,20 @@ function setup(on, options = {}) {
     await open("write");
     await options.write?.(e, clock);
     const helper = helpers.find((h) => e.path.startsWith(`${h.dir}/`));
+    if (/\/cancel-/.test(e.path)) return { value: undefined };
+    const judge = /judge-(\d+)-(\d+)\.json$/.exec(e.path);
+    if (judge) {
+      helper.replies ??= [];
+      helper.replies.push(JSON.parse(e.text));
+      helper.emit({ stream: "stdout", text: `${JSON.stringify({ id: Number(judge[1]), ...selection() })}\n` });
+      return { value: undefined };
+    }
     const id = Number(/req-(\d+)\.json$/.exec(e.path)?.[1]);
     const body = JSON.parse(e.text);
     helper.requests.push({ id, ...body });
-    const answer = options.answer?.(helper, id, body) ?? { id, ...selection() };
+    const answer = options.answer?.(helper, id, body) ?? (options.classifier ? {
+      id, call: 0, cache_turn: true, classifier: { model: "claude-sonnet-5-5", prompt: "Classify", system: "Return JSON", maxTokens: 384 },
+    } : { id, ...selection() });
     if (answer !== "silent") helper.emit({ stream: "stdout", text: `${typeof answer === "string" ? answer : JSON.stringify(answer)}\n` });
     return { value: undefined };
   });
@@ -86,7 +102,7 @@ function setup(on, options = {}) {
   on("command.register", ($, e) => ({ value: { command: e.name } }));
   const alive = () => helpers.filter((h) => h.alive).length;
   return {
-    sent, clock, statuses, helpers, removed, alive, gate, stored,
+    sent, clock, statuses, helpers, removed, alive, gate, stored, classifierCalls,
     setModel: (model) => { nativeModel = model; },
     setSession: (id) => { session = id; },
   };
@@ -234,7 +250,7 @@ for (const transition of ["clear", "resume"]) {
     await step($);
     await ask($, "off");
     await $.session.end({ reason: transition, sessionId: "session-a", resume: { id: "session-a" } });
-    expect(statuses.at(-1)).toBe("Switchyard Auto · waiting for a request");
+    expect(statuses.at(-1)).toBe("Switchyard · waiting for a request");
     setSession("session-b");
     // session.start does not fire here, so the next request notices the new session.
     await step($);
@@ -250,7 +266,7 @@ test("a session switch without session.end uses the same helper with a new ID", 
   await step($);
   await ask($, "off");
   setSession("session-b");
-  expect((await ask($, "status")).text).toBe("Switchyard Auto · waiting for a request");
+  expect((await ask($, "status")).text).toBe("Switchyard · waiting for a request");
   await step($);
   expect(helpers.map((h) => h.alive)).toEqual([true]);
   expect(helpers[0].requests.map((r) => r.session_id)).toEqual(["session-a", "session-b"]);
@@ -297,7 +313,7 @@ test("a decision that times out ends the helper and the next request starts a fr
   const { sent, clock, helpers, removed, statuses } = setup(on, { answer: (h) => (h === undefined ? undefined : "silent") });
   const pending = step($);
   await clock.settle();
-  await clock.advance(2999);
+  await clock.advance(14999);
   expect(helpers[0].alive).toBe(true);
   await clock.advance(1);
   await pending;
@@ -393,7 +409,7 @@ test("completion errors do not retry or substitute another model", async ($, on)
 test("startup exposes enabled status and registers controls", async ($, on) => {
   const { statuses, helpers } = setup(on);
   await $.session.start({ cwd: "/tmp", surface: "terminal", isInteractive: true });
-  expect(statuses.at(-1)).toBe("Switchyard Auto · waiting for a request");
+  expect(statuses.at(-1)).toBe("Switchyard · waiting for a request");
   expect((await ask($, "")).text).toBe(statuses.at(-1));
   expect(helpers.length).toBe(0);
 });
@@ -581,7 +597,7 @@ test("a late model command cannot disable a different session", async ($, on) =>
   await ask($, "status");
   release();
   await old;
-  expect((await ask($, "status")).text).toBe("Switchyard Auto · waiting for a request");
+  expect((await ask($, "status")).text).toBe("Switchyard · waiting for a request");
 });
 
 test("a delayed on preference cannot overwrite off or start a helper afterward", async ($, on) => {
@@ -604,7 +620,7 @@ test("the decision timeout also bounds writing the request", async ($, on) => {
   const release = gate("write");
   const pending = step($);
   await clock.settle();
-  await clock.advance(3000);
+  await clock.advance(15000);
   const timedOut = sent.length === 1;
   release();
   await clock.settle();
@@ -637,4 +653,76 @@ test("a session switch while reading history cannot update the previous session'
   release();
   await pending;
   expect(helpers.length).toBe(0);
+});
+
+
+test("native classifier uses low-effort Sonnet and reuses a user-turn verdict", async ($, on) => {
+  const { classifierCalls, helpers } = setup(on, { classifier: true });
+  await step($);
+  await step($); // Retry of the same user turn.
+  expect(classifierCalls.length).toBe(1);
+  expect(classifierCalls[0]).toMatchObject({ model: "claude-sonnet-5-5", effort: "low", maxTokens: 384, timeoutMs: 10000 });
+  await step($, { ...input, turnId: "next-user-turn" });
+  expect(classifierCalls.length).toBe(2);
+  expect(helpers.length).toBe(1);
+});
+
+test("classifier failure is returned to Runner and cached for that turn", async ($, on) => {
+  const { classifierCalls, helpers } = setup(on, { classifier: true, classifierResult: { isAnswered: false, reason: "aborted", usage: null } });
+  await step($);
+  await step($);
+  expect(classifierCalls.length).toBe(1);
+  expect(helpers[0].replies).toEqual([{ error: "aborted" }, { error: "aborted" }]);
+  expect(helpers[0].alive).toBe(true);
+});
+
+test("off during classification discards the verdict and keeps the Runner", async ($, on) => {
+  const { helpers, sent, gate, clock } = setup(on, { classifier: true });
+  const release = gate("classifier");
+  const pending = step($);
+  await clock.settle();
+  await ask($, "off");
+  release();
+  await pending;
+  expect(sent).toEqual([input]);
+  expect(helpers[0].replies ?? []).toEqual([]);
+  expect(helpers[0].alive).toBe(true);
+  await ask($, "on");
+  await step($, { ...input, turnId: "new-turn" });
+  expect(helpers.length).toBe(1);
+});
+
+test("classifier verdicts are isolated by session", async ($, on) => {
+  const { classifierCalls, helpers, setSession } = setup(on, { classifier: true });
+  await step($);
+  setSession("session-b");
+  await step($);
+  expect(classifierCalls.length).toBe(2);
+  expect(helpers.length).toBe(1);
+});
+
+test("classifier failure is visible alongside the selected stage model", async ($, on) => {
+  const { statuses } = setup(on, { answer: (h, id) => ({ id, ...selection(), evidence: { source: "fail_open" } }) });
+  await step($);
+  expect(statuses.at(-1)).toContain("classifier unavailable; stage routing");
+});
+
+test("a failed classifier reply write reports the error and retains the Runner", async ($, on) => {
+  const { helpers, statuses, sent } = setup(on, { classifier: true, write: (e) => {
+    if (/\/judge-/.test(e.path)) throw new Error("judge write failed");
+  } });
+  await step($);
+  expect(helpers[0].alive).toBe(true);
+  expect(sent).toEqual([input]);
+  expect(statuses.at(-1)).toContain("Switchyard unavailable");
+  expect(statuses.at(-1)).toContain("fs.write");
+});
+
+test("per-request classifiers do not reuse a composite user-turn verdict", async ($, on) => {
+  const { classifierCalls } = setup(on, { answer: (h, id) => ({
+    id, call: 0, cache_turn: false, classifier: { model: "claude-sonnet-5-5", prompt: "Classify", maxTokens: 384 },
+  }) });
+  await step($);
+  await step($);
+  expect(classifierCalls.length).toBe(2);
 });

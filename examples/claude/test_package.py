@@ -11,9 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -85,108 +83,105 @@ class Helper:
         self.exits()
 
 
-class HungClassifier:
-    """A local HTTP server that accepts a classifier call and never answers it."""
-
-    def __init__(self):
-        self.entered = threading.Event()
-        self.release = threading.Event()
-        outer = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                self.rfile.read(int(self.headers.get("content-length", "0")))
-                outer.entered.set()
-                outer.release.wait(10)
-                self.send_response(500)
-                self.end_headers()
-
-            def log_message(self, *args):
-                pass
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def config(self, path):
-        path.write_text(f'''schema_version = 1
-[llm_clients.local]
-format = "openai_chat"
-base_url = "http://127.0.0.1:{self.server.server_port}/v1"
-[targets.fast]
-id = "claude-sonnet-5-5"
-llm_client = "local"
-[targets.strong]
-id = "claude-opus-5-5"
-llm_client = "local"
-[routes.test]
-id = "switchyard"
-type = "llm_classifier"
-classifier_target = "strong"
-strong_target = "strong"
-weak_target = "fast"
-base_threshold = 0.5
-''')
-        return path
-
-    def close(self):
-        self.release.set()
-        self.server.shutdown()
-
-
 def stops_during_decision(plugin, tmp, how):
-    """A helper waiting on the classifier must still stop when told to."""
-    stub = HungClassifier()
+    """A helper awaiting Claude's classifier must stop without waiting for a reply."""
+    request = json.dumps({"session_id": "session", "messages": PROMPT})
+    if how == "parent":
+        parent = subprocess.Popen(
+            [sys.executable, "-I", "-c",
+             "import subprocess,sys,os\n"
+             "p=subprocess.Popen(sys.argv[1:],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)\n"
+             "sys.stdout.buffer.write(p.stdout.readline());sys.stdout.flush()\n"
+             "sys.stdout.buffer.write(p.stdout.readline());sys.stdout.flush()\n"
+             "sys.stdin.readline();os._exit(0)",
+             str(plugin / "bin/switchyard-claude"), str(plugin / "switchyard.toml")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            env={"PATH": "/usr/bin:/bin", "TMPDIR": tmp},
+        )
+        directory = Path(json.loads(parent.stdout.readline())["dir"])
+    else:
+        helper = Helper(plugin, tmp)
+        directory = helper.dir
+    (directory / "req-1.json").write_text(request)
+    call = json.loads(parent.stdout.readline()) if how == "parent" else helper.line()
+    assert "classifier" in call, call
+    if how == "parent":
+        parent.stdin.write(b"\n")
+        parent.stdin.close()
+        parent.wait()
+    elif how == "directory":
+        shutil.rmtree(directory)
+    else:
+        helper.proc.terminate()
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline and (directory.exists() if how == "parent" else helper.proc.poll() is None):
+        time.sleep(0.05)
+    if how == "parent":
+        assert not directory.exists(), "helper kept running after parent died"
+    else:
+        helper.exits()
+
+
+def composite_checks(plugin, tmp):
+    h = Helper(plugin, tmp)
     try:
-        config = stub.config(Path(tmp) / f"classifier-{how}.toml")
-        request = json.dumps({"session_id": "session", "messages": PROMPT}) + "\n"
-        if how == "parent":
-            # The intermediate parent exits while the decision is in flight.
-            parent = subprocess.Popen(
-                [sys.executable, "-I", "-c",
-                 "import subprocess,sys\n"
-                 "p=subprocess.Popen(sys.argv[1:],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)\n"
-                 "sys.stdout.buffer.write(p.stdout.readline());sys.stdout.flush()\n"
-                 "sys.stdin.readline()\n"
-                 "import os;os._exit(0)",
-                 str(plugin / "bin/switchyard-claude"), str(config), how],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                env={"PATH": "/usr/bin:/bin", "TMPDIR": tmp},
-            )
-            directory = Path(json.loads(parent.stdout.readline())["dir"])
-        else:
-            helper = Helper(plugin, tmp, config=config, session=how)
-            directory = helper.dir
-        (directory / "req-1.json").write_text(request)
-        assert stub.entered.wait(3), "decision never reached the classifier"
-        if how == "parent":
-            parent.stdin.write(b"\n")
-            parent.stdin.close()
-            parent.wait()
-        elif how == "directory":
-            shutil.rmtree(directory)
-        else:
-            helper.proc.send_signal(signal.SIGTERM)
-        deadline = time.monotonic() + 1.5
-        while time.monotonic() < deadline and (directory.exists() if how != "directory" else helper.proc.poll() is None):
-            time.sleep(0.05)
-        if how == "parent":
-            assert not directory.exists(), "helper kept running after its parent died"
-        else:
-            assert helper.proc.poll() is not None, f"helper kept running after {how}"
-            if how != "directory":
-                assert not directory.exists()
+        def judge(messages, reply, session="a"):
+            number = h.send(json.dumps({"session_id": session, "messages": messages}))
+            call = h.line()
+            assert call["id"] == number and "classifier" in call, call
+            assert call["classifier"]["model"] == "claude-sonnet-5-5", call
+            assert call["classifier"]["maxTokens"] == 64, call
+            (h.dir / f'judge-{number}-{call["call"]}.json').write_text(json.dumps(reply))
+            answer = h.line()
+            assert answer["id"] == number, answer
+            return answer
+
+        def verdict(target):
+            return {"text": json.dumps({"decision": {"target": target}})}
+
+        pid = h.proc.pid
+        assert judge(PROMPT, verdict("capable"))["model"] == "claude-opus-5-5"
+        # Text-only assistant continuation has no new user boundary; reuse the tier.
+        continuation = PROMPT + [{"role": "assistant", "content": [{"type": "text", "text": "Working"}]}]
+        assert h.model(continuation, "a") == "claude-opus-5-5"
+        assert judge(PROMPT, verdict("efficient"), "b")["model"] == "claude-sonnet-5-5"
+        assert h.model(continuation, "a") == "claude-opus-5-5"
+        followup = continuation + [{"role": "user", "content": [{"type": "text", "text": "Now fix the typo"}]}]
+        assert judge(followup, verdict("efficient"))["model"] == "claude-sonnet-5-5"
+        # Actual tool continuations use stage routing and never emit another judge call.
+        assert h.model(followup + tool("failure", "Bash", "out of memory", True), "a") == "claude-opus-5-5"
+        assert h.model(followup + tool("pass", "Bash", "10 passed in 0.1s"), "a") == "claude-sonnet-5-5"
+        for reply in [{"error": "aborted"}, {"text": "not JSON"}, {"text": "{}"}, verdict("judge"), verdict("other"), {"text": '{"target":"capable"}'}]:
+            answer = judge(PROMPT, reply, "fresh-" + str(reply))
+            assert answer["model"] == "claude-sonnet-5-5", answer
+            assert answer["evidence"]["source"] == "fail_open", answer
+        # A lost native response falls back within the helper deadline without a restart.
+        number = h.send(json.dumps({"session_id": "timeout", "messages": PROMPT}))
+        assert "classifier" in h.line()
+        answer = h.line(timeout=14)
+        assert answer["id"] == number and answer["evidence"]["source"] == "fail_open", answer
+        assert answer["model"] == "claude-sonnet-5-5", answer
+        # Cancel while waiting for a native call, then reuse this same Runner.
+        number = h.send(json.dumps({"session_id": "cancelled", "messages": PROMPT}))
+        assert "classifier" in h.line()
+        (h.dir / f"cancel-{number}").write_text("")
+        assert h.line()["error"] == "Routing cancelled"
+        assert judge(PROMPT, verdict("efficient"), "after-cancel")["model"] == "claude-sonnet-5-5"
+        assert h.proc.pid == pid and h.proc.poll() is None
     finally:
-        stub.close()
-        if how != "parent" and helper.proc.poll() is None:
-            helper.proc.kill()
+        h.close()
 
 
 def main():
     plugin = Path(sys.argv[1]).resolve()
     config = plugin / "switchyard.toml"
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as configs:
+        auto_config = Path(configs) / "auto.toml"
+        source = config.read_text()
+        auto_config.write_text(source[:source.index('[routes.claude]')] + '[routes.claude]\nid = "switchyard"\ntype = "auto"\nefficient_target = "efficient"\ncapable_target = "capable"\n')
         def helpers(**kw):
-            return Helper(plugin, tmp, **kw)
+            return Helper(plugin, tmp, **{"config": auto_config, **kw})
+        composite_checks(plugin, tmp)
 
         # Selection, escalation, and recovery over one growing transcript.
         h = helpers()
@@ -306,11 +301,11 @@ def main():
         assert startup().returncode != 0
         assert startup(plugin / "missing.toml", "s").returncode != 0
         invalid = Path(tmp) / "invalid.toml"
-        invalid.write_text(config.read_text().replace('id = "switchyard"', 'id = "other"'))
+        invalid.write_text(auto_config.read_text().replace('id = "switchyard"', 'id = "other"'))
         h = helpers(config=invalid)
         assert h.ask(PROMPT)["error"] == "Missing switchyard route"
         h.close()
-    print("Packaged helper: selection, hold, restart, isolation, bad input, and shutdown checks passed")
+    print("Packaged helper: composite judge, boundaries, fallback, timeout, cancellation, stage recovery, isolation, and shutdown passed")
 
 
 if __name__ == "__main__":

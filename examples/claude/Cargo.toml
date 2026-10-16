@@ -10,6 +10,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 switchyard-protocol.workspace = true
