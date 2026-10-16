@@ -188,6 +188,49 @@ async fn custom_composite_respects_new_session_and_fail_closed() {
     let closed = CONFIG.replace("mode = \"custom\"", "mode = \"custom\"\nfail_open = false");
     let route = custom_route(&closed, custom_judge(None));
     assert!(route.decide(request()).await.is_err());
+
+    let judge = custom_judge(Some(r#"{"decision":{"target":"capable"}}"#));
+    let route = custom_route(&closed, judge.clone());
+    route.decide(request()).await.unwrap();
+    // Invalid verdicts abstain independently of client-error recovery.
+    for reply in ["not JSON", "{}", r#"{"decision":{"target":"other"}}"#] {
+        *judge.reply.lock().unwrap() = Some(reply);
+        let outcome = route.decide(request()).await.unwrap();
+        assert_eq!(
+            outcome.selected_model_id().unwrap().as_str(),
+            "strong-model"
+        );
+        assert_eq!(
+            outcome.metadata.unwrap().evidence.unwrap()["source"],
+            "retained"
+        );
+    }
+}
+
+#[tokio::test]
+async fn custom_composite_retains_tier_with_message_hash_fallback() {
+    for trigger in ["user_turn", "new_session"] {
+        let config = CONFIG.replace("user_turn", trigger).replace(
+            "mode = \"custom\"",
+            "mode = \"custom\"\nmessage_hash_fallback = true",
+        );
+        let judge = custom_judge(Some(r#"{"decision":{"target":"capable"}}"#));
+        let route = custom_route(&config, judge.clone());
+        let mut request = request();
+        request.metadata = None;
+        for _ in 0..2 {
+            let outcome = route.decide(request.clone()).await.unwrap();
+            assert_eq!(
+                outcome.selected_model_id().unwrap().as_str(),
+                "strong-model"
+            );
+            request
+                .llm_request
+                .messages
+                .push(Message::text(Role::Assistant, "Working"));
+        }
+        assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[test]

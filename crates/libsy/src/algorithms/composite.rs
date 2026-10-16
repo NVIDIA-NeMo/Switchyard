@@ -105,10 +105,23 @@ impl Processor<State> for TierSetter {
     }
 }
 
+/// Classifier settings for the composite router's retained tier.
+pub enum CompositeJudgeConfig {
+    /// Selects a tier from a capability verdict.
+    Capability(TaskClassifierConfig),
+    /// Selects a tier using a custom schema and policy.
+    Custom {
+        /// Custom classifier contract and trigger settings.
+        config: CustomClassifierConfig,
+        /// Recovers from client failures by retaining the previous tier.
+        fail_open: bool,
+    },
+}
+
 /// A judge stacked over a stage router.
 pub struct CompositeRouterConfig {
     /// Judge settings, including how often `classify_trigger` runs it.
-    pub judge: TaskClassifierConfig,
+    pub judge: CompositeJudgeConfig,
     /// Serves the turns, with the tier the judge picked as its fall-open default.
     pub stage: StageRouterConfig,
 }
@@ -126,66 +139,41 @@ impl CompositeRouter {
     /// A stage router carrying its own judge is allowed, but that judge sits ahead
     /// of the fall-open tier and so answers most of the turns this one set a tier for.
     pub fn new(config: CompositeRouterConfig) -> Result<Self> {
-        if config.judge.classify_trigger == ClassifyTrigger::EveryRequest {
-            return Err(LibsyError::AlgorithmError {
-                message: "composite: classify_trigger must be user_turn or new_session".to_string(),
-            });
-        }
-        let trigger = config.judge.classify_trigger;
-        let message_hash_fallback = config.judge.message_hash_fallback;
-        // Only the judge's Classifier face is used, so its own affinity never runs.
-        // Leaving these set would apply the standalone route's pairing rules to a
-        // trigger this router implements itself.
-        let judge_config = TaskClassifierConfig {
-            classify_trigger: ClassifyTrigger::EveryRequest,
-            message_hash_fallback: false,
-            ..config.judge
+        let (trigger, message_hash_fallback) = match &config.judge {
+            CompositeJudgeConfig::Capability(judge) => {
+                (judge.classify_trigger, judge.message_hash_fallback)
+            }
+            CompositeJudgeConfig::Custom { config, .. } => {
+                (config.classify_trigger, config.message_hash_fallback)
+            }
         };
-        let judge = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-            config: judge_config,
-        })?;
-        Self::with_judge(
-            Arc::new(judge),
-            trigger,
-            message_hash_fallback,
-            config.stage,
-        )
-    }
-
-    /// Uses a custom-schema judge selecting the `efficient` or `capable` category.
-    /// Other categories abstain, retaining the previous tier. The stage router
-    /// continues routing within the turn. `fail_open` recovers from client failures.
-    pub fn with_custom_classifier(
-        judge: CustomClassifierConfig,
-        stage: StageRouterConfig,
-        fail_open: bool,
-    ) -> Result<Self> {
-        if judge.classify_trigger == ClassifyTrigger::EveryRequest {
+        if trigger == ClassifyTrigger::EveryRequest {
             return Err(LibsyError::AlgorithmError {
                 message: "composite: classify_trigger must be user_turn or new_session".to_string(),
             });
         }
-        Self::with_judge(
-            LlmTaskClassifier::custom_classifier(&judge, fail_open)?,
-            judge.classify_trigger,
-            judge.message_hash_fallback,
-            stage,
-        )
-    }
-
-    fn with_judge(
-        judge: Arc<dyn Classifier<State>>,
-        trigger: ClassifyTrigger,
-        message_hash_fallback: bool,
-        stage: StageRouterConfig,
-    ) -> Result<Self> {
+        let judge: Arc<dyn Classifier<State>> = match config.judge {
+            CompositeJudgeConfig::Capability(judge) => {
+                // Composite owns the trigger and retention; standalone affinity never runs.
+                Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                    config: TaskClassifierConfig {
+                        classify_trigger: ClassifyTrigger::EveryRequest,
+                        message_hash_fallback: false,
+                        ..judge
+                    },
+                })?)
+            }
+            CompositeJudgeConfig::Custom { config, fail_open } => {
+                LlmTaskClassifier::custom_classifier(&config, fail_open)?
+            }
+        };
         let setter = TierSetter {
             judge,
             trigger,
             message_hash_fallback,
             tiers: Mutex::new(HashMap::new()),
         };
-        let route = build_stage_route(stage)?
+        let route = build_stage_route(config.stage)?
             .with_name(COMPOSITE)
             .with_processor(Arc::new(setter));
         Ok(Self { route })
@@ -252,7 +240,7 @@ mod tests {
 
     fn hash_keyed_router() -> Result<Arc<CompositeRouter>> {
         Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
-            judge: TaskClassifierConfig {
+            judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold: 0.5,
                     ..LlmCapabilityConfig::default()
@@ -260,35 +248,47 @@ mod tests {
                 classify_trigger: ClassifyTrigger::UserTurn,
                 message_hash_fallback: true,
                 ..Default::default()
-            },
+            }),
             stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
         })?))
     }
 
     fn router() -> Result<Arc<CompositeRouter>> {
         Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
-            judge: TaskClassifierConfig {
+            judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold: 0.5,
                     ..LlmCapabilityConfig::default()
                 }),
                 classify_trigger: ClassifyTrigger::UserTurn,
                 ..Default::default()
-            },
+            }),
             stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
         })?))
     }
 
     #[test]
     fn rejects_every_request_as_a_trigger() {
-        let config = CompositeRouterConfig {
-            judge: TaskClassifierConfig::default(),
-            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
-        };
-        assert!(matches!(
-            CompositeRouter::new(config),
-            Err(LibsyError::AlgorithmError { .. })
-        ));
+        for judge in [
+            CompositeJudgeConfig::Capability(TaskClassifierConfig::default()),
+            CompositeJudgeConfig::Custom {
+                config: CustomClassifierConfig::new(
+                    "Choose a tier",
+                    serde_json::json!({"type": "object"}),
+                    crate::CustomClassifierPolicy::target_selector("/decision/target"),
+                ),
+                fail_open: true,
+            },
+        ] {
+            let error = CompositeRouter::new(CompositeRouterConfig {
+                judge,
+                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+            })
+            .err()
+            .expect("every_request must be rejected for both classifier modes");
+            assert!(matches!(error, LibsyError::AlgorithmError { message }
+                if message == "composite: classify_trigger must be user_turn or new_session"));
+        }
     }
 
     /// A route may point its judge at the same target it serves capable turns on.

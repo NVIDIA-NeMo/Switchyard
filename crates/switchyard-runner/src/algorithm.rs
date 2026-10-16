@@ -11,12 +11,13 @@ use std::sync::Arc;
 
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
-    ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeRouter,
-    CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
-    EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, LlmCapabilityConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
-    PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter, StageRouterConfig,
-    SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
+    ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
+    CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
+    DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -1650,18 +1651,20 @@ fn build_algorithm(
             }
             stage_config.tool_semantics = stage.tool_semantics.clone();
             stage_config.handoff_notes = stage.handoff_notes.clone();
-            let algorithm = if matches!(classifier.mode, Some(ClassifierMode::Custom)) {
-                CompositeRouter::with_custom_classifier(
-                    classifier.custom_classifier_config(route_name)?,
-                    stage_config,
-                    classifier.fail_open.unwrap_or(true),
-                )
+            let judge = if matches!(classifier.mode, Some(ClassifierMode::Custom)) {
+                CompositeJudgeConfig::Custom {
+                    config: classifier.custom_classifier_config(route_name)?,
+                    fail_open: classifier.fail_open.unwrap_or(true),
+                }
             } else {
-                CompositeRouter::new(CompositeRouterConfig {
-                    judge: classifier.task_classifier_config(route_name, stage, targets)?,
-                    stage: stage_config,
-                })
-            }
+                CompositeJudgeConfig::Capability(
+                    classifier.task_classifier_config(route_name, stage, targets)?,
+                )
+            };
+            let algorithm = CompositeRouter::new(CompositeRouterConfig {
+                judge,
+                stage: stage_config,
+            })
             .map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("composite route {route_name}: {error}"),
