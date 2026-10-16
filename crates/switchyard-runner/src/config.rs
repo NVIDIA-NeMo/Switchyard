@@ -18,6 +18,8 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::privacy::PrivacyPolicy;
+use crate::route::ExecutionLane;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
     Runner, RunnerError,
@@ -127,12 +129,39 @@ struct RouteConfig {
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
     vision: Option<bool>,
+    privacy: Option<PrivacyConfig>,
     algorithm: AlgorithmSpec,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyConfig {
+    #[serde(default)]
+    accept_external_signal: bool,
 }
 
 struct TargetPromptPolicy {
     prompts: HashMap<ModelId, String>,
     routing_answer_target: Option<ModelId>,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedTarget<'a> {
+    target_name: &'a str,
+    config: &'a TargetConfig,
+}
+
+type LaneTargets<'a> = BTreeMap<&'a str, ResolvedTarget<'a>>;
+
+#[derive(Clone, Copy)]
+struct ResolvedDecisionTarget<'a> {
+    model: &'a ModelId,
+    client: &'a Arc<dyn RoutedDecisionClient>,
+}
+
+struct BuiltPrivacy {
+    policy: PrivacyPolicy,
+    restricted: ExecutionLane,
 }
 
 impl<'de> Deserialize<'de> for RouteConfig {
@@ -146,6 +175,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let privacy = take_optional(&mut table, "privacy")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -154,6 +184,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             tool_calling,
             reasoning,
             vision,
+            privacy,
             algorithm,
         })
     }
@@ -188,14 +219,6 @@ impl RouteConfig {
             vision: self.vision,
         }
     }
-
-    fn routing_target_names(&self) -> Vec<&str> {
-        self.algorithm.routing_target_names()
-    }
-
-    fn callable_target_names(&self) -> Vec<&str> {
-        self.algorithm.callable_target_names()
-    }
 }
 
 impl DeploymentConfig {
@@ -213,7 +236,7 @@ impl DeploymentConfig {
                     "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
                 )));
             }
-            for target_name in route.routing_target_names() {
+            for target_name in route.algorithm.routing_target_names() {
                 if let Some(target) = self.targets.get(target_name)
                     && (target.system_prompt.is_some()
                         || target.reasoning_effort.is_some()
@@ -278,6 +301,11 @@ impl DeploymentConfig {
                 }
                 std::collections::hash_map::Entry::Occupied(slot) => {
                     let (first_name, first) = slot.get();
+                    if first.is_private != target.is_private {
+                        return Err(RunnerError::configuration(format!(
+                            "targets {first_name} and {target_name} share a model and llm client but disagree on private"
+                        )));
+                    }
                     if first.reasoning_effort != target.reasoning_effort
                         || first.extra_body != target.extra_body
                         || first.omit_body_fields != target.omit_body_fields
@@ -299,6 +327,7 @@ impl DeploymentConfig {
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
         let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;
+        let mut decision_approvals = HashMap::new();
         for (name, target) in &self.decision_targets {
             validate_value("decision target name", name)?;
             validate_value(&format!("decision target {name} id"), &target.id)?;
@@ -313,72 +342,224 @@ impl DeploymentConfig {
                     target.decision_client
                 )));
             }
+            if decision_approvals
+                .insert((&target.decision_client, &target.id), target.is_private)
+                .is_some_and(|approved| approved != target.is_private)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "decision target {name} shares a model and client with an alias but disagrees on private"
+                )));
+            }
         }
-        let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         for (route_name, config) in &self.routes {
-            let decision_judge = config.algorithm.decision_judge();
-            for name in config.callable_target_names() {
-                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
-                    (self.decision_targets.contains_key(name), "decision")
-                } else {
-                    (self.targets.contains_key(name), "LLM")
-                };
-                if !exists {
-                    return Err(RunnerError::configuration(format!(
-                        "route references unknown target {name}; route {route_name} requires target kind {kind}"
-                    )));
-                }
-            }
-            for name in config.routing_target_names().into_iter().chain(
-                decision_judge
-                    .into_iter()
-                    .flat_map(|(_, judge)| judge.candidates.values().map(String::as_str)),
-            ) {
-                if !self.targets.contains_key(name) {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name} completion and candidate target {name} must be an LLM target"
-                    )));
-                }
-            }
+            let standard_targets = self.resolve_lane_targets(&config.algorithm)?;
+            let decision = config
+                .algorithm
+                .decision_judge()
+                .map(|(name, _)| self.resolve_decision_target(route_name, name, &decision_clients))
+                .transpose()?;
             let capabilities = config.capabilities();
             if capabilities.context_window == Some(0) {
                 return Err(RunnerError::configuration(format!(
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let (algorithm, models) = config
-                .algorithm
-                .build_with_runtime_models(route_name, &targets)
-                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            let (route_clients, caller_auth) =
-                self.build_route_clients(route_name, config, &clients, &decision_clients)?;
-            let anthropic_auxiliary_target =
-                self.build_anthropic_auxiliary_target(config, &clients);
-            let responses_auxiliary_target =
-                self.build_responses_auxiliary_target(config, &clients);
-            let decision_targets = config
-                .routing_target_names()
-                .into_iter()
-                .filter_map(|name| self.decision_target(name))
-                .collect();
-            let route = Route::new(
-                algorithm,
-                route_clients,
-                caller_auth,
-                capabilities,
-                anthropic_auxiliary_target,
-                responses_auxiliary_target,
-                decision_targets,
-                models,
-            );
+            let privacy =
+                self.build_privacy(route_name, config, &standard_targets, decision, &clients)?;
+            let (standard, caller_auth) = self.build_lane(
+                route_name,
+                &config.algorithm,
+                &standard_targets,
+                decision,
+                &clients,
+                config.privacy.is_some(),
+            )?;
+            let mut route = Route::from_lane(standard, caller_auth, capabilities);
+            if let Some(privacy) = privacy {
+                route = route.with_privacy(privacy.policy, privacy.restricted);
+            }
             routes.push((config.id.clone(), route));
         }
         let runner = Runner::new(routes)
             .with_fallback_url(fallback_base_url)
             .with_provider_api_keys(provider_api_keys);
         Ok(runner)
+    }
+
+    fn build_privacy(
+        &self,
+        route_name: &str,
+        route_config: &RouteConfig,
+        standard_targets: &LaneTargets<'_>,
+        standard_decision_target: Option<ResolvedDecisionTarget<'_>>,
+        llm_clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> RunnerResult<Option<BuiltPrivacy>> {
+        let Some(config) = &route_config.privacy else {
+            return Ok(None);
+        };
+        if !route_config.algorithm.supports_privacy_lanes() {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} cannot use privacy with prefill_router"
+            )));
+        }
+        if !config.accept_external_signal {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy must configure at least one request input"
+            )));
+        }
+        let approved = self
+            .targets
+            .iter()
+            .filter(|(_, target)| target.is_private)
+            .map(|(name, _)| name.as_str())
+            .chain(
+                self.decision_targets
+                    .iter()
+                    .filter(|(_, target)| target.is_private)
+                    .map(|(name, _)| name.as_str()),
+            )
+            .collect();
+        let restricted_algorithm = route_config
+            .algorithm
+            .restricted_to(&approved)
+            .map_err(|error| RunnerError::configuration(format!("route {route_name}: {error}")))?;
+        let restricted_targets = self.resolve_lane_targets(&restricted_algorithm)?;
+        if self.uses_forward_auth(standard_targets) {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} cannot use privacy with forward_auth"
+            )));
+        }
+        let policy = PrivacyPolicy::new(config.accept_external_signal);
+        let (restricted, _) = self.build_lane(
+            route_name,
+            &restricted_algorithm,
+            &restricted_targets,
+            standard_decision_target,
+            llm_clients,
+            true,
+        )?;
+        Ok(Some(BuiltPrivacy { policy, restricted }))
+    }
+
+    fn uses_forward_auth(&self, targets: &LaneTargets<'_>) -> bool {
+        targets.values().any(|target| {
+            self.llm_clients
+                .get(&target.config.llm_client)
+                .is_some_and(|client| client.forward_auth)
+        })
+    }
+
+    fn resolve_lane_targets<'a>(
+        &'a self,
+        algorithm: &'a AlgorithmSpec,
+    ) -> RunnerResult<LaneTargets<'a>> {
+        let decision = algorithm.decision_judge().map(|(target, _)| target);
+        let mut callable = algorithm.callable_target_names();
+        callable.retain(|name| Some(*name) != decision);
+        callable.sort_unstable();
+        callable.dedup();
+        callable
+            .into_iter()
+            .map(|name| {
+                let config = self.targets.get(name).ok_or_else(|| {
+                    RunnerError::configuration(format!("route references unknown target {name}"))
+                })?;
+                Ok((
+                    name,
+                    ResolvedTarget {
+                        target_name: name,
+                        config,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    fn resolve_decision_target<'a>(
+        &'a self,
+        route_name: &str,
+        name: &str,
+        clients: &'a BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
+    ) -> RunnerResult<ResolvedDecisionTarget<'a>> {
+        let target = self.decision_targets.get(name).ok_or_else(|| {
+            RunnerError::configuration(format!(
+                "route {route_name} requires unknown decision target {name}"
+            ))
+        })?;
+        let client = clients.get(&target.decision_client).ok_or_else(|| {
+            RunnerError::configuration(format!(
+                "decision target {name} references unknown decision client {}",
+                target.decision_client
+            ))
+        })?;
+        Ok(ResolvedDecisionTarget {
+            model: &target.id,
+            client,
+        })
+    }
+
+    fn build_lane(
+        &self,
+        route_name: &str,
+        route: &AlgorithmSpec,
+        targets: &LaneTargets<'_>,
+        decision: Option<ResolvedDecisionTarget<'_>>,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+        restrict_targets: bool,
+    ) -> RunnerResult<(ExecutionLane, Option<CallerAuthKind>)> {
+        let mut model_ids = targets
+            .iter()
+            .map(|(name, target)| ((*name).to_string(), target.config.id.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if let Some((_, config)) = route.decision_judge() {
+            for candidate in config.candidates.values() {
+                if !model_ids.contains_key(candidate) {
+                    let target = self.targets.get(candidate).ok_or_else(|| {
+                        RunnerError::configuration(format!(
+                            "route {route_name} completion and candidate target {candidate} must be an LLM target"
+                        ))
+                    })?;
+                    model_ids.insert(candidate.clone(), target.id.clone());
+                }
+            }
+        }
+        if let (Some((name, _)), Some(decision)) = (route.decision_judge(), decision) {
+            model_ids.insert(name.to_string(), decision.model.clone());
+        }
+        let (algorithm, mut models) = route
+            .build_with_runtime_models(route_name, &model_ids)
+            .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+        let (route_clients, caller_auth) =
+            self.build_route_clients(route_name, route, targets, decision, clients)?;
+        let anthropic_auxiliary_target =
+            self.build_anthropic_auxiliary_target(route, targets, clients);
+        let responses_auxiliary_target =
+            self.build_responses_auxiliary_target(route, targets, clients);
+        let decision_targets = route
+            .routing_target_names()
+            .into_iter()
+            .filter_map(|name| {
+                targets
+                    .get(name)
+                    .and_then(|target| self.decision_target(target.target_name))
+            })
+            .collect();
+        if restrict_targets {
+            models = models.with_target_restriction();
+        }
+        Ok((
+            ExecutionLane::new(
+                algorithm,
+                route_clients,
+                anthropic_auxiliary_target,
+                responses_auxiliary_target,
+                decision_targets,
+                models,
+            ),
+            caller_auth,
+        ))
     }
 
     fn build_clients(
@@ -490,69 +671,47 @@ impl DeploymentConfig {
             .collect()
     }
 
-    fn build_targets(&self) -> BTreeMap<String, ModelId> {
-        self.targets
-            .iter()
-            .map(|(name, config)| (name.clone(), config.id.clone()))
-            .chain(
-                self.decision_targets
-                    .iter()
-                    .map(|(name, config)| (name.clone(), config.id.clone())),
-            )
-            .collect()
-    }
-
     /// Builds the client router for one route. The second value is the caller credential family
     /// that the route's forwarding clients need, or `None` when no client forwards the caller's
     /// credential. A request through the other family's APIs fails before any upstream call.
     fn build_route_clients(
         &self,
         route_name: &str,
-        route: &RouteConfig,
+        route: &AlgorithmSpec,
+        targets: &LaneTargets<'_>,
+        decision: Option<ResolvedDecisionTarget<'_>>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-        decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<(ClientRouter, Option<CallerAuthKind>)> {
         let TargetPromptPolicy {
             prompts,
             routing_answer_target,
-        } = self.build_route_target_prompts(route_name, route)?;
+        } = self.build_route_target_prompts(route_name, route, targets)?;
         let mut by_model = HashMap::new();
         let mut targets_by_model: HashMap<&str, (&str, &TargetConfig)> = HashMap::new();
         let mut caller_auth = None;
         let mut has_mixed_families = false;
         let mut forwarding_origins = BTreeSet::new();
-        let mut decisions_by_model = HashMap::new();
-        for name in route.callable_target_names() {
-            if route
-                .algorithm
-                .decision_judge()
-                .is_some_and(|(judge, _)| judge == name)
-            {
-                let target = &self.decision_targets[name];
-                decisions_by_model.insert(
-                    target.id.clone(),
-                    decision_clients[&target.decision_client].clone(),
-                );
-                continue;
-            }
-            let target = self.targets.get(name).ok_or_else(|| {
-                RunnerError::configuration(format!("route references unknown target {name}"))
-            })?;
-            if let Some((first_name, first)) = targets_by_model.insert(&target.id, (name, target))
+        for resolved in targets.values() {
+            let target = resolved.config;
+            if let Some((first_name, first)) =
+                targets_by_model.insert(&target.id, (resolved.target_name, target))
                 && first.llm_client != target.llm_client
             {
                 return Err(RunnerError::configuration(format!(
-                    "route {route_name} targets {first_name} and {name} use model {} on different llm clients; execution is keyed by model id, so use distinct model ids within this route or put these targets in separate routes",
-                    target.id
+                    "route {route_name} targets {first_name} and {} use model {} on different llm clients; execution is keyed by model id, so use distinct model ids within this route or put these targets in separate routes",
+                    resolved.target_name, target.id
                 )));
             }
             let client = clients.get(&target.llm_client).ok_or_else(|| {
-                RunnerError::configuration(format!("target {name} has no constructed llm client"))
+                RunnerError::configuration(format!(
+                    "target {} has no constructed llm client",
+                    resolved.target_name
+                ))
             })?;
             let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
                 RunnerError::configuration(format!(
-                    "target {name} references unknown llm client {}",
-                    target.llm_client
+                    "target {} references unknown llm client {}",
+                    resolved.target_name, target.llm_client
                 ))
             })?;
             if client_config.forward_auth {
@@ -581,8 +740,11 @@ impl DeploymentConfig {
         let completion_targets = route
             .routing_target_names()
             .into_iter()
-            .map(|name| self.targets[name].id.clone())
+            .map(|name| targets[name].config.id.clone())
             .collect::<Vec<_>>();
+        let decisions_by_model = decision
+            .map(|decision| HashMap::from([(decision.model.clone(), Arc::clone(decision.client))]))
+            .unwrap_or_default();
         let router = ClientRouter::new_with_decision_clients(
             by_model,
             decisions_by_model,
@@ -608,14 +770,18 @@ impl DeploymentConfig {
     fn build_route_target_prompts(
         &self,
         route_name: &str,
-        route: &RouteConfig,
+        route: &AlgorithmSpec,
+        targets: &LaneTargets<'_>,
     ) -> RunnerResult<TargetPromptPolicy> {
         let mut prompts = HashMap::new();
         let mut aliases = HashMap::<&ModelId, Option<&str>>::new();
-        for name in route.algorithm.routing_target_names() {
-            let target = self.targets.get(name).ok_or_else(|| {
-                RunnerError::configuration(format!("route references unknown target {name}"))
-            })?;
+        for name in route.routing_target_names() {
+            let target = targets
+                .get(name)
+                .map(|target| target.config)
+                .ok_or_else(|| {
+                    RunnerError::configuration(format!("route references unknown target {name}"))
+                })?;
             let prompt = target.system_prompt.as_deref();
             if aliases
                 .insert(&target.id, prompt)
@@ -634,20 +800,28 @@ impl DeploymentConfig {
             prompts,
             routing_answer_target: None,
         };
-        let Some((response_name, dependency_name)) =
-            route.algorithm.routing_response_and_dependency()
-        else {
+        let Some((response_name, dependency_name)) = route.routing_response_and_dependency() else {
             return Ok(policy);
         };
-        let response = self.targets.get(response_name).ok_or_else(|| {
-            RunnerError::configuration(format!("route references unknown target {response_name}"))
-        })?;
+        let response = targets
+            .get(response_name)
+            .map(|target| target.config)
+            .ok_or_else(|| {
+                RunnerError::configuration(format!(
+                    "route references unknown target {response_name}"
+                ))
+            })?;
         if !policy.prompts.contains_key(&response.id) {
             return Ok(policy);
         }
-        let dependency = self.targets.get(dependency_name).ok_or_else(|| {
-            RunnerError::configuration(format!("route references unknown target {dependency_name}"))
-        })?;
+        let dependency = targets
+            .get(dependency_name)
+            .map(|target| target.config)
+            .ok_or_else(|| {
+                RunnerError::configuration(format!(
+                    "route references unknown target {dependency_name}"
+                ))
+            })?;
         if response.id == dependency.id {
             return Err(RunnerError::configuration(format!(
                 "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
@@ -672,7 +846,8 @@ impl DeploymentConfig {
 
     fn build_anthropic_auxiliary_target(
         &self,
-        route: &RouteConfig,
+        route: &AlgorithmSpec,
+        targets: &LaneTargets<'_>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> Option<AuxiliaryTarget> {
         route
@@ -680,12 +855,17 @@ impl DeploymentConfig {
             .into_iter()
             .enumerate()
             .filter_map(|(index, name)| {
+                let resolved = *targets.get(name)?;
                 let target = self.build_auxiliary_target(
-                    name,
+                    resolved,
                     clients,
                     AuxiliaryOperation::AnthropicCountTokens,
                 )?;
-                Some((count_tokens_priority(name, &target.model), index, target))
+                Some((
+                    count_tokens_priority(resolved.target_name, &target.model),
+                    index,
+                    target,
+                ))
             })
             .min_by_key(|(priority, index, _)| (*priority, *index))
             .map(|(_, _, target)| target)
@@ -693,26 +873,27 @@ impl DeploymentConfig {
 
     fn build_responses_auxiliary_target(
         &self,
-        route: &RouteConfig,
+        route: &AlgorithmSpec,
+        targets: &LaneTargets<'_>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> Option<AuxiliaryTarget> {
         route.routing_target_names().into_iter().find_map(|name| {
-            self.build_auxiliary_target(name, clients, AuxiliaryOperation::ResponsesInputTokens)
+            let target = *targets.get(name)?;
+            self.build_auxiliary_target(target, clients, AuxiliaryOperation::ResponsesInputTokens)
         })
     }
 
     fn build_auxiliary_target(
         &self,
-        name: &str,
+        target: ResolvedTarget<'_>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
         operation: AuxiliaryOperation,
     ) -> Option<AuxiliaryTarget> {
-        let target = self.targets.get(name)?;
-        let client = clients.get(&target.llm_client)?;
+        let client = clients.get(&target.config.llm_client)?;
         client
-            .supports_auxiliary(&target.id, operation)
+            .supports_auxiliary(&target.config.id, operation)
             .then(|| AuxiliaryTarget {
-                model: target.id.clone(),
+                model: target.config.id.clone(),
                 client: client.clone(),
             })
     }
@@ -794,6 +975,8 @@ enum DecisionClientConfig {
 struct DecisionTargetConfig {
     id: ModelId,
     decision_client: String,
+    #[serde(default, rename = "private")]
+    is_private: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -801,6 +984,8 @@ struct DecisionTargetConfig {
 struct TargetConfig {
     id: ModelId,
     llm_client: String,
+    #[serde(default, rename = "private")]
+    is_private: bool,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
     /// Top-level request fields dropped from the outbound body before `extra_body` is merged.
@@ -997,8 +1182,9 @@ bogus = true
 #[cfg(test)]
 mod deployment_tests {
     use super::*;
+    use crate::mark_privacy_restricted;
     use serde_json::json;
-    use switchyard_protocol::Category;
+    use switchyard_protocol::{Category, Message, Request, Role};
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -1056,6 +1242,62 @@ capable_target = "strong"
 efficient_target = "weak"
 "#;
 
+    fn decision_privacy_config() -> String {
+        let config = VALID_CONFIG
+            .replace(
+                "id = \"strong/model\"",
+                "id = \"strong/model\"\nprivate = true",
+            )
+            .replace("id = \"weak/model\"", "id = \"weak/model\"\nprivate = true");
+        format!(
+            r#"{config}
+
+[decision_clients.privacy]
+format = "system_one"
+endpoint = "https://example.test/v1/systemone"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.standard]
+id = "decision/standard"
+decision_client = "privacy"
+private = true
+
+[routes.typed]
+id = "switchyard/typed"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "standard"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.typed.decision]
+cutoff = 0.4
+candidates = {{ a = "strong", b = "weak" }}
+evidence = {{}}
+
+[routes.typed.privacy]
+accept_external_signal = true
+"#
+        )
+    }
+
+    fn external_privacy_config() -> String {
+        let config = VALID_CONFIG
+            .replace("id = \"strong/model\"", "id = \"strong/model\"\nprivate = true")
+            .replace(
+                "type = \"passthrough\"\ntarget = \"weak\"",
+                "type = \"random\"\ntargets = [\"weak\", \"strong\"]\nweights = [3.0, 1.0]\nseed = 7",
+            );
+        format!(
+            r#"{config}
+
+[routes.passthrough.privacy]
+accept_external_signal = true
+"#
+        )
+    }
+
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
@@ -1092,6 +1334,97 @@ efficient_target = "weak"
             [ModelId::from("weak/model")]
         );
         assert!(runner.route("switchyard/passthrough").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn privacy_requires_approved_roles_and_decision_targets() -> RunnerResult<()> {
+        let configured = decision_privacy_config();
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/typed")
+            .expect("typed privacy route should exist");
+        assert_eq!(
+            route.models().models_for(&Category::Judge),
+            [ModelId::from("decision/standard")]
+        );
+
+        for (config, expected) in [
+            (
+                configured.replace(
+                    "decision_client = \"privacy\"\nprivate = true",
+                    "decision_client = \"privacy\"",
+                ),
+                "privacy requires target standard to be private",
+            ),
+            (
+                configured.replace("id = \"weak/model\"\nprivate = true", "id = \"weak/model\""),
+                "privacy decision candidate weak must be private",
+            ),
+        ] {
+            let message = error_message(&config);
+            assert!(
+                message.contains(expected),
+                "expected {expected:?}, got {message}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_privacy_selects_the_restricted_lane() -> RunnerResult<()> {
+        let configured = external_privacy_config();
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("privacy route should exist");
+
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message::text(
+            Role::User,
+            "Contact user@example.test. Authorization: Bearer abcdefghijklmnop",
+        ));
+        let outcome = route.decide(request.clone()).await?;
+        assert!(
+            route
+                .models()
+                .models_for(&Category::Any)
+                .contains(outcome.selected_model_id()?)
+        );
+        assert_eq!(
+            crate::privacy::selected_lane(&outcome.request).map(|lane| lane.as_str()),
+            Some("standard")
+        );
+        mark_privacy_restricted(&mut request);
+        assert_eq!(
+            route.decide(request).await?.selected_model_id()?,
+            "strong/model"
+        );
+
+        let empty = configured.replace(
+            "accept_external_signal = true",
+            "accept_external_signal = false",
+        );
+        assert!(error_message(&empty).contains("must configure at least one request input"));
+        let obsolete = format!(
+            "{configured}\n[routes.passthrough.privacy.deterministic]\ndetectors = [\"email\"]\n"
+        );
+        assert!(error_message(&obsolete).contains("unknown field `deterministic`"));
+        let unmapped = format!(
+            "{configured}\n[routes.passthrough.privacy.restricted_targets]\nweak = \"strong\"\n"
+        );
+        assert!(error_message(&unmapped).contains("unknown field `restricted_targets`"));
+        let no_private_target = configured.replace("private = true", "private = false");
+        assert!(error_message(&no_private_target).contains("without a private target"));
+        let missing_tier =
+            format!("{configured}\n[routes.plan_execute.privacy]\naccept_external_signal = true\n");
+        assert!(
+            error_message(&missing_tier).contains("privacy requires target weak to be private")
+        );
+        let conflicting_alias = format!(
+            "{configured}\n[targets.alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n"
+        );
+        assert!(error_message(&conflicting_alias).contains("disagree on private"));
         Ok(())
     }
 
@@ -1276,11 +1609,15 @@ evidence = { description = "candidate comparison" }
             (source.replace("b = \"weak\"", "b = \"strong\""), false),
         ] {
             let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
+            let targets = deployment
+                .targets
+                .iter()
+                .map(|(name, target)| (name.clone(), target.id.clone()))
+                .collect();
             let spec = &deployment.routes["composed"].algorithm;
             assert_eq!(spec.decision_judge().unwrap().0, "tier_judge");
             assert_eq!(
-                spec.build_with_runtime_models("composed", &deployment.build_targets())
-                    .is_ok(),
+                spec.build_with_runtime_models("composed", &targets).is_ok(),
                 valid
             );
         }
@@ -1354,7 +1691,7 @@ evidence = { description = "candidate comparison" }
         let Some(stage_route) = parsed.routes.get("stage") else {
             return Err(RunnerError::configuration("stage route is missing"));
         };
-        let callable_targets = stage_route.callable_target_names();
+        let callable_targets = stage_route.algorithm.callable_target_names();
         for expected in ["strong", "weak", "stage_judge", "classifier"] {
             assert!(callable_targets.contains(&expected));
         }
