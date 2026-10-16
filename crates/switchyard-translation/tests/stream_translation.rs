@@ -9,7 +9,9 @@ use std::collections::HashMap;
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
+use switchyard_protocol::{
+    ContentBlock, LlmResponseStreamEvent, McpContent, McpItemKind, ResponseAccumulator, StopReason,
+};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
@@ -31,13 +33,13 @@ fn mcp_chunks_report_a_terminal_encoding_error() -> TestResult {
                 index: 0,
                 id: "mcpl_1".into(),
                 server_name: "inventory".into(),
-                kind: switchyard_protocol::McpItemKind::Listing,
+                kind: McpItemKind::Listing,
             },
             LlmResponseChunk::McpItemAnnouncement {
                 index: 1,
                 id: "mcpr_1".into(),
                 server_name: "inventory".into(),
-                kind: switchyard_protocol::McpItemKind::ApprovalRequest {
+                kind: McpItemKind::ApprovalRequest {
                     name: "lookup".into(),
                     arguments: "{}".into(),
                 },
@@ -51,14 +53,12 @@ fn mcp_chunks_report_a_terminal_encoding_error() -> TestResult {
             },
             LlmResponseChunk::McpContentBlockComplete {
                 index: 0,
-                block: Box::new(switchyard_protocol::ContentBlock::Mcp(
-                    switchyard_protocol::McpContent::Listing {
-                        server_name: "inventory".into(),
-                        id: None,
-                        tools: Vec::new(),
-                        error: None,
-                    },
-                )),
+                block: Box::new(ContentBlock::Mcp(McpContent::Listing {
+                    server_name: "inventory".into(),
+                    id: None,
+                    tools: Vec::new(),
+                    error: None,
+                })),
             },
         ] {
             let mut state = StreamTranslationState::new(format, format);
@@ -69,7 +69,9 @@ fn mcp_chunks_report_a_terminal_encoding_error() -> TestResult {
             } else {
                 &events[0]["error"]["message"]
             };
-            assert!(message.as_str().is_some_and(|message| message.contains("MCP stream encoding is not supported")));
+            assert!(message.as_str().is_some_and(|message| {
+                message.contains("MCP stream encoding is not supported")
+            }));
             assert!(
                 engine
                     .encode_stream_event(

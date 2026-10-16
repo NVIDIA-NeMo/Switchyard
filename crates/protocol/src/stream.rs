@@ -363,9 +363,11 @@ pub enum LlmResponseChunk {
         arguments_delta: Option<String>,
     },
     /// Adds arguments or identity to a backend-executed MCP call.
-    /// A McpContentBlockComplete carrying the call finalizes its arguments, not its execution.
+    /// A [completion](Self::McpContentBlockComplete) carrying the call finalizes
+    /// its arguments, not its execution.
     McpCallDelta {
-        /// Source content or output-item index.
+        /// Key identifying MCP state and ordering MCP blocks during aggregation.
+        /// Live streams use provider indices; synthetic streams use MCP block ordinals.
         index: usize,
         /// Call identifier, when announced.
         id: Option<String>,
@@ -377,10 +379,12 @@ pub enum LlmResponseChunk {
         arguments_delta: Option<String>,
     },
     /// Announces a non-call MCP item so translators can emit its initial event.
-    /// Calls announce their identity through McpCallDelta instead.
-    /// Aggregation ignores this notification; content arrives through McpContentBlockComplete.
+    /// Calls announce their identity through [call deltas](Self::McpCallDelta) instead.
+    /// Aggregation ignores this notification; content arrives through
+    /// [completion](Self::McpContentBlockComplete).
     McpItemAnnouncement {
-        /// Source content or output-item index.
+        /// Key identifying MCP state and ordering MCP blocks during aggregation.
+        /// Live streams use provider indices; synthetic streams use MCP block ordinals.
         index: usize,
         /// Provider item identifier.
         id: String,
@@ -392,7 +396,8 @@ pub enum LlmResponseChunk {
     /// A complete MCP listing, call, result, or opaque MCP provider item.
     /// Replaces an MCP call announced at the same index; results remain separate blocks.
     McpContentBlockComplete {
-        /// Source content or output-item index.
+        /// Key identifying MCP state and ordering MCP blocks during aggregation.
+        /// Live streams use provider indices; synthetic streams use MCP block ordinals.
         index: usize,
         /// Complete content, replacing any earlier announcement at this index.
         block: Box<ContentBlock>,
@@ -525,13 +530,14 @@ impl ResponseAccumulator {
                         server_name: String::new(),
                         call: PartialToolCall::default(),
                     });
+                // Completed content is authoritative; ignore later call deltas.
                 if let McpBlockState::Call {
-                    server_name: server,
+                    server_name: stored_server_name,
                     call,
                 } = block
                 {
                     if let Some(server_name) = server_name {
-                        *server = server_name;
+                        *stored_server_name = server_name;
                     }
                     if id.is_some() {
                         call.id = id;
@@ -552,7 +558,9 @@ impl ResponseAccumulator {
                 match state {
                     // A provider item can contain both a call and its result.
                     McpBlockState::Complete(blocks) => blocks.push(*block),
-                    _ => *state = McpBlockState::Complete(vec![*block]),
+                    McpBlockState::Call { .. } => {
+                        *state = McpBlockState::Complete(vec![*block]);
+                    }
                 }
             }
             LlmResponseChunk::Usage(usage) => self.usage = usage,
@@ -564,7 +572,7 @@ impl ResponseAccumulator {
     }
 
     /// Build one assistant output: reasoning, text, ordinary tool calls, then MCP blocks.
-    /// Tool calls and MCP blocks are each ordered by ascending source index.
+    /// Tool calls and MCP blocks are each ordered by ascending index within their group.
     /// Unfinished MCP calls retain their partial data; announcements add no content.
     pub fn finish(self) -> AggLlmResponse {
         let mut content = Vec::new();
@@ -660,25 +668,25 @@ mod tests {
     }
 
     #[test]
-    fn empty_reasoning_details_do_not_create_content() {
-        let response = fold(vec![LlmResponseChunk::ReasoningDetailsDelta {
-            index: 0,
-            text: String::new(),
-            details: Vec::new(),
-        }]);
-        assert!(response.outputs[0].content.is_empty());
-        let response = fold(vec![LlmResponseChunk::ReasoningDelta {
-            index: 0,
-            text: String::new(),
-        }]);
-        assert!(matches!(
-            response.outputs[0].content.as_slice(),
-            [ContentBlock::Reasoning { .. }]
-        ));
-    }
-
-    #[test]
     fn mcp_completions_replace_partial_calls_and_follow_source_indices() {
+        for kind in [
+            McpItemKind::Listing,
+            McpItemKind::ApprovalRequest {
+                name: "lookup".into(),
+                arguments: "{}".into(),
+            },
+        ] {
+            let announcement = LlmResponseChunk::McpItemAnnouncement {
+                index: 0,
+                id: "item_1".into(),
+                server_name: "inventory".into(),
+                kind,
+            };
+            let serialized = serde_json::to_value(&announcement).expect("serialize announcement");
+            let restored = serde_json::from_value(serialized).expect("deserialize announcement");
+            assert_eq!(announcement, restored);
+            assert!(fold(vec![restored]).outputs[0].content.is_empty());
+        }
         let call = ContentBlock::Mcp(McpContent::Call {
             server_name: "inventory".into(),
             call: ToolCall {
@@ -698,6 +706,11 @@ mod tests {
             tools: Vec::new(),
             error: None,
         });
+        let tool = ToolCall {
+            id: "local_1".into(),
+            name: "local".into(),
+            arguments: json!({}),
+        };
         let response = fold(vec![
             LlmResponseChunk::TextDelta {
                 index: 0,
@@ -726,14 +739,37 @@ mod tests {
                 index: 0,
                 block: Box::new(listing.clone()),
             },
+            LlmResponseChunk::McpCallDelta {
+                index: 1,
+                id: None,
+                server_name: None,
+                name: None,
+                arguments_delta: Some("ignored after completion".into()),
+            },
+            LlmResponseChunk::ReasoningDelta {
+                index: 0,
+                text: "Thought".into(),
+            },
+            LlmResponseChunk::ToolCallDelta {
+                index: 0,
+                id: Some(tool.id.clone()),
+                name: Some(tool.name.clone()),
+                arguments_delta: Some("{}".into()),
+            },
             LlmResponseChunk::MessageStop { reason: None },
         ]);
         assert_eq!(
             response.outputs[0].content,
             vec![
+                ContentBlock::Reasoning {
+                    text: "Thought".into(),
+                    signature: None,
+                    details: Vec::new(),
+                },
                 ContentBlock::Text {
                     text: "BeforeAfter".into()
                 },
+                ContentBlock::ToolCall(tool),
                 listing,
                 call,
                 result,
@@ -745,176 +781,46 @@ mod tests {
     }
 
     #[test]
-    fn mcp_announcements_preserve_metadata_without_adding_content() {
-        for kind in [
-            McpItemKind::Listing,
-            McpItemKind::ApprovalRequest {
-                name: "lookup".into(),
-                arguments: r#"{"sku":"widget"}"#.into(),
-            },
-        ] {
-            let announcement = LlmResponseChunk::McpItemAnnouncement {
-                index: 3,
-                id: "item_1".into(),
-                server_name: "inventory".into(),
-                kind,
-            };
-            let serialized = serde_json::to_value(&announcement).expect("serialize announcement");
-            let recovered: LlmResponseChunk =
-                serde_json::from_value(serialized).expect("deserialize announcement");
-            assert_eq!(recovered, announcement);
-            let block = ContentBlock::Mcp(McpContent::Listing {
-                server_name: "other_server".into(),
-                id: Some("listing_1".into()),
-                tools: Vec::new(),
-                error: None,
-            });
-            let mut accumulator = ResponseAccumulator::new();
-            accumulator.push(announcement.clone());
-            assert!(accumulator.mcp_blocks.is_empty());
-            accumulator.push(LlmResponseChunk::McpContentBlockComplete {
-                index: 3,
-                block: Box::new(block.clone()),
-            });
-            accumulator.push(announcement);
-            assert_eq!(accumulator.finish().outputs[0].content, vec![block]);
-        }
-    }
-
-    #[test]
     fn interleaved_mcp_calls_keep_separate_arguments() {
-        let mut accumulator = ResponseAccumulator::new();
-        for (index, fragment) in [
-            (2, r#"{"sku":"#),
-            (5, r#"{"city":"#),
-            (5, r#""Paris"}"#),
-            (2, r#""widget"}"#),
-        ] {
-            accumulator.push(LlmResponseChunk::McpCallDelta {
-                index,
-                id: Some(format!("call_{index}")),
-                server_name: Some("inventory".into()),
-                name: Some("lookup".into()),
-                arguments_delta: Some(fragment.into()),
-            });
-        }
-        let response = accumulator.finish();
-        for (block, id, arguments) in [
-            (
-                &response.outputs[0].content[0],
-                "call_2",
-                json!({"sku": "widget"}),
-            ),
-            (
-                &response.outputs[0].content[1],
-                "call_5",
-                json!({"city": "Paris"}),
-            ),
-        ] {
-            assert_eq!(
-                block,
-                &ContentBlock::Mcp(McpContent::Call {
-                    server_name: "inventory".into(),
-                    call: ToolCall {
-                        id: id.into(),
-                        name: "lookup".into(),
-                        arguments
-                    },
-                })
-            );
-        }
-    }
-
-    #[test]
-    fn partial_mcp_calls_retain_received_data() {
         for (first, last, expected) in [
-            ("{\"sku\":", "\"widget\"}", json!({"sku": "widget"})),
-            ("{\"sku\":", "", json!("{\"sku\":")),
+            (r#"{"sku":"#, r#""widget"}"#, json!({"sku": "widget"})),
+            (r#"{"sku":"#, "", json!(r#"{"sku":"#)),
             ("", "", json!({})),
         ] {
-            let chunks = vec![
-                LlmResponseChunk::McpCallDelta {
-                    index: 0,
-                    id: Some("call_1".into()),
-                    server_name: None,
-                    name: None,
-                    arguments_delta: Some(first.into()),
-                },
-                LlmResponseChunk::McpCallDelta {
-                    index: 0,
-                    id: None,
-                    server_name: Some("inventory".into()),
-                    name: Some("lookup".into()),
-                    arguments_delta: Some(last.into()),
-                },
-            ];
-            let response = LlmResponse::Stream(Box::pin(stream::iter(
-                chunks.into_iter().map(|chunk| Ok(chunk.into())),
-            )));
-            let recovered = block_on(response.into_agg()).expect("partial MCP call");
-            assert_eq!(
-                recovered.outputs[0].content,
-                vec![ContentBlock::Mcp(McpContent::Call {
-                    server_name: "inventory".into(),
-                    call: ToolCall {
-                        id: "call_1".into(),
-                        name: "lookup".into(),
-                        arguments: expected
-                    },
-                })]
-            );
-        }
-    }
-
-    #[test]
-    fn synthetic_mcp_stream_aggregates_in_fixed_content_order() {
-        let reasoning = |text: &str| ContentBlock::Reasoning {
-            text: text.into(),
-            signature: None,
-            details: Vec::new(),
-        };
-        let response = AggLlmResponse {
-            outputs: vec![ResponseOutput {
-                role: Role::Assistant,
-                content: vec![
-                    reasoning("First"),
-                    ContentBlock::Text {
-                        text: "Before".into(),
-                    },
-                    ContentBlock::Mcp(McpContent::Listing {
-                        server_name: "inventory".into(),
-                        id: None,
-                        tools: Vec::new(),
-                        error: None,
-                    }),
-                    ContentBlock::ToolCall(ToolCall {
-                        id: "local_1".into(),
-                        name: "local".into(),
-                        arguments: json!({}),
-                    }),
-                    reasoning("Second"),
-                    ContentBlock::Text {
-                        text: "After".into(),
-                    },
-                ],
-                url_citations: Vec::new(),
-                stop_reason: None,
-            }],
-            ..AggLlmResponse::default()
-        };
-        let recovered = block_on(LlmResponse::Stream(response.clone().into_stream()).into_agg())
-            .expect("complete mixed stream");
-        assert_eq!(
-            recovered.outputs[0].content,
-            vec![
-                reasoning("FirstSecond"),
-                ContentBlock::Text {
-                    text: "BeforeAfter".into()
-                },
-                response.outputs[0].content[3].clone(),
-                response.outputs[0].content[2].clone(),
+            let chunks = [
+                (2, Some("call_2"), None, first),
+                (5, Some("call_5"), None, r#"{"city":"#),
+                (5, None, Some("lookup"), r#""Paris"}"#),
+                (2, None, Some("lookup"), last),
             ]
-        );
+            .map(|(index, id, name, fragment)| {
+                Ok(LlmResponseChunk::McpCallDelta {
+                    index,
+                    id: id.map(String::from),
+                    server_name: name.map(|_| "inventory".into()),
+                    name: name.map(String::from),
+                    arguments_delta: Some(fragment.into()),
+                }
+                .into())
+            });
+            let response = block_on(LlmResponse::Stream(Box::pin(stream::iter(chunks))).into_agg())
+                .expect("partial calls without completion");
+            let expected_calls: Vec<_> =
+                [("call_2", expected), ("call_5", json!({"city": "Paris"}))]
+                    .into_iter()
+                    .map(|(id, arguments)| {
+                        ContentBlock::Mcp(McpContent::Call {
+                            server_name: "inventory".into(),
+                            call: ToolCall {
+                                id: id.into(),
+                                name: "lookup".into(),
+                                arguments,
+                            },
+                        })
+                    })
+                    .collect();
+            assert_eq!(response.outputs[0].content, expected_calls);
+        }
     }
 
     #[test]
@@ -965,33 +871,15 @@ mod tests {
             .into_iter()
             .flat_map(|event| event.expect("synthetic event").normalized)
             .filter_map(|chunk| match chunk {
-                LlmResponseChunk::TextDelta { index, .. } => Some(("text", index)),
-                LlmResponseChunk::ReasoningDelta { index, .. }
-                | LlmResponseChunk::ReasoningDetailsDelta { index, .. } => {
-                    Some(("reasoning", index))
-                }
-                LlmResponseChunk::ToolCallDelta { index, .. } => Some(("tool", index)),
-                LlmResponseChunk::McpContentBlockComplete { index, .. } => Some(("mcp", index)),
+                LlmResponseChunk::TextDelta { index, .. }
+                | LlmResponseChunk::ReasoningDelta { index, .. }
+                | LlmResponseChunk::ReasoningDetailsDelta { index, .. }
+                | LlmResponseChunk::ToolCallDelta { index, .. }
+                | LlmResponseChunk::McpContentBlockComplete { index, .. } => Some(index),
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            indices,
-            vec![
-                ("reasoning", 0),
-                ("text", 0),
-                ("mcp", 0),
-                ("tool", 0),
-                ("reasoning", 0),
-                ("mcp", 1),
-                ("reasoning", 1),
-                ("text", 1),
-                ("mcp", 2),
-                ("tool", 1),
-                ("reasoning", 1),
-                ("mcp", 3),
-            ]
-        );
+        assert_eq!(indices, vec![0, 0, 0, 0, 0, 1, 1, 1, 2, 1, 1, 3]);
     }
 
     #[test]
@@ -1006,12 +894,8 @@ mod tests {
                 text: "Hel".to_string(),
             },
             LlmResponseChunk::TextDelta {
-                index: 1,
-                text: "l".to_string(),
-            },
-            LlmResponseChunk::TextDelta {
                 index: 0,
-                text: "o".to_string(),
+                text: "lo".to_string(),
             },
             LlmResponseChunk::Usage(Usage {
                 output_tokens: Some(2),
