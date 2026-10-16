@@ -58,13 +58,16 @@ jobs:
           set -euxo pipefail
           docker run --rm \
             -e MATURIN_VERSION="${MATURIN_VERSION}" \
+            -e CARGO_HOME=/tmp/switchyard-cargo \
+            -e RUSTUP_HOME=/tmp/switchyard-rustup \
             -v "${GITHUB_WORKSPACE}:/io" \
             -w /io \
             "quay.io/pypa/manylinux2014_x86_64" \
             /bin/bash -lc '
               set -euxo pipefail
-              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-              source "${HOME}/.cargo/env"
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+              source "${CARGO_HOME}/env"
+              cargo --version
               PYTHON=/opt/python/cp312-cp312/bin/python
               "${PYTHON}" -m pip install --upgrade pip
               "${PYTHON}" -m pip install "maturin==${MATURIN_VERSION}"

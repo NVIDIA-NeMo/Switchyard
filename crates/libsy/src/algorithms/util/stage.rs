@@ -537,6 +537,7 @@ impl HandoffNoteConfig {
 pub struct StageClassifier {
     mode: PickerMode,
     confidence_threshold: f64,
+    capable_first_threshold: f64,
     capable_hold_turns: u32,
     handoff_notes: Option<HandoffNoteConfig>,
 }
@@ -548,9 +549,16 @@ impl StageClassifier {
         Self {
             mode,
             confidence_threshold,
+            capable_first_threshold: 0.0,
             capable_hold_turns: 2,
             handoff_notes: None,
         }
+    }
+
+    /// Threshold used when an outer classifier selects capable-first.
+    pub fn with_capable_first_threshold(mut self, threshold: f64) -> Self {
+        self.capable_first_threshold = threshold;
+        self
     }
 
     /// Keep the capable tier for this many requests after an escalation. A
@@ -639,10 +647,15 @@ impl Classifier<State> for StageClassifier {
         if clean_test_pass {
             state.extra.remove(&capable_hold_key);
         }
+        let (mode, threshold) = match fall_open_tier(state) {
+            Some(Tier::Capable) => (PickerMode::CapableFirst, self.capable_first_threshold),
+            Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),
+            None => (self.mode, self.confidence_threshold),
+        };
         let outcome = if !clean_test_pass && Self::consume_capable_hold(state, &capable_hold_key) {
             resolved(Tier::Capable, DecisionSource::CapableHold, 0.5, Some(1.0))
         } else {
-            pick_tier(&signal, self.mode, self.confidence_threshold)
+            pick_tier(&signal, mode, threshold)
         };
         record_score_metrics(&signal, &outcome);
         match outcome {
@@ -685,7 +698,7 @@ impl Classifier<State> for StageClassifier {
                     (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
                         "source": source.as_str(),
                         "confidence": confidence,
-                        "threshold": self.confidence_threshold,
+                        "threshold": threshold,
                     }),
                     _ => serde_json::json!({"source": source.as_str()}),
                 };
@@ -989,6 +1002,32 @@ mod tests {
             tool_signals: Some(signal),
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn classified_tier_controls_the_stage_threshold() -> Result<()> {
+        let mut state = state_with(ToolSignals {
+            severity: 0.3,
+            recent_edit_count: 1,
+            tool_result_count: 1,
+            ..Default::default()
+        });
+        for (tier, threshold, expected) in [
+            (Tier::Capable, 0.0, Some(ModelId::from("weak"))),
+            (Tier::Efficient, 0.0, None),
+            (Tier::Capable, 0.5, None),
+        ] {
+            set_fall_open(&mut state, tier);
+            let (classification, _) = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+                .with_capable_first_threshold(threshold)
+                .score(&mut state, &mut Request::default(), &driver())
+                .await?;
+            assert_eq!(
+                classification.argmax(false)?.map(|score| score.target),
+                expected
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

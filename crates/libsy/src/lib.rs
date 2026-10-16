@@ -19,7 +19,7 @@ pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
-pub use algorithms::composite::{CompositeRouter, CompositeRouterConfig};
+pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{
     CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
     LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
@@ -38,6 +38,9 @@ pub use algorithms::util::escalation::{DeescalationConfig, EscalationJudgeConfig
 pub use algorithms::util::prompts::append_note;
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
+pub use algorithms::vgr::{
+    ACTIVE_APPROVAL, BreakerConfig, KillSwitch, ServingMode, Targets as VgrTargets, Vgr, VgrConfig,
+};
 
 // Stage-router scoring and tier selection — the shared signal-driven routing
 // core (scorer, picker, and the `StageClassifier`).

@@ -26,6 +26,39 @@ use crate::{
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
 
+/// This function returns a deployment's declared credential variable names without reading their values.
+/// It parses the deployment and checks its schema version before returning names from LLM and decision clients.
+pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|_| {
+        RunnerError::configuration(
+            "Could not parse the server config to read credential references.",
+        )
+    })?;
+    if config.schema_version != SUPPORTED_SCHEMA_VERSION {
+        return Err(RunnerError::configuration(
+            "Unsupported server config schema version.",
+        ));
+    }
+    let mut variables: BTreeSet<_> = config
+        .llm_clients
+        .values()
+        .filter_map(|client| client.api_key_env.clone())
+        .collect();
+    for client in config.decision_clients.values() {
+        let DecisionClientConfig::SystemOne { api_key_env, .. } = client;
+        variables.insert(api_key_env.clone());
+    }
+    if variables
+        .iter()
+        .any(|name| name.trim().is_empty() || name.contains(['\0', '=']))
+    {
+        return Err(RunnerError::configuration(
+            "Invalid credential environment variable name.",
+        ));
+    }
+    Ok(variables)
+}
+
 type RunnerResult<T> = Result<T, RunnerError>;
 
 pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
@@ -413,11 +446,12 @@ impl DeploymentConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let client = Arc::new(
-                TranslatingLlmClient::new(&model_configs)
-                    .map_err(|error| RunnerError::configuration(error.to_string()))?,
-            );
-            clients.insert(name, client);
+            let mut client = TranslatingLlmClient::new(&model_configs)
+                .map_err(|error| RunnerError::configuration(error.to_string()))?;
+            if !self.llm_clients[&name].fallback_on_rate_limit {
+                client = client.without_rate_limit_cooldown();
+            }
+            clients.insert(name, Arc::new(client));
         }
         Ok(clients)
     }
@@ -555,6 +589,17 @@ impl DeploymentConfig {
             prompts,
             routing_answer_target,
             &completion_targets,
+        )
+        .without_rate_limit_fallback(
+            route
+                .routing_target_names()
+                .into_iter()
+                .filter_map(|name| {
+                    let target = &self.targets[name];
+                    (!self.llm_clients[&target.llm_client].fallback_on_rate_limit)
+                        .then(|| target.id.clone())
+                })
+                .collect(),
         );
         Ok((router, caller_auth))
     }
@@ -725,6 +770,8 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    #[serde(default = "default_fallback_on_rate_limit")]
+    fallback_on_rate_limit: bool,
     /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
     #[serde(default = "default_failure_cooldown_ms")]
     failure_cooldown_ms: u64,
@@ -846,9 +893,20 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
             "{client} api_key_env must not be empty"
         )));
     }
+    // A name with `=` is often a pasted `NAME=key` line, so this error omits the name.
+    if variable.contains(['\0', '=']) {
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env must not contain '=' or NUL"
+        )));
+    }
     let api_key = std::env::var(variable).map_err(|error| {
+        // VarError can contain the raw credential, so errors report only its category.
+        let reason = match error {
+            std::env::VarError::NotPresent => "environment variable not found",
+            std::env::VarError::NotUnicode(_) => "environment variable is not valid Unicode",
+        };
         RunnerError::configuration(format!(
-            "{client} could not read api_key_env {variable}: {error}"
+            "{client} could not read api_key_env {variable}: {reason}"
         ))
     })?;
     if api_key.trim().is_empty() {
@@ -862,6 +920,10 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
 // A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
+}
+
+const fn default_fallback_on_rate_limit() -> bool {
+    true
 }
 
 const fn default_failure_cooldown_ms() -> u64 {
@@ -1091,6 +1153,45 @@ target = "strong"
         }
     }
 
+    fn vgr_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "weak"
+cloud_target = "strong"
+judge_target = "classifier"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#
+        )
+    }
+
+    #[test]
+    fn vgr_route_builds_and_rejects_unsafe_configuration() -> RunnerResult<()> {
+        let runner = runner_from_toml(&vgr_config())?;
+        assert!(runner.route("switchyard/vgr").is_some());
+
+        let compact = format!("{}\ncompact_handoff = true\n", vgr_config());
+        assert!(error_message(&compact).contains("unknown field `compact_handoff`"));
+
+        let identical_ids =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"strong\"");
+        assert!(error_message(&identical_ids).contains("distinct local and cloud model IDs"));
+
+        let bad_approval =
+            vgr_config().replace("prospective-validation-and-canary-approved", "approved");
+        assert!(error_message(&bad_approval).contains("approval attestation"));
+
+        let missing_target =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
+        assert!(error_message(&missing_target).contains("unknown target missing"));
+        Ok(())
+    }
+
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));
@@ -1222,6 +1323,39 @@ evidence = { description = "candidate comparison" }
                 valid
             );
         }
+    }
+
+    #[test]
+    fn composite_custom_judge_builds_and_rejects_capability_settings() -> RunnerResult<()> {
+        let source = composite_config().replace(
+            "base_threshold = 0.5\nclassify_trigger",
+            r#"mode = "custom"
+prompt = 'Select efficient or capable.'
+response_schema = '{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["efficient","capable"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}'
+policy = { type = "target_selector", selector = "/decision/target" }
+classify_trigger"#,
+        );
+        runner_from_toml(&source)?;
+        runner_from_toml(
+            &source.replace("mode = \"custom\"", "mode = \"custom\"\nfail_open = true"),
+        )?;
+        for (setting, expected) in [
+            (
+                "base_threshold = 0.5",
+                "composite custom classifier cannot use capability thresholds",
+            ),
+            (
+                "fail_open = false",
+                "composite custom classifiers always fail open",
+            ),
+        ] {
+            let invalid = source.replace(
+                "mode = \"custom\"",
+                &format!("mode = \"custom\"\n{setting}"),
+            );
+            assert!(error_message(&invalid).contains(expected));
+        }
+        Ok(())
     }
 
     #[test]
@@ -2067,6 +2201,49 @@ confidence_threshold = 0.5
             std::env::remove_var(EMPTY_KEY_ENV);
         }
         assert!(message.contains("is empty"));
+
+        // macOS reads `FOO` for the name `FOO=x`, so the config would use another variable. A
+        // name with `=` is often a pasted `NAME=key` line, so the error leaves it out.
+        let with_equals = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\napi_key_env = \"NVIDIA_API_KEY=DUMMY_SECRET_DO_NOT_LOG\"",
+            1,
+        );
+        let message = error_message(&with_equals);
+        assert!(message.contains("llm client primary api_key_env must not contain '=' or NUL"));
+        assert!(!message.contains("DUMMY_SECRET_DO_NOT_LOG"), "{message}");
+    }
+
+    // `VarError::NotUnicode` holds the variable's value, so printing that error prints the key.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn invalid_unicode_api_key_is_not_printed() {
+        const RAW_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_RAW_KEY";
+        #[cfg(unix)]
+        let raw = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = b"DUMMY_SECRET_DO_NOT_LOG".to_vec();
+            bytes.push(0xff);
+            std::ffi::OsString::from_vec(bytes)
+        };
+        #[cfg(windows)]
+        let raw = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut words: Vec<_> = "DUMMY_SECRET_DO_NOT_LOG".encode_utf16().collect();
+            words.push(0xd800);
+            std::ffi::OsString::from_wide(&words)
+        };
+        unsafe {
+            // "unsafe" is for concurrent reads and writes, very rare
+            std::env::set_var(RAW_KEY_ENV, raw);
+        }
+        let result = read_api_key("llm client fixture", RAW_KEY_ENV);
+        unsafe {
+            std::env::remove_var(RAW_KEY_ENV);
+        }
+        let error = result.expect_err("invalid Unicode credential").to_string();
+        assert!(error.contains("not valid Unicode"), "{error}");
+        assert!(!error.contains("DUMMY_SECRET_DO_NOT_LOG"), "{error}");
     }
 
     #[test]

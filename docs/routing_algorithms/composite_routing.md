@@ -7,9 +7,13 @@ fit the same route type.
 
 ## What exists today
 
-One pairing: a classifier sets the tier a stage router falls open to when
-its own signals are not confident. The stage router's `picker` mode is unchanged,
-and so is how it scores signals, escalates, and de-escalates. Both algorithms and the
+One pairing: a classifier selects the stage router's starting policy.
+An efficient classification selects efficient-first with `efficient_first_threshold`
+(default `0.5`).
+A capable classification selects capable-first with `capable_first_threshold`
+(default `0.0`). Both thresholds are configurable from `0.0` to `1.0`.
+Tool signals can still change the tier
+during execution. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
 
@@ -36,7 +40,8 @@ classify_trigger = "user_turn"
 [routes.switchyard.stage]
 capable_target = "strong"
 efficient_target = "weak"
-confidence_threshold = 0.5
+efficient_first_threshold = 0.5
+capable_first_threshold = 0.0
 
 [routes.switchyard.stage.tool_semantics]
 observe = ["lookup_customer"]
@@ -50,8 +55,34 @@ new = ["send_message"]
 whenever the user speaks, `new_session` picks once and holds it.
 `[routes.switchyard.stage]` takes the stage settings, but accepts neither `picker`
 nor a second `classifier`. The outer classifier supplies the default tier.
+`confidence_threshold` remains an alias for `efficient_first_threshold`.
 Custom `tool_semantics` remain stage-local and have the same additive behavior as
 on a standalone stage route.
+
+## Custom LLM classifier
+
+To select a tier directly with your own prompt, keep the stage block and use:
+
+```toml
+[routes.switchyard.classifier]
+mode = "custom"
+target = "judge"
+classify_trigger = "user_turn"
+max_output_tokens = 64
+prompt = 'Choose efficient unless capable offers a concrete advantage for this task. Return JSON with decision.target set to efficient or capable.'
+response_schema = '''
+{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["efficient","capable"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}
+'''
+policy = { type = "target_selector", selector = "/decision/target" }
+```
+
+The schema is validated locally. The selector names a tier, and the existing
+stage targets supply its model. Custom classifiers always fall open: a missing
+or invalid verdict or a client failure retains the previous tier, or uses the
+configured stage default for a new session. A failed `new_session` judgment retains
+that fallback so tool continuations do not call the judge again.
+`fail_open = false` is rejected for custom classifiers. Capability thresholds and
+decision-model settings cannot be combined with `mode = "custom"`.
 
 ## Decision model classifier
 
