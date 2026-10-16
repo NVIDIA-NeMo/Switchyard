@@ -102,13 +102,12 @@ fn decode_responses_stream(
     state: &mut StreamTranslationState,
     event: &Value,
 ) -> Vec<LlmResponseChunk> {
-    // Opt-in raw capture of what the upstream actually sent, for diagnosing provider-specific
-    // event shapes: `RUST_LOG=switchyard_translation::responses::raw=trace`.
-    tracing::trace!(target: "switchyard_translation::responses::raw", raw = %event);
     let event_type = event
         .get("type")
         .or_else(|| event.get("event"))
         .and_then(Value::as_str);
+    // Provider error payloads can echo credentials; the client redacts them after decoding.
+    tracing::trace!(target: "switchyard_translation::responses", event_type, "decoding stream event");
     match event_type {
         Some("response.created") => {
             state.saw_message_start = true;
