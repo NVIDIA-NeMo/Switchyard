@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Buffered translation with runtime diagnostics for server HTTP boundaries.
+//! Buffered server translation with diagnostic metrics and logs.
 
 use std::sync::LazyLock;
 

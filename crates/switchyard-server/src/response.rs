@@ -11,8 +11,8 @@ use axum::response::{IntoResponse, Response as HttpResponse};
 use switchyard_protocol::{LlmResponse, ProviderExtensions, Response as AlgorithmResponse};
 use switchyard_translation::{WireFormat, encode_stream_with_extensions};
 
+use crate::observed_translation;
 use crate::sse::frame_stream;
-use crate::translation;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -28,7 +28,7 @@ pub(crate) fn into_http_response(
 ) -> Result<HttpResponse, BoxError> {
     match response.llm_response {
         LlmResponse::Agg(response) => {
-            let body = translation::encode_response(
+            let body = observed_translation::encode_response(
                 &response,
                 target_format,
                 served_model.as_deref(),

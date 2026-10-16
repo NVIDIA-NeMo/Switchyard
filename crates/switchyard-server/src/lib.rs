@@ -7,6 +7,7 @@ mod capabilities;
 pub mod config;
 mod metrics;
 mod observability;
+mod observed_translation;
 mod redaction;
 mod response;
 mod routing_log;
@@ -15,7 +16,6 @@ mod sse;
 mod stats;
 #[cfg(test)]
 mod testing;
-mod translation;
 mod usage_metrics;
 
 use std::collections::BTreeMap;
@@ -750,7 +750,7 @@ async fn decision(
             // The request moved into the decision run, so its namespace mapping
             // is gone by here. A Codex tool call in this preview keeps its
             // qualified name.
-            match translation::encode_response(
+            match observed_translation::encode_response(
                 &aggregate,
                 input_format,
                 outcome.selected_model_id().ok().map(ModelId::as_str),
@@ -977,7 +977,7 @@ fn resolve_route(
     if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove(switchyard_translation::util::SWITCHYARD_METADATA_KEY);
     }
-    let llm_request = translation::decode_request(wire_format, &body)
+    let llm_request = observed_translation::decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     let requested_model = llm_request
         .model
