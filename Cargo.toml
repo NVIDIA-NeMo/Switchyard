@@ -14,6 +14,7 @@ members = [
     "crates/protocol",
     "crates/switchyard-nemo-relay-plugin",
     "crates/switchyard-runner",
+    "crates/switchyard-desktop",
     "crates/switchyard-menubar",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
