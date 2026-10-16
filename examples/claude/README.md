@@ -7,9 +7,9 @@ main-conversation request, including tool continuations. Claude Code keeps the
 conversation, tools, reasoning effort, authentication, and completion connection.
 
 The package contains the mod, a native Switchyard executable, and default
-configuration. Users need no Rust, Node.js, routing API key, or running server.
+configuration. Prebuilt packages need no Rust, Node.js, routing API key, or running server.
 
-## Install a prebuilt package
+## Install
 
 Initial support: **Linux x86_64 with glibc 2.35 or newer**, Claude Code CLI
 **2.1.301 or newer**, mods allowed by your organization, and a Claude login with
@@ -18,10 +18,16 @@ validated. Locally built packages inherit the build host's glibc requirement.
 Organization policy can prevent mods from loading at all; check
 Claude's plugin errors if no Switchyard status appears.
 
-Download the `switchyard-claude-linux-x86_64` artifact from this PR's **Claude
-plugin** workflow. Unzip the artifact, then extract its `.tar.gz` file. The tar
-archive preserves the native executable's permissions. Keep the extracted
-marketplace directory: Claude uses a local marketplace in place.
+Build the package from the repository root with Python 3 and the repository's
+Rust toolchain:
+
+```bash
+python3 examples/claude/package.py
+```
+
+This creates `dist/switchyard-claude-linux-x86_64` and a `.tar.gz` archive for
+sharing. Recipients can extract the archive without building it. Keep the built
+or extracted marketplace directory: Claude uses a local marketplace in place.
 
 In Claude Code, run these once, using the extracted directory's absolute path:
 

@@ -17,14 +17,14 @@ def main():
     if (platform.system(), platform.machine()) != ("Linux", "x86_64"):
         raise SystemExit("The prebuilt plugin currently supports Linux x86_64 only")
     subprocess.run(
-        ["cargo", "build", "--locked", "--release", "-p", "switchyard-runner", "--example", "switchyard-claude"],
+        ["cargo", "build", "--locked", "--release", "-p", "switchyard-claude"],
         cwd=ROOT,
         check=True,
     )
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True,
     ))
-    binary = Path(metadata["target_directory"]) / "release/examples/switchyard-claude"
+    binary = Path(metadata["target_directory"]) / "release/switchyard-claude"
     marketplace = ROOT / "dist" / "switchyard-claude-linux-x86_64"
     if marketplace.exists():
         shutil.rmtree(marketplace)
