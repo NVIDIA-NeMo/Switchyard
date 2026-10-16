@@ -1333,14 +1333,25 @@ policy = { type = "target_selector", selector = "/decision/target" }
 classify_trigger"#,
         );
         runner_from_toml(&source)?;
-        let mixed = source.replace(
-            "mode = \"custom\"",
-            "mode = \"custom\"\nbase_threshold = 0.5",
-        );
-        assert!(
-            error_message(&mixed)
-                .contains("composite custom classifier cannot use capability thresholds")
-        );
+        runner_from_toml(
+            &source.replace("mode = \"custom\"", "mode = \"custom\"\nfail_open = true"),
+        )?;
+        for (setting, expected) in [
+            (
+                "base_threshold = 0.5",
+                "composite custom classifier cannot use capability thresholds",
+            ),
+            (
+                "fail_open = false",
+                "composite custom classifiers always fail open",
+            ),
+        ] {
+            let invalid = source.replace(
+                "mode = \"custom\"",
+                &format!("mode = \"custom\"\n{setting}"),
+            );
+            assert!(error_message(&invalid).contains(expected));
+        }
         Ok(())
     }
 

@@ -691,6 +691,11 @@ impl StageClassifierConfig {
         &self,
         route_name: &str,
     ) -> AlgorithmResult<CustomClassifierConfig> {
+        if self.fail_open == Some(false) {
+            return Err(AlgorithmConfigError::new(
+                "composite custom classifiers always fail open; remove fail_open = false",
+            ));
+        }
         if self.decision.is_some()
             || self.base_threshold.is_some()
             || self.threshold_step.is_some()
@@ -1652,10 +1657,7 @@ fn build_algorithm(
             stage_config.tool_semantics = stage.tool_semantics.clone();
             stage_config.handoff_notes = stage.handoff_notes.clone();
             let judge = if matches!(classifier.mode, Some(ClassifierMode::Custom)) {
-                CompositeJudgeConfig::Custom {
-                    config: classifier.custom_classifier_config(route_name)?,
-                    fail_open: classifier.fail_open.unwrap_or(true),
-                }
+                CompositeJudgeConfig::Custom(classifier.custom_classifier_config(route_name)?)
             } else {
                 CompositeJudgeConfig::Capability(
                     classifier.task_classifier_config(route_name, stage, targets)?,

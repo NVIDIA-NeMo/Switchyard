@@ -69,7 +69,6 @@ mode = "custom"
 target = "judge"
 classify_trigger = "user_turn"
 max_output_tokens = 64
-fail_open = true
 prompt = 'Choose efficient unless capable offers a concrete advantage for this task. Return JSON with decision.target set to efficient or capable.'
 response_schema = '''
 {"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["efficient","capable"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}
@@ -78,13 +77,12 @@ policy = { type = "target_selector", selector = "/decision/target" }
 ```
 
 The schema is validated locally. The selector names a tier, and the existing
-stage targets supply its model. With `fail_open = true` (the default), a missing
-or invalid verdict or a client failure retains the previous tier, or uses efficient
-for a new session. A failed `new_session` judgment retains that fallback so tool
-continuations do not call the judge again. With `fail_open = false`, client failures
-and verdicts that do not select `efficient` or `capable` return an error.
-Capability thresholds and decision-model
-settings cannot be combined with `mode = "custom"`.
+stage targets supply its model. Custom classifiers always fall open: a missing
+or invalid verdict or a client failure retains the previous tier, or uses the
+configured stage default for a new session. A failed `new_session` judgment retains
+that fallback so tool continuations do not call the judge again.
+`fail_open = false` is rejected for custom classifiers. Capability thresholds and
+decision-model settings cannot be combined with `mode = "custom"`.
 
 ## Decision model classifier
 

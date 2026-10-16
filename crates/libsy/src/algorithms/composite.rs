@@ -37,7 +37,6 @@ struct TierSetter {
     judge: Arc<dyn Classifier<State>>,
     trigger: ClassifyTrigger,
     message_hash_fallback: bool,
-    require_verdict: bool,
     default_tier: Tier,
     tiers: Mutex<HashMap<RoutingIdentity, Tier>>,
 }
@@ -95,11 +94,6 @@ impl Processor<State> for TierSetter {
                 }
                 return Ok(());
             }
-            if self.require_verdict {
-                return Err(LibsyError::AlgorithmError {
-                    message: "composite: custom classifier must select efficient or capable".into(),
-                });
-            }
             if self.trigger == ClassifyTrigger::NewSession
                 && let Some(identity) = identity.as_ref()
             {
@@ -122,13 +116,8 @@ impl Processor<State> for TierSetter {
 pub enum CompositeJudgeConfig {
     /// Selects a tier from a capability verdict.
     Capability(TaskClassifierConfig),
-    /// Selects a tier using a custom schema and policy.
-    Custom {
-        /// Custom classifier contract and trigger settings.
-        config: CustomClassifierConfig,
-        /// Retains the previous tier on failure; otherwise requires a valid tier verdict.
-        fail_open: bool,
-    },
+    /// Selects a tier using a custom schema and policy, retaining the fallback on failure.
+    Custom(CustomClassifierConfig),
 }
 
 /// A judge stacked over a stage router.
@@ -156,7 +145,7 @@ impl CompositeRouter {
             CompositeJudgeConfig::Capability(judge) => {
                 (judge.classify_trigger, judge.message_hash_fallback)
             }
-            CompositeJudgeConfig::Custom { config, .. } => {
+            CompositeJudgeConfig::Custom(config) => {
                 (config.classify_trigger, config.message_hash_fallback)
             }
         };
@@ -165,13 +154,6 @@ impl CompositeRouter {
                 message: "composite: classify_trigger must be user_turn or new_session".to_string(),
             });
         }
-        let require_verdict = matches!(
-            &config.judge,
-            CompositeJudgeConfig::Custom {
-                fail_open: false,
-                ..
-            }
-        );
         let judge: Arc<dyn Classifier<State>> = match config.judge {
             CompositeJudgeConfig::Capability(judge) => {
                 // Composite owns the trigger and retention; standalone affinity never runs.
@@ -183,15 +165,14 @@ impl CompositeRouter {
                     },
                 })?)
             }
-            CompositeJudgeConfig::Custom { config, fail_open } => {
-                LlmTaskClassifier::custom_classifier(&config, fail_open)?
+            CompositeJudgeConfig::Custom(config) => {
+                LlmTaskClassifier::custom_classifier(&config, true)?
             }
         };
         let setter = TierSetter {
             judge,
             trigger,
             message_hash_fallback,
-            require_verdict,
             default_tier: config.stage.mode.default_tier(),
             tiers: Mutex::new(HashMap::new()),
         };
@@ -223,7 +204,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use switchyard_protocol::{Category, Message, ModelId, Role};
+    use switchyard_protocol::{Category, LlmClientError, Message, ModelId, Role};
 
     use super::*;
     use crate::algorithms::util::stage::PickerMode;
@@ -293,14 +274,11 @@ mod tests {
     fn rejects_every_request_as_a_trigger() {
         for judge in [
             CompositeJudgeConfig::Capability(TaskClassifierConfig::default()),
-            CompositeJudgeConfig::Custom {
-                config: CustomClassifierConfig::new(
-                    "Choose a tier",
-                    serde_json::json!({"type": "object"}),
-                    crate::CustomClassifierPolicy::target_selector("/decision/target"),
-                ),
-                fail_open: true,
-            },
+            CompositeJudgeConfig::Custom(CustomClassifierConfig::new(
+                "Choose a tier",
+                serde_json::json!({"type": "object"}),
+                crate::CustomClassifierPolicy::target_selector("/decision/target"),
+            )),
         ] {
             let error = CompositeRouter::new(CompositeRouterConfig {
                 judge,
@@ -313,14 +291,14 @@ mod tests {
         }
     }
 
-    fn custom_judge(trigger: ClassifyTrigger, fail_open: bool) -> CompositeJudgeConfig {
+    fn custom_judge(trigger: ClassifyTrigger) -> CompositeJudgeConfig {
         let mut config = CustomClassifierConfig::new(
             "Select a tier",
             serde_json::json!({"type": "object"}),
             crate::CustomClassifierPolicy::target_selector("/decision/target"),
         );
         config.classify_trigger = trigger;
-        CompositeJudgeConfig::Custom { config, fail_open }
+        CompositeJudgeConfig::Custom(config)
     }
 
     #[tokio::test]
@@ -331,7 +309,7 @@ mod tests {
                 (PickerMode::CapableFirst, "strong"),
             ] {
                 let judge = if custom {
-                    custom_judge(ClassifyTrigger::NewSession, true)
+                    custom_judge(ClassifyTrigger::NewSession)
                 } else {
                     CompositeJudgeConfig::Capability(TaskClassifierConfig {
                         classify_trigger: ClassifyTrigger::NewSession,
@@ -382,14 +360,15 @@ mod tests {
     #[tokio::test]
     async fn a_custom_judge_sets_the_tier_and_retains_it_on_failure() -> Result<()> {
         let router = Arc::new(CompositeRouter::new(CompositeRouterConfig {
-            judge: custom_judge(ClassifyTrigger::UserTurn, true),
+            judge: custom_judge(ClassifyTrigger::UserTurn),
             stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
         })?);
         let replies = Arc::new(Mutex::new(
             [
-                r#"{"decision":{"target":"capable"}}"#,
-                "not JSON",
-                r#"{"decision":{"target":"efficient"}}"#,
+                Some(r#"{"decision":{"target":"capable"}}"#),
+                None,
+                Some("not JSON"),
+                Some(r#"{"decision":{"target":"efficient"}}"#),
             ]
             .into_iter(),
         ));
@@ -401,16 +380,21 @@ mod tests {
                         .lock()
                         .next()
                         .expect("unexpected judge call")
-                        .to_string()
+                        .map(str::to_string)
                 } else {
-                    target.to_string()
+                    Some(target.to_string())
                 };
-                async move { Ok(crate::core::testing::reply(completion)) }
+                async move {
+                    completion
+                        .map(crate::core::testing::reply)
+                        .ok_or_else(|| LlmClientError::General("judge unavailable".into()))
+                }
             }
         };
         for (request, expected) in [
             (user_turn_request(), "strong"),
             (turn_request(false), "strong"),
+            (user_turn_request(), "strong"),
             (user_turn_request(), "strong"),
             (user_turn_request(), "weak"),
         ] {
@@ -420,36 +404,6 @@ mod tests {
             assert_eq!(selected.as_str(), expected);
         }
         assert!(replies.lock().next().is_none());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_custom_judge_failure_stops_composite_when_fail_open_is_false() -> Result<()> {
-        for reply in [
-            None,
-            Some("not JSON"),
-            Some(r#"{"decision":{"target":"judge"}}"#),
-        ] {
-            let router = Arc::new(CompositeRouter::new(CompositeRouterConfig {
-                judge: custom_judge(ClassifyTrigger::UserTurn, false),
-                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
-            })?);
-            let outcome = test_drive_with_models(
-                router,
-                user_turn_request(),
-                runtime_models(),
-                move |_target: ModelId, _request: Request| async move {
-                    reply.map(crate::core::testing::reply).ok_or_else(|| {
-                        switchyard_protocol::LlmClientError::General("judge unavailable".into())
-                    })
-                },
-            )
-            .await;
-            assert!(
-                outcome.is_err(),
-                "unusable verdict must stop routing: {reply:?}"
-            );
-        }
         Ok(())
     }
 
