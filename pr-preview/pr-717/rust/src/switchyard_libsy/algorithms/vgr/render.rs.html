@@ -8,7 +8,7 @@
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a></span><span class="kw">use </span>switchyard_protocol::{ContentBlock, Request, Role};
 <a href=#10 id=10 data-nosnippet>10</a>
-<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span><span class="kw">super</span>::text::{Turn, clip_mid, content_text, redact};
+<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span><span class="kw">super</span>::text::{Turn, clip_mid, content_text, redact, tool_result_failed};
 <a href=#12 id=12 data-nosnippet>12</a>
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">const </span>ASSISTANT_TURN_BUDGET: usize = <span class="number">1200</span>;
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">const </span>ATTEMPT_BUDGET: usize = <span class="number">2200</span>;
@@ -94,7 +94,7 @@
 <a href=#94 id=94 data-nosnippet>94</a>                    <span class="prelude-val">Some</span>((<span class="string">"tool call"</span>, <span class="macro">format!</span>(<span class="string">"{}({})"</span>, call.name, call.arguments)))
 <a href=#95 id=95 data-nosnippet>95</a>                }
 <a href=#96 id=96 data-nosnippet>96</a>                ContentBlock::ToolResult(result) =&gt; <span class="prelude-val">Some</span>((
-<a href=#97 id=97 data-nosnippet>97</a>                    <span class="kw">if </span>result.is_error == <span class="prelude-val">Some</span>(<span class="bool-val">true</span>) {
+<a href=#97 id=97 data-nosnippet>97</a>                    <span class="kw">if </span>tool_result_failed(result) {
 <a href=#98 id=98 data-nosnippet>98</a>                        <span class="string">"tool error"
 <a href=#99 id=99 data-nosnippet>99</a>                    </span>} <span class="kw">else </span>{
 <a href=#100 id=100 data-nosnippet>100</a>                        <span class="string">"tool result"

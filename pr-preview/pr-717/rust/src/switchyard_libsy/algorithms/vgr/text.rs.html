@@ -9,7 +9,7 @@
 <a href=#9 id=9 data-nosnippet>9</a>
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>regex::Regex;
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>serde_json::Value;
-<a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role};
+<a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, ToolResult};
 <a href=#13 id=13 data-nosnippet>13</a>
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">crate</span>::algorithms::util::tool_signals::classify_text;
 <a href=#15 id=15 data-nosnippet>15</a>
@@ -174,51 +174,56 @@
 <a href=#174 id=174 data-nosnippet>174</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) clean_tail: i32,
 <a href=#175 id=175 data-nosnippet>175</a>}
 <a href=#176 id=176 data-nosnippet>176</a>
-<a href=#177 id=177 data-nosnippet>177</a><span class="kw">impl </span>ToolRecord {
-<a href=#178 id=178 data-nosnippet>178</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>from_request(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="self">Self </span>{
-<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">let </span><span class="kw-2">mut </span>record = <span class="self">Self</span>::default();
-<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>results = request
-<a href=#181 id=181 data-nosnippet>181</a>            .llm_request
-<a href=#182 id=182 data-nosnippet>182</a>            .messages
-<a href=#183 id=183 data-nosnippet>183</a>            .iter()
-<a href=#184 id=184 data-nosnippet>184</a>            .flat_map(|message| <span class="kw-2">&amp;</span>message.content)
-<a href=#185 id=185 data-nosnippet>185</a>            .filter_map(|block| <span class="kw">match </span>block {
-<a href=#186 id=186 data-nosnippet>186</a>                ContentBlock::ToolResult(result) =&gt; <span class="prelude-val">Some</span>(result),
-<a href=#187 id=187 data-nosnippet>187</a>                <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#188 id=188 data-nosnippet>188</a>            });
-<a href=#189 id=189 data-nosnippet>189</a>        <span class="kw">for </span>result <span class="kw">in </span>results {
-<a href=#190 id=190 data-nosnippet>190</a>            <span class="kw">let </span>text = result
-<a href=#191 id=191 data-nosnippet>191</a>                .content
-<a href=#192 id=192 data-nosnippet>192</a>                .iter()
-<a href=#193 id=193 data-nosnippet>193</a>                .filter_map(|block| <span class="kw">match </span>block {
-<a href=#194 id=194 data-nosnippet>194</a>                    ContentBlock::Text { text } | ContentBlock::Refusal { text } =&gt; <span class="prelude-val">Some</span>(text),
-<a href=#195 id=195 data-nosnippet>195</a>                    <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#196 id=196 data-nosnippet>196</a>                })
-<a href=#197 id=197 data-nosnippet>197</a>                .map(String::as_str)
-<a href=#198 id=198 data-nosnippet>198</a>                .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
-<a href=#199 id=199 data-nosnippet>199</a>                .join(<span class="string">"\n"</span>);
-<a href=#200 id=200 data-nosnippet>200</a>            <span class="kw">let </span>body = serde_json::from_str::&lt;Value&gt;(<span class="kw-2">&amp;</span>text).ok();
-<a href=#201 id=201 data-nosnippet>201</a>            <span class="kw">let </span>object = body.as_ref().and_then(Value::as_object);
-<a href=#202 id=202 data-nosnippet>202</a>            <span class="comment">// The executor's own `exit_code: 0` overrules every inferred failure:
-<a href=#203 id=203 data-nosnippet>203</a>            // harnesses send `"error": null` on success, and negative checks print
-<a href=#204 id=204 data-nosnippet>204</a>            // error-shaped text.
-<a href=#205 id=205 data-nosnippet>205</a>            </span><span class="kw">let </span>exit_ok = object
-<a href=#206 id=206 data-nosnippet>206</a>                .and_then(|object| object.get(<span class="string">"exit_code"</span>))
-<a href=#207 id=207 data-nosnippet>207</a>                .and_then(Value::as_i64)
-<a href=#208 id=208 data-nosnippet>208</a>                == <span class="prelude-val">Some</span>(<span class="number">0</span>);
-<a href=#209 id=209 data-nosnippet>209</a>            <span class="kw">let </span>failed = (result.is_error == <span class="prelude-val">Some</span>(<span class="bool-val">true</span>)
-<a href=#210 id=210 data-nosnippet>210</a>                || object.is_some_and(|object| object.contains_key(<span class="string">"error"</span>))
-<a href=#211 id=211 data-nosnippet>211</a>                || classify_text(<span class="kw-2">&amp;</span>text).<span class="number">0 </span>&gt; <span class="number">0.0</span>)
-<a href=#212 id=212 data-nosnippet>212</a>                &amp;&amp; !exit_ok;
-<a href=#213 id=213 data-nosnippet>213</a>            record.results = record.results.saturating_add(<span class="number">1</span>);
-<a href=#214 id=214 data-nosnippet>214</a>            record.errors = record.errors.saturating_add(i32::from(failed));
-<a href=#215 id=215 data-nosnippet>215</a>            record.clean_tail = <span class="kw">if </span>failed {
-<a href=#216 id=216 data-nosnippet>216</a>                <span class="number">0
-<a href=#217 id=217 data-nosnippet>217</a>            </span>} <span class="kw">else </span>{
-<a href=#218 id=218 data-nosnippet>218</a>                record.clean_tail.saturating_add(<span class="number">1</span>)
-<a href=#219 id=219 data-nosnippet>219</a>            };
-<a href=#220 id=220 data-nosnippet>220</a>        }
-<a href=#221 id=221 data-nosnippet>221</a>        record
-<a href=#222 id=222 data-nosnippet>222</a>    }
-<a href=#223 id=223 data-nosnippet>223</a>}
+<a href=#177 id=177 data-nosnippet>177</a><span class="doccomment">/// Uses executor status and inferred failures, with a successful exit taking precedence.
+<a href=#178 id=178 data-nosnippet>178</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>tool_result_failed(result: <span class="kw-2">&amp;</span>ToolResult) -&gt; bool {
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">let </span>text = result
+<a href=#180 id=180 data-nosnippet>180</a>        .content
+<a href=#181 id=181 data-nosnippet>181</a>        .iter()
+<a href=#182 id=182 data-nosnippet>182</a>        .filter_map(|block| <span class="kw">match </span>block {
+<a href=#183 id=183 data-nosnippet>183</a>            ContentBlock::Text { text } | ContentBlock::Refusal { text } =&gt; <span class="prelude-val">Some</span>(text),
+<a href=#184 id=184 data-nosnippet>184</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#185 id=185 data-nosnippet>185</a>        })
+<a href=#186 id=186 data-nosnippet>186</a>        .map(String::as_str)
+<a href=#187 id=187 data-nosnippet>187</a>        .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
+<a href=#188 id=188 data-nosnippet>188</a>        .join(<span class="string">"\n"</span>);
+<a href=#189 id=189 data-nosnippet>189</a>    <span class="kw">let </span>body = serde_json::from_str::&lt;Value&gt;(<span class="kw-2">&amp;</span>text).ok();
+<a href=#190 id=190 data-nosnippet>190</a>    <span class="kw">let </span>object = body.as_ref().and_then(Value::as_object);
+<a href=#191 id=191 data-nosnippet>191</a>    <span class="comment">// The executor's own `exit_code: 0` overrules every inferred failure:
+<a href=#192 id=192 data-nosnippet>192</a>    // harnesses send `"error": null` on success, and negative checks print
+<a href=#193 id=193 data-nosnippet>193</a>    // error-shaped text.
+<a href=#194 id=194 data-nosnippet>194</a>    </span><span class="kw">let </span>exit_ok = object
+<a href=#195 id=195 data-nosnippet>195</a>        .and_then(|object| object.get(<span class="string">"exit_code"</span>))
+<a href=#196 id=196 data-nosnippet>196</a>        .and_then(Value::as_i64)
+<a href=#197 id=197 data-nosnippet>197</a>        == <span class="prelude-val">Some</span>(<span class="number">0</span>);
+<a href=#198 id=198 data-nosnippet>198</a>    (result.is_error == <span class="prelude-val">Some</span>(<span class="bool-val">true</span>)
+<a href=#199 id=199 data-nosnippet>199</a>        || object.is_some_and(|object| object.contains_key(<span class="string">"error"</span>))
+<a href=#200 id=200 data-nosnippet>200</a>        || classify_text(<span class="kw-2">&amp;</span>text).<span class="number">0 </span>&gt; <span class="number">0.0</span>)
+<a href=#201 id=201 data-nosnippet>201</a>        &amp;&amp; !exit_ok
+<a href=#202 id=202 data-nosnippet>202</a>}
+<a href=#203 id=203 data-nosnippet>203</a>
+<a href=#204 id=204 data-nosnippet>204</a><span class="kw">impl </span>ToolRecord {
+<a href=#205 id=205 data-nosnippet>205</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>from_request(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="self">Self </span>{
+<a href=#206 id=206 data-nosnippet>206</a>        <span class="kw">let </span><span class="kw-2">mut </span>record = <span class="self">Self</span>::default();
+<a href=#207 id=207 data-nosnippet>207</a>        <span class="kw">let </span>results = request
+<a href=#208 id=208 data-nosnippet>208</a>            .llm_request
+<a href=#209 id=209 data-nosnippet>209</a>            .messages
+<a href=#210 id=210 data-nosnippet>210</a>            .iter()
+<a href=#211 id=211 data-nosnippet>211</a>            .flat_map(|message| <span class="kw-2">&amp;</span>message.content)
+<a href=#212 id=212 data-nosnippet>212</a>            .filter_map(|block| <span class="kw">match </span>block {
+<a href=#213 id=213 data-nosnippet>213</a>                ContentBlock::ToolResult(result) =&gt; <span class="prelude-val">Some</span>(result),
+<a href=#214 id=214 data-nosnippet>214</a>                <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#215 id=215 data-nosnippet>215</a>            });
+<a href=#216 id=216 data-nosnippet>216</a>        <span class="kw">for </span>result <span class="kw">in </span>results {
+<a href=#217 id=217 data-nosnippet>217</a>            <span class="kw">let </span>failed = tool_result_failed(result);
+<a href=#218 id=218 data-nosnippet>218</a>            record.results = record.results.saturating_add(<span class="number">1</span>);
+<a href=#219 id=219 data-nosnippet>219</a>            record.errors = record.errors.saturating_add(i32::from(failed));
+<a href=#220 id=220 data-nosnippet>220</a>            record.clean_tail = <span class="kw">if </span>failed {
+<a href=#221 id=221 data-nosnippet>221</a>                <span class="number">0
+<a href=#222 id=222 data-nosnippet>222</a>            </span>} <span class="kw">else </span>{
+<a href=#223 id=223 data-nosnippet>223</a>                record.clean_tail.saturating_add(<span class="number">1</span>)
+<a href=#224 id=224 data-nosnippet>224</a>            };
+<a href=#225 id=225 data-nosnippet>225</a>        }
+<a href=#226 id=226 data-nosnippet>226</a>        record
+<a href=#227 id=227 data-nosnippet>227</a>    }
+<a href=#228 id=228 data-nosnippet>228</a>}
 </code></pre></div></section></main></body></html>
