@@ -1560,6 +1560,8 @@ classifier_magic = true
                 ),
                 "cannot use message_hash_fallback",
             ),
+            // Nested classifier routes reject the fallback: sub-agent affinity needs
+            // harness-provided child identity, which a message hash cannot supply.
             (
                 with_subagent_llm_classifier(
                     VALID_CONFIG,
