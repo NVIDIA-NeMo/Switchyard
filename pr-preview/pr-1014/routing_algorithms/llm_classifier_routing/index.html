@@ -1723,7 +1723,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <p>The same classifier also supports <a href="../escalation_router_routing/">escalation</a>
 and <a href="#custom-multi-target-routing">custom routing</a> across two or more targets.</p>
 <p>For a task-level decision-model example with structured instructions, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/47b19fa7f21453db1ac45c9e75a9ba8d545aff97/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/917a39937a7651002bfe9da7498dbdfadc9a67be/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
@@ -1797,11 +1797,14 @@ rule; no match selects <code>fast</code>. The provider's selected option and con
 not override the rules. Choice probabilities express a judgment among the
 declared candidates, not calibrated task-success probabilities. Evaluate your
 cutoffs on your workload.</p>
-<p>Supply exactly one of <code>decision.cutoff</code> and <code>decision.policy</code>. The existing
-<code>cutoff</code> form retains its relative-advantage question and binary behavior.
-The policy form asks a Choice question over the candidate labels. Both forms
-accept free-form structured <code>instructions</code> and <code>evidence</code>; omitting instructions
-uses the default prompt for that policy.</p>
+<p><code>decision.policy</code> is required for both two-model and N-way routing. The judge
+receives a Choice question over the candidate labels. Free-form structured
+<code>instructions</code> and <code>evidence</code> are passed through; omitting instructions uses the
+default candidate-selection prompt.</p>
+<p>The former <code>decision.cutoff</code> form and <code>advantage</code>/<code>no_advantage</code> question are
+removed. Migrate to explicit rules and a fallback, update custom instructions to
+use candidate labels, and re-evaluate cutoffs: candidate-choice scores have a
+different meaning from relative-advantage scores.</p>
 <p>An unavailable or invalid verdict selects the policy fallback. Provider errors
 return an error when <code>fail_open = false</code>; when true, they select the fallback.
 Use a session ID with <code>new_session</code> to retain the selected model. Stage and
@@ -1869,7 +1872,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/47b19fa7f21453db1ac45c9e75a9ba8d545aff97/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/917a39937a7651002bfe9da7498dbdfadc9a67be/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>

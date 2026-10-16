@@ -1617,16 +1617,25 @@ and replace its LLM classifier settings with:</p>
 </span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;user_turn&quot;</span>
 </span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>
 </span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="k">[routes.switchyard.classifier.decision]</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="n">cutoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.4</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="n">candidates</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="n">evidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">description</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Add task-relevant evidence comparing a and b.&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="n">candidates</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="n">evidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">description</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Add task-relevant evidence comparing a and b.&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="k">[routes.switchyard.classifier.decision.policy]</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="n">rules</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[{</span><span class="w"> </span><span class="n">score</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;a&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">target</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;a&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">cutoff</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mf">0.4</span><span class="w"> </span><span class="p">}]</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="n">fallback</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;b&quot;</span>
 </span></code></pre></div>
 <p>Both candidates must be completion targets. The judge must be a decision target.
-The classifier selects capable when <code>probabilities.advantage</code> exceeds <code>cutoff</code>.
-Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
+The judge scores the candidate labels. The first rule whose score strictly exceeds
+its cutoff selects its target. Here <code>probabilities.a &gt; 0.4</code> selects capable;
+otherwise the fallback selects efficient. Calibrate cutoffs for your tasks and models.
+Omit LLM-only settings such as
 <code>base_threshold</code>, <code>threshold_step</code> and <code>prompt</code> when using a decision model.
-On judge failure, the default is to retain the last classified tier or use
-efficient for a new session. Set <code>classifier.fail_open = false</code> to return the error.</p>
+Missing or invalid scores select the policy fallback. Provider errors also select
+it when <code>classifier.fail_open</code> is true; set it to false to return the error.
+Policy destinations must stay within the stage router's configured tier pair.</p>
+<p><code>decision.policy</code> is required. The former <code>decision.cutoff</code> form and
+<code>advantage</code>/<code>no_advantage</code> question are removed. Candidate-choice scores have a
+different meaning, so re-evaluate old cutoffs when migrating.</p>
 <h2 id="sessions">Sessions<a class="headerlink" href="#sessions" title="Permanent link">&para;</a></h2>
 <p>The tier is retained per session, so send <code>x-switchyard-session-id</code> and each
 conversation keeps its own. A client that sends no session ID can set
