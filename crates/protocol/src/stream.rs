@@ -224,11 +224,9 @@ impl AggLlmResponse {
             model: self.model,
         });
         let mut tool_call_index = 0usize;
-        let mut content_index = 0usize;
-        for output in self.outputs {
+        let mut mcp_block_index = 0usize;
+        for (output_index, output) in self.outputs.into_iter().enumerate() {
             for block in output.content {
-                let output_index = content_index;
-                content_index += 1;
                 match block {
                     ContentBlock::Text { text } => {
                         chunks.push(LlmResponseChunk::TextDelta {
@@ -262,9 +260,10 @@ impl AggLlmResponse {
                     }
                     block @ ContentBlock::Mcp(_) => {
                         chunks.push(LlmResponseChunk::McpContentBlockComplete {
-                            index: output_index,
+                            index: mcp_block_index,
                             block: Box::new(block),
-                        })
+                        });
+                        mcp_block_index += 1;
                     }
                     // Other variants have no synthetic chunks.
                     _ => {}
@@ -914,6 +913,83 @@ mod tests {
                 },
                 response.outputs[0].content[3].clone(),
                 response.outputs[0].content[2].clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn synthetic_stream_keeps_output_indices_and_separate_call_counters() {
+        let output = ResponseOutput {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::Reasoning {
+                    text: "First".into(),
+                    signature: None,
+                    details: Vec::new(),
+                },
+                ContentBlock::Text {
+                    text: "Answer".into(),
+                },
+                ContentBlock::Mcp(McpContent::Listing {
+                    server_name: "inventory".into(),
+                    id: None,
+                    tools: Vec::new(),
+                    error: None,
+                }),
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call_1".into(),
+                    name: "lookup".into(),
+                    arguments: json!({}),
+                }),
+                ContentBlock::Reasoning {
+                    text: "Second".into(),
+                    signature: None,
+                    details: vec![json!({"type": "summary"})],
+                },
+                ContentBlock::Mcp(McpContent::Listing {
+                    server_name: "weather".into(),
+                    id: None,
+                    tools: Vec::new(),
+                    error: None,
+                }),
+            ],
+            url_citations: Vec::new(),
+            stop_reason: None,
+        };
+        let response = AggLlmResponse {
+            outputs: vec![output.clone(), output],
+            ..Default::default()
+        };
+        let events = block_on(response.into_stream().collect::<Vec<_>>());
+        let indices: Vec<_> = events
+            .into_iter()
+            .flat_map(|event| event.expect("synthetic event").normalized)
+            .filter_map(|chunk| match chunk {
+                LlmResponseChunk::TextDelta { index, .. } => Some(("text", index)),
+                LlmResponseChunk::ReasoningDelta { index, .. }
+                | LlmResponseChunk::ReasoningDetailsDelta { index, .. } => {
+                    Some(("reasoning", index))
+                }
+                LlmResponseChunk::ToolCallDelta { index, .. } => Some(("tool", index)),
+                LlmResponseChunk::McpContentBlockComplete { index, .. } => Some(("mcp", index)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            indices,
+            vec![
+                ("reasoning", 0),
+                ("text", 0),
+                ("mcp", 0),
+                ("tool", 0),
+                ("reasoning", 0),
+                ("mcp", 1),
+                ("reasoning", 1),
+                ("text", 1),
+                ("mcp", 2),
+                ("tool", 1),
+                ("reasoning", 1),
+                ("mcp", 3),
             ]
         );
     }
