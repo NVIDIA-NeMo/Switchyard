@@ -69,8 +69,7 @@ async fn serve() -> Result<(), String> {
     let parent = parent_id();
     let config = env::args().nth(1).ok_or("Expected a TOML config path")?;
     let source = fs::read_to_string(config).map_err(|error| error.to_string())?;
-    let runner =
-        Runner::from_toml_for_model_selection(&source).map_err(|error| error.to_string())?;
+    let runner = Runner::from_toml(&source).map_err(|error| error.to_string())?;
     let mut terminate = signal(SignalKind::terminate()).map_err(|error| error.to_string())?;
     let mut hangup = signal(SignalKind::hangup()).map_err(|error| error.to_string())?;
 

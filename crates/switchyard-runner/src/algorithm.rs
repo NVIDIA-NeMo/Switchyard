@@ -734,11 +734,6 @@ impl AlgorithmSpec {
                 subagents: None, ..
             }
             | Self::Auto { .. } => true,
-            Self::Composite {
-                subagents: None,
-                stage,
-                ..
-            } => stage.handoff_notes.is_none(),
             Self::LlmClassifier { config } => {
                 matches!(config.classifier_mode(), ClassifierMode::Capability)
                     && config.classify_trigger == ClassifyTrigger::EveryRequest

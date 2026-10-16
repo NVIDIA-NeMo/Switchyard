@@ -96,7 +96,7 @@ efficient_target = "fast"
 capable_target = "strong"
 "#
     );
-    let runner = Runner::from_toml_for_model_selection(&config).unwrap();
+    let runner = Runner::from_toml(&config).unwrap();
     let request = Request {
         llm_request: text_request(Some("composite-id".into()), "Solve this task"),
         ..Default::default()

@@ -21,13 +21,15 @@ Then run in Claude Code, using the generated directory's absolute path:
 /reload-plugins
 ```
 
-Keep the generated directory in place. Routing starts automatically after reload.
+Keep the generated directory in place. Routing is enabled automatically after reload.
 
 ## Use
 
 - `/switchyard`: show status.
-- `/switchyard off` / `/switchyard on`: pause or resume routing.
+- `/switchyard off`: pause routing.
+- `/switchyard on`: enable routing for the next request.
 
+The status line shows the selected model or a routing error.
 Manual model selection pauses routing. Subagents keep Claude's model selection.
 Routing state survives off/on and resets when Claude exits or the plugin restarts.
 

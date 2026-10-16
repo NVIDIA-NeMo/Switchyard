@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Claude keeps the full prompt. Switchyard receives visible text and tool activity.
-export function routingMessages(transcript) {
+function routingMessages(transcript) {
   const calls = new Set();
   return transcript.flatMap((message) => {
     const content = [];
@@ -22,15 +22,7 @@ export function routingMessages(transcript) {
   });
 }
 
-function selectedModel(body) {
-  const model = body.model;
-  if (typeof model !== "string" || !/^claude-[\w.-]+$/.test(model)) {
-    throw new Error("Switchyard did not select a native Claude model");
-  }
-  return model;
-}
-
-const DECISION_MS = 3000;
+const STARTUP_MS = 3000;
 const CLASSIFIER_MS = 10000;
 const ROUTING_MS = 15000;
 const WAITING = "Switchyard · waiting for a request";
@@ -143,9 +135,8 @@ const staleError = () => Object.assign(new Error("Switchyard routing stopped"), 
 // Claude ties a spawned child to the dispatch that spawned it and kills it when that
 // dispatch is abandoned, such as an interrupted turn. The loop started by session.start
 // outlives every turn, so every helper is spawned from it. Callers queue a job and wait.
-let jobs = [];
+const jobs = [];
 let wakeController;
-let controllerStarted = false;
 
 async function controller($) {
   for (;;) {
@@ -161,21 +152,18 @@ async function controller($) {
   }
 }
 
-function startHelper(g, session, config) {
-  if (!controllerStarted) return Promise.reject(new Error("Switchyard helper owner not started"));
-  return new Promise((resolve, reject) => {
-    jobs.push({ g, session, config, resolve, reject });
-    wakeController?.();
-  });
-}
-
 // The live helper, or a new one. Nothing starts if routing stopped or moved on.
 async function acquire($, g, session) {
   if (isStale(g, session)) throw staleError();
   if (life) return life;
   const config = (await $.env.get("SWITCHYARD_CONFIG")) || `${$.plugin.root}/switchyard.toml`;
   if (isStale(g, session)) throw staleError();
-  return life ?? startHelper(g, session, config);
+  if (life) return life;
+  if (!wakeController) throw new Error("Switchyard helper owner not started");
+  return new Promise((resolve, reject) => {
+    jobs.push({ g, session, config, resolve, reject });
+    wakeController?.();
+  });
 }
 
 async function decide($, messages, g, session, turn, signal) {
@@ -183,7 +171,7 @@ async function decide($, messages, g, session, turn, signal) {
   let id;
   const cancel = () => l.pending.get(id)?.cancel();
   try {
-    await within($, DECISION_MS, l.ready, "Switchyard helper did not start");
+    await within($, STARTUP_MS, l.ready, "Switchyard helper did not start");
     if (isStale(g, session)) throw staleError();
     id = ++l.nextId;
     const answer = new Promise((resolve, reject) => l.pending.set(id, {
@@ -246,14 +234,9 @@ function invalidate() {
   life?.pending.clear();
 }
 
-function stop($) {
-  invalidate();
-  return life ? close(life, $, new Error("Switchyard routing stopped")) : Promise.resolve();
-}
-
 function disable($, model) {
   enabled = false;
-  status = `Switchyard off · Claude selected ${model}; /switchyard on to resume`;
+  status = model ? `Switchyard off · Claude selected ${model}; /switchyard on to resume` : "Switchyard off";
   invalidate();
   return savePreference($, sessionId, false);
 }
@@ -278,20 +261,65 @@ async function sync($) {
   return true;
 }
 
+async function routeRequest($, e, signal) {
+  if (e.agentId || signal.aborted) return e;
+  let started = generation;
+  let session = sessionId;
+  try {
+    if (!await sync($)) throw staleError();
+    started = generation;
+    session = sessionId;
+    if (!enabled) return e;
+    const current = await $.session.model();
+    if (isStale(started, session)) throw staleError();
+    if (nativeModel !== undefined && nativeModel !== current) {
+      await disable($, current);
+      $.ui.status(status);
+      return e;
+    }
+    nativeModel = current;
+    const messages = routingMessages(await $.session.messages());
+    if (session !== await $.session.id() || signal.aborted) throw staleError();
+    if (!messages.length) throw new Error("No routing context available");
+    const decision = await decide($, messages, started, session, e.turnId, signal);
+    const model = decision.model;
+    if (typeof model !== "string" || !/^claude-[\w.-]+$/.test(model)) {
+      throw new Error("Switchyard did not select a native Claude model");
+    }
+    const [id, now] = [await $.session.id(), await $.session.model()];
+    if (id !== session || !enabled || isStale(started, session)) return e;
+    if (now !== current) {
+      await disable($, now);
+      $.ui.status(status);
+      return e;
+    }
+    if (signal.aborted) return e;
+    const fallback = decision.evidence?.source === "fail_open" ? " · classifier unavailable; stage routing" : "";
+    status = `Switchyard ${decision.algorithm === "composite" ? "Composite" : "Auto"} · ${model}${fallback}`;
+    $.ui.status(status);
+    return { ...e, model };
+  } catch (error) {
+    if (!error.stale && !isStale(started, session) && !signal.aborted) {
+      status = `Switchyard unavailable · keeping ${e.model}: ${error.message}`;
+      $.ui.status(status);
+    }
+  }
+  return e;
+}
+
 export function register(on) {
   on("session.start", async ($, e, next) => {
-    if (!controllerStarted) {
-      controllerStarted = true;
-      void controller($);
-    }
+    if (!wakeController) void controller($);
     await $.command.register({ name: "switchyard", description: "Switchyard routing: on, off, or status" });
     if (await sync($)) $.ui.status(status);
     return next(e);
   });
 
   on("session.end", async ($, e, next) => {
-    if (["clear", "resume"].includes(e.reason)) invalidate();
-    else await stop($);
+    invalidate();
+    if (!["clear", "resume"].includes(e.reason) && life) {
+      await close(life, $, new Error("Switchyard routing stopped"));
+    }
     sessionId = undefined;
     enabled = true;
     status = WAITING;
@@ -306,40 +334,20 @@ export function register(on) {
     }
     if (!await sync($)) return { text: status };
     if (action === "off") {
-      enabled = false;
-      status = "Switchyard off";
-      invalidate();
-      await savePreference($, sessionId, false);
-    } else if (action === "on") {
-      if (!enabled) {
-        const started = generation;
-        const session = sessionId;
-        const model = await $.session.model();
-        if (isStale(started, session)) return { text: status };
-        // Set together after the await, so no turn sees routing on with a stale model.
-        if (!enabled) {
-          enabled = true;
-          generation += 1;
-          nativeModel = model;
-          status = WAITING;
-          const enabledAt = generation;
-          await savePreference($, session, true);
-          if (isStale(enabledAt, session)) return { text: status };
-        }
-      }
-      // Start the helper now so a failure shows in the status. It stays if running.
+      await disable($);
+    } else if (action === "on" && !enabled) {
       const started = generation;
       const session = sessionId;
-      let l;
-      try {
-        l = await acquire($, started, session);
-        await within($, DECISION_MS, l.ready, "Switchyard helper did not start");
-      } catch (error) {
-        if (!isStale(started, session)) {
-          status = `Switchyard unavailable · ${error.message}`;
-          // A helper that missed the deadline is replaced by the next request.
-          if (l) await close(l, $, error);
-        }
+      const model = await $.session.model();
+      if (isStale(started, session)) return { text: status };
+      if (!enabled) {
+        enabled = true;
+        generation += 1;
+        nativeModel = model;
+        status = WAITING;
+        const enabledAt = generation;
+        await savePreference($, session, true);
+        if (isStale(enabledAt, session)) return { text: status };
       }
     }
     $.ui.status(status);
@@ -362,51 +370,7 @@ export function register(on) {
   });
 
   on("turn.step", async function* ($, e, next) {
-    // session.messages() describes the main conversation, not a subagent's work.
-    if (e.agentId || next.signal.aborted) return yield* next(e);
-    let request = e;
-    let started = generation;
-    let session = sessionId;
-    try {
-      if (!await sync($)) throw staleError();
-      started = generation;
-      session = sessionId;
-      if (enabled) {
-        // Covers picker changes after command.run returns, SDK changes, and
-        // native fallbacks without using managed-only classic hooks.
-        const current = await $.session.model();
-        if (isStale(started, session)) throw staleError();
-        if (nativeModel !== undefined && nativeModel !== current) {
-          await disable($, current);
-          $.ui.status(status);
-        }
-        nativeModel = current;
-        if (enabled && !isStale(started, session)) {
-          const messages = routingMessages(await $.session.messages());
-          if (session !== await $.session.id() || next.signal.aborted) throw staleError();
-          if (!messages.length) throw new Error("No routing context available");
-          const decision = await decide($, messages, started, session, e.turnId, next.signal);
-          const model = selectedModel(decision);
-          // Read the session as it is now: a picker or SDK change needs no hook of ours.
-          const [id, now] = [await $.session.id(), await $.session.model()];
-          if (id === session && now !== current && enabled && !isStale(started, session)) {
-            await disable($, now);
-            $.ui.status(status);
-          } else if (id === session && enabled && !isStale(started, session) && !next.signal.aborted) {
-            request = { ...e, model };
-            const fallback = decision.evidence?.source === "fail_open" ? " · classifier unavailable; stage routing" : "";
-            status = `Switchyard ${decision.algorithm === "composite" ? "Composite" : "Auto"} · ${model}${fallback}`;
-            $.ui.status(status);
-          }
-        }
-      }
-    } catch (error) {
-      if (!error.stale && !isStale(started, session) && !next.signal.aborted) {
-        status = `Switchyard unavailable · keeping ${e.model}: ${error.message}`;
-        $.ui.status(status);
-      }
-    }
-    // Keep completion failures outside the routing catch: never replay a stream.
-    return yield* next(request);
+    // Completion errors propagate directly; never replay a completion stream.
+    return yield* next(await routeRequest($, e, next.signal));
   });
 }

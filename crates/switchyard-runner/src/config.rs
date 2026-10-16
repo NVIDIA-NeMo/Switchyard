@@ -210,7 +210,7 @@ impl DeploymentConfig {
         for (name, route) in &self.routes {
             if !route.algorithm.supports_model_selection() {
                 return Err(RunnerError::configuration(format!(
-                    "route {name}: model selection requires auto, passthrough, composite without subagents or handoff notes, or capability llm_classifier with every_request"
+                    "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
                 )));
             }
             for target_name in route.routing_target_names() {
