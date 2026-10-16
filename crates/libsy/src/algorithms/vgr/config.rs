@@ -61,6 +61,12 @@ pub struct VgrConfig {
     /// Lets a long agentic run with earlier tool errors commit on a capable-tier
     /// confirmation once it ends in this many consecutive clean tool results.
     pub confirmed_recovery_min_clean_tail: Option<u32>,
+    /// Tells the capable tier, once per user turn, that it inherits unverified
+    /// tool-using work.
+    pub agentic_handoff: bool,
+    /// Wall-clock budget for the local tier within one user turn, including the
+    /// client's tool execution.
+    pub local_turn_budget: Option<Duration>,
 }
 
 impl VgrConfig {
@@ -80,10 +86,17 @@ impl VgrConfig {
             task_typing: true,
             local_supports_images: false,
             confirmed_recovery_min_clean_tail: None,
+            agentic_handoff: false,
+            local_turn_budget: None,
         }
     }
 
     pub(super) fn validate(&self) -> Result<()> {
+        if self.targets.local == self.targets.cloud {
+            return Err(LibsyError::AlgorithmError {
+                message: "vgr requires distinct local and cloud model IDs".into(),
+            });
+        }
         if self.deadline.is_zero() || self.breaker.threshold == 0 {
             return Err(LibsyError::AlgorithmError {
                 message: "vgr deadline and breaker threshold must be non-zero".into(),
@@ -108,5 +121,16 @@ impl VgrConfig {
     pub(super) fn confirmed_min_clean_tail(&self) -> Option<i32> {
         self.confirmed_recovery_min_clean_tail
             .map(|tail| i32::try_from(tail.max(1)).unwrap_or(i32::MAX))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_callers_must_use_distinct_local_and_cloud_ids() {
+        assert!(super::super::Vgr::new(VgrConfig::new("same".into(), "same".into())).is_err());
+        assert!(super::super::Vgr::new(VgrConfig::new("local".into(), "cloud".into())).is_ok());
     }
 }

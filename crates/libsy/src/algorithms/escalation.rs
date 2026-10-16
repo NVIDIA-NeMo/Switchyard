@@ -89,7 +89,7 @@ pub(super) fn build_classifier(
     contract_config: ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
-) -> Result<Arc<dyn Classifier<State>>> {
+) -> Result<Arc<dyn Classifier>> {
     let confirmations = config.confirmations;
     let deescalation = match config.deescalation {
         Some(deescalation) => Some(DeescalationPolicy {
@@ -104,7 +104,7 @@ pub(super) fn build_classifier(
         None => None,
     };
     let is_phase_aware = deescalation.is_some();
-    let classifier: Arc<dyn Classifier<State>> = Arc::new(EscalationClassifier {
+    let classifier: Arc<dyn Classifier> = Arc::new(EscalationClassifier {
         escalation_judge: escalation::build_judge(
             &contract_config,
             config,
@@ -204,7 +204,7 @@ impl EscalationClassifier {
 }
 
 #[async_trait]
-impl Classifier<State> for EscalationClassifier {
+impl Classifier for EscalationClassifier {
     async fn score(
         &self,
         state: &mut State,

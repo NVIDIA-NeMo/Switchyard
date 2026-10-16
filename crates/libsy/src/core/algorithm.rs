@@ -28,7 +28,7 @@ use switchyard_protocol::{
     Category, DecisionRequest, DecisionResponse, ModelId, Request, Response,
 };
 
-use crate::{DriverError, LibsyError, Result, observability};
+use crate::{DriverError, LibsyError, Result, State, observability};
 
 /// A boxed, `Send` stream of [`Step`]s — the output of
 /// [`Algorithm::run_stream`]. Boxed so the trait method that produces it keeps
@@ -265,6 +265,8 @@ pub struct RoutingOutcome {
     /// Constructors leave this empty; [`Algorithm::run_stream`] fills it before publishing a
     /// successful outcome.
     pub metadata: Option<crate::OutcomeMetadata>,
+    /// Routing state after the run, for hosts that store state outside the algorithm.
+    pub state: State,
 }
 
 impl RoutingOutcome {
@@ -291,6 +293,7 @@ impl RoutingOutcome {
             request,
             response: None,
             metadata: None,
+            state: State::default(),
         }
     }
 
@@ -303,6 +306,7 @@ impl RoutingOutcome {
             request,
             response: Some(response),
             metadata: None,
+            state: State::default(),
         }
     }
 }
@@ -317,6 +321,9 @@ pub struct Driver {
 
     /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
     evidence: Arc<Mutex<Option<Value>>>,
+
+    /// Caller-supplied routing state, read and updated when a request carries no session ID.
+    state: Arc<Mutex<State>>,
 
     /// Every group this run may route over, shared by all driver clones.
     models: Arc<RuntimeModels>,
@@ -342,11 +349,20 @@ impl Driver {
                 step_tx,
                 algorithm: algorithm.to_string(),
                 evidence: Arc::new(Mutex::new(None)),
+                state: Arc::new(Mutex::new(State::default())),
                 models,
                 scope: Scope::Parent,
             },
             step_rx,
         )
+    }
+
+    pub(crate) fn take_state(&self) -> State {
+        std::mem::take(&mut *self.state.lock())
+    }
+
+    pub(crate) fn set_state(&self, state: State) {
+        *self.state.lock() = state;
     }
 
     /// Replace the current run's evidence when a component makes the final decision.
@@ -501,6 +517,7 @@ impl Driver {
     /// when the algorithm finishes.
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let result = result.map(|mut outcome| {
+            outcome.state = self.take_state();
             let metadata = outcome.metadata.get_or_insert_with(|| {
                 crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
             });
@@ -563,7 +580,22 @@ where
     F: Fn(Call) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(request, models);
+    drive_with_state(algorithm, request, models, State::default(), serve).await
+}
+
+/// [`drive`] starting from caller-supplied `state`.
+pub(crate) async fn drive_with_state<F, Fut>(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    models: Arc<RuntimeModels>,
+    state: State,
+    serve: F,
+) -> Result<RoutingOutcome>
+where
+    F: Fn(Call) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let stream = algorithm.run_stream(request, models, state);
     tokio::pin!(stream);
 
     let mut in_flight = futures::stream::FuturesUnordered::new();
@@ -709,8 +741,14 @@ pub trait Algorithm: Send + Sync + 'static {
     /// the stream aborts the spawned algorithm task.
     ///
     /// Every invocation owns a separate [`Driver`].
-    fn run_stream(self: Arc<Self>, request: Request, models: Arc<RuntimeModels>) -> StepStream {
+    fn run_stream(
+        self: Arc<Self>,
+        request: Request,
+        models: Arc<RuntimeModels>,
+        state: State,
+    ) -> StepStream {
         let (driver, step_rx) = Driver::new(self.name(), models);
+        driver.set_state(state);
         let span = observability::run_span(self.name(), &request);
         let handle = tokio::spawn(
             async move {
@@ -1166,8 +1204,11 @@ mod tests {
     async fn run_offloads_via_promise_then_finishes() -> Result<()> {
         // Every call is offloaded via a promise the orchestrator surfaces as a
         // `CallModel` step for us to fulfill.
-        let stream = orch(target_set(&["offload/model"]))
-            .run_stream(request(), Arc::new(RuntimeModels::default()));
+        let stream = orch(target_set(&["offload/model"])).run_stream(
+            request(),
+            Arc::new(RuntimeModels::default()),
+            State::default(),
+        );
         tokio::pin!(stream);
 
         let mut saw_call = false;
@@ -1282,8 +1323,11 @@ mod tests {
         // A client-less target offloads its call; we fulfill the promise with an
         // Err, which must flow back through `call_model_target` into the algorithm and
         // out as an error step — not a response.
-        let stream = orch(target_set(&["offload/model"]))
-            .run_stream(request(), Arc::new(RuntimeModels::default()));
+        let stream = orch(target_set(&["offload/model"])).run_stream(
+            request(),
+            Arc::new(RuntimeModels::default()),
+            State::default(),
+        );
         tokio::pin!(stream);
 
         let mut saw_error = false;
@@ -1360,7 +1404,11 @@ mod tests {
             dropped: dropped.clone(),
         });
 
-        let stream = algo.run_stream(request(), Arc::new(RuntimeModels::default()));
+        let stream = algo.run_stream(
+            request(),
+            Arc::new(RuntimeModels::default()),
+            State::default(),
+        );
         started_rx
             .recv()
             .await
@@ -1397,7 +1445,11 @@ mod tests {
         }
 
         let algo: Arc<dyn Algorithm> = Arc::new(Panicky);
-        let stream = algo.run_stream(request(), Arc::new(RuntimeModels::default()));
+        let stream = algo.run_stream(
+            request(),
+            Arc::new(RuntimeModels::default()),
+            State::default(),
+        );
         tokio::pin!(stream);
 
         let mut saw_error = false;

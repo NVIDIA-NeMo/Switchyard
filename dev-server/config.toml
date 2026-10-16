@@ -48,7 +48,7 @@ evidence = { description = "Candidate a is the larger reasoning-oriented coding 
 capable_target = "capable"
 efficient_target = "efficient"
 efficient_first_threshold = 0.5
-capable_first_threshold = 0.0
+capable_first_threshold = 0.2
 
 # Basic routes
 

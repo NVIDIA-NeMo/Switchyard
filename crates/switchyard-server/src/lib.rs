@@ -169,6 +169,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+    model_catalog: Arc<tokio::sync::Mutex<Option<(Instant, Value)>>>,
 }
 
 #[derive(Clone)]
@@ -226,6 +227,7 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
+            model_catalog: Arc::default(),
         })
     }
 
@@ -1471,12 +1473,43 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .runner
-            .models()
+    let mut cache = state.model_catalog.lock().await;
+    if let Some((updated, catalog)) = cache.as_ref()
+        && updated.elapsed() < Duration::from_secs(60)
+    {
+        return Json(catalog.clone());
+    }
+    let mut models: Vec<_> = state.runner.models().collect();
+    let probes = models
+        .iter_mut()
+        .filter(|model| model.capabilities.context_window.is_none())
+        .map(|model| async {
+            model.capabilities.context_window =
+                discover_context_window(&state.runner, model.id).await;
+        });
+    // Keep completed discoveries even when another backend exhausts the shared budget.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        futures_util::future::join_all(probes),
+    )
+    .await;
+    let catalog = model_list_payload(
+        models
+            .into_iter()
             .map(|model| (model.id.as_str(), model.capabilities)),
-    ))
+    );
+    *cache = Some((Instant::now(), catalog.clone()));
+    Json(catalog)
+}
+
+async fn discover_context_window(runner: &Runner, model: &ModelId) -> Option<u32> {
+    let body = runner
+        .model_properties(model.as_str(), Duration::from_secs(2))
+        .await?;
+    let context = body
+        .pointer("/default_generation_settings/n_ctx")?
+        .as_u64()?;
+    u32::try_from(context).ok().filter(|context| *context > 0)
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {

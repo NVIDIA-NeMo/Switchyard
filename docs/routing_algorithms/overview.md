@@ -47,6 +47,7 @@ These options remain available when you need a different routing policy.
 | [Advisor Gate](advisor_gate_routing.md) | Keep one executor model and have a stronger advisor review its plans and completion claims. | `advisor` |
 | [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough`, `stage_router`, or `composite` with `subagents` |
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
+| [Verification-Gated Routing](vgr_routing.md) | Serve a local attempt only after bounded verification, and send the request to the capable model otherwise. | `vgr` |
 | [Fixed Model](#direct-model-routes) | Send every request to one target without a routing decision. | `passthrough` |
 
 ### Experimental

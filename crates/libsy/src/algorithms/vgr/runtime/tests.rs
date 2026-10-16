@@ -15,6 +15,7 @@ use super::super::tests::{call, request, result};
 use crate::Result;
 use crate::algorithms::vgr::Vgr;
 use crate::core::algorithm::Algorithm;
+use crate::core::state::{State, StateValue};
 use crate::core::testing::{category_models, reply, test_drive_with_models};
 
 fn route(configure: impl FnOnce(&mut VgrConfig)) -> Result<Arc<dyn Algorithm>> {
@@ -203,13 +204,13 @@ async fn final_answers_commit_only_on_a_verified_clean_record() -> Result<()> {
         long.extend([call(&id), result(&id, "ok")]);
     }
     assert_eq!(
-        drive(&clean, session(long.clone()), calls.clone(), answer, 1.0).await?,
+        drive(&clean, session(long.clone()), calls.clone(), answer, 0.99).await?,
         "cloud"
     );
     assert_eq!(calls.1.load(Ordering::Relaxed), 0);
     let confirmed = route(|config| config.confirmed_recovery_min_clean_tail = Some(1))?;
     assert_eq!(
-        drive(&confirmed, session(long), calls.clone(), answer, 1.0).await?,
+        drive(&confirmed, session(long), calls.clone(), answer, 0.99).await?,
         "local"
     );
     assert_eq!(calls.1.load(Ordering::Relaxed), 1);
@@ -271,7 +272,7 @@ async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
         breaker: super::CircuitBreaker::new(config.breaker),
         config,
     };
-    let mut state = super::VgrState::default();
+    let mut state = State::default();
     let task = session(vec![Message::text(Role::User, "list files")]);
     let LlmResponse::Agg(proposed) = complete_call().llm_response else {
         unreachable!();
@@ -292,7 +293,7 @@ async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
     let escalates = judging.await;
     drop(pending_call);
     assert!(!escalates);
-    assert!(!state.turn_latched);
+    assert!(super::turn_streak(&state) < super::TURN_CONFIRMATIONS);
     assert!(classifier.breaker.attempt().is_some());
     Ok(())
 }
@@ -305,7 +306,7 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
 
     for skip in ["image", "latched", "off", "kill", "deadline"] {
         let mut classifier = recovering_classifier();
-        let mut state = super::VgrState::default();
+        let mut state = State::default();
         let mut task = request(vec![Message::text(Role::User, "task")]);
         match skip {
             "image" => {
@@ -316,7 +317,12 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
                     },
                 }]
             }
-            "latched" => state.turn_latched = true,
+            "latched" => {
+                state.extra.insert(
+                    super::TURN_STREAK_KEY.to_string(),
+                    StateValue::Count(super::TURN_CONFIRMATIONS),
+                );
+            }
             "off" => classifier.config.mode = ServingMode::Off,
             "kill" => {
                 let switch = super::super::KillSwitch::new();
@@ -343,7 +349,7 @@ async fn cancelling_local_generation_releases_the_recovery_trial() -> Result<()>
     use crate::core::classifier::Classifier;
 
     let classifier = recovering_classifier();
-    let mut state = super::VgrState::default();
+    let mut state = State::default();
     let mut task = request(vec![Message::text(Role::User, "task")]);
     let (driver, _steps) = Driver::new("vgr", Arc::new(RuntimeModels::default()));
     let mut pending = classifier.score(&mut state, &mut task, &driver);
@@ -397,4 +403,225 @@ async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Resu
         }
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn cloud_only_work_does_not_get_a_local_handoff_notice() -> Result<()> {
+    for scenario in ["shadow", "kill_switch", "local_turn_budget"] {
+        let route = route(|config| {
+            config.agentic_handoff = true;
+            match scenario {
+                "shadow" => config.mode = ServingMode::Shadow,
+                "kill_switch" => {
+                    let switch = super::super::safety::KillSwitch::new();
+                    switch.engage();
+                    config.kill_switch = Some(switch);
+                }
+                _ => config.local_turn_budget = Some(std::time::Duration::ZERO),
+            }
+        })?;
+        let task = session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ]);
+        let (selected, _) = test_drive_with_models(
+            route,
+            task,
+            category_models(Category::Any, &["local", "cloud"]),
+            move |target: ModelId, request: Request| async move {
+                Ok(match target.as_str() {
+                    "local" => complete_call(),
+                    "judge" => scored(0.0),
+                    _ => {
+                        let text = serde_json::to_string(&request.llm_request.messages)
+                            .unwrap_or_default();
+                        assert!(!text.contains("Routing notice"), "{scenario}");
+                        reply("cloud answer")
+                    }
+                })
+            },
+        )
+        .await?;
+        assert_eq!(selected, "cloud");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn latched_sessions_do_not_repeat_the_handoff_on_later_user_turns() -> Result<()> {
+    let route = route(|config| config.agentic_handoff = true)?;
+    assert_eq!(
+        drive(
+            &route,
+            session(vec![Message::text(Role::User, "fix the build")]),
+            Arc::new(Calls::default()),
+            complete_call,
+            0.9,
+        )
+        .await?,
+        "local"
+    );
+    let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    for new_user_turn in [false, true] {
+        let mut messages = vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ];
+        if new_user_turn {
+            messages.push(Message::text(Role::User, "now run the tests"));
+        }
+        let sent = Arc::clone(&sent);
+        let (selected, _) = test_drive_with_models(
+            Arc::clone(&route),
+            session(messages),
+            category_models(Category::Any, &["local", "cloud"]),
+            move |target: ModelId, request: Request| {
+                let sent = Arc::clone(&sent);
+                async move {
+                    Ok(match target.as_str() {
+                        "local" => complete_call(),
+                        "judge" => scored(0.9),
+                        _ => {
+                            sent.lock().push(
+                                serde_json::to_string(&request.llm_request.messages)
+                                    .unwrap_or_default(),
+                            );
+                            reply("cloud answer")
+                        }
+                    })
+                }
+            },
+        )
+        .await?;
+        assert_eq!(selected, "cloud");
+    }
+    let sent = sent.lock();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].contains("Routing notice"));
+    assert!(!sent[1].contains("Routing notice"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> Result<()> {
+    let route = route(|config| config.agentic_handoff = true)?;
+    assert_eq!(
+        drive(
+            &route,
+            session(vec![Message::text(Role::User, "fix the build")]),
+            Arc::new(Calls::default()),
+            complete_call,
+            0.0,
+        )
+        .await?,
+        "local"
+    );
+    let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let task = || {
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ])
+    };
+    for _ in 0..2 {
+        let sent = Arc::clone(&sent);
+        test_drive_with_models(
+            Arc::clone(&route),
+            task(),
+            category_models(Category::Any, &["local", "cloud"]),
+            move |target: ModelId, request: Request| {
+                let sent = Arc::clone(&sent);
+                async move {
+                    Ok(match target.as_str() {
+                        "local" => reply("the build passes"),
+                        "judge" => scored(0.0),
+                        "cloud" => {
+                            let text = serde_json::to_string(&request.llm_request.messages)
+                                .unwrap_or_default();
+                            sent.lock().push(text);
+                            reply("cloud answer")
+                        }
+                        _ => reply("no"),
+                    })
+                }
+            },
+        )
+        .await?;
+    }
+    let sent = sent.lock();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].contains("Routing notice") && sent[0].contains("the build passes"));
+    assert!(
+        !sent[1].contains("Routing notice"),
+        "sent once per user turn"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_spent_local_turn_budget_skips_the_local_attempt() -> Result<()> {
+    let route = route(|config| config.local_turn_budget = Some(std::time::Duration::ZERO))?;
+    let calls = Arc::new(Calls::default());
+    let task = session(vec![Message::text(Role::User, "fix the build")]);
+    assert_eq!(
+        drive(&route, task, calls.clone(), complete_call, 0.0).await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[test]
+fn handoff_preserves_existing_messages_and_non_text_content() {
+    use switchyard_protocol::ImageSource;
+
+    let mut classifier = recovering_classifier();
+    classifier.config.agentic_handoff = true;
+    let mut task = request(vec![
+        Message::text(Role::User, "finish the task"),
+        Message::text(Role::User, "keep the original files"),
+        call("c1"),
+        result("c1", "the command failed"),
+        Message::text(Role::User, "preserve this requirement"),
+        Message::text(Role::User, "continue"),
+        Message::text(Role::User, "then report the result"),
+    ]);
+    if let ContentBlock::ToolResult(result) = &mut task.llm_request.messages[3].content[0] {
+        result.content.push(ContentBlock::Image {
+            source: ImageSource::Url {
+                url: "https://example.test/result.png".into(),
+                detail: None,
+            },
+        });
+    }
+    let original = task.llm_request.messages.clone();
+    let mut state = State::default();
+    super::set_flag(&mut state, super::LOCAL_SERVED_KEY, true);
+    classifier.hand_off(&mut task, &mut state, Some("unchecked result"));
+    // A notice may be appended, but all original content stays unchanged.
+    let messages = &task.llm_request.messages;
+    assert_eq!(messages.len(), original.len());
+    assert_eq!(
+        &messages[..original.len() - 1],
+        &original[..original.len() - 1]
+    );
+    let last = messages.last().expect("last user message");
+    assert_eq!(
+        &last.content[..original
+            .last()
+            .expect("original last message")
+            .content
+            .len()],
+        &original.last().expect("original last message").content
+    );
+    assert!(
+        last.text_content("")
+            .is_some_and(|text| text.contains("unchecked result"))
+    );
+    let after_first = task.llm_request.messages.clone();
+    classifier.hand_off(&mut task, &mut state, Some("duplicate notice"));
+    assert_eq!(task.llm_request.messages, after_first);
 }

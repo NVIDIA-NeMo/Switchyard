@@ -110,7 +110,7 @@ impl DecisionClassifier {
 }
 
 #[async_trait]
-impl Classifier<State> for DecisionClassifier {
+impl Classifier for DecisionClassifier {
     async fn score(
         &self,
         _state: &mut State,

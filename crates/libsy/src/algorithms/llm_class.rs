@@ -599,9 +599,9 @@ fn affinity_router(
 
 /// Routes requests through a capability, escalation, or custom classifier mode.
 pub struct LlmTaskClassifier {
-    route: FallThrough<State>,
+    route: FallThrough,
     /// Classifier used when this router is embedded in another cascade.
-    inner: Arc<dyn Classifier<State>>,
+    inner: Arc<dyn Classifier>,
 }
 
 struct ClassifierRouteConfig {
@@ -615,10 +615,10 @@ struct ClassifierRouteConfig {
 pub struct DefaultCategoryClassifier(pub Category);
 
 #[async_trait]
-impl<S: Send> Classifier<S> for DefaultCategoryClassifier {
+impl Classifier for DefaultCategoryClassifier {
     async fn score(
         &self,
-        _state: &mut S,
+        _state: &mut State,
         _request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
@@ -691,7 +691,7 @@ impl LlmTaskClassifier {
         let input = TaskInput {
             recent_turn_window: config.recent_turn_window,
         };
-        let classifier: Arc<dyn Classifier<State>> = match config.judge {
+        let classifier: Arc<dyn Classifier> = match config.judge {
             CapabilityJudgeConfig::Llm(judge) => Arc::new(
                 JudgeClassifier::new(
                     StructuredJudge::new(
@@ -720,40 +720,49 @@ impl LlmTaskClassifier {
     }
 
     fn build_custom(default_target: Category, config: CustomClassifierConfig) -> Result<Self> {
+        Self::from_classifier(
+            Self::custom_classifier(&config, false)?,
+            ClassifierRouteConfig {
+                default_target,
+                classify_trigger: config.classify_trigger,
+                message_hash_fallback: config.message_hash_fallback,
+            },
+        )
+    }
+
+    /// The judge face alone, for composite's own trigger and retained tier.
+    pub(crate) fn custom_classifier(
+        config: &CustomClassifierConfig,
+        fail_open: bool,
+    ) -> Result<Arc<dyn Classifier>> {
         config.validate()?;
-        let CustomClassifierConfig {
-            prompt,
-            response_schema,
-            policy,
-            classify_trigger,
-            message_hash_fallback,
-            recent_turn_window,
-            max_output_tokens,
-        } = config;
-        let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
-        let policy = match policy {
+        let contract =
+            ClassifierContract::from_inner_schema(&config.prompt, config.response_schema.clone())?;
+        let policy = match &config.policy {
             CustomClassifierPolicy::TargetSelector { selector } => {
                 CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector)?)
             }
         };
-        let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
+        let classifier = JudgeClassifier::new(
             StructuredJudge::new(
-                TaskInput { recent_turn_window },
+                TaskInput {
+                    recent_turn_window: config.recent_turn_window,
+                },
                 contract,
                 JsonSchemaDecoder::new(),
-                JudgeRuntimeConfig::new(max_output_tokens)?,
+                JudgeRuntimeConfig::new(config.max_output_tokens)?,
             ),
             policy,
-        ));
-
-        Self::from_classifier(
-            classifier,
-            ClassifierRouteConfig {
-                default_target,
-                classify_trigger,
-                message_hash_fallback,
-            },
         )
+        .with_error_recovery(fail_open);
+        let classifier = if fail_open {
+            classifier.with_evidence(|_, verdict| {
+                verdict.map(|_| serde_json::json!({"source": "llm-classifier"}))
+            })
+        } else {
+            classifier
+        };
+        Ok(Arc::new(classifier))
     }
 
     fn build_escalation(
@@ -763,7 +772,7 @@ impl LlmTaskClassifier {
     ) -> Result<Self> {
         let inner = escalation::build_classifier(contract_config, config, max_output_tokens)?;
         Ok(Self {
-            route: FallThrough::<State>::new_with_state()
+            route: FallThrough::new_with_state()
                 .with_name(ALGORITHM_NAME)
                 .with_classifier(Arc::clone(&inner)),
             inner,
@@ -776,10 +785,7 @@ impl LlmTaskClassifier {
     }
 
     /// Keeps affinity and fallback ordering identical across judge-backed modes.
-    fn from_classifier(
-        inner: Arc<dyn Classifier<State>>,
-        config: ClassifierRouteConfig,
-    ) -> Result<Self> {
+    fn from_classifier(inner: Arc<dyn Classifier>, config: ClassifierRouteConfig) -> Result<Self> {
         // Only `every_request` is rejected: it retains no target, so a fallback identity has nothing to key on. Both retaining triggers can key the retained target on a message hash when the caller sends no session id.
         if config.message_hash_fallback && config.classify_trigger == ClassifyTrigger::EveryRequest
         {
@@ -790,7 +796,7 @@ impl LlmTaskClassifier {
             });
         }
         // Affinity comes first so a retained assignment short-circuits the judge call.
-        let mut route = FallThrough::<State>::new_with_state().with_name(ALGORITHM_NAME);
+        let mut route = FallThrough::new_with_state().with_name(ALGORITHM_NAME);
         if let Some(affinity) =
             affinity_router(config.classify_trigger, config.message_hash_fallback).as_ref()
         {
@@ -810,7 +816,7 @@ impl LlmTaskClassifier {
 }
 
 #[async_trait]
-impl Classifier<State> for LlmTaskClassifier {
+impl Classifier for LlmTaskClassifier {
     async fn score(
         &self,
         state: &mut State,
