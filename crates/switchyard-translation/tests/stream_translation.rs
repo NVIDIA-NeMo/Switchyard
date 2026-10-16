@@ -19,6 +19,59 @@ use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn mcp_chunks_report_a_terminal_encoding_error() -> TestResult {
+    let engine = TranslationEngine::default();
+    for format in [
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+    ] {
+        for chunk in [
+            LlmResponseChunk::McpContentBlockStart { index: 0 },
+            LlmResponseChunk::McpCallDelta {
+                index: 0,
+                id: None,
+                server_name: None,
+                name: None,
+                arguments_delta: None,
+            },
+            LlmResponseChunk::McpContentBlockComplete {
+                index: 0,
+                block: Box::new(switchyard_protocol::ContentBlock::Mcp(
+                    switchyard_protocol::McpContent::Listing {
+                        server_name: "inventory".into(),
+                        id: None,
+                        tools: Vec::new(),
+                        error: None,
+                    },
+                )),
+            },
+        ] {
+            let mut state = StreamTranslationState::new(format, format);
+            let events = engine.encode_stream_event(&mut state, format, chunk.into())?;
+            assert_eq!(events.len(), 1);
+            let message = if format == WireFormat::OpenAiResponses {
+                &events[0]["message"]
+            } else {
+                &events[0]["error"]["message"]
+            };
+            assert!(message.as_str().is_some_and(|message| message.contains("MCP stream encoding is not supported")));
+            assert!(
+                engine
+                    .encode_stream_event(
+                        &mut state,
+                        format,
+                        LlmResponseChunk::MessageStop { reason: None }.into()
+                    )?
+                    .is_empty()
+            );
+            assert!(engine.finish_stream(&mut state, format)?.is_empty());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {
     let engine = TranslationEngine::default();
     for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
@@ -1683,7 +1736,7 @@ fn anthropic_message_stop_does_not_overwrite_max_tokens_stop_reason() -> TestRes
             accumulator.push(chunk);
         }
     }
-    let aggregate = accumulator.finish();
+    let aggregate = accumulator.try_finish()?;
 
     assert_eq!(
         aggregate.outputs[0].stop_reason,
@@ -1747,7 +1800,7 @@ fn responses_buffered_and_streamed_outputs_match() -> TestResult {
         }
     }
 
-    assert_eq!(buffered.outputs, accumulator.finish().outputs);
+    assert_eq!(buffered.outputs, accumulator.try_finish()?.outputs);
     Ok(())
 }
 
@@ -3435,7 +3488,7 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
             }
             assert_eq!(
                 expected.outputs,
-                accumulator.finish().outputs,
+                accumulator.try_finish()?.outputs,
                 "{target:?}: {mode}"
             );
         }

@@ -216,6 +216,14 @@ fn encode_openai_chat_stream(
         return Vec::new();
     }
     match event {
+        LlmResponseChunk::McpCallDelta { .. }
+        | LlmResponseChunk::McpContentBlockStart { .. }
+        | LlmResponseChunk::McpContentBlockComplete { .. } => encode_openai_chat_stream(
+            state,
+            LlmResponseChunk::DecodeError {
+                message: "MCP stream encoding is not supported for OpenAI Chat Completions".into(),
+            },
+        ),
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             // `finish_openai_chat_stream` uses this flag to decide whether a clean EOF needs a

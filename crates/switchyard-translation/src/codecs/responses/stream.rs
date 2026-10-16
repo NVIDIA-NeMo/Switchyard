@@ -336,6 +336,14 @@ fn encode_responses_stream(
         return Vec::new();
     }
     match event {
+        LlmResponseChunk::McpCallDelta { .. }
+        | LlmResponseChunk::McpContentBlockStart { .. }
+        | LlmResponseChunk::McpContentBlockComplete { .. } => encode_responses_stream(
+            state,
+            LlmResponseChunk::DecodeError {
+                message: "MCP stream encoding is not supported for OpenAI Responses".into(),
+            },
+        ),
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             ensure_responses_created(state)

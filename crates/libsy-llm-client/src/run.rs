@@ -855,7 +855,7 @@ impl ClientRouter {
                                 && valid
                             {
                                 router.remember_canonical_response(
-                                    &accumulator.finish(),
+                                    &accumulator.try_finish()?,
                                     &model,
                                     store,
                                     input,
