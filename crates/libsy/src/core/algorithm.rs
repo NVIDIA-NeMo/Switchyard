@@ -50,6 +50,7 @@ pub struct RuntimeModels {
     /// When using subagents this is the parent agent category.
     by_category: HashMap<Category, Vec<ModelId>>,
     subagent: Option<HashMap<Category, Vec<ModelId>>>,
+    has_target_restriction: bool,
 }
 
 impl RuntimeModels {
@@ -58,6 +59,7 @@ impl RuntimeModels {
         Self {
             by_category,
             subagent: None,
+            has_target_restriction: false,
         }
     }
 
@@ -65,6 +67,33 @@ impl RuntimeModels {
     pub fn with_subagent(mut self, models: HashMap<Category, Vec<ModelId>>) -> Self {
         self.subagent = Some(models);
         self
+    }
+
+    /// Rejects routing calls and completion candidates outside the configured model groups.
+    /// Enforced by the driver and [`drive`]; hosts bind IDs to permitted deployments.
+    pub fn with_target_restriction(mut self) -> Self {
+        self.has_target_restriction = true;
+        self
+    }
+
+    fn check_targets(&self, targets: &[ModelId]) -> Result<()> {
+        if !self.has_target_restriction {
+            return Ok(());
+        }
+        // Include delegated groups: the parent driver publishes subagent outcomes too.
+        for target in targets {
+            if !self
+                .by_category
+                .values()
+                .chain(self.subagent.iter().flat_map(HashMap::values))
+                .any(|models| models.contains(target))
+            {
+                return Err(LibsyError::TargetNotFound {
+                    target: target.clone(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The models in `category`, ordered best-first.
@@ -401,6 +430,7 @@ impl Driver {
         let Some(selected_model_id) = models.first() else {
             return Err(LibsyError::NoTargets);
         };
+        self.models.check_targets(&models)?;
         request.llm_request.model = Some(selected_model_id.to_string());
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
@@ -445,6 +475,7 @@ impl Driver {
         mut request: DecisionRequest,
         model: ModelId,
     ) -> Result<DecisionResponse> {
+        self.models.check_targets(std::slice::from_ref(&model))?;
         request.model = Some(model.clone());
         let started = Instant::now();
         let (reply, response) = oneshot::channel();
@@ -563,7 +594,7 @@ where
     F: Fn(Call) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(request, models);
+    let stream = algorithm.run_stream(request, Arc::clone(&models));
     tokio::pin!(stream);
 
     let mut in_flight = futures::stream::FuturesUnordered::new();
@@ -579,11 +610,18 @@ where
                 match step {
                     None => break, // stream has ended, no more steps
                     Some(item) => match item? {
-                        Step::CallModel(call) => in_flight.push(serve(Call::Model(call))),
+                        Step::CallModel(call) => {
+                            models.check_targets(&call.models)?;
+                            in_flight.push(serve(Call::Model(call)));
+                        }
                         Step::CallDecision(call) => {
+                            models.check_targets(std::slice::from_ref(&call.model))?;
                             in_flight.push(serve(Call::Decision(call)));
                         }
                         Step::Done(outcome) => {
+                            if outcome.response.is_none() {
+                                models.check_targets(&outcome.selected_model_ids)?;
+                            }
                             final_outcome = Some(*outcome);
                             break;
                         }
@@ -717,15 +755,19 @@ pub trait Algorithm: Send + Sync + 'static {
                 let algorithm = self.name().to_string();
                 // Catch a panicking algorithm so the run still publishes a terminal step.
                 let route = AssertUnwindSafe(self.route(driver.clone(), request)).catch_unwind();
-                let result = observability::observe_run(&algorithm, async move {
-                    route.await.unwrap_or_else(|payload| {
+                let result = observability::observe_run(&algorithm, async {
+                    let outcome = route.await.unwrap_or_else(|payload| {
                         Err(LibsyError::AlgorithmError {
                             message: format!(
                                 "algorithm task panicked: {}",
                                 panic_message(payload.as_ref())
                             ),
                         })
-                    })
+                    })?;
+                    if outcome.response.is_none() {
+                        driver.models.check_targets(&outcome.selected_model_ids)?;
+                    }
+                    Ok(outcome)
                 })
                 .await;
 
@@ -849,6 +891,188 @@ mod tests {
 
     fn target_set(names: &[&str]) -> Vec<ModelId> {
         names.iter().map(|name| ModelId::from(*name)).collect()
+    }
+
+    enum TargetProbe {
+        Model(Vec<ModelId>),
+        Decision(ModelId),
+        Completion(Vec<ModelId>),
+        Subagent,
+    }
+
+    #[async_trait]
+    impl Algorithm for TargetProbe {
+        fn name(&self) -> &str {
+            "target_probe"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> Result<RoutingOutcome> {
+            match &*self {
+                Self::Model(models) => {
+                    let response = driver.call_model(request.clone(), models.clone()).await?;
+                    Ok(RoutingOutcome::answered(
+                        models[0].clone(),
+                        request,
+                        response,
+                    ))
+                }
+                Self::Decision(model) => {
+                    driver
+                        .call_decision(
+                            DecisionRequest {
+                                model: None,
+                                context: Value::Null,
+                                questions: Default::default(),
+                            },
+                            model.clone(),
+                        )
+                        .await?;
+                    Ok(RoutingOutcome::route_to("allowed".into(), vec![], request))
+                }
+                Self::Completion(models) => Ok(RoutingOutcome::route_to(
+                    models[0].clone(),
+                    models[1..].to_vec(),
+                    request,
+                )),
+                Self::Subagent => Ok(RoutingOutcome::route_to(
+                    driver
+                        .for_subagent()?
+                        .first_model_for(&Category::Any)?
+                        .clone(),
+                    vec![],
+                    request,
+                )),
+            }
+        }
+    }
+
+    struct RewrittenSteps(Arc<TargetProbe>);
+
+    #[async_trait]
+    impl Algorithm for RewrittenSteps {
+        fn name(&self) -> &str {
+            "rewritten_steps"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> Result<RoutingOutcome> {
+            Arc::clone(&self.0).route(driver, request).await
+        }
+
+        fn run_stream(self: Arc<Self>, request: Request, models: Arc<RuntimeModels>) -> StepStream {
+            Box::pin(Arc::clone(&self.0).run_stream(request, models).map(|step| {
+                step.map(|mut step| {
+                    match &mut step {
+                        Step::CallModel(call) => call.models.push("outside".into()),
+                        Step::CallDecision(call) => call.model = "outside".into(),
+                        Step::Done(outcome) => outcome.selected_model_ids.push("outside".into()),
+                    }
+                    step
+                })
+            }))
+        }
+    }
+
+    fn restricted_models() -> RuntimeModels {
+        RuntimeModels::new(HashMap::from([
+            (Category::Any, target_set(&["allowed", "fallback"])),
+            (Category::Judge, target_set(&["judge"])),
+        ]))
+        .with_target_restriction()
+        .with_subagent(HashMap::from([(Category::Any, target_set(&["subagent"]))]))
+    }
+
+    // No forbidden call or completion candidate reaches the host.
+    #[tokio::test]
+    async fn target_restriction_blocks_undeclared_work() {
+        for probe in [
+            TargetProbe::Model(target_set(&["outside"])),
+            TargetProbe::Model(target_set(&["allowed", "outside"])),
+            TargetProbe::Decision("outside".into()),
+            TargetProbe::Completion(target_set(&["outside"])),
+            TargetProbe::Completion(target_set(&["allowed", "outside"])),
+        ] {
+            let mut stream = Arc::new(probe).run_stream(request(), Arc::new(restricted_models()));
+            assert!(matches!(
+                stream.next().await,
+                Some(Err(LibsyError::TargetNotFound { target })) if target == "outside"
+            ));
+            assert!(stream.next().await.is_none());
+        }
+        // A stream override can rewrite valid steps after the default driver checked them.
+        for probe in [
+            TargetProbe::Model(target_set(&["allowed"])),
+            TargetProbe::Decision("judge".into()),
+            TargetProbe::Completion(target_set(&["allowed"])),
+        ] {
+            let result = drive(
+                Arc::new(RewrittenSteps(Arc::new(probe))),
+                request(),
+                Arc::new(restricted_models()),
+                |_| async { panic!("undeclared work must not reach the host") },
+            )
+            .await;
+            assert!(
+                matches!(result, Err(LibsyError::TargetNotFound { target }) if target == "outside")
+            );
+        }
+    }
+
+    // Judges, fallbacks, delegated targets and local answers remain valid.
+    #[tokio::test]
+    async fn target_restriction_preserves_allowed_work() -> Result<()> {
+        for (probe, expected) in [
+            (
+                TargetProbe::Model(target_set(&["allowed", "fallback"])),
+                &["allowed"][..],
+            ),
+            (TargetProbe::Model(target_set(&["judge"])), &["judge"][..]),
+            (TargetProbe::Decision("judge".into()), &["allowed"][..]),
+            (
+                TargetProbe::Completion(target_set(&["allowed", "fallback"])),
+                &["allowed", "fallback"][..],
+            ),
+            (TargetProbe::Subagent, &["subagent"][..]),
+        ] {
+            let outcome = drive(
+                Arc::new(probe),
+                request(),
+                Arc::new(restricted_models()),
+                |call| async move {
+                    match call {
+                        Call::Model(call) => {
+                            call.respond(std::future::ready(Ok(reply("ok")))).await
+                        }
+                        Call::Decision(call) => serve_decision(*call).await,
+                    }
+                },
+            )
+            .await?;
+            assert_eq!(outcome.selected_model_ids, target_set(expected));
+        }
+        let outcome = drive(
+            Arc::new(crate::Noop {}),
+            request(),
+            Arc::new(RuntimeModels::default().with_target_restriction()),
+            |_| async { panic!("Noop must not request model calls") },
+        )
+        .await?;
+        assert!(outcome.response.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn target_restriction_is_opt_in() {
+        let mut stream = orch(target_set(&["outside"]))
+            .run_stream(request(), Arc::new(RuntimeModels::default()));
+        assert!(matches!(stream.next().await, Some(Ok(Step::CallModel(_)))));
     }
 
     #[tokio::test]
