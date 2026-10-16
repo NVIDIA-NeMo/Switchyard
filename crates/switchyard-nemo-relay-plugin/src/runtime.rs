@@ -17,7 +17,7 @@ use switchyard_protocol::{
     Request, Response, Usage, WireFormat,
 };
 use switchyard_runner::{
-    ProviderKeyRedactor, Route, RouteErrorSummary, Runner, stream_error_summary,
+    PrivacyDecision, ProviderKeyRedactor, Route, RouteErrorSummary, Runner, stream_error_summary,
 };
 use switchyard_translation::{TranslationEngine, encode_stream_with_extensions};
 
@@ -254,7 +254,12 @@ impl SwitchyardRuntime {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(observation);
         });
-        match route.execute(request, Some(observer)).await {
+        let result = route
+            .execute_with_privacy_observer(request, Some(observer), |decision| {
+                events.push(privacy_decision_mark(decision, metadata.clone()));
+            })
+            .await;
+        match result {
             Ok(output) => {
                 let outcome_fields = self.emit_observations(
                     &mut events,
@@ -666,6 +671,29 @@ fn route_execution_error_mark(
     }
 }
 
+fn privacy_decision_mark(decision: &PrivacyDecision, metadata: Json) -> RoutingEvent {
+    let mut data = Map::from_iter([
+        ("lane".into(), Json::String(decision.lane().into())),
+        ("source".into(), Json::String(decision.source().into())),
+        (
+            "reason_code".into(),
+            Json::String(decision.reason_code().into()),
+        ),
+    ]);
+    if let Some(score) = decision.clear_score() {
+        data.insert("clear_score".into(), json!(score));
+    }
+    if let Some(threshold) = decision.clear_threshold() {
+        data.insert("clear_threshold".into(), json!(threshold));
+    }
+    RoutingEvent::Mark(RoutingMark {
+        name: "switchyard.privacy.decision".into(),
+        data: Json::Object(data),
+        metadata,
+        severity: Some(LogSeverity::Info),
+    })
+}
+
 fn route_execution_error_events(
     summary: &RouteErrorSummary,
     metadata: Json,
@@ -958,6 +986,47 @@ mod tests {
         .expect("cross-format runtime should load")
     }
 
+    fn privacy_runtime(base_url: &str) -> SwitchyardRuntime {
+        let deployment = json!({
+            "schema_version": 1,
+            "llm_clients": {
+                "target": {
+                    "format": "openai_chat",
+                    "base_url": base_url,
+                    "max_retries": 0,
+                }
+            },
+            "targets": {
+                "standard": {"id": "standard/model", "llm_client": "target"},
+                "restricted": {"id": "restricted/model", "llm_client": "target", "private": true},
+                "backup": {"id": "backup/model", "llm_client": "target", "private": true},
+            },
+            "routes": {
+                "privacy": {
+                    "id": "switchyard/privacy",
+                    "type": "random",
+                    "targets": ["standard", "restricted", "backup"],
+                    "weights": [100.0, 10.0, 1.0],
+                    "seed": 42,
+                    "privacy": {
+                        "accept_external_signal": true,
+                    },
+                }
+            }
+        });
+        SwitchyardRuntime::new(crate::config::SwitchyardConfig {
+            priority: 0,
+            switchyard_config_path: None,
+            switchyard_config: Some(
+                deployment
+                    .as_object()
+                    .expect("deployment should be an object")
+                    .clone(),
+            ),
+        })
+        .expect("privacy runtime should load")
+    }
+
     fn namespaced_responses_request() -> RelayRequest {
         RelayRequest {
             headers: Map::new(),
@@ -986,6 +1055,197 @@ mod tests {
         let runtime = runtime_for("switchyard");
         assert!(runtime.manages_model("switchyard"));
         assert!(!runtime.manages_model("other"));
+    }
+
+    #[tokio::test]
+    async fn privacy_marks_survive_lane_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(json!({"model": "standard/model"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl_privacy",
+                "object": "chat.completion",
+                "model": "standard/model",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for model in ["restricted/model", "backup/model"] {
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .and(body_partial_json(json!({"model": model})))
+                .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let runtime = privacy_runtime(&format!("{}/v1", server.uri()));
+
+        for (restricted, expected, succeeds) in [
+            (
+                false,
+                json!({"lane": "standard", "source": "policy", "reason_code": "all_clear"}),
+                true,
+            ),
+            (
+                true,
+                json!({"lane": "restricted", "source": "external_signal", "reason_code": "restricted"}),
+                false,
+            ),
+        ] {
+            let mut request = runtime
+                .decode_request(
+                    WireFormat::OpenAiChat,
+                    RelayRequest {
+                        headers: Map::new(),
+                        content: json!({
+                            "model": "switchyard/privacy",
+                            "messages": [{"role": "user", "content": "hello"}],
+                        }),
+                    },
+                    false,
+                )
+                .expect("privacy request should decode");
+            if restricted {
+                switchyard_runner::mark_privacy_restricted(&mut request);
+            }
+            let execution = runtime
+                .execute_buffered(WireFormat::OpenAiChat, request)
+                .await;
+            assert_eq!(execution.result.is_ok(), succeeds);
+            let marks = execution
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    RoutingEvent::Mark(mark) => Some(mark),
+                    RoutingEvent::Metric(_) => None,
+                })
+                .collect::<Vec<_>>();
+            let privacy = marks
+                .iter()
+                .position(|mark| mark.name == "switchyard.privacy.decision")
+                .expect("privacy mark should be emitted");
+            assert_eq!(marks[privacy].data, expected);
+            if !succeeds {
+                let error = marks
+                    .iter()
+                    .position(|mark| mark.name == "switchyard.routing.error")
+                    .expect("failure should emit an error mark");
+                assert!(privacy < error);
+            }
+        }
+    }
+
+    // Answer failures must not restore a public candidate, including on the streaming path.
+    #[tokio::test]
+    async fn private_target_flags_restrict_buffered_and_streaming_fallbacks() {
+        for streaming in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(body_partial_json(json!({"model": "restricted/model"})))
+                .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let response = json!({
+                "id": "chatcmpl_private",
+                "object": if streaming { "chat.completion.chunk" } else { "chat.completion" },
+                "model": "backup/model",
+                "choices": [{
+                    "index": 0,
+                    (if streaming { "delta" } else { "message" }): {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            });
+            let response = if streaming {
+                ResponseTemplate::new(200).set_body_raw(
+                    format!("data: {response}\n\ndata: [DONE]\n\n"),
+                    "text/event-stream",
+                )
+            } else {
+                ResponseTemplate::new(200).set_body_json(response)
+            };
+            Mock::given(body_partial_json(json!({"model": "backup/model"})))
+                .respond_with(response)
+                .expect(1)
+                .mount(&server)
+                .await;
+            let runtime = privacy_runtime(&format!("{}/v1", server.uri()));
+            let mut request = runtime
+                .decode_request(
+                    WireFormat::OpenAiChat,
+                    RelayRequest {
+                        headers: Map::new(),
+                        content: json!({
+                            "model": "switchyard/privacy",
+                            "messages": [{"role": "user", "content": "hello"}],
+                            "stream": streaming,
+                        }),
+                    },
+                    streaming,
+                )
+                .expect("privacy request should decode");
+            switchyard_runner::mark_privacy_restricted(&mut request);
+            let events = if streaming {
+                let execution = runtime
+                    .execute_stream(WireFormat::OpenAiChat, request, Arc::new(|_| {}))
+                    .await;
+                let chunks = execution
+                    .result
+                    .expect("private fallback should stream")
+                    .collect::<Vec<_>>()
+                    .await
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("stream should encode");
+                assert!(
+                    chunks
+                        .iter()
+                        .any(|chunk| chunk["choices"][0]["delta"]["content"] == "ok")
+                );
+                execution.events
+            } else {
+                let execution = runtime
+                    .execute_buffered(WireFormat::OpenAiChat, request)
+                    .await;
+                assert_eq!(
+                    execution.result.expect("private fallback should answer")["model"],
+                    "backup/model"
+                );
+                execution.events
+            };
+            let decision = events
+                .iter()
+                .find_map(|event| match event {
+                    RoutingEvent::Mark(mark) if mark.name == "switchyard.routing.decision" => {
+                        Some(&mark.data)
+                    }
+                    _ => None,
+                })
+                .expect("routing decision should be emitted");
+            assert_eq!(decision["selected_model"], "restricted/model");
+            assert_eq!(decision["served_model"], "backup/model");
+            assert_eq!(decision["fallback_used"], true);
+            let requests = server
+                .received_requests()
+                .await
+                .expect("requests should be recorded");
+            let models = requests
+                .iter()
+                .map(|request| {
+                    serde_json::from_slice::<Json>(&request.body).expect("request JSON")["model"]
+                        .clone()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(models, ["restricted/model", "backup/model"]);
+        }
     }
 
     #[tokio::test]
