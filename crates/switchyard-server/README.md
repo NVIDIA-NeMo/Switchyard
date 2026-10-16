@@ -259,7 +259,7 @@ rule to `~/.codex/rules/default.rules`. See Codex's
 [Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security)
 page.
 
-The installer, `scripts/linux/install.sh`, does not overwrite an existing
+The installer, `cargo desktop install`, does not overwrite an existing
 `~/.switchyard/composite.toml`.
 If you installed Switchyard before this route was added, add the
 `[targets.reviewer]` and `[routes.codex_auto_review]` blocks to that file by
@@ -284,8 +284,8 @@ hand, then restart the server.
 | `GET` | `/health` | Liveness |
 
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
-routes through the `[routes.general]` entry above. Any of the three request formats can address any
-route, and the server translates between them.
+routes through the `[routes.general]` entry above. The server translates between request formats
+supported by the selected route and its forwarding clients.
 
 Set the top-level `fallback_client` to an entry under `[llm_clients]` to proxy any otherwise
 unmatched method and path through that client. The fallback client does not need a target. Requests
