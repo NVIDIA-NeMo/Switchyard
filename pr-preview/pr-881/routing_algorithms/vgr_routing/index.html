@@ -1533,12 +1533,14 @@
 
 
 <h1 id="verification-gated-routing">Verification-Gated Routing<a class="headerlink" href="#verification-gated-routing" title="Permanent link">&para;</a></h1>
-<p>Verification-Gated Routing (VGR) generates a candidate on a local tier, gathers
-bounded evidence about that exact candidate, and serves it only when the policy
-licenses a local commit. All other outcomes use the cloud tier.</p>
-<p>Tool-calling turns continue on the local tier without being mistaken for a
-terminal answer. Missing context, unavailable verifiers, malformed verdicts,
-and expired decision deadlines fail closed to cloud.</p>
+<p>Verification-Gated Routing (VGR) generates a candidate on a local tier. For a
+final answer, it gathers bounded evidence about that exact candidate and serves
+it only when the policy allows it. All other final-answer outcomes use the cloud
+tier. Missing context, unavailable verifiers, malformed verdicts, and expired
+decision deadlines fail closed to cloud for final answers.</p>
+<p>Tool-calling turns continue on the local tier unless the turn judge provides
+evidence to escalate. An unavailable or inconclusive turn judge leaves the tool
+turn on the local tier. A local endpoint failure triggers cloud fallback.</p>
 <h2 id="configure-a-route">Configure a route<a class="headerlink" href="#configure-a-route" title="Permanent link">&para;</a></h2>
 <p>Declare local, cloud, and optional verifier targets using the normal deployment
 schema, then reference their target names:</p>
@@ -1567,11 +1569,12 @@ results are clean and the cloud judge confirms the evidence.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">agentic_handoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">local_turn_budget_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">600</span>
 </span></code></pre></div>
-<p><code>agentic_handoff</code> tells the cloud tier, once per user turn, that it is taking
-over unverified tool-using work, including the local tier's unchecked final
-message. The handoff adds a notice while preserving the conversation's existing
-messages and content. <code>local_turn_budget_seconds</code> escalates a user turn once
-the local tier has spent that much wall-clock time on it.</p>
+<p><code>agentic_handoff</code> tells the cloud tier when it takes over tool-using work that
+the local tier previously served. The notice can include the local tier's
+unchecked final message. It is sent at most once per user turn, and only after
+new local work has been served since the previous handoff. The handoff preserves
+the conversation's existing messages and content. <code>local_turn_budget_seconds</code>
+escalates a user turn once the local tier has spent that much wall-clock time on it.</p>
 <h2 id="serving-modes">Serving modes<a class="headerlink" href="#serving-modes" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>off</code> skips candidate generation and serves cloud. This is the default.</li>
