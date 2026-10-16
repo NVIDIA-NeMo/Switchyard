@@ -571,8 +571,9 @@ impl ResponseAccumulator {
         }
     }
 
-    /// Build one assistant output: reasoning, text, ordinary tool calls, then MCP blocks.
-    /// Tool calls and MCP blocks are each ordered by ascending index within their group.
+    /// Build the buffered response. Content is ordered reasoning, then text, then
+    /// tool calls (by ascending delta index), then MCP blocks (by ascending index)
+    /// — a single assistant output.
     /// Unfinished MCP calls retain their partial data; announcements add no content.
     pub fn finish(self) -> AggLlmResponse {
         let mut content = Vec::new();
