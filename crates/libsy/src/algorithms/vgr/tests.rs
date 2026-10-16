@@ -118,6 +118,45 @@ fn a_zero_exit_code_overrules_every_error_inference() {
 }
 
 #[test]
+fn trajectory_labels_agree_with_tool_failure_counts() {
+    for (output, is_error, failed) in [
+        (r#"{"error":"spawn failed"}"#, None, true),
+        (
+            "Traceback (most recent call last):\n  ValueError",
+            None,
+            true,
+        ),
+        ("done", Some(true), true),
+        (r#"{"exit_code":0,"error":"expected failure"}"#, None, false),
+        (r#"{"exit_code":0}"#, Some(true), false),
+        ("done", None, false),
+    ] {
+        let session = request(vec![
+            Message::text(Role::User, "check the task"),
+            call("c1"),
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: "c1".into(),
+                    content: vec![ContentBlock::Text {
+                        text: output.into(),
+                    }],
+                    is_error,
+                })],
+            },
+        ]);
+        let caps = derive_capabilities(&session, "checked", Some(TaskType::Agentic));
+        assert_eq!(caps.tools.unwrap().errors, i32::from(failed), "{output}");
+        let view = caps.transcript.unwrap();
+        let label = if failed { "tool error" } else { "tool result" };
+        assert!(
+            view.contains(&format!("[{label}] {output}")),
+            "{output}: {view}"
+        );
+    }
+}
+
+#[test]
 // Verifiers see user requirements and redacted tool history without framework instructions.
 fn the_agentic_view_keeps_the_task_and_redacts_the_trajectory() {
     let session = request(vec![
@@ -164,10 +203,15 @@ fn clipping_preserves_character_budgets_and_utf8_boundaries() {
     for (input, budget, fraction, expected) in [
         ("abcdef", 6, 0.5, "abcdef"),
         ("abcdef", 4, 0.5, "ab\n...[2 chars omitted]...\nef"),
-        ("aé🙂中z", 4, 0.5, "aé\n...[1 chars omitted]...\n中z"),
-        ("aé🙂中z", 3, 1.0 / 3.0, "a\n...[2 chars omitted]...\n中z"),
-        ("aé🙂中z", 2, 1.0, "aé\n...[3 chars omitted]...\n"),
-        ("aé🙂中z", 1, 0.5, "a\n...[4 chars omitted]...\n"),
+        ("aé\u{1f642}中z", 4, 0.5, "aé\n...[1 chars omitted]...\n中z"),
+        (
+            "aé\u{1f642}中z",
+            3,
+            1.0 / 3.0,
+            "a\n...[2 chars omitted]...\n中z",
+        ),
+        ("aé\u{1f642}中z", 2, 1.0, "aé\n...[3 chars omitted]...\n"),
+        ("aé\u{1f642}中z", 1, 0.5, "a\n...[4 chars omitted]...\n"),
     ] {
         assert_eq!(super::text::clip_mid(input, budget, fraction), expected);
     }

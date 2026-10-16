@@ -32,6 +32,12 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "exceeds the maximum allowed input length",
     "exceeds the maximum allowed length",
     "is longer than the model's context length",
+    // llama-server, both of its ERROR_TYPE_EXCEED_CONTEXT_SIZE messages
+    // (tools/server/server-context.cpp). The structured check below catches
+    // them from `error.type`; these cover a proxy that rewrites the envelope
+    // and keeps the message.
+    "exceeds the available context size",
+    "larger than the max context size",
 ];
 
 // Anthropic has no structured `error.code`, so detection is phrase-based only.
@@ -357,11 +363,19 @@ impl Backend {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => is_overflow_body(
                 body,
                 |value| {
-                    value
-                        .get("error")
-                        .and_then(|err| err.get("code"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some("context_length_exceeded")
+                    let error = value.get("error");
+                    let field = |name| {
+                        error
+                            .and_then(|err| err.get(name))
+                            .and_then(serde_json::Value::as_str)
+                    };
+                    // llama-server puts the HTTP status in `code` as a number and
+                    // names the reason in `type`, so the canonical code never
+                    // matches. Its two overflow messages are worded unlike any
+                    // other provider's, which leaves the type as the signal that
+                    // holds across releases.
+                    field("code") == Some("context_length_exceeded")
+                        || field("type") == Some("exceed_context_size_error")
                 },
                 OPENAI_OVERFLOW_PHRASES,
             ),
@@ -598,6 +612,31 @@ mod tests {
         ));
         assert!(backend.is_context_overflow(
             r#"{"object":"error","message":"The input (12345 tokens) is longer than the model's context length (8192 tokens).","type":"BadRequestError","param":null,"code":400}"#
+        ));
+    }
+
+    #[test]
+    fn openai_detects_llama_server_overflow() {
+        let backend = Backend::OpenAiChat(config("x"));
+        // llama-server, numeric `code` and the reason in `type`. Both of the
+        // messages ERROR_TYPE_EXCEED_CONTEXT_SIZE can carry are here.
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"request (600000 tokens) exceeds the available context size (524288 tokens), try increasing it","type":"exceed_context_size_error"}}"#
+        ));
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"input (600000 tokens) is larger than the max context size (524288 tokens). skipping","type":"exceed_context_size_error"}}"#
+        ));
+        // The type alone is enough, so a reworded message still falls back.
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"something new","type":"exceed_context_size_error"}}"#
+        ));
+        // And the message alone is enough, for a proxy that drops the type.
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"request (600000 tokens) exceeds the available context size (524288 tokens), try increasing it"}}"#
+        ));
+        // llama-server's other 400s must still surface to the caller.
+        assert!(!backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"Invalid tool_choice","type":"invalid_request_error"}}"#
         ));
     }
 

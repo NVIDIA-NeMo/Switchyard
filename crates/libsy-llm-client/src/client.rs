@@ -20,8 +20,7 @@ use switchyard_protocol::{
     ModelId, Request, Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    TranslationError, WireFormat, decode_aggregated_response, decode_request, decode_stream,
-    encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
+    TranslationError, WireFormat, decode_stream, encode_stream_with_extensions,
 };
 use tokio::time::Instant;
 use tracing::Instrument;
@@ -29,6 +28,7 @@ use tracing::Instrument;
 use crate::backend::{Backend, openai_url};
 use crate::error::{LlmClientError, Result};
 use crate::metrics;
+use crate::observed_translation;
 use crate::raw::RawResponse;
 
 // Caller headers safe to send when caller auth forwarding is disabled.
@@ -128,6 +128,7 @@ pub struct TranslatingLlmClient {
     model_to_config: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
     forward_auth_client: reqwest::Client,
+    is_rate_limit_cooldown_enabled: bool,
     cooldown_epoch: Instant,
     // Milliseconds since cooldown_epoch. Each atomic is independent, so relaxed ordering suffices.
     unavailable_until: HashMap<ModelId, AtomicU64>,
@@ -166,9 +167,16 @@ impl TranslatingLlmClient {
             model_to_config,
             client,
             forward_auth_client,
+            is_rate_limit_cooldown_enabled: true,
             cooldown_epoch: Instant::now(),
             unavailable_until,
         })
+    }
+
+    /// Disable HTTP 429 cooldown so subsequent calls can receive the upstream error.
+    pub fn without_rate_limit_cooldown(mut self) -> Self {
+        self.is_rate_limit_cooldown_enabled = false;
+        self
     }
 
     /// The backend serving `model` over `format` — the default backend when its
@@ -268,7 +276,7 @@ impl TranslatingLlmClient {
             return Err(LlmClientError::TemporarilyUnavailable);
         }
 
-        let mut body = encode_request(&llm_request, wire_format)
+        let mut body = observed_translation::encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
@@ -302,11 +310,11 @@ impl TranslatingLlmClient {
         let result = self
             .send_with_retries(&url, backend, &body, metadata, model, streaming)
             .await;
-        // Forwarded credentials can hit a user's quota while the backend remains healthy.
+        // Keep quota failures request-local when forwarding auth or returning 429 to callers.
         if let Some(until) = unavailable_until
             && let Err(error) = &result
             && is_transient_failure(error)
-            && !(backend.is_forwarding_auth()
+            && !((backend.is_forwarding_auth() || !self.is_rate_limit_cooldown_enabled)
                 && matches!(error, LlmClientError::UpstreamHttp { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS))
         {
             let deadline = duration_millis(self.cooldown_epoch.elapsed().saturating_add(cooldown));
@@ -600,8 +608,8 @@ impl TranslatingLlmClient {
                 // Map a provider's failed generation to 502, even under HTTP 200.
                 // Redact forwarded credentials before returning the provider error.
                 let agg =
-                    decode_aggregated_response(&body, wire_format).map_err(
-                        |error| match error {
+                    observed_translation::decode_response(&body, wire_format).map_err(|error| {
+                        match error {
                             TranslationError::UpstreamFailure { error } => {
                                 LlmClientError::UpstreamHttp {
                                     status: StatusCode::BAD_GATEWAY,
@@ -613,8 +621,8 @@ impl TranslatingLlmClient {
                                 }
                             }
                             error => LlmClientError::ResponseTranslation(error.to_string()),
-                        },
-                    )?;
+                        }
+                    })?;
                 (LlmResponse::Agg(agg), upstream_headers)
             }
         };
@@ -650,7 +658,7 @@ impl TranslatingLlmClient {
         model: Option<&ModelId>,
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
-        let llm_request = decode_request(wire_format, &raw_http_request)
+        let llm_request = observed_translation::decode_request(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
         let request_extensions = llm_request.extensions.clone();
         // The model that serves the call — the rewrite target when the caller pinned
@@ -678,7 +686,7 @@ impl TranslatingLlmClient {
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
-                let body = encode_aggregated_response_with_extensions(
+                let body = observed_translation::encode_response(
                     &agg,
                     wire_format,
                     served_model.as_deref(),

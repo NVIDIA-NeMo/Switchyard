@@ -113,7 +113,10 @@ mod tests {
         assert_eq!(ir.sampling.temperature, Some(0.2));
         assert_eq!(ir.output.max_output_tokens, Some(64));
         assert_eq!(ir.tool_choice, Some(ToolChoice::Required));
-        assert_eq!(ir.tools[0].name, "Bash");
+        assert_eq!(
+            ir.tools[0].function().map(|tool| tool.name.as_str()),
+            Some("Bash")
+        );
         let ContentBlock::ToolCall(call) = &ir.messages[0].content[0] else {
             panic!("missing tool call")
         };
