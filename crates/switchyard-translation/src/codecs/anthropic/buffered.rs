@@ -154,10 +154,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 request.messages.push(Message { role, content });
             }
         }
-        request.tools = decode_anthropic_tools(body.get("tools"))
-            .into_iter()
-            .map(Tool::from)
-            .collect();
+        request.tools = decode_anthropic_tools(body.get("tools"));
         request.tool_choice = body.get("tool_choice").map(decode_anthropic_tool_choice);
         request.extensions.fields = provider_extensions(
             body,
@@ -786,25 +783,37 @@ fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
 }
 
 // Decodes Anthropic tool definitions into normalized tool definitions.
-fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
+fn decode_anthropic_tools(value: Option<&Value>) -> Vec<Tool> {
     value
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_object)
         .filter_map(|tool| {
+            if tool
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind != "custom")
+            {
+                return Some(Tool::Provider {
+                    provider: WireFormat::AnthropicMessages.into(),
+                    raw: Value::Object(tool.clone()),
+                });
+            }
             let name = tool.get("name").and_then(Value::as_str)?.to_string();
-            (!name.is_empty()).then(|| ToolDefinition {
-                name,
-                description: tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                parameters: tool
-                    .get("input_schema")
-                    .cloned()
-                    .unwrap_or_else(|| json!({})),
-                strict: tool.get("strict").and_then(Value::as_bool),
+            (!name.is_empty()).then(|| {
+                Tool::Function(ToolDefinition {
+                    name,
+                    description: tool
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    parameters: tool
+                        .get("input_schema")
+                        .cloned()
+                        .unwrap_or_else(|| json!({})),
+                    strict: tool.get("strict").and_then(Value::as_bool),
+                })
             })
         })
         .collect()
@@ -1214,6 +1223,11 @@ fn encode_anthropic_tools(tools: &[Tool]) -> Result<Value> {
         tools
             .iter()
             .map(|tool| {
+                if let Tool::Provider { provider, raw } = tool
+                    && provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                {
+                    return Ok(raw.clone());
+                }
                 let tool = tool.function().ok_or_else(|| {
                     TranslationError::LossyConversion(
                         "MCP and provider tool encoding is not implemented".into(),
