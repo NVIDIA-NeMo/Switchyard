@@ -33,27 +33,44 @@ def main():
             cwd="/tmp", env={"PATH": "/usr/bin:/bin"},
         )
 
+    checkpoint = None
+    step = 0
+
     def selected(messages):
-        result = run(json.dumps(messages))
+        nonlocal checkpoint, step
+        payload = {"version": 1, "session_id": "package-test", "decision_id": str(step),
+                   "messages": messages, "checkpoint": checkpoint}
+        result = run(json.dumps(payload))
         assert result.returncode == 0, result.stderr
-        return json.loads(result.stdout)["model"]
+        decision = json.loads(result.stdout)
+        checkpoint = decision["checkpoint"]
+        payload["checkpoint"] = checkpoint
+        repeated = run(json.dumps(payload))
+        assert repeated.returncode == 0, repeated.stderr
+        assert json.loads(repeated.stdout)["checkpoint"] == checkpoint
+        step += 1
+        return decision["model"]
 
     messages = [{"role": "user", "content": [{"type": "text", "text": "Fix the tests"}]}]
     assert selected(messages) == "claude-sonnet-5-5"
-    messages.extend(tool("failure", "Bash", "out of memory", True))
-    assert selected(messages) == "claude-opus-5-5"
-    for i in range(3):
-        messages.extend(tool(f"write-{i}", "Write", "wrote file"))
-    assert selected(messages) == "claude-sonnet-5-5"
+    for cycle in range(3):
+        messages.extend(tool(f"failure-{cycle}", "Bash", "out of memory", True))
+        assert selected(messages) == "claude-opus-5-5"
+        for i in range(3):
+            messages.extend(tool(f"write-{cycle}-{i}", "Write", "wrote file"))
+        assert selected(messages) == "claude-opus-5-5"  # First held recovery request.
+        assert selected(messages) == "claude-opus-5-5"  # Second held recovery request.
+        assert selected(messages) == "claude-sonnet-5-5"
     assert run("not json").returncode != 0
     assert run("[]", plugin / "missing.toml").returncode != 0
     with tempfile.TemporaryDirectory() as directory:
         invalid = Path(directory) / "invalid.toml"
         invalid.write_text(config.read_text().replace('id = "switchyard"', 'id = "other"'))
-        result = run("[]", invalid)
+        result = run(json.dumps({"version": 1, "session_id": "test", "decision_id": "0",
+                                 "messages": [], "checkpoint": None}), invalid)
         assert result.returncode != 0
         assert "Missing switchyard route" in result.stderr
-    print("Packaged helper: selection, escalation, recovery, and failure checks passed")
+    print("Packaged helper: three stateful escalation/recovery cycles, replay, and failure checks passed")
 
 
 if __name__ == "__main__":

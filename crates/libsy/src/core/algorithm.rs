@@ -698,6 +698,26 @@ pub trait Algorithm: Send + Sync + 'static {
     /// emits for its runs.
     fn name(&self) -> &str;
 
+    /// Export one session after its routing work has finished. Algorithms opt in
+    /// only when all their persistent state can be captured, including caches.
+    async fn checkpoint_session(&self, _session: &str) -> Result<crate::SessionCheckpoint> {
+        Err(LibsyError::AlgorithmError {
+            message: format!("{} does not support session checkpoints", self.name()),
+        })
+    }
+
+    /// Restore a checkpoint before routing starts. The host must serialize
+    /// restore/route/checkpoint operations and use the original configuration.
+    async fn restore_session(
+        &self,
+        _session: &str,
+        _checkpoint: &crate::SessionCheckpoint,
+    ) -> Result<()> {
+        Err(LibsyError::AlgorithmError {
+            message: format!("{} does not support session checkpoints", self.name()),
+        })
+    }
+
     /// Select a route, requesting external work through [`Driver`] as needed.
     /// [`run_stream`](Self::run_stream) runs this method and exposes its work to the host.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;

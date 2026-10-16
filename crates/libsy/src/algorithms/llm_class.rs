@@ -602,6 +602,8 @@ pub struct LlmTaskClassifier {
     route: FallThrough<State>,
     /// Classifier used when this router is embedded in another cascade.
     inner: Arc<dyn Classifier<State>>,
+    // Retaining classifiers also own affinity/latch caches outside State.
+    checkpointable: bool,
 }
 
 struct ClassifierRouteConfig {
@@ -776,6 +778,7 @@ impl LlmTaskClassifier {
                 .with_name(ALGORITHM_NAME)
                 .with_classifier(Arc::clone(&inner)),
             inner,
+            checkpointable: false,
         })
     }
 
@@ -814,6 +817,7 @@ impl LlmTaskClassifier {
                 .with_classifier(inner.clone())
                 .with_classifier(Arc::new(fallback)),
             inner,
+            checkpointable: config.classify_trigger == ClassifyTrigger::EveryRequest,
         })
     }
 }
@@ -834,6 +838,28 @@ impl Classifier<State> for LlmTaskClassifier {
 impl Algorithm for LlmTaskClassifier {
     fn name(&self) -> &str {
         "llm_task_classifier"
+    }
+
+    async fn checkpoint_session(&self, session: &str) -> Result<crate::SessionCheckpoint> {
+        if !self.checkpointable {
+            return Err(LibsyError::AlgorithmError {
+                message: "Retaining classifiers do not support session checkpoints".to_string(),
+            });
+        }
+        self.route.checkpoint_session(session).await
+    }
+
+    async fn restore_session(
+        &self,
+        session: &str,
+        checkpoint: &crate::SessionCheckpoint,
+    ) -> Result<()> {
+        if !self.checkpointable {
+            return Err(LibsyError::AlgorithmError {
+                message: "Retaining classifiers do not support session checkpoints".to_string(),
+            });
+        }
+        self.route.restore_session(session, checkpoint).await
     }
 
     async fn route(

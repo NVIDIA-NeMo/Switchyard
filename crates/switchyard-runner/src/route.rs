@@ -221,6 +221,30 @@ impl Route {
         .map_err(Into::into)
     }
 
+    /// Export algorithm-owned state after a session's decision has completed.
+    pub async fn checkpoint_session(
+        &self,
+        session: &str,
+    ) -> Result<libsy::SessionCheckpoint, RunnerError> {
+        self.algorithm
+            .checkpoint_session(session)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Restore a session on a fresh route with the same configuration. Callers
+    /// must exclude concurrent routing/restore operations for this session.
+    pub async fn restore_session(
+        &self,
+        session: &str,
+        checkpoint: &libsy::SessionCheckpoint,
+    ) -> Result<(), RunnerError> {
+        self.algorithm
+            .restore_session(session, checkpoint)
+            .await
+            .map_err(Into::into)
+    }
+
     /// Executes a model-bearing provider operation through a compatible target.
     pub async fn call_auxiliary(
         &self,
