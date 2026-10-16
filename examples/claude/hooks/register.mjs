@@ -169,6 +169,12 @@ export function register(on) {
               || decision.checkpoint?.version !== 1 || decision.checkpoint.session_id !== ctx.id) {
             throw new Error("Switchyard returned an invalid session checkpoint");
           }
+          // A native picker or SDK model change can arrive while the helper runs.
+          await locked(async () => {
+            if (started !== generation || ctx.id !== await $.session.id() || next.signal.aborted) return;
+            const native = await $.session.model();
+            if (started === generation && ctx.data.nativeModel !== native) await disable($, ctx, native);
+          });
           if (started === generation && ctx.id === await $.session.id() && !next.signal.aborted) {
             request = { ...e, model };
             ctx.data.status = `Switchyard Auto · ${model}${decision.state_reset ? " · configuration changed; state reset" : ""}`;

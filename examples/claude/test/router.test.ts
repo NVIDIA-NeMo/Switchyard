@@ -306,6 +306,22 @@ test("subagent steps do not consume the parent checkpoint", async ($, on) => {
   expect((readStore(sessionKey())).checkpoint.count).toBe(4);
 });
 
+test("a native model change during routing discards the decision and disables routing", async ($, on) => {
+  const { clock, sent, setModel, readStore } = setup(on, { process: async (e, clock) => {
+    await clock.sleep(100);
+    return { value: helperResponse(e) };
+  } });
+  const step = drain($.turn.step(input));
+  await clock.settle();
+  setModel("claude-haiku-4-5");
+  await clock.advance(100);
+  await step;
+  expect(sent[0]).toEqual(input);
+  expect(readStore(sessionKey()).enabled).toBe(false);
+  expect(readStore(sessionKey()).checkpoint).toBe(null);
+  expect(readStore(sessionKey()).nativeModel).toBe("claude-haiku-4-5");
+});
+
 test("reset recovers corrupt storage without losing Claude's request", async ($, on) => {
   const { sent, requests, readStore } = setup(on, { store: { [sessionKey()]: { version: 99 } } });
   await drain($.turn.step(input));
