@@ -188,8 +188,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --locked
-      - name: Build server CLI for reference tests
-        run: cargo build --locked -p switchyard-server
       - name: pytest
         run: uv run pytest tests/ -v -m "not integration"
 
