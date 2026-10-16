@@ -92,13 +92,16 @@ pub(crate) fn runner_from_toml_with_clients(
     source: &str,
     factory: &mut HostClientFactory<'_>,
 ) -> RunnerResult<Runner> {
-    let table: toml::Table = toml::from_str(source).map_err(|error| {
+    let raw_config: toml::Table = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
     // Check presence before omitted transport fields receive defaults.
-    if let Some(clients) = table.get("llm_clients").and_then(toml::Value::as_table) {
-        for (name, client) in clients {
-            for field in [
+    if let Some(client_configs) = raw_config
+        .get("llm_clients")
+        .and_then(toml::Value::as_table)
+    {
+        for (client_name, client_config) in client_configs {
+            for transport_field in [
                 "api_key_env",
                 "forward_auth",
                 "extra_headers",
@@ -107,15 +110,15 @@ pub(crate) fn runner_from_toml_with_clients(
                 "timeout_ms",
                 "context_discovery",
             ] {
-                if client.get(field).is_some() {
+                if client_config.get(transport_field).is_some() {
                     return Err(RunnerError::configuration(format!(
-                        "llm client {name}: {field} is owned by the host client"
+                        "llm client {client_name}: {transport_field} is owned by the host client"
                     )));
                 }
             }
         }
     }
-    let config: DeploymentConfig = table.try_into().map_err(|error| {
+    let config: DeploymentConfig = raw_config.try_into().map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
     if config.fallback_client.is_some()
