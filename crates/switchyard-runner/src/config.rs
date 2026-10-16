@@ -1323,6 +1323,28 @@ evidence = { description = "candidate comparison" }
     }
 
     #[test]
+    fn composite_custom_judge_builds_and_rejects_capability_settings() -> RunnerResult<()> {
+        let source = composite_config().replace(
+            "base_threshold = 0.5\nclassify_trigger",
+            r#"mode = "custom"
+prompt = 'Select efficient or capable.'
+response_schema = '{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["efficient","capable"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}'
+policy = { type = "target_selector", selector = "/decision/target" }
+classify_trigger"#,
+        );
+        runner_from_toml(&source)?;
+        let mixed = source.replace(
+            "mode = \"custom\"",
+            "mode = \"custom\"\nbase_threshold = 0.5",
+        );
+        assert!(
+            error_message(&mixed)
+                .contains("composite custom classifier cannot use capability thresholds")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn composite_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
         let runner = runner_from_toml(&composite_config())?;
         assert!(

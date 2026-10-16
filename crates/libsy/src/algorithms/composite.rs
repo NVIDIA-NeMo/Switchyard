@@ -38,6 +38,7 @@ struct TierSetter {
     trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     require_verdict: bool,
+    default_tier: Tier,
     tiers: Mutex<HashMap<RoutingIdentity, Tier>>,
 }
 
@@ -103,7 +104,7 @@ impl Processor<State> for TierSetter {
                 && let Some(identity) = identity.as_ref()
             {
                 // A failed opening judgment is still the session's one judgment.
-                self.retain(identity.clone(), Tier::Efficient);
+                self.retain(identity.clone(), self.default_tier);
             }
         }
         // Either not this request's turn or the judge had no verdict, so the last
@@ -191,6 +192,7 @@ impl CompositeRouter {
             trigger,
             message_hash_fallback,
             require_verdict,
+            default_tier: config.stage.mode.default_tier(),
             tiers: Mutex::new(HashMap::new()),
         };
         let route = build_stage_route(config.stage)?
@@ -309,6 +311,146 @@ mod tests {
             assert!(matches!(error, LibsyError::AlgorithmError { message }
                 if message == "composite: classify_trigger must be user_turn or new_session"));
         }
+    }
+
+    fn custom_judge(trigger: ClassifyTrigger, fail_open: bool) -> CompositeJudgeConfig {
+        let mut config = CustomClassifierConfig::new(
+            "Select a tier",
+            serde_json::json!({"type": "object"}),
+            crate::CustomClassifierPolicy::target_selector("/decision/target"),
+        );
+        config.classify_trigger = trigger;
+        CompositeJudgeConfig::Custom { config, fail_open }
+    }
+
+    #[tokio::test]
+    async fn a_failed_session_judgment_retains_the_configured_stage_default() -> Result<()> {
+        for custom in [false, true] {
+            for (mode, expected) in [
+                (PickerMode::EfficientFirst, "weak"),
+                (PickerMode::CapableFirst, "strong"),
+            ] {
+                let judge = if custom {
+                    custom_judge(ClassifyTrigger::NewSession, true)
+                } else {
+                    CompositeJudgeConfig::Capability(TaskClassifierConfig {
+                        classify_trigger: ClassifyTrigger::NewSession,
+                        ..Default::default()
+                    })
+                };
+                let router = Arc::new(CompositeRouter::new(CompositeRouterConfig {
+                    judge,
+                    stage: StageRouterConfig::new(mode, 0.5),
+                })?);
+                let calls = Arc::new(Mutex::new(0));
+                let serve = {
+                    let calls = calls.clone();
+                    move |target: ModelId, _request: Request| {
+                        let completion = if target.as_str() == JUDGE {
+                            *calls.lock() += 1;
+                            "not JSON".to_string()
+                        } else {
+                            target.to_string()
+                        };
+                        async move { Ok(crate::core::testing::reply(completion)) }
+                    }
+                };
+                for request in [
+                    user_turn_request(),
+                    turn_request(false),
+                    user_turn_request(),
+                ] {
+                    let (selected, _) = test_drive_with_models(
+                        router.clone(),
+                        request,
+                        runtime_models(),
+                        serve.clone(),
+                    )
+                    .await?;
+                    assert_eq!(selected.as_str(), expected);
+                }
+                assert_eq!(
+                    *calls.lock(),
+                    1,
+                    "new_session must retain a failed judgment"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_custom_judge_sets_the_tier_and_retains_it_on_failure() -> Result<()> {
+        let router = Arc::new(CompositeRouter::new(CompositeRouterConfig {
+            judge: custom_judge(ClassifyTrigger::UserTurn, true),
+            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+        })?);
+        let replies = Arc::new(Mutex::new(
+            [
+                r#"{"decision":{"target":"capable"}}"#,
+                "not JSON",
+                r#"{"decision":{"target":"efficient"}}"#,
+            ]
+            .into_iter(),
+        ));
+        let serve = {
+            let replies = replies.clone();
+            move |target: ModelId, _request: Request| {
+                let completion = if target.as_str() == JUDGE {
+                    replies
+                        .lock()
+                        .next()
+                        .expect("unexpected judge call")
+                        .to_string()
+                } else {
+                    target.to_string()
+                };
+                async move { Ok(crate::core::testing::reply(completion)) }
+            }
+        };
+        for (request, expected) in [
+            (user_turn_request(), "strong"),
+            (turn_request(false), "strong"),
+            (user_turn_request(), "strong"),
+            (user_turn_request(), "weak"),
+        ] {
+            let (selected, _) =
+                test_drive_with_models(router.clone(), request, runtime_models(), serve.clone())
+                    .await?;
+            assert_eq!(selected.as_str(), expected);
+        }
+        assert!(replies.lock().next().is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_custom_judge_failure_stops_composite_when_fail_open_is_false() -> Result<()> {
+        for reply in [
+            None,
+            Some("not JSON"),
+            Some(r#"{"decision":{"target":"judge"}}"#),
+        ] {
+            let router = Arc::new(CompositeRouter::new(CompositeRouterConfig {
+                judge: custom_judge(ClassifyTrigger::UserTurn, false),
+                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+            })?);
+            let outcome = test_drive_with_models(
+                router,
+                user_turn_request(),
+                runtime_models(),
+                move |_target: ModelId, _request: Request| async move {
+                    reply.map(crate::core::testing::reply).ok_or_else(|| {
+                        switchyard_protocol::LlmClientError::General("judge unavailable".into())
+                    })
+                },
+            )
+            .await;
+            assert!(
+                outcome.is_err(),
+                "unusable verdict must stop routing: {reply:?}"
+            );
+        }
+        Ok(())
     }
 
     /// A route may point its judge at the same target it serves capable turns on.
