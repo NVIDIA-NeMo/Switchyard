@@ -1260,9 +1260,12 @@ new = ["send_message"]
             "[routes.composed.classifier]\ntarget = \"tier_judge\"",
         ) + r#"
 [routes.composed.classifier.decision]
-cutoff = 0.4
 candidates = { a = "strong", b = "weak" }
 evidence = { description = "candidate comparison" }
+
+[routes.composed.classifier.decision.policy]
+rules = [{ score = "a", target = "a", cutoff = 0.4 }]
+fallback = "b"
 "#;
         for (source, valid) in [
             (source.clone(), true),

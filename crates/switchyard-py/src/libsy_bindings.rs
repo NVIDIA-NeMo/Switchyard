@@ -304,11 +304,11 @@ impl PyLlmClassifierConfig {
 
 #[pymethods]
 impl PyTaskClassifierConfig {
-    /// Use a decision model's relative-advantage probability to select a target.
+    /// Select a candidate using ordered score cutoffs and an explicit fallback.
     #[staticmethod]
-    #[pyo3(signature = (*, cutoff, candidates, evidence, instructions=None))]
+    #[pyo3(signature = (*, policy, candidates, evidence, instructions=None))]
     fn decision(
-        cutoff: f64,
+        policy: &Bound<'_, PyAny>,
         candidates: BTreeMap<String, String>,
         evidence: &Bound<'_, PyAny>,
         instructions: Option<&Bound<'_, PyAny>>,
@@ -316,7 +316,7 @@ impl PyTaskClassifierConfig {
         Ok(Self {
             inner: TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
-                    cutoff,
+                    policy: from_python(policy)?,
                     candidates: candidates
                         .into_iter()
                         .map(|(label, model)| (label, ModelId::from(model)))

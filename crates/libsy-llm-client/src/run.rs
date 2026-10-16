@@ -1158,8 +1158,8 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         use std::time::Duration;
         use switchyard_libsy::{
-            CapabilityJudgeConfig, DecisionJudgeConfig, LlmClassifierConfig, LlmTaskClassifier,
-            TaskClassifierConfig,
+            CapabilityJudgeConfig, DecisionJudgeConfig, DecisionPolicy, DecisionRule,
+            LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
         };
         use switchyard_protocol::{
             BooleanEstimate, DecisionRequest, DecisionValue, Probability, ScoreValue,
@@ -1294,6 +1294,10 @@ mod tests {
 
         body["answers"].as_object_mut().unwrap().remove("boolean");
         body["answers"].as_object_mut().unwrap().remove("score");
+        body["answers"]["route"] = json!({
+            "type": "choice", "choice": "b", "confidence": 0.7,
+            "probabilities": {"a": 0.2, "b": 0.8}
+        });
         let models = Arc::new(RuntimeModels::new(HashMap::from([
             (Category::Judge, vec!["judge".into()]),
             (Category::Capable, vec!["capable".into()]),
@@ -1305,7 +1309,14 @@ mod tests {
                 LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
                         judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
-                            cutoff: 0.4,
+                            policy: DecisionPolicy {
+                                rules: vec![DecisionRule {
+                                    score: "b".into(),
+                                    target: "b".into(),
+                                    cutoff: 0.4,
+                                }],
+                                fallback: "a".into(),
+                            },
                             instructions: None,
                             candidates: BTreeMap::from([
                                 ("a".into(), "capable".into()),

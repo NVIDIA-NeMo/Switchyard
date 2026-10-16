@@ -56,20 +56,26 @@ strong_target = "quality"
 weak_target = "economy"
 
 [routes.capability.decision]
-cutoff = 0.4
 candidates = { a = "quality", b = "economy" }
 evidence = { candidates = { a = "Higher-quality model", b = "Lower-cost model" } }
+
+[routes.capability.decision.policy]
+rules = [{ score = "a", target = "a", cutoff = 0.4 }]
+fallback = "b"
 ```
 
 - `endpoint` is the full System One URL. Set the named key environment variable
   before startup; caller credentials are not forwarded to the decision provider.
-- Candidate labels must cover both tiers. Extra candidates add context, not routes.
+- Candidate labels must cover both tiers. All labels become Choice options.
   Supply evidence from your evaluations and choose a cutoff using those results.
-- `decision.instructions` can replace the default relative-advantage instructions.
-  It must preserve the meaning of `advantage` and `no_advantage`. Evidence is passed unchanged.
-- The capable tier is selected only when its advantage score exceeds `cutoff`.
-  Client failures and deadlines use the capable tier by default; set `fail_open = false`
-  on the route to propagate those errors.
+- `decision.instructions` can replace the default candidate-selection instructions.
+  Evidence is passed unchanged.
+- The first rule whose candidate score strictly exceeds its cutoff selects its target.
+  With this policy, `a > 0.4` selects quality; otherwise it selects economy.
+  Missing or invalid scores use the explicit fallback. Client failures and deadlines
+  also use it when `fail_open` is true; set `fail_open = false` to propagate those errors.
+- `decision.policy` is required. Replace the former `decision.cutoff` with explicit
+  rules and a fallback. The judge now scores candidate labels, so re-evaluate cutoffs.
 - Decision targets cannot serve final answers. Both normal requests and `/v1/decision`
   use this configuration. Omit `decision` to keep the existing LLM judge settings.
 
