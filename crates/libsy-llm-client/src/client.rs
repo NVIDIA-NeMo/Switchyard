@@ -276,32 +276,14 @@ impl TranslatingLlmClient {
             return Err(LlmClientError::TemporarilyUnavailable);
         }
 
-        let mut body = observed_translation::encode_request(&llm_request, wire_format)
-            .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
-        // `encode_request` round-trips a preserved same-format body verbatim,
-        // which keeps the caller's original `model`; force the resolved model so
-        // the upstream always sees the target id.
-        set_json_model(&mut body, model);
-        if matches!(backend, Backend::OpenAiResponses(_)) {
-            sanitize_openai_responses_provider_body(&mut body);
-        }
-        // Strip before `merge_extra_body` so a target can reinstate either field
-        // deliberately via `extra_body`.
-        if matches!(backend, Backend::Anthropic(_)) {
-            strip_anthropic_incompatible_fields(&mut body);
-            strip_unsigned_thinking_blocks(&mut body);
-        }
-        omit_configured_body_fields(&mut body, backend.omit_body_fields());
-        merge_extra_body(&mut body, backend.extra_body());
-        // After the merge on purpose: the effort override must win over both the caller's
-        // value and any `reasoning` default a target set through `extra_body`.
-        apply_reasoning_effort(&mut body, backend);
-        if matches!(backend, Backend::Anthropic(_)) {
-            enable_anthropic_prompt_caching(&mut body);
-        }
-        if matches!(backend, Backend::OpenAiChat(_)) {
-            ensure_openai_stream_usage(&mut body);
-        }
+        let body = prepare_request_body(
+            &llm_request,
+            model,
+            wire_format,
+            backend.extra_body(),
+            backend.omit_body_fields(),
+            backend.reasoning_effort(),
+        )?;
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let url = endpoint.url(backend);
@@ -957,6 +939,40 @@ fn apply_extra_headers(mut builder: RequestBuilder, backend: &Backend) -> Reques
     builder
 }
 
+// Borrow settings so native HTTP clients and host clients share preparation without cloning config.
+pub(crate) fn prepare_request_body(
+    request: &LlmRequest,
+    model: &ModelId,
+    wire_format: WireFormat,
+    extra_body: &BTreeMap<String, Value>,
+    omit_body_fields: &BTreeSet<String>,
+    reasoning_effort: Option<&str>,
+) -> Result<Value> {
+    let mut body = observed_translation::encode_request(request, wire_format)
+        .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
+    // Same-format replay retains the caller's model; always stamp the resolved target.
+    set_json_model(&mut body, model);
+    if wire_format == WireFormat::OpenAiResponses {
+        sanitize_openai_responses_provider_body(&mut body);
+    }
+    // Strip before defaults so a target can deliberately reinstate a field.
+    if wire_format == WireFormat::AnthropicMessages {
+        strip_anthropic_incompatible_fields(&mut body);
+        strip_unsigned_thinking_blocks(&mut body);
+    }
+    omit_configured_body_fields(&mut body, omit_body_fields);
+    merge_extra_body(&mut body, extra_body);
+    // Forced effort wins over both caller values and defaults.
+    apply_reasoning_effort(&mut body, wire_format, reasoning_effort);
+    if wire_format == WireFormat::AnthropicMessages {
+        enable_anthropic_prompt_caching(&mut body);
+    }
+    if wire_format == WireFormat::OpenAiChat {
+        ensure_openai_stream_usage(&mut body);
+    }
+    Ok(body)
+}
+
 // Overwrites the outbound body's `model` field with the resolved model id.
 fn set_json_model(body: &mut Value, model: &str) {
     if let Value::Object(object) = body {
@@ -1150,15 +1166,15 @@ fn is_unsigned_thinking_block(block: &Value) -> bool {
 // Forces the target's configured reasoning effort onto the outbound body, replacing the
 // caller's value. Unlike `extra_body`, this is an override: a route that sends one model at a
 // higher effort than the client asked for is the point of the setting.
-fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
-    let Some(effort) = backend.reasoning_effort() else {
+fn apply_reasoning_effort(body: &mut Value, wire_format: WireFormat, effort: Option<&str>) {
+    let Some(effort) = effort else {
         return;
     };
     let Value::Object(object) = body else {
         return;
     };
-    match backend {
-        Backend::OpenAiResponses(_) => {
+    match wire_format {
+        WireFormat::OpenAiResponses => {
             // Responses nests effort under `reasoning` next to fields the caller may have set
             // (`summary`, for example), so only the `effort` key is replaced. A `reasoning`
             // value that is not an object is malformed and is replaced whole.
@@ -1172,7 +1188,7 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
                 reasoning.insert("effort".to_string(), Value::String(effort.to_string()));
             }
         }
-        Backend::OpenAiChat(_) => {
+        WireFormat::OpenAiChat => {
             // Chat Completions takes effort as a top-level field.
             object.insert(
                 "reasoning_effort".to_string(),
@@ -1181,7 +1197,7 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
         }
         // Anthropic has no effort field (thinking is a token budget); the runner rejects the
         // setting on Anthropic clients at load time, so this arm is unreachable in practice.
-        Backend::Anthropic(_) => {}
+        WireFormat::AnthropicMessages => {}
     }
 }
 
