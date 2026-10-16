@@ -210,9 +210,6 @@ impl Route {
     }
 
     /// Completes routing-time calls without serving a post-routing completion.
-    ///
-    /// The returned model IDs do not require `base_url`; HTTP endpoint metadata
-    /// is resolved separately by [`crate::Runner::describe_decision`].
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
         switchyard_llm_client::decide(
             Arc::clone(&self.algorithm),
