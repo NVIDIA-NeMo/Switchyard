@@ -17,10 +17,8 @@ pub enum StateValue {
     String(String),
     /// Nonnegative counter.
     Count(u32),
-    /// Signed integer value.
-    Int(i32),
-    /// Floating-point value.
-    Scalar(f32),
+    /// Flag value.
+    Bool(bool),
 }
 
 /// Routing facts accumulated across one session's algorithm runs.
@@ -56,9 +54,13 @@ mod tests {
             "fall_open".to_string(),
             StateValue::String("capable".to_string()),
         );
+        state
+            .extra
+            .insert("vgr_handoff_sent".to_string(), StateValue::Bool(true));
         let json = serde_json::json!({
             "capable_hold_turns": {"count": 2},
             "fall_open": {"string": "capable"},
+            "vgr_handoff_sent": {"bool": true},
         });
 
         let with_signals = State {

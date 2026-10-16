@@ -158,7 +158,7 @@ impl CompositeRouter {
                 message: "composite: classify_trigger must be user_turn or new_session".to_string(),
             });
         }
-        let judge: Arc<dyn Classifier<State>> = match config.judge {
+        let judge: Arc<dyn Classifier> = match config.judge {
             CompositeJudgeConfig::Capability(judge) => {
                 // Composite owns the trigger and retention; standalone affinity never runs.
                 Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {

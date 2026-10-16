@@ -36,7 +36,7 @@ mod tests;
 
 /// A verification-gated route between a local and a capable tier.
 pub struct Vgr {
-    route: FallThrough<runtime::VgrState>,
+    route: FallThrough,
 }
 
 impl Vgr {

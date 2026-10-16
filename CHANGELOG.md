@@ -18,7 +18,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Host API change (source-breaking):** `Processor`, `Classifier`,
   `FallThrough` and `SubagentGate` use `State` in place of a type parameter.
   `State.extra` is a `BTreeMap`. `State.turn_count` and `DECISION_SOURCE_KEY`
-  are removed.
+  are removed. `StateValue::Bool` replaces `StateValue::Int` and
+  `StateValue::Scalar`.
 - **Speculative workflows** - algorithms can run model and decision calls in
   parallel, stop one call, and let another continue. This includes decision
   models used as speculative tool callers. The same controls support general

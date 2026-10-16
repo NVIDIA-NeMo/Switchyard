@@ -15,6 +15,7 @@ use super::super::tests::{call, request, result};
 use crate::Result;
 use crate::algorithms::vgr::Vgr;
 use crate::core::algorithm::Algorithm;
+use crate::core::state::{State, StateValue};
 use crate::core::testing::{category_models, reply, test_drive_with_models};
 
 fn route(configure: impl FnOnce(&mut VgrConfig)) -> Result<Arc<dyn Algorithm>> {
@@ -271,7 +272,7 @@ async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
         breaker: super::CircuitBreaker::new(config.breaker),
         config,
     };
-    let mut state = super::VgrState::default();
+    let mut state = State::default();
     let task = session(vec![Message::text(Role::User, "list files")]);
     let LlmResponse::Agg(proposed) = complete_call().llm_response else {
         unreachable!();
@@ -292,7 +293,7 @@ async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
     let escalates = judging.await;
     drop(pending_call);
     assert!(!escalates);
-    assert!(!state.turn_latched);
+    assert!(super::turn_streak(&state) < super::TURN_CONFIRMATIONS);
     assert!(classifier.breaker.attempt().is_some());
     Ok(())
 }
@@ -305,7 +306,7 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
 
     for skip in ["image", "latched", "off", "kill", "deadline"] {
         let mut classifier = recovering_classifier();
-        let mut state = super::VgrState::default();
+        let mut state = State::default();
         let mut task = request(vec![Message::text(Role::User, "task")]);
         match skip {
             "image" => {
@@ -316,7 +317,12 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
                     },
                 }]
             }
-            "latched" => state.turn_latched = true,
+            "latched" => {
+                state.extra.insert(
+                    super::TURN_STREAK_KEY.to_string(),
+                    StateValue::Count(super::TURN_CONFIRMATIONS),
+                );
+            }
             "off" => classifier.config.mode = ServingMode::Off,
             "kill" => {
                 let switch = super::super::KillSwitch::new();
@@ -343,7 +349,7 @@ async fn cancelling_local_generation_releases_the_recovery_trial() -> Result<()>
     use crate::core::classifier::Classifier;
 
     let classifier = recovering_classifier();
-    let mut state = super::VgrState::default();
+    let mut state = State::default();
     let mut task = request(vec![Message::text(Role::User, "task")]);
     let (driver, _steps) = Driver::new("vgr", Arc::new(RuntimeModels::default()));
     let mut pending = classifier.score(&mut state, &mut task, &driver);
@@ -592,10 +598,8 @@ fn handoff_preserves_existing_messages_and_non_text_content() {
         });
     }
     let original = task.llm_request.messages.clone();
-    let mut state = super::VgrState {
-        local_served: true,
-        ..Default::default()
-    };
+    let mut state = State::default();
+    super::set_flag(&mut state, super::LOCAL_SERVED_KEY, true);
     classifier.hand_off(&mut task, &mut state, Some("unchecked result"));
     // A notice may be appended, but all original content stays unchanged.
     let messages = &task.llm_request.messages;
