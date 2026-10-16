@@ -397,10 +397,11 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `classifier.target` | Yes | — | Target the tier judge is called through. Not a routing destination. |
+| `classifier` | No | unset | Optional classification component. Omit for efficient-first stage routing without judge calls. |
+| `classifier.target` | When classifier is set | unset | Target the tier judge is called through. |
 | `classifier.base_threshold` | For LLM judges | unset | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
-| `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
+| `classifier.classify_trigger` | When classifier is set | unset | `user_turn` re-picks the tier whenever the user speaks. `new_session` picks once and holds it. `every_request` is rejected. |
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. |
 | `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
@@ -427,7 +428,8 @@ The same decision settings are accepted by the optional `stage_router` classifie
 
 The tier is retained per session. A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message
-instead. The outer `[routes.<name>.classifier]` table is required. The nested
+instead. The outer `[routes.<name>.classifier]` table is optional. Without it,
+stage uses the efficient tier as its default. The nested
 `[routes.<name>.stage]` table accepts neither `picker` nor a second `classifier`.
 The outer classifier supplies the default tier. A turn the classifier cannot
 reach falls open to the efficient tier.

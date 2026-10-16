@@ -50,7 +50,22 @@ plan = ["create_research_plan"]
 new = ["send_message"]
 ```
 
-`[routes.switchyard.classifier]` is required and takes the `stage_router` classifier fields.
+`[routes.switchyard.classifier]` is optional and takes the `stage_router` classifier fields.
+Omit the table to turn classification off. The route keeps `type = "composite"`
+and runs efficient-first stage routing without judge calls or a judge target.
+An explicitly configured classifier must still be valid.
+
+```toml
+[routes.switchyard]
+id = "switchyard"
+type = "composite"
+
+[routes.switchyard.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.5
+```
+
 `classify_trigger` sets how often the judge runs: `user_turn` re-picks the tier
 whenever the user speaks, `new_session` picks once and holds it.
 `[routes.switchyard.stage]` takes the stage settings, but accepts neither `picker`
