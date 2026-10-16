@@ -1870,6 +1870,32 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
 }
 
 #[tokio::test]
+async fn routing_call_keeps_buffered_response_identity() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const MODEL: &str = "obs-routing-response-model";
+    run(
+        Arc::new(RoutingCallAlgo {
+            name: "obs-routing-response".into(),
+            target: MODEL.into(),
+        }),
+        Arc::new(UsageClient {
+            usage: Usage::default(),
+        }),
+        Request::default(),
+    )
+    .await?;
+    let span = find_span(&store.spans(), "libsy.llm_call", "selected_model", MODEL);
+    for (field, expected) in [
+        ("gen_ai.response.id", "obs-response-1"),
+        ("gen_ai.response.model", MODEL),
+    ] {
+        assert_eq!(span.fields.get(field).map(String::as_str), Some(expected));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (_store, exporter, provider, _, _) = telemetry();
