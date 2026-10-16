@@ -73,8 +73,10 @@ impl Runner {
     /// Return distinct clients for groups with separate provider continuation state.
     /// `base_url` is optional; transport settings, typed decision clients, and
     /// `fallback_client` are rejected. Auxiliary operations are unavailable, and
-    /// capability enforcement remains host-owned. Endpoint descriptions require
-    /// a configured `base_url`. Factory errors stop loading.
+    /// capability enforcement remains host-owned. Factory errors stop loading.
+    ///
+    /// A `base_url` is not needed to execute or select models. Without one for
+    /// a selected target or fallback, [`Self::describe_decision`] returns `None`.
     pub fn from_toml_with_clients(
         source: &str,
         mut factory: impl FnMut(
@@ -162,7 +164,11 @@ impl Runner {
         self.fallback_base_url.as_deref()
     }
 
-    /// Resolves an outcome to configured target names and non-secret client settings.
+    /// Resolves a routing outcome to target names and non-secret HTTP endpoint settings.
+    ///
+    /// Returns `None` if the route is unknown, the outcome selects no models, or any
+    /// selected target or fallback lacks an endpoint description with a valid URL.
+    /// [`Route::decide`] returns routing outcomes without requiring this metadata.
     pub fn describe_decision(
         &self,
         model: &ModelId,
