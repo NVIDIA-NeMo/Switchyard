@@ -170,6 +170,11 @@ impl CompositeRouter {
                 })?)
             }
             CompositeJudgeConfig::Custom(config) => {
+                if matches!(config.policy, crate::CustomClassifierPolicy::HandoffNote(_)) {
+                    return Err(LibsyError::AlgorithmError {
+                        message: "composite requires a tier-selecting policy; handoff_note fixes the target".into(),
+                    });
+                }
                 LlmTaskClassifier::custom_classifier(&config, true)?
             }
         };
@@ -307,6 +312,29 @@ mod tests {
         );
         config.classify_trigger = trigger;
         CompositeJudgeConfig::Custom(config)
+    }
+
+    #[test]
+    fn fixed_hint_targets_cannot_be_used_as_tier_judges() -> Result<()> {
+        let policy = crate::HandoffNotePolicy::new(
+            ModelId::from("target"),
+            "/note",
+            [("retry".into(), "Inspect the failure.".into())].into(),
+        )?;
+        let mut config = CustomClassifierConfig::new(
+            "Choose an optional note",
+            serde_json::json!({"type": "object"}),
+            crate::CustomClassifierPolicy::HandoffNote(policy),
+        );
+        config.classify_trigger = ClassifyTrigger::UserTurn;
+        let error = CompositeRouter::new(CompositeRouterConfig {
+            judge: CompositeJudgeConfig::Custom(config),
+            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+        })
+        .err()
+        .expect("a tier picker cannot preserve the hint policy's fixed target");
+        assert!(error.to_string().contains("handoff_note fixes the target"));
+        Ok(())
     }
 
     #[tokio::test]

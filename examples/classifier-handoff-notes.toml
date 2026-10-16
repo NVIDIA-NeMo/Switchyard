@@ -7,8 +7,8 @@ schema_version = 1
 format = "openai_chat"
 base_url = "http://localhost:8000/v1"
 
-[targets.answer]
-id = "model/answer"
+[targets.target]
+id = "model/target"
 llm_client = "local"
 
 [targets.judge]
@@ -23,24 +23,21 @@ default_target = "any"
 classify_trigger = "every_request"
 recent_turn_window = 8
 max_output_tokens = 128
-prompt = "Choose a useful handoff note for the next turn, or null. Always set target to any."
+prompt = "Choose a useful handoff note for the next turn, or null."
 response_schema = '''
 {
   "type": "object",
   "properties": {
-    "target": {"type": "string", "enum": ["any"]},
     "note": {"type": ["string", "null"]}
   },
-  "required": ["target", "note"],
+  "required": ["note"],
   "additionalProperties": false
 }
 '''
-models = { any = ["answer"], judge = ["judge"] }
+models = { any = ["target"], judge = ["judge"] }
 
 [routes.notes.policy]
-type = "target_selector"
-selector = "/target"
-
-[routes.notes.policy.handoff_notes]
+type = "handoff_note"
+target = "target"
 selector = "/note"
 db_path = "handoff-notes.toml"

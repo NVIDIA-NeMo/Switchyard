@@ -206,7 +206,7 @@ pub trait JudgePolicy: Send + Sync {
         driver: &Driver,
     ) -> Result<Classification>;
 
-    /// Adds a configured handoff note after a verdict selects a target.
+    /// Adds a configured handoff note after the policy resolves a target.
     fn apply_handoff_note(&self, _verdict: &Self::Verdict, _request: &mut Request) {}
 }
 

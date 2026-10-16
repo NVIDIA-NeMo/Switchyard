@@ -23,11 +23,11 @@ use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
 };
 use super::util::escalation::EscalationJudgeConfig;
+pub use super::util::handoff_note::HandoffNotePolicy;
 use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
     SerdeDecoder, StructuredJudge,
 };
-pub use super::util::target_selector::HandoffNoteSelector;
 use super::util::target_selector::TargetSelectorPolicy;
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -488,16 +488,16 @@ impl TaskClassifierConfig {
     }
 }
 
-/// Policy that maps a custom classifier verdict to a routing target.
+/// Policy applied to a validated custom classifier verdict.
 #[derive(Clone, Debug)]
 pub enum CustomClassifierPolicy {
     /// Resolves a JSON Pointer and treats its string value as a model category.
     TargetSelector {
         /// JSON Pointer evaluated against each schema-validated verdict.
         selector: String,
-        /// Optional note database selected through another verdict field.
-        handoff_notes: Option<HandoffNoteSelector>,
     },
+    /// Adds an optional note to a target fixed in configuration.
+    HandoffNote(HandoffNotePolicy),
 }
 
 impl CustomClassifierPolicy {
@@ -505,19 +505,11 @@ impl CustomClassifierPolicy {
     pub fn target_selector(selector: impl Into<String>) -> Self {
         Self::TargetSelector {
             selector: selector.into(),
-            handoff_notes: None,
         }
-    }
-
-    /// Adds judge-selected notes using the same append behavior as stage handoffs.
-    pub fn with_handoff_notes(mut self, notes: HandoffNoteSelector) -> Self {
-        let Self::TargetSelector { handoff_notes, .. } = &mut self;
-        *handoff_notes = Some(notes);
-        self
     }
 }
 
-/// Settings for a classifier whose JSON Schema and target-selection policy are user supplied.
+/// Settings for a classifier with a user-supplied JSON Schema and verdict policy.
 #[derive(Clone, Debug)]
 pub struct CustomClassifierConfig {
     /// System prompt sent to the classifier judge.
@@ -526,7 +518,7 @@ pub struct CustomClassifierConfig {
     pub response_schema: Value,
     /// Deterministic policy applied after the verdict passes schema validation.
     pub policy: CustomClassifierPolicy,
-    /// How often the classifier re-decides this session's target.
+    /// How often the classifier judge runs.
     pub classify_trigger: ClassifyTrigger,
     /// Uses the first user message when session metadata is unavailable.
     pub message_hash_fallback: bool,
@@ -574,6 +566,7 @@ impl CustomClassifierConfig {
 
 enum CustomPolicyRuntime {
     TargetSelector(TargetSelectorPolicy),
+    HandoffNote(HandoffNotePolicy),
 }
 
 impl JudgePolicy for CustomPolicyRuntime {
@@ -581,7 +574,8 @@ impl JudgePolicy for CustomPolicyRuntime {
 
     fn apply_handoff_note(&self, verdict: &Value, request: &mut Request) {
         match self {
-            Self::TargetSelector(policy) => policy.apply_handoff_note(verdict, request),
+            Self::TargetSelector(_) => {}
+            Self::HandoffNote(policy) => policy.apply_handoff_note(verdict, request),
         }
     }
 
@@ -592,6 +586,7 @@ impl JudgePolicy for CustomPolicyRuntime {
     ) -> Result<Classification> {
         match self {
             Self::TargetSelector(policy) => policy.to_classification(verdict, driver),
+            Self::HandoffNote(policy) => policy.to_classification(verdict, driver),
         }
     }
 }
@@ -754,22 +749,14 @@ impl LlmTaskClassifier {
     ) -> Result<Arc<dyn Classifier>> {
         config.validate()?;
         let (policy, prompt) = match &config.policy {
-            CustomClassifierPolicy::TargetSelector {
-                selector,
-                handoff_notes,
-            } => {
-                let prompt = match handoff_notes {
-                    Some(notes) => notes.extend_prompt(&config.prompt)?,
-                    None => config.prompt.clone(),
-                };
-                (
-                    CustomPolicyRuntime::TargetSelector(
-                        TargetSelectorPolicy::new(selector)?
-                            .with_handoff_notes(handoff_notes.clone()),
-                    ),
-                    prompt,
-                )
-            }
+            CustomClassifierPolicy::TargetSelector { selector } => (
+                CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector)?),
+                config.prompt.clone(),
+            ),
+            CustomClassifierPolicy::HandoffNote(notes) => (
+                CustomPolicyRuntime::HandoffNote(notes.clone()),
+                notes.extend_prompt(&config.prompt)?,
+            ),
         };
         let contract =
             ClassifierContract::from_inner_schema(&prompt, config.response_schema.clone())?;

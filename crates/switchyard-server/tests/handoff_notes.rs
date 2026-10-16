@@ -34,7 +34,7 @@ async fn complete(State(state): State<Arc<Upstream>>, Json(body): Json<Value>) -
             .verdicts
             .lock()
             .pop_front()
-            .unwrap_or(json!({"target": "any", "note": null}))
+            .unwrap_or(json!({"note": null}))
             .to_string()
     } else {
         "ok".into()
@@ -72,7 +72,15 @@ async fn selected_database_notes_reach_the_model_across_input_formats() -> TestR
         &config,
         CONFIG
             .replace("http://localhost:8000/v1", &base_url)
-            .replace("\"enum\": [\"any\"]", "\"minLength\": 1"),
+            .replace(
+                "[targets.target]",
+                "[targets.other]\nid = \"model/other\"\nllm_client = \"local\"\n\n[targets.target]",
+            )
+            .replace("any = [\"target\"]", "any = [\"other\", \"target\"]")
+            .replace(
+                "\"additionalProperties\": false",
+                "\"additionalProperties\": true",
+            ),
     )?;
     std::fs::write(dir.path().join("handoff-notes.toml"), NOTES)?;
     let app = build_switchyard_router(ServerState::from_runner(Runner::load(&config)?)?);
@@ -100,14 +108,11 @@ async fn selected_database_notes_reach_the_model_across_input_formats() -> TestR
     ];
     for (path, body) in inputs {
         for (verdict, expected_note) in [
-            (json!({"target": "any", "note": "compile_failure"}), true),
-            (json!({"target": "any", "note": null}), false),
-            (json!({"target": "any", "note": "unknown"}), false),
-            (json!({"target": "any", "note": 42}), false),
-            (
-                json!({"target": "unconfigured", "note": "compile_failure"}),
-                false,
-            ),
+            (json!({"note": "compile_failure"}), true),
+            (json!({"note": null}), false),
+            (json!({"note": "unknown"}), false),
+            (json!({"note": 42}), false),
+            (json!({"target": "judge", "note": "compile_failure"}), true),
         ] {
             upstream.verdicts.lock().push_back(verdict);
             upstream.requests.lock().clear();
@@ -130,14 +135,17 @@ async fn selected_database_notes_reach_the_model_across_input_formats() -> TestR
                     .as_str()
                     .is_some_and(|text| text.contains(NOTE))
             );
-            let answer = &requests[1];
-            assert_eq!(answer["model"], "model/answer");
+            let target = &requests[1];
             assert_eq!(
-                answer["messages"].to_string().contains(NOTE),
-                expected_note,
-                "{path}: {answer}"
+                target["model"], "model/target",
+                "policy.target overrides the default group order and any target in the verdict"
             );
-            assert!(answer["messages"].to_string().contains("build failed"));
+            assert_eq!(
+                target["messages"].to_string().contains(NOTE),
+                expected_note,
+                "{path}: {target}"
+            );
+            assert!(target["messages"].to_string().contains("build failed"));
         }
     }
     std::fs::write(
@@ -151,7 +159,7 @@ async fn selected_database_notes_reach_the_model_across_input_formats() -> TestR
     upstream
         .verdicts
         .lock()
-        .push_back(json!({"target": "any", "note": "compile_failure"}));
+        .push_back(json!({"note": "compile_failure"}));
     for _ in 0..2 {
         let body = json!({"model": "switchyard/notes", "messages": [{"role": "user", "content": "build failed"}]});
         let response = app
@@ -167,7 +175,7 @@ async fn selected_database_notes_reach_the_model_across_input_formats() -> TestR
         to_bytes(response.into_body(), usize::MAX).await?;
     }
     let requests = upstream.requests.lock();
-    assert_eq!(requests.len(), 3, "one judge call and two answer calls");
+    assert_eq!(requests.len(), 3, "one judge call and two target calls");
     assert!(requests[1]["messages"].to_string().contains(NOTE));
     assert!(
         !requests[2]["messages"].to_string().contains(NOTE),
@@ -194,6 +202,16 @@ fn handoff_note_database_is_validated_when_loading_the_route() -> TestResult {
     }
     std::fs::write(dir.path().join("handoff-notes.toml"), NOTES)?;
     assert!(Runner::load(&config).is_ok());
+    for target in ["missing", "judge"] {
+        std::fs::write(
+            &config,
+            CONFIG.replace("target = \"target\"", &format!("target = {target:?}")),
+        )?;
+        assert!(
+            Runner::load(&config).is_err(),
+            "accepted hint target {target}"
+        );
+    }
     std::fs::write(
         &config,
         CONFIG.replace("selector = \"/note\"", "selector = \"invalid\""),

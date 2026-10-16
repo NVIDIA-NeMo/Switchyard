@@ -22,7 +22,7 @@ pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig};
 pub use algorithms::llm_class::{
     CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
-    HandoffNoteSelector, LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier,
+    HandoffNotePolicy, LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier,
     TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;

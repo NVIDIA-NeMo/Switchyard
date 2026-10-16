@@ -13,11 +13,11 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    HandoffNoteSelector, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
-    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics, Vgr, VgrConfig,
+    DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, HandoffNotePolicy,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -60,7 +60,7 @@ impl Error for AlgorithmConfigError {
 
 type AlgorithmResult<T> = Result<T, AlgorithmConfigError>;
 
-/// How a custom classifier turns the judge's JSON verdict into a target.
+/// How a custom classifier applies the judge's JSON verdict.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClassifierPolicyConfig {
@@ -68,20 +68,16 @@ pub enum ClassifierPolicyConfig {
     TargetSelector {
         /// JSON Pointer to the name, such as `/decision/target`.
         selector: String,
-        /// File-backed notes selected by another field in the same verdict.
-        #[serde(default)]
-        handoff_notes: Option<HandoffNoteDatabase>,
     },
-}
-
-/// A TOML file mapping note IDs to text, loaded with the route configuration.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HandoffNoteDatabase {
-    /// JSON Pointer to the selected note ID, such as `/note`.
-    pub selector: String,
-    /// Database path. Relative paths resolve beside a file-loaded deployment.
-    pub db_path: PathBuf,
+    /// Adds a judge-selected note to one configured target.
+    HandoffNote {
+        /// Name of the target that receives the request and optional note.
+        target: String,
+        /// JSON Pointer to the selected note ID, such as `/note`.
+        selector: String,
+        /// TOML note database, resolved beside a file-loaded deployment.
+        db_path: PathBuf,
+    },
 }
 
 /// Which of the three `llm_classifier` behaviors a route uses.
@@ -98,34 +94,37 @@ pub enum ClassifierMode {
 }
 
 impl ClassifierPolicyConfig {
-    fn into_libsy(self) -> AlgorithmResult<CustomClassifierPolicy> {
+    fn into_libsy(
+        self,
+        route_name: &str,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<CustomClassifierPolicy> {
         match self {
-            Self::TargetSelector {
+            Self::TargetSelector { selector } => {
+                Ok(CustomClassifierPolicy::target_selector(selector))
+            }
+            Self::HandoffNote {
+                target,
                 selector,
-                handoff_notes,
+                db_path,
             } => {
-                let mut policy = CustomClassifierPolicy::target_selector(selector);
-                if let Some(config) = handoff_notes {
-                    let source = std::fs::read_to_string(&config.db_path).map_err(|error| {
-                        AlgorithmConfigError::with_source(
-                            format!("failed to read handoff notes {}", config.db_path.display()),
-                            error,
-                        )
-                    })?;
-                    let notes: BTreeMap<String, String> =
-                        toml::from_str(&source).map_err(|_| {
-                            AlgorithmConfigError::new(format!(
-                                "handoff notes {} must be a TOML mapping of IDs to text",
-                                config.db_path.display()
-                            ))
-                        })?;
-                    let notes =
-                        HandoffNoteSelector::new(config.selector, notes).map_err(|error| {
-                            AlgorithmConfigError::with_source("invalid handoff notes", error)
-                        })?;
-                    policy = policy.with_handoff_notes(notes);
-                }
-                Ok(policy)
+                let target = resolve_target_model_id(route_name, &target, targets)?;
+                let source = std::fs::read_to_string(&db_path).map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("failed to read handoff notes {}", db_path.display()),
+                        error,
+                    )
+                })?;
+                let notes: BTreeMap<String, String> = toml::from_str(&source).map_err(|_| {
+                    AlgorithmConfigError::new(format!(
+                        "handoff notes {} must be a TOML mapping of IDs to text",
+                        db_path.display()
+                    ))
+                })?;
+                let policy = HandoffNotePolicy::new(target, selector, notes).map_err(|error| {
+                    AlgorithmConfigError::with_source("invalid handoff notes", error)
+                })?;
+                Ok(CustomClassifierPolicy::HandoffNote(policy))
             }
         }
     }
@@ -735,6 +734,7 @@ impl StageClassifierConfig {
     fn custom_classifier_config(
         &self,
         route_name: &str,
+        targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<CustomClassifierConfig> {
         if self.fail_open == Some(false) {
             return Err(AlgorithmConfigError::new(
@@ -761,7 +761,8 @@ impl StageClassifierConfig {
         let mut config = CustomClassifierConfig::new(
             required_classifier_field(route_name, "prompt", &self.prompt)?,
             schema,
-            required_classifier_field(route_name, "policy", &self.policy)?.into_libsy()?,
+            required_classifier_field(route_name, "policy", &self.policy)?
+                .into_libsy(route_name, targets)?,
         );
         config.classify_trigger = self.classify_trigger;
         config.message_hash_fallback = self.message_hash_fallback;
@@ -796,11 +797,10 @@ impl AlgorithmSpec {
             _ => None,
         };
         for policy in policy.into_iter().chain(nested).filter_map(Option::as_mut) {
-            let ClassifierPolicyConfig::TargetSelector { handoff_notes, .. } = policy;
-            if let Some(notes) = handoff_notes
-                && notes.db_path.is_relative()
+            if let ClassifierPolicyConfig::HandoffNote { db_path, .. } = policy
+                && db_path.is_relative()
             {
-                notes.db_path = base.join(&notes.db_path);
+                *db_path = base.join(&*db_path);
             }
         }
     }
@@ -1395,6 +1395,14 @@ impl LlmClassifierRouteConfig {
                     )));
                 }
                 models.validate(route_name, &default_target)?;
+                let policy = required_classifier_field(route_name, "policy", policy)?;
+                if let ClassifierPolicyConfig::HandoffNote { target, .. } = &policy
+                    && !models.get(&Category::Any).contains(target)
+                {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "llm_classifier route {route_name}: handoff_note target {target} must appear in models.any"
+                    )));
+                }
                 Ok(LlmClassifierModeConfig::Custom(
                     CustomClassifierRouteConfig {
                         models,
@@ -1405,7 +1413,7 @@ impl LlmClassifierRouteConfig {
                             "response_schema",
                             response_schema,
                         )?,
-                        policy: required_classifier_field(route_name, "policy", policy)?,
+                        policy,
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
@@ -1488,11 +1496,11 @@ fn build_subagent_router_config(
                         error,
                     )
                 })?;
-            warn_single_target_classifier(route_name, &config.models);
+            warn_single_target_classifier(route_name, &config.models, &config.policy);
             let mut classifier_config = CustomClassifierConfig::new(
                 config.prompt,
                 response_schema,
-                config.policy.into_libsy()?,
+                config.policy.into_libsy(route_name, targets)?,
             );
             classifier_config.recent_turn_window = config.recent_turn_window;
             classifier_config.max_output_tokens = config.max_output_tokens;
@@ -1632,11 +1640,11 @@ fn build_algorithm(
                             )
                         },
                     )?;
-                    warn_single_target_classifier(route_name, &config.models);
+                    warn_single_target_classifier(route_name, &config.models, &config.policy);
                     let mut classifier_config = CustomClassifierConfig::new(
                         config.prompt,
                         response_schema,
-                        config.policy.into_libsy()?,
+                        config.policy.into_libsy(route_name, targets)?,
                     );
                     classifier_config.classify_trigger = config.classify_trigger;
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
@@ -1735,7 +1743,9 @@ fn build_algorithm(
             stage_config.tool_semantics = stage.tool_semantics.clone();
             stage_config.handoff_notes = stage.handoff_notes.clone();
             let judge = if matches!(classifier.mode, Some(ClassifierMode::Custom)) {
-                CompositeJudgeConfig::Custom(classifier.custom_classifier_config(route_name)?)
+                CompositeJudgeConfig::Custom(
+                    classifier.custom_classifier_config(route_name, targets)?,
+                )
             } else {
                 CompositeJudgeConfig::Capability(
                     classifier.task_classifier_config(route_name, stage, targets)?,
@@ -1931,8 +1941,14 @@ fn default_classifier_max_output_tokens() -> u64 {
     LlmCapabilityConfig::default().max_output_tokens
 }
 
-fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig) {
-    if models.routing_names().len() < 2 {
+fn warn_single_target_classifier(
+    route_name: &str,
+    models: &CategoryModelConfig,
+    policy: &ClassifierPolicyConfig,
+) {
+    if matches!(policy, ClassifierPolicyConfig::TargetSelector { .. })
+        && models.routing_names().len() < 2
+    {
         tracing::warn!(
             route = route_name,
             "custom classifier has only one routing target; judge calls add cost without a routing choice. Use passthrough or add another completion target in routes.<name>, or in routes.<name>.subagents for a subagent classifier."

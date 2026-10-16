@@ -336,18 +336,19 @@ how one route chooses between more than two models.
 | `models.capable` | No | — | Ordered capable-tier models. A `capable` verdict selects the first; eligible non-timeout failures try the rest in order. |
 | `models.efficient` | No | — | Ordered efficient-tier models. An `efficient` verdict selects the first; eligible non-timeout failures try the rest in order. |
 | `models.<your name>` | No | — | A group you name. A verdict naming it selects its first model; eligible non-timeout failures try the rest in order. |
-| `default_target` | Yes | — | Group used when the judge's verdict cannot be parsed or routed. HTTP client failures stop the request after retries. Any group except `judge`, and it must contain at least one target. |
+| `default_target` | Yes | — | Fallback group for `target_selector`. The `handoff_note` policy always uses `policy.target`. HTTP client failures stop the request after retries. Any group except `judge`, and it must contain at least one target. |
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
-| `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
-| `policy.handoff_notes.selector` | When using notes | — | JSON Pointer to a note ID in the same validated verdict, such as `/note`. Use a nullable string field in `response_schema`. |
-| `policy.handoff_notes.db_path` | When using notes | — | TOML file mapping IDs to note text, loaded at startup. Relative paths resolve beside a file-loaded deployment. The judge sees this mapping; a selected ID appends its text using the handoff-note helper. |
+| `policy` | Yes | — | `type = "target_selector"` reads a target group from the verdict. `type = "handoff_note"` reads only a note ID and uses a fixed target from TOML. |
+| `policy.selector` | Yes | — | JSON Pointer to the target group for `target_selector`, or to a nullable note ID for `handoff_note` (such as `/note`). |
+| `policy.target` | For `handoff_note` | — | Fixed target name from `[targets]`, also listed in `models.any`. Used even when the judge returns no note or an invalid verdict. |
+| `policy.db_path` | For `handoff_note` | — | TOML file mapping IDs to note text, loaded at startup. Relative paths resolve beside a file-loaded deployment. The judge sees this mapping; a selected ID appends its text using the handoff-note helper. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 
-The selected JSON label must name a configured group. A label naming a target
-rather than a group, or a group you did not configure, falls back to
+For `target_selector`, the selected JSON label must name a configured group.
+A label naming a target rather than a group, or a group you did not configure, falls back to
 `default_target`. `judge` is not routable.
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
