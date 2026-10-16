@@ -337,7 +337,7 @@ fn encode_responses_stream(
     }
     match event {
         LlmResponseChunk::McpCallDelta { .. }
-        | LlmResponseChunk::McpContentBlockStart { .. }
+        | LlmResponseChunk::McpItemAnnouncement { .. }
         | LlmResponseChunk::McpContentBlockComplete { .. } => encode_responses_stream(
             state,
             LlmResponseChunk::DecodeError {

@@ -217,7 +217,7 @@ fn encode_openai_chat_stream(
     }
     match event {
         LlmResponseChunk::McpCallDelta { .. }
-        | LlmResponseChunk::McpContentBlockStart { .. }
+        | LlmResponseChunk::McpItemAnnouncement { .. }
         | LlmResponseChunk::McpContentBlockComplete { .. } => encode_openai_chat_stream(
             state,
             LlmResponseChunk::DecodeError {

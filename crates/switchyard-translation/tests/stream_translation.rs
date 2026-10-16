@@ -27,7 +27,21 @@ fn mcp_chunks_report_a_terminal_encoding_error() -> TestResult {
         WireFormat::AnthropicMessages,
     ] {
         for chunk in [
-            LlmResponseChunk::McpContentBlockStart { index: 0 },
+            LlmResponseChunk::McpItemAnnouncement {
+                index: 0,
+                id: "mcpl_1".into(),
+                server_name: "inventory".into(),
+                kind: switchyard_protocol::McpItemKind::Listing,
+            },
+            LlmResponseChunk::McpItemAnnouncement {
+                index: 1,
+                id: "mcpr_1".into(),
+                server_name: "inventory".into(),
+                kind: switchyard_protocol::McpItemKind::ApprovalRequest {
+                    name: "lookup".into(),
+                    arguments: "{}".into(),
+                },
+            },
             LlmResponseChunk::McpCallDelta {
                 index: 0,
                 id: None,

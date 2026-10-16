@@ -172,7 +172,7 @@ fn encode_anthropic_stream(
     }
     match event {
         LlmResponseChunk::McpCallDelta { .. }
-        | LlmResponseChunk::McpContentBlockStart { .. }
+        | LlmResponseChunk::McpItemAnnouncement { .. }
         | LlmResponseChunk::McpContentBlockComplete { .. } => encode_anthropic_stream(
             state,
             LlmResponseChunk::DecodeError {

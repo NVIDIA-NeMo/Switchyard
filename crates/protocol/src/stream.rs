@@ -304,6 +304,21 @@ fn push_checked_chunk(
     }
 }
 
+/// Non-call MCP operation announced before its completed content is emitted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpItemKind {
+    /// Discovery of the tools exposed by a server.
+    Listing,
+    /// A request for permission to execute a tool.
+    ApprovalRequest {
+        /// Tool whose execution requires approval.
+        name: String,
+        /// Serialized arguments presented for approval.
+        arguments: String,
+    },
+}
+
 /// One provider-neutral streaming response chunk.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LlmResponseChunk {
@@ -362,10 +377,18 @@ pub enum LlmResponseChunk {
         /// Fragment of the serialized input object.
         arguments_delta: Option<String>,
     },
-    /// Reserve the position of an MCP block whose payload arrives later.
-    McpContentBlockStart {
+    /// Announces a non-call MCP item so translators can emit its initial event.
+    /// Calls announce their identity through McpCallDelta instead.
+    /// Aggregation ignores this notification; content arrives through McpContentBlockComplete.
+    McpItemAnnouncement {
         /// Source content or output-item index.
         index: usize,
+        /// Provider item identifier.
+        id: String,
+        /// Identity of the MCP server.
+        server_name: String,
+        /// Operation and metadata needed to encode its announcement.
+        kind: McpItemKind,
     },
     /// A complete MCP listing, call, result, or opaque MCP provider item.
     /// Replaces an MCP call announced at the same index; results remain separate blocks.
@@ -429,10 +452,7 @@ struct PartialToolCall {
     arguments: String,
 }
 
-#[derive(Default)]
 enum McpBlockState {
-    #[default]
-    Started,
     Call {
         server_name: String,
         call: PartialToolCall,
@@ -491,9 +511,7 @@ impl ResponseAccumulator {
                     call.arguments.push_str(&delta);
                 }
             }
-            LlmResponseChunk::McpContentBlockStart { index } => {
-                self.mcp_blocks.entry(index).or_default();
-            }
+            LlmResponseChunk::McpItemAnnouncement { .. } => {}
             LlmResponseChunk::McpCallDelta {
                 index,
                 id,
@@ -501,13 +519,13 @@ impl ResponseAccumulator {
                 name,
                 arguments_delta,
             } => {
-                let block = self.mcp_blocks.entry(index).or_default();
-                if matches!(block, McpBlockState::Started) {
-                    *block = McpBlockState::Call {
+                let block = self
+                    .mcp_blocks
+                    .entry(index)
+                    .or_insert_with(|| McpBlockState::Call {
                         server_name: String::new(),
                         call: PartialToolCall::default(),
-                    };
-                }
+                    });
                 if let McpBlockState::Call {
                     server_name: server,
                     call,
@@ -528,7 +546,10 @@ impl ResponseAccumulator {
                 }
             }
             LlmResponseChunk::McpContentBlockComplete { index, block } => {
-                let state = self.mcp_blocks.entry(index).or_default();
+                let state = self
+                    .mcp_blocks
+                    .entry(index)
+                    .or_insert_with(|| McpBlockState::Complete(Vec::new()));
                 match state {
                     // A provider item can contain both a call and its result.
                     McpBlockState::Complete(blocks) => blocks.push(*block),
@@ -545,7 +566,7 @@ impl ResponseAccumulator {
 
     /// Build one assistant output: reasoning, text, ordinary tool calls, then MCP blocks.
     /// Tool calls and MCP blocks are each ordered by ascending source index.
-    /// Unfinished MCP calls retain their partial data; starts without content are omitted.
+    /// Unfinished MCP calls retain their partial data; announcements add no content.
     pub fn finish(self) -> AggLlmResponse {
         let mut content = Vec::new();
         if self.reasoning.is_some() || !self.reasoning_details.is_empty() {
@@ -572,7 +593,6 @@ impl ResponseAccumulator {
         }
         for block in self.mcp_blocks.into_values() {
             match block {
-                McpBlockState::Started => {}
                 McpBlockState::Call { server_name, call } => {
                     content.push(ContentBlock::Mcp(McpContent::Call {
                         server_name,
@@ -684,7 +704,6 @@ mod tests {
                 index: 0,
                 text: "Before".into(),
             },
-            LlmResponseChunk::McpContentBlockStart { index: 1 },
             LlmResponseChunk::McpCallDelta {
                 index: 1,
                 id: Some("call_1".into()),
@@ -727,19 +746,94 @@ mod tests {
     }
 
     #[test]
-    fn mcp_starts_are_empty_and_partial_calls_retain_received_data() {
-        assert!(
-            fold(vec![LlmResponseChunk::McpContentBlockStart { index: 0 }]).outputs[0]
-                .content
-                .is_empty()
-        );
+    fn mcp_announcements_preserve_metadata_without_adding_content() {
+        for kind in [
+            McpItemKind::Listing,
+            McpItemKind::ApprovalRequest {
+                name: "lookup".into(),
+                arguments: r#"{"sku":"widget"}"#.into(),
+            },
+        ] {
+            let announcement = LlmResponseChunk::McpItemAnnouncement {
+                index: 3,
+                id: "item_1".into(),
+                server_name: "inventory".into(),
+                kind,
+            };
+            let serialized = serde_json::to_value(&announcement).expect("serialize announcement");
+            let recovered: LlmResponseChunk =
+                serde_json::from_value(serialized).expect("deserialize announcement");
+            assert_eq!(recovered, announcement);
+            let block = ContentBlock::Mcp(McpContent::Listing {
+                server_name: "other_server".into(),
+                id: Some("listing_1".into()),
+                tools: Vec::new(),
+                error: None,
+            });
+            let mut accumulator = ResponseAccumulator::new();
+            accumulator.push(announcement.clone());
+            assert!(accumulator.mcp_blocks.is_empty());
+            accumulator.push(LlmResponseChunk::McpContentBlockComplete {
+                index: 3,
+                block: Box::new(block.clone()),
+            });
+            accumulator.push(announcement);
+            assert_eq!(accumulator.finish().outputs[0].content, vec![block]);
+        }
+    }
+
+    #[test]
+    fn interleaved_mcp_calls_keep_separate_arguments() {
+        let mut accumulator = ResponseAccumulator::new();
+        for (index, fragment) in [
+            (2, r#"{"sku":"#),
+            (5, r#"{"city":"#),
+            (5, r#""Paris"}"#),
+            (2, r#""widget"}"#),
+        ] {
+            accumulator.push(LlmResponseChunk::McpCallDelta {
+                index,
+                id: Some(format!("call_{index}")),
+                server_name: Some("inventory".into()),
+                name: Some("lookup".into()),
+                arguments_delta: Some(fragment.into()),
+            });
+        }
+        let response = accumulator.finish();
+        for (block, id, arguments) in [
+            (
+                &response.outputs[0].content[0],
+                "call_2",
+                json!({"sku": "widget"}),
+            ),
+            (
+                &response.outputs[0].content[1],
+                "call_5",
+                json!({"city": "Paris"}),
+            ),
+        ] {
+            assert_eq!(
+                block,
+                &ContentBlock::Mcp(McpContent::Call {
+                    server_name: "inventory".into(),
+                    call: ToolCall {
+                        id: id.into(),
+                        name: "lookup".into(),
+                        arguments
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn partial_mcp_calls_retain_received_data() {
         for (first, last, expected) in [
             ("{\"sku\":", "\"widget\"}", json!({"sku": "widget"})),
             ("{\"sku\":", "", json!("{\"sku\":")),
             ("", "", json!({})),
         ] {
             let chunks = vec![
-                LlmResponseChunk::McpContentBlockStart { index: 0 },
                 LlmResponseChunk::McpCallDelta {
                     index: 0,
                     id: Some("call_1".into()),
@@ -747,7 +841,6 @@ mod tests {
                     name: None,
                     arguments_delta: Some(first.into()),
                 },
-                LlmResponseChunk::McpContentBlockStart { index: 0 },
                 LlmResponseChunk::McpCallDelta {
                     index: 0,
                     id: None,
