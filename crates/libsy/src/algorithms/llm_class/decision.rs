@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashSet};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use switchyard_protocol::{
-    Category, ChoiceOption, DecisionKind, DecisionQuestion, DecisionRequest, DecisionValue,
-    ModelId, Request, Response,
+    Category, ChoiceOption, ContentBlock, DecisionKind, DecisionQuestion, DecisionRequest,
+    DecisionValue, ImageSource, ModelId, Request, Response,
 };
 
 use crate::algorithms::llm_class::TaskInput;
@@ -120,10 +120,16 @@ impl Classifier<State> for DecisionClassifier {
         let judge = driver.first_model_for(&Category::Judge)?;
         let capable = driver.first_model_for(&Category::Capable)?;
         let efficient = driver.first_model_for(&Category::Efficient)?;
+        let mut messages = self.input.messages(request);
+        let mut images = Vec::new();
+        for message in &mut messages {
+            extract_images(&mut message.content, &mut images);
+        }
         let decision = DecisionRequest {
             model: None,
+            images,
             context: json!({
-                "task": self.input.messages(request),
+                "task": messages,
                 "candidates": self.config.candidates.keys().collect::<Vec<_>>(),
                 "comparison": {
                     "capable": self.config.candidate(capable)?,
@@ -188,6 +194,22 @@ impl Classifier<State> for DecisionClassifier {
     }
 }
 
+fn extract_images(blocks: &mut [ContentBlock], images: &mut Vec<ImageSource>) {
+    for block in blocks {
+        match block {
+            ContentBlock::Image { source } => {
+                images.push(source.clone());
+                // Keep the image's position without tokenizing its encoded bytes.
+                *block = ContentBlock::Text {
+                    text: format!("[Image {}]", images.len()),
+                };
+            }
+            ContentBlock::ToolResult(result) => extract_images(&mut result.content, images),
+            _ => {}
+        }
+    }
+}
+
 fn unavailable(
     driver: &Driver,
     judge: &ModelId,
@@ -197,4 +219,50 @@ fn unavailable(
     report_fail_open(judge.as_str(), error, reason);
     driver.set_evidence_if_empty(json!({"source": "fail_open", "reason_code": reason}));
     (Classification::Ambiguous(vec![]), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use switchyard_protocol::ToolResult;
+
+    #[test]
+    fn extracts_tool_images_in_order() {
+        let image = |url: &str| ImageSource::Url {
+            url: url.into(),
+            detail: None,
+        };
+        let mut blocks = vec![
+            ContentBlock::Image {
+                source: image("https://example.test/first.png"),
+            },
+            ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "capture".into(),
+                content: vec![ContentBlock::Image {
+                    source: image("https://example.test/second.png"),
+                }],
+                is_error: Some(false),
+            }),
+        ];
+        let mut images = Vec::new();
+        extract_images(&mut blocks, &mut images);
+        assert_eq!(
+            images,
+            vec![
+                image("https://example.test/first.png"),
+                image("https://example.test/second.png")
+            ]
+        );
+        let ContentBlock::ToolResult(result) = &blocks[1] else {
+            panic!("expected tool result")
+        };
+        assert_eq!(result.tool_call_id, "capture");
+        assert_eq!(
+            result.content,
+            vec![ContentBlock::Text {
+                text: "[Image 2]".into()
+            }]
+        );
+        assert_eq!(result.is_error, Some(false));
+    }
 }

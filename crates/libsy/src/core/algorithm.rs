@@ -947,6 +947,7 @@ mod tests {
                 DecisionRequest {
                     model: Some("overwritten".into()),
                     context: serde_json::json!({"task": "choose a route"}),
+                    images: Vec::new(),
                     questions: Default::default(),
                 }
             }

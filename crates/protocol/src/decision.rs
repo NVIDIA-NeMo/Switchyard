@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ModelId, Usage};
+use crate::{ImageSource, ModelId, Usage};
 
 /// Answer probability on a `[0, 1]` scale.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -35,6 +35,9 @@ pub struct DecisionRequest {
     pub model: Option<ModelId>,
     /// Conversation, application state, or other material to evaluate.
     pub context: Value,
+    /// Images shared by every question, in input order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSource>,
     /// Independent questions keyed by their IDs.
     pub questions: BTreeMap<String, DecisionQuestion>,
 }

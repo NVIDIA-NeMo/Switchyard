@@ -1318,6 +1318,15 @@ mod tests {
                 },
             )?))
         };
+        let mut media_request = request();
+        media_request.llm_request.messages[0]
+            .content
+            .push(ContentBlock::Image {
+                source: switchyard_protocol::ImageSource::Base64 {
+                    media_type: Some("image/png".into()),
+                    data: "aW1hZ2U=".into(),
+                },
+            });
         for (template, expected, is_success) in [
             (
                 ResponseTemplate::new(200).set_body_json(&body),
@@ -1333,6 +1342,9 @@ mod tests {
             server.reset().await;
             Mock::given(method("POST"))
                 .and(path("/v1/systemone"))
+                .and(body_partial_json(json!({
+                    "images": ["data:image/png;base64,aW1hZ2U="]
+                })))
                 .respond_with(template)
                 .expect(2)
                 .mount(&server)
@@ -1349,7 +1361,13 @@ mod tests {
                     client.clone() as Arc<dyn RoutedDecisionClient>,
                 )]),
             );
-            let outcome = decide(algorithm()?, clients.clone(), request(), models.clone()).await?;
+            let outcome = decide(
+                algorithm()?,
+                clients.clone(),
+                media_request.clone(),
+                models.clone(),
+            )
+            .await?;
             assert_eq!(outcome.selected_model_id()?, expected);
             assert!(llm.calls.lock().is_empty());
             let events = Arc::new(Mutex::new(Vec::new()));
@@ -1357,13 +1375,17 @@ mod tests {
             let (selected, _) = run(
                 algorithm()?,
                 clients,
-                request(),
+                media_request.clone(),
                 models.clone(),
                 Some(Arc::new(move |event| captured.lock().push(event))),
             )
             .await?;
             assert_eq!(selected, expected);
             assert_eq!(&*llm.calls.lock(), &[ModelId::from(expected)]);
+            assert_eq!(
+                llm.requests.lock()[0].llm_request.messages,
+                media_request.llm_request.messages
+            );
             {
                 let events = events.lock();
                 let RunObservation::DecisionCall(call) = &events[0] else {

@@ -1660,6 +1660,10 @@ async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Re
                     DecisionRequest {
                         model: None,
                         context: json!(LEAKED_CONTENT),
+                        images: vec![switchyard_protocol::ImageSource::Base64 {
+                            media_type: Some("image/png".into()),
+                            data: LEAKED_CONTENT.into(),
+                        }],
                         questions: Default::default(),
                     },
                     self.0.clone().into(),

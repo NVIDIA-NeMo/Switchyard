@@ -1324,11 +1324,34 @@ mod tests {
             .llm_request
             .messages
             .push(Message::text(Role::User, "latest follow-up"));
+        let image = switchyard_protocol::ImageSource::Base64 {
+            media_type: Some("image/png".into()),
+            data: "aW1hZ2U=".into(),
+        };
+        request
+            .llm_request
+            .messages
+            .last_mut()
+            .unwrap()
+            .content
+            .push(ContentBlock::Image {
+                source: image.clone(),
+            });
         let original_messages = request.llm_request.messages.clone();
         let expected_task = json!([
             original_messages[0].clone(),
             Message::text(Role::Assistant, "visible progress"),
-            Message::text(Role::User, "latest follow-up"),
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentBlock::Text {
+                        text: "latest follow-up".into()
+                    },
+                    ContentBlock::Text {
+                        text: "[Image 1]".into()
+                    },
+                ],
+            },
         ]);
 
         for (name, score, fail_open, expected) in [
@@ -1371,6 +1394,7 @@ mod tests {
                 let expected_task = &expected_task;
                 let settings = &settings;
                 let override_instructions = &override_instructions;
+                let image = &image;
                 async move {
                     let Call::Decision(call) = call else {
                         panic!("judge must use the decision step")
@@ -1378,6 +1402,7 @@ mod tests {
                     calls.fetch_add(1, Ordering::SeqCst);
                     assert_eq!(call.model, "judge");
                     assert_eq!(call.request.model, Some("judge".into()));
+                    assert_eq!(call.request.images, vec![image.clone()]);
                     assert_eq!(
                         call.request.context,
                         json!({
