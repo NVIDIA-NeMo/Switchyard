@@ -8,8 +8,6 @@
 //! on stdout. Each answer is one JSON line on stdout. One `Runner` serves every request,
 //! so routing state such as the capable-tier hold lasts as long as the helper.
 
-mod classifier;
-
 use std::{
     collections::HashMap,
     env,
@@ -18,17 +16,24 @@ use std::{
     os::unix::{fs::DirBuilderExt, process::parent_id},
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use switchyard_protocol::{LlmRequest, Metadata, ModelId, Request};
+use switchyard_protocol::{
+    ContentBlock, LlmClientError, LlmRequest, LlmResponse, Metadata, ModelId, Request, Response,
+    RoutedLlmClient, text_response,
+};
 use switchyard_runner::Runner;
 use tokio::{
     signal::unix::{SignalKind, signal},
-    time::sleep,
+    time::{sleep, timeout},
 };
 
 const POLL: Duration = Duration::from_millis(25);
@@ -91,7 +96,7 @@ async fn serve() -> Result<(), String> {
                     break;
                 };
                 let answer = tokio::select! {
-                    answer = decide(&runner, &request.session_id, request.messages, Arc::new(classifier::NativeClassifier {
+                    answer = decide(&runner, &request.session_id, request.messages, Arc::new(NativeClassifier {
                         dir: dir.clone(), request_id: id, next_call: AtomicU64::new(0),
                         cache_turn: runner.route("switchyard").is_some_and(|route| route.algorithm_name() == "composite"),
                     })) => answer,
@@ -184,7 +189,7 @@ async fn decide(
     runner: &Runner,
     session: &str,
     messages: Value,
-    client: Arc<classifier::NativeClassifier>,
+    client: Arc<NativeClassifier>,
 ) -> Result<Value, String> {
     let messages = serde_json::from_value(messages).map_err(|_| "Invalid routing messages")?;
     let route = runner
@@ -218,4 +223,80 @@ async fn decide(
         json!({ "target": decision.selected.target, "model": decision.selected.model,
         "evidence": outcome.metadata.and_then(|m| m.evidence), "algorithm": route.algorithm_name() }),
     )
+}
+
+/// Routes judge calls through the mod, which owns Claude's authenticated client.
+struct NativeClassifier {
+    dir: PathBuf,
+    request_id: u64,
+    next_call: AtomicU64,
+    cache_turn: bool,
+}
+
+#[derive(Deserialize)]
+struct Reply {
+    text: Option<String>,
+    error: Option<String>,
+}
+
+#[async_trait]
+impl RoutedLlmClient for NativeClassifier {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        let call = self.next_call.fetch_add(1, Ordering::Relaxed);
+        let path = self
+            .dir
+            .join(format!("judge-{}-{call}.json", self.request_id));
+        let llm = request.llm_request;
+        let instructions = llm
+            .instructions
+            .iter()
+            .flat_map(|b| &b.content)
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // model.complete accepts text, not a provider-specific structured-output field.
+        // Send the library's schema as an instruction; libsy still validates the reply.
+        emit(&json!({
+            "id": self.request_id,
+            "call": call,
+            "cache_turn": self.cache_turn,
+            "classifier": {
+                "model": llm.model,
+                "system": format!("{instructions}\nReturn only JSON matching this output format: {}", json!(llm.output.response_format)),
+                "prompt": serde_json::to_string(&llm.messages).map_err(|e| LlmClientError::General(e.to_string()))?,
+                "maxTokens": llm.output.max_output_tokens.unwrap_or(384),
+            }
+        })).map_err(LlmClientError::General)?;
+        // Longer than the mod's native-call timeout, shorter than its decision deadline.
+        let reply = timeout(Duration::from_secs(12), async {
+            loop {
+                if let Ok(text) = fs::read_to_string(&path)
+                    && let Ok(reply) = serde_json::from_str::<Reply>(&text)
+                {
+                    break reply;
+                }
+                sleep(POLL).await;
+            }
+        })
+        .await;
+        let _ = fs::remove_file(path);
+        let reply =
+            reply.map_err(|_| LlmClientError::General("Native classifier timed out".into()))?;
+        if reply.error.is_some() {
+            return Err(LlmClientError::General(
+                "Native classifier unavailable".into(),
+            ));
+        }
+        let text = reply
+            .text
+            .ok_or_else(|| LlmClientError::General("Empty classifier reply".into()))?;
+        Ok(Response {
+            llm_response: LlmResponse::Agg(text_response(llm.model, text)),
+            metadata: request.metadata,
+            upstream_headers: Default::default(),
+        })
+    }
 }
