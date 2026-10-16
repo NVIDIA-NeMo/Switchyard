@@ -547,7 +547,7 @@ pub struct VgrRouteConfig {
     pub confirmed_recovery_min_clean_tail: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VgrModeConfig {
     #[default]

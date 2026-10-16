@@ -1,12 +1,14 @@
 # Verification-Gated Routing
 
-Verification-Gated Routing (VGR) generates a candidate on a local tier, gathers
-bounded evidence about that exact candidate, and serves it only when the policy
-licenses a local commit. All other outcomes use the cloud tier.
+Verification-Gated Routing (VGR) generates a candidate on a local tier. For a
+final answer, it gathers bounded evidence about that exact candidate and serves
+it only when the policy allows it. All other final-answer outcomes use the cloud
+tier. Missing context, unavailable verifiers, malformed verdicts, and expired
+decision deadlines fail closed to cloud for final answers.
 
-Tool-calling turns continue on the local tier without being mistaken for a
-terminal answer. Missing context, unavailable verifiers, malformed verdicts,
-and expired decision deadlines fail closed to cloud.
+Tool-calling turns continue on the local tier unless the turn judge provides
+evidence to escalate. An unavailable or inconclusive turn judge leaves the tool
+turn on the local tier. A local endpoint failure triggers cloud fallback.
 
 ## Configure a route
 
