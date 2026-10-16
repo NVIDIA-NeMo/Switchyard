@@ -107,8 +107,9 @@ pub(crate) fn record_retry_recovered() {
         .add(1, &[]);
 }
 
-// Records translation diagnostics without putting request-derived values in metric labels.
-pub(crate) fn record_translation_diagnostics(
+/// Records translation diagnostics as metrics and structured warnings.
+/// Diagnostic messages and JSON paths are logged, not used as metric labels.
+pub fn record_translation_diagnostics(
     diagnostics: &[TranslationDiagnostic],
     operation: &'static str,
     format: WireFormat,
