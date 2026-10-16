@@ -4,3 +4,23 @@
 type = "auto"
 efficient_target = "openai-codex/gpt-6-luna"
 capable_target = "openai-codex/gpt-6.1-sol"
+
+[classifier]
+target = "judge"
+message_hash_fallback = true
+fail_open = false
+
+[classifier.decision]
+cutoff = 0.4
+candidates = { a = "openai-codex/gpt-6.1-sol", b = "openai-codex/gpt-6-luna" }
+evidence = { description = "Replace with evaluation evidence comparing Sol and Luna on your tasks." }
+
+[decision_clients.decisions]
+format = "system_one"
+endpoint = "https://openrouter.ai/api/alpha/decisions"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_ms = 5000
+
+[decision_targets.judge]
+id = "inception/mercury-decide:free"
+decision_client = "decisions"

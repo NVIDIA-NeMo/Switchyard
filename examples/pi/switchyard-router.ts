@@ -16,7 +16,7 @@ function modelIdentity(reference: unknown) {
 }
 
 function loadRunner(): Runner {
-  const algorithm = parse(readFileSync(process.env.SWITCHYARD_CONFIG ?? new URL("./switchyard.toml", import.meta.url), "utf8"));
+  const { decision_clients, decision_targets, ...algorithm } = parse(readFileSync(process.env.SWITCHYARD_CONFIG ?? new URL("./switchyard.toml", import.meta.url), "utf8"))
   const targets = Object.fromEntries([algorithm.efficient_target, algorithm.capable_target].map((value) => {
     const { reference } = modelIdentity(value);
     return [reference, { id: reference, llm_client: "pi" }];
@@ -26,6 +26,8 @@ function loadRunner(): Runner {
     schema_version: 1,
     llm_clients: { pi: { format: "openai_chat", base_url: "http://127.0.0.1:1/v1" } },
     targets,
+    decision_clients,
+    decision_targets,
     routes: { auto: { ...algorithm, id: "switchyard/auto" } },
   }));
 }

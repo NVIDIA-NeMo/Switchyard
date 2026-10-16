@@ -100,7 +100,18 @@ id = "switchyard"
 type = "auto"
 capable_target = "strong"
 efficient_target = "weak"
+
+[routes.smart.classifier]
+target = "strong"
+base_threshold = 0.5
 ```
+
+Auto uses composite routing. The classifier runs on user turns, and stage
+signals handle tool progress and failures between them. This example uses the
+strong target as an LLM judge. You can also configure a separate
+[decision model](routing_algorithms/composite_routing.md#decision-model-classifier).
+Send `x-switchyard-session-id` with a stable conversation ID to retain the tier
+and recovery holds. A missing classifier is a configuration error.
 
 `format` selects the upstream protocol and must be `openai_chat`,
 `openai_responses`, or `anthropic_messages`. `api_key_env` names the environment

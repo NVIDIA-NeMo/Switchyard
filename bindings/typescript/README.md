@@ -1,7 +1,7 @@
 # Switchyard runner for Node.js
 
 Local TypeScript bindings for choosing a model with Switchyard. The caller sends
-the selected model's completion request and owns session state.
+the selected model's completion request.
 
 Requires Node.js 22.19 or newer and the repository's Rust toolchain. The package
 is private. Its native addon is built for the local host. Linux is covered in CI.
@@ -64,9 +64,11 @@ const decision = await runner.decide("switchyard/auto", [
 ]);
 ```
 
-Routing state is fresh for each call. Supply the current branch's conversation on
-each decision. The API leaves session identity unset, so recovery signals come
-from the transcript rather than cross-request capable holds.
+Supply the current branch's conversation on each decision. Auto requires
+`classifier.message_hash_fallback = true` to retain its classified tier by the
+first user message. Conversations with identical opening text share that tier.
+The API leaves session identity unset, so recovery holds do not persist across
+calls. Recovery signals still come from the transcript.
 
 `AbortSignal` cancels the Rust routing future, including pending classifier HTTP
 work and retry waits. Cancellation rejects with `name: "AbortError"` and
@@ -87,10 +89,11 @@ Provider failures use safe summaries.
 ## Supported routes
 
 Use `auto`, `passthrough` with its subagent policy unset, or `llm_classifier` in
-capability mode. Auto uses local tool signals with an efficient-first default.
-Capability mode supports both LLM judges and System One decision judges.
-Use `classify_trigger = "every_request"` and `message_hash_fallback = false`
-(their defaults). The host persists any chosen model or phase.
+capability mode. Auto uses composite routing and requires a classifier with
+`message_hash_fallback = true`. It defaults to user-turn classification.
+Both auto and capability mode support LLM and decision models.
+Standalone capability classifiers require `classify_trigger = "every_request"`
+and `message_hash_fallback = false` (their defaults).
 
 The host owns completion prompts, reasoning, and request options. Completion
 targets must leave `system_prompt`, `reasoning_effort`, `extra_body`, and

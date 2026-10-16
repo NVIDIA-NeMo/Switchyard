@@ -210,7 +210,7 @@ impl DeploymentConfig {
         for (name, route) in &self.routes {
             if !route.algorithm.supports_model_selection() {
                 return Err(RunnerError::configuration(format!(
-                    "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
+                    "route {name}: model selection requires auto with classifier.message_hash_fallback = true, passthrough, or capability llm_classifier with every_request"
                 )));
             }
             for target_name in route.routing_target_names() {
@@ -1577,7 +1577,7 @@ evidence = { description = "candidate comparison" }
     }
 
     #[test]
-    fn auto_route_builds_a_stage_router_with_no_extra_fields() -> RunnerResult<()> {
+    fn auto_route_requires_a_classifier_and_builds_composite() -> RunnerResult<()> {
         let config = format!(
             r#"{VALID_CONFIG}
 [routes.auto]
@@ -1587,8 +1587,23 @@ capable_target = "strong"
 efficient_target = "weak"
 "#
         );
+        assert!(error_message(&config).contains("missing field `classifier`"));
+        let config = format!(
+            r#"{config}
+[routes.auto.classifier]
+target = "classifier"
+base_threshold = 0.5
+"#
+        );
         let runner = runner_from_toml(&config)?;
-        assert!(runner.route("switchyard/auto").is_some());
+        assert_eq!(
+            runner.route("switchyard/auto").unwrap().algorithm_name(),
+            "composite"
+        );
+        let invalid = format!("{config}\nclassify_trigger = 'every_request'");
+        assert!(
+            error_message(&invalid).contains("classify_trigger must be user_turn or new_session")
+        );
         Ok(())
     }
 

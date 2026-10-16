@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Node.js bindings for caller-owned completion dispatch and routing state.
+//! Node.js bindings for caller-owned completion dispatch.
 
 use napi_derive::napi;
 use switchyard_protocol::{LlmRequest, ModelId, Request};

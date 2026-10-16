@@ -45,7 +45,7 @@ function publicError(cause: unknown): Error {
   });
 }
 
-/** A reusable model selector. The caller owns completion dispatch and session state. */
+/** A reusable model selector. The caller owns completion dispatch. */
 export class Runner {
   readonly #native: NativeRunner;
 
