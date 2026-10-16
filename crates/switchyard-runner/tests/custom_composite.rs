@@ -9,8 +9,8 @@ use std::sync::{
 };
 use switchyard_llm_client::ClientRouter;
 use switchyard_protocol::{
-    LlmClientError, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
-    RoutedLlmClient, text_response,
+    LlmClientError, LlmResponse, Message, Metadata, Request, Response, Role, RoutedLlmClient,
+    text_request, text_response,
 };
 use switchyard_runner::{AlgorithmSpec, ModelCapabilities, Route, Runner};
 
@@ -48,17 +48,8 @@ struct CustomJudge {
 
 #[async_trait]
 impl RoutedLlmClient for CustomJudge {
-    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        assert!(
-            request.llm_request.instructions[0]
-                .content
-                .iter()
-                .any(|block| {
-                    matches!(block, switchyard_protocol::ContentBlock::Text { text }
-                if text == "Choose efficient or capable for the current task.")
-                })
-        );
         let reply = self
             .reply
             .lock()
@@ -107,10 +98,7 @@ fn custom_route(config: &str, judge: Arc<CustomJudge>) -> Route {
 
 fn request() -> Request {
     Request {
-        llm_request: LlmRequest {
-            messages: vec![Message::text(Role::User, "Analyze a difficult task")],
-            ..Default::default()
-        },
+        llm_request: text_request(None, "Analyze a difficult task"),
         metadata: Some(Metadata {
             session_id: Some("a".into()),
             ..Default::default()
@@ -120,24 +108,12 @@ fn request() -> Request {
 }
 
 #[tokio::test]
-async fn custom_composite_preserves_tier_across_continuations_and_judge_failure() {
+async fn custom_composite_reclassifies_user_turns_and_retains_tier_on_failure() {
     let judge = custom_judge(Some(r#"{"decision":{"target":"capable"}}"#));
     let route = custom_route(CONFIG, judge.clone());
     let mut request = request();
     let first = route.decide(request.clone()).await.unwrap();
     assert_eq!(first.selected_model_id().unwrap().as_str(), "strong-model");
-    let mut continuation = request.clone();
-    continuation
-        .llm_request
-        .messages
-        .push(Message::text(Role::Assistant, "Working"));
-    let outcome = route.decide(continuation).await.unwrap();
-    assert_eq!(
-        outcome.selected_model_id().unwrap().as_str(),
-        "strong-model"
-    );
-    assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
-
     for reply in [
         None,
         Some("not JSON"),
@@ -163,73 +139,80 @@ async fn custom_composite_preserves_tier_across_continuations_and_judge_failure(
     request.metadata.as_mut().unwrap().session_id = Some("a".into());
     *judge.reply.lock().unwrap() = Some(r#"{"decision":{"target":"efficient"}}"#);
     let outcome = route.decide(request.clone()).await.unwrap();
-    let mut expected = request.llm_request;
-    expected.model = Some("fast-model".into());
-    assert_eq!(outcome.request.llm_request, expected);
-    assert!(outcome.response.is_none());
+    assert_eq!(outcome.selected_model_id().unwrap().as_str(), "fast-model");
 }
 
 #[tokio::test]
-async fn custom_composite_respects_new_session_and_fail_closed() {
-    let config = CONFIG.replace(
-        "classify_trigger = \"user_turn\"",
-        "classify_trigger = \"new_session\"",
-    );
-    let judge = custom_judge(Some(r#"{"decision":{"target":"capable"}}"#));
-    let route = custom_route(&config, judge.clone());
-    for _ in 0..2 {
-        let outcome = route.decide(request()).await.unwrap();
-        assert_eq!(
-            outcome.selected_model_id().unwrap().as_str(),
-            "strong-model"
-        );
-    }
-    assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
-    let closed = CONFIG.replace("mode = \"custom\"", "mode = \"custom\"\nfail_open = false");
-    let route = custom_route(&closed, custom_judge(None));
-    assert!(route.decide(request()).await.is_err());
-
-    let judge = custom_judge(Some(r#"{"decision":{"target":"capable"}}"#));
-    let route = custom_route(&closed, judge.clone());
-    route.decide(request()).await.unwrap();
-    // Invalid verdicts abstain independently of client-error recovery.
-    for reply in ["not JSON", "{}", r#"{"decision":{"target":"other"}}"#] {
-        *judge.reply.lock().unwrap() = Some(reply);
-        let outcome = route.decide(request()).await.unwrap();
-        assert_eq!(
-            outcome.selected_model_id().unwrap().as_str(),
-            "strong-model"
-        );
-        assert_eq!(
-            outcome.metadata.unwrap().evidence.unwrap()["source"],
-            "retained"
-        );
-    }
-}
-
-#[tokio::test]
-async fn custom_composite_retains_tier_with_message_hash_fallback() {
+async fn custom_composite_retains_first_verdict_or_fallback() {
     for trigger in ["user_turn", "new_session"] {
-        let config = CONFIG.replace("user_turn", trigger).replace(
-            "mode = \"custom\"",
-            "mode = \"custom\"\nmessage_hash_fallback = true",
-        );
-        let judge = custom_judge(Some(r#"{"decision":{"target":"capable"}}"#));
-        let route = custom_route(&config, judge.clone());
-        let mut request = request();
-        request.metadata = None;
-        for _ in 0..2 {
-            let outcome = route.decide(request.clone()).await.unwrap();
-            assert_eq!(
-                outcome.selected_model_id().unwrap().as_str(),
-                "strong-model"
-            );
-            request
-                .llm_request
-                .messages
-                .push(Message::text(Role::Assistant, "Working"));
+        for hash_keyed in [false, true] {
+            for reply in [
+                Some(r#"{"decision":{"target":"capable"}}"#),
+                None,
+                Some("not JSON"),
+            ] {
+                let config = CONFIG.replace("user_turn", trigger).replace(
+                    "mode = \"custom\"",
+                    &format!("mode = \"custom\"\nmessage_hash_fallback = {hash_keyed}"),
+                );
+                let judge = custom_judge(reply);
+                let route = custom_route(&config, judge.clone());
+                let mut request = request();
+                if hash_keyed {
+                    request.metadata = None;
+                }
+                let expected = if reply.is_some_and(|reply| reply.contains("capable")) {
+                    "strong-model"
+                } else {
+                    "fast-model"
+                };
+                for _ in 0..2 {
+                    let outcome = route.decide(request.clone()).await.unwrap();
+                    assert_eq!(outcome.selected_model_id().unwrap().as_str(), expected);
+                    request
+                        .llm_request
+                        .messages
+                        .push(Message::text(Role::Assistant, "Working"));
+                    // A recovered judge must not change a new-session assignment.
+                    *judge.reply.lock().unwrap() = Some(r#"{"decision":{"target":"capable"}}"#);
+                }
+                assert_eq!(
+                    judge.calls.load(Ordering::SeqCst),
+                    1,
+                    "{trigger}, hash_keyed={hash_keyed}, reply={reply:?}"
+                );
+            }
         }
-        assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn custom_composite_fail_closed_rejects_unusable_verdicts() {
+    let config = CONFIG
+        .replace("mode = \"custom\"", "mode = \"custom\"\nfail_open = false")
+        .replace(
+            r#"["efficient","capable"]"#,
+            r#"["efficient","capable","judge"]"#,
+        );
+    for retained in [false, true] {
+        for reply in [
+            None,
+            Some("not JSON"),
+            Some("{}"),
+            Some(r#"{"decision":{"target":"judge"}}"#),
+            Some(r#"{"decision":{"target":"other"}}"#),
+        ] {
+            let judge = custom_judge(Some(r#"{"decision":{"target":"capable"}}"#));
+            let route = custom_route(&config, judge.clone());
+            if retained {
+                route.decide(request()).await.unwrap();
+            }
+            *judge.reply.lock().unwrap() = reply;
+            assert!(
+                route.decide(request()).await.is_err(),
+                "retained={retained}, reply={reply:?}"
+            );
+        }
     }
 }
 

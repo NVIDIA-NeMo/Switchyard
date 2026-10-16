@@ -78,9 +78,11 @@ policy = { type = "target_selector", selector = "/decision/target" }
 ```
 
 The schema is validated locally. The selector names a tier, and the existing
-stage targets supply its model. A missing or invalid verdict retains the previous
-tier, or uses efficient for a new session. Client failures do the same with
-`fail_open = true` (the default); with `fail_open = false`, client errors propagate.
+stage targets supply its model. With `fail_open = true` (the default), a missing
+or invalid verdict or a client failure retains the previous tier, or uses efficient
+for a new session. A failed `new_session` judgment retains that fallback so tool
+continuations do not call the judge again. With `fail_open = false`, client failures
+and verdicts that do not select `efficient` or `capable` return an error.
 Capability thresholds and decision-model
 settings cannot be combined with `mode = "custom"`.
 

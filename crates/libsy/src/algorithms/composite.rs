@@ -37,6 +37,7 @@ struct TierSetter {
     judge: Arc<dyn Classifier<State>>,
     trigger: ClassifyTrigger,
     message_hash_fallback: bool,
+    require_verdict: bool,
     tiers: Mutex<HashMap<RoutingIdentity, Tier>>,
 }
 
@@ -93,6 +94,17 @@ impl Processor<State> for TierSetter {
                 }
                 return Ok(());
             }
+            if self.require_verdict {
+                return Err(LibsyError::AlgorithmError {
+                    message: "composite: custom classifier must select efficient or capable".into(),
+                });
+            }
+            if self.trigger == ClassifyTrigger::NewSession
+                && let Some(identity) = identity.as_ref()
+            {
+                // A failed opening judgment is still the session's one judgment.
+                self.retain(identity.clone(), Tier::Efficient);
+            }
         }
         // Either not this request's turn or the judge had no verdict, so the last
         // tier stands rather than dropping back to the picker default.
@@ -113,7 +125,7 @@ pub enum CompositeJudgeConfig {
     Custom {
         /// Custom classifier contract and trigger settings.
         config: CustomClassifierConfig,
-        /// Recovers from client failures by retaining the previous tier.
+        /// Retains the previous tier on failure; otherwise requires a valid tier verdict.
         fail_open: bool,
     },
 }
@@ -152,6 +164,13 @@ impl CompositeRouter {
                 message: "composite: classify_trigger must be user_turn or new_session".to_string(),
             });
         }
+        let require_verdict = matches!(
+            &config.judge,
+            CompositeJudgeConfig::Custom {
+                fail_open: false,
+                ..
+            }
+        );
         let judge: Arc<dyn Classifier<State>> = match config.judge {
             CompositeJudgeConfig::Capability(judge) => {
                 // Composite owns the trigger and retention; standalone affinity never runs.
@@ -171,6 +190,7 @@ impl CompositeRouter {
             judge,
             trigger,
             message_hash_fallback,
+            require_verdict,
             tiers: Mutex::new(HashMap::new()),
         };
         let route = build_stage_route(config.stage)?
