@@ -432,9 +432,35 @@ fn can_replay_mcp_request(request: &LlmRequest, target: WireFormat) -> bool {
                     .is_ok_and(|original| {
                         original.request.tools == request.tools
                             && original.request.messages == request.messages
+                            && instructions_match(&original.request, request)
                             && original.request.tool_choice == request.tool_choice
+                            && original.request.extensions.fields == request.extensions.fields
                     })
             })
+}
+
+fn instructions_match(original: &LlmRequest, request: &LlmRequest) -> bool {
+    if original.instructions == request.instructions {
+        return true;
+    }
+    // Target prompts create separate IR blocks, but the wire body may combine
+    // them into one system instruction. Compare the text those encoders emit.
+    let system_text = |request: &LlmRequest| {
+        let mut parts = Vec::new();
+        for instruction in &request.instructions {
+            if instruction.role != crate::llm::Role::System {
+                return None;
+            }
+            for block in &instruction.content {
+                let ContentBlock::Text { text } = block else {
+                    return None;
+                };
+                parts.push(text.as_str());
+            }
+        }
+        Some(parts.join("\n\n"))
+    };
+    system_text(original).is_some_and(|text| Some(text) == system_text(request))
 }
 
 fn drop_unsupported_request_tools(original: &LlmRequest, target: WireFormat) -> LlmRequest {
@@ -616,7 +642,10 @@ fn can_replay_mcp_response(response: &AggLlmResponse, target: WireFormat) -> boo
             .is_some_and(|body| {
                 preservation_codec(target)
                     .decode_response(body, &preservation_check_policy())
-                    .is_ok_and(|original| original.response.outputs == response.outputs)
+                    .is_ok_and(|original| {
+                        original.response.outputs == response.outputs
+                            && original.response.usage == response.usage
+                    })
             })
 }
 
@@ -665,6 +694,94 @@ mod tests {
             Some("rs_2")
         );
         assert_eq!(encrypted_reasoning_data(&[json!({"type": "other"})]), None);
+    }
+
+    #[test]
+    fn mcp_request_replay_preserves_instruction_and_extension_edits() -> Result<()> {
+        let engine = crate::TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        for (target, instruction_key, body) in [
+            (
+                WireFormat::OpenAiResponses,
+                "instructions",
+                json!({
+                    "model": "route", "input": "Check inventory", "instructions": "Original",
+                    "metadata": {"label": "original"},
+                    "tools": [{"type": "mcp", "server_label": "inventory",
+                        "server_url": "https://inventory.example/mcp", "require_approval": "never"}]
+                }),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                "system",
+                json!({
+                    "model": "route", "max_tokens": 64, "system": "Original",
+                    "metadata": {"label": "original"},
+                    "messages": [{"role": "user", "content": "Check inventory"}],
+                    "mcp_servers": [{"type": "url", "name": "inventory", "url": "https://inventory.example/mcp"}],
+                    "tools": [{"type": "mcp_toolset", "mcp_server_name": "inventory"}]
+                }),
+            ),
+        ] {
+            let request = engine.decode_request(target, &body, &policy)?.request;
+            assert_eq!(engine.encode_request(target, &request, &policy)?.body, body);
+            for edit_instructions in [true, false] {
+                let mut edited = request.clone();
+                if edit_instructions {
+                    edited.instructions[0].content = vec![ContentBlock::Text {
+                        text: "Updated".into(),
+                    }];
+                } else {
+                    edited
+                        .extensions
+                        .fields
+                        .insert("metadata".into(), json!({"label": "updated"}));
+                }
+                let encoded = engine.encode_request(target, &edited, &policy)?.body;
+                if edit_instructions {
+                    assert_eq!(encoded[instruction_key], "Updated", "{target}");
+                } else {
+                    assert_eq!(encoded["metadata"]["label"], "updated", "{target}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_response_replay_preserves_usage_edits() -> Result<()> {
+        let engine = crate::TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        for (target, body) in [
+            (
+                WireFormat::OpenAiResponses,
+                json!({
+                    "id": "resp_1", "model": "route", "status": "completed",
+                    "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                    "output": [{"type": "mcp_call", "id": "call_1", "server_label": "inventory",
+                        "name": "lookup", "arguments": "{}", "output": "12"}]
+                }),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({
+                    "id": "msg_1", "model": "route", "type": "message", "role": "assistant",
+                    "usage": {"input_tokens": 10, "output_tokens": 2}, "stop_reason": "end_turn",
+                    "content": [{"type": "mcp_tool_use", "id": "call_1", "server_name": "inventory", "name": "lookup", "input": {}},
+                        {"type": "mcp_tool_result", "tool_use_id": "call_1", "content": "12"}]
+                }),
+            ),
+        ] {
+            let mut response = engine.decode_response(target, &body, &policy)?.response;
+            assert_eq!(
+                engine.encode_response(target, &response, &policy)?.body,
+                body
+            );
+            response.usage.input_tokens = Some(20);
+            let encoded = engine.encode_response(target, &response, &policy)?.body;
+            assert_eq!(encoded["usage"]["input_tokens"], 20, "{target}");
+        }
+        Ok(())
     }
 
     #[test]
