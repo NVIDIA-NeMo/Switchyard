@@ -137,9 +137,19 @@ struct RouteConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PrivacyConfig {
+    #[serde(default)]
+    restriction_scope: RestrictionScope,
     classifier: Option<PrivacyClassifierConfig>,
     #[serde(default)]
     accept_external_signal: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RestrictionScope {
+    #[default]
+    Request,
+    Task,
 }
 
 #[derive(Debug, Deserialize)]
@@ -467,7 +477,10 @@ impl DeploymentConfig {
             llm_clients,
             decision_clients,
         )?;
-        let policy = PrivacyPolicy::new(config.accept_external_signal, classifier);
+        let mut policy = PrivacyPolicy::new(config.accept_external_signal, classifier);
+        if matches!(&config.restriction_scope, RestrictionScope::Task) {
+            policy = policy.with_task_retention();
+        }
         let (restricted, _) = self.build_lane(
             route_name,
             &restricted_algorithm,
@@ -1448,6 +1461,13 @@ accept_external_signal = true
         )
     }
 
+    fn task_retained_privacy_config() -> String {
+        external_privacy_config().replace(
+            "accept_external_signal = true",
+            "accept_external_signal = true\nrestriction_scope = \"task\"",
+        )
+    }
+
     fn semantic_privacy_config() -> String {
         let config = external_privacy_config();
         format!(
@@ -1621,6 +1641,51 @@ clear_threshold = 0.9
             "{configured}\n[targets.alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n"
         );
         assert!(error_message(&conflicting_alias).contains("disagree on private"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
+        let runner = Runner::from_toml(&task_retained_privacy_config())?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("privacy route should exist");
+        let request = |task_id: Option<&str>, text: &str, restricted: bool| {
+            let mut request = Request::default();
+            request
+                .llm_request
+                .messages
+                .push(Message::text(Role::User, text));
+            request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
+            if restricted {
+                mark_privacy_restricted(&mut request);
+            }
+            request
+        };
+
+        for (task_id, text, restricted, expected) in [
+            (Some("task-a"), "ordinary turn", false, "standard"),
+            (
+                Some("task-a"),
+                "Authorization: Bearer abcdefghijklmnop",
+                true,
+                "restricted",
+            ),
+            (Some("task-a"), "later clear turn", false, "restricted"),
+            (Some("task-b"), "independent clear task", false, "standard"),
+            (None, "unkeyed task", false, "restricted"),
+            (Some(" "), "invalid task id", false, "restricted"),
+        ] {
+            let outcome = route.decide(request(task_id, text, restricted)).await?;
+            assert_eq!(
+                crate::privacy::selected_lane(&outcome.request).map(|lane| lane.as_str()),
+                Some(expected),
+                "{text}"
+            );
+            if expected == "restricted" {
+                assert_eq!(outcome.selected_model_id()?, "strong/model");
+            }
+        }
         Ok(())
     }
 

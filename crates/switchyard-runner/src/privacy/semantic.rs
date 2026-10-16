@@ -63,7 +63,12 @@ impl SemanticPrivacyClassifier {
             "no_sensitive_content" => (PrivacyLane::Restricted, "below_clear_threshold"),
             _ => (PrivacyLane::Restricted, reason),
         };
-        PrivacyDecision::semantic(lane, reason, score, self.clear_threshold)
+        let decision = PrivacyDecision::semantic(lane, reason, score, self.clear_threshold);
+        if assessment.has_sensitive_content() {
+            decision.retained_for_task()
+        } else {
+            decision
+        }
     }
 
     async fn call(&self, call: Call) -> libsy::Result<()> {
@@ -217,28 +222,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assessments_preserve_thresholds() -> libsy::Result<()> {
-        for (reason, score, lane, expected_reason) in [
+    async fn assessments_preserve_thresholds_and_task_retention() -> libsy::Result<()> {
+        for (reason, score, lane, expected_reason, retained) in [
             (
                 "no_sensitive_content",
                 0.95,
                 "standard",
                 "no_sensitive_content",
+                false,
             ),
             (
                 "no_sensitive_content",
                 0.8,
                 "restricted",
                 "below_clear_threshold",
+                false,
             ),
-            ("confidential_data", 0.1, "restricted", "confidential_data"),
-            ("uncertain", 0.5, "restricted", "uncertain"),
+            (
+                "confidential_data",
+                0.1,
+                "restricted",
+                "confidential_data",
+                true,
+            ),
+            ("uncertain", 0.5, "restricted", "uncertain", false),
         ] {
             for classifier in classifiers(reason, score, false)? {
                 let decision = classifier.assess(&Request::default()).await;
                 assert_eq!(decision.lane(), lane);
                 assert_eq!(decision.reason_code(), expected_reason);
                 assert_eq!(decision.clear_score(), Some(score));
+                assert_eq!(decision.retain_for_task, retained);
             }
         }
         Ok(())
@@ -251,6 +265,7 @@ mod tests {
             assert_eq!(decision.lane(), "restricted");
             assert_eq!(decision.reason_code(), "classifier_failed");
             assert_eq!(decision.clear_score(), None);
+            assert!(!decision.retain_for_task);
         }
         Ok(())
     }
