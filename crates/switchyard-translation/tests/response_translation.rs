@@ -1122,6 +1122,11 @@ fn error_bodies_return_upstream_failure_with_provider_message() -> TestResult {
             json!({"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop", "error": null}]}),
         ),
         (
+            WireFormat::OpenAiChat,
+            json!({"choices": [{"message": {"role": "assistant", "content": "partial"}, "finish_reason": "error", "error": {"message": "deterministic upstream failure"}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]}),
+        ),
+        (
             WireFormat::AnthropicMessages,
             json!({"type": "error", "error": {"type": "api_error", "message": "deterministic upstream failure"}}),
             json!({"type": "message", "content": [{"type": "text", "text": "hi"}], "error": {}}),
