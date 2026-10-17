@@ -31,6 +31,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [host integration guide](docs/getting_started.md#drive-the-algorithm).
   ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
 
+### Changed
+
+- The standalone `switchyard-server` now binds to `127.0.0.1` by default.
+  Existing deployments that accept remote clients must add `--host 0.0.0.0`.
+  The provided Docker image and systemd service already set this explicitly.
+
 ## [0.3.0]
 
 Switchyard 0.3.0 builds on the native server and Rust library introduced in
