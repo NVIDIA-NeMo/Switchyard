@@ -274,6 +274,21 @@ impl FormatCodec for OpenAiChatCodec {
         _policy: &TranslationPolicy,
     ) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
+        // 200 with no choices, or an object at choices[0].error, fails the turn.
+        // A top-level error beside choices does not.
+        let error = match object
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+        {
+            Some(choice) => choice.get("error"),
+            None => object.get("error"),
+        };
+        if let Some(error) = error.filter(|error| error.is_object()) {
+            return Err(TranslationError::UpstreamFailure {
+                error: error.clone(),
+            });
+        }
         // `abort`, `error` and `repetition` mean the generation did not complete.
         if let Some(reason @ ("abort" | "error" | "repetition")) = object
             .get("choices")
