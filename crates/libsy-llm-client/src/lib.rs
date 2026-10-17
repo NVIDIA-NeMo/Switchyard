@@ -28,6 +28,7 @@ mod observability;
 mod observation;
 mod observed_translation;
 pub mod raw;
+mod responses_reasoning;
 pub mod run;
 mod system_one;
 
@@ -36,6 +37,7 @@ pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
 pub use error::{LlmClientError, Result};
 pub use observation::{ModelCallObservation, RunObservation, RunObserver};
 pub use raw::RawResponse;
+pub use responses_reasoning::ResponsesReasoningPolicy;
 pub use run::{ClientRouter, decide, run};
 pub use switchyard_translation::RawEventStream;
 pub use system_one::SystemOneClient;
