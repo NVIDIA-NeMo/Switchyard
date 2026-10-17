@@ -243,6 +243,10 @@ fn build_multi_format_client(
 - By default, only `x-request-id` from `request.metadata.http_headers` is forwarded.
   With `forward_auth`, application headers are forwarded, while connection, destination,
   body, and the selected provider's owned headers are removed or rebuilt.
+- Calls send `x-litellm-session-id` with the metadata agent id, or the session id
+  when there is no agent id. The header is left out when neither id is set or the
+  id is not a valid header value. A caller's own `x-litellm-session-id` is never
+  forwarded. LiteLLM uses the id to keep a conversation on one prompt cache.
 - `HttpBackendConfig::forward_auth` uses the caller's credential instead of the
   backend's configured key and forwards other application headers. OpenAI backends
   normalize `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`.
