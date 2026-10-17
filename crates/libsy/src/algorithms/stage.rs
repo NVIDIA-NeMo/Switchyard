@@ -272,6 +272,7 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::*;
+    use crate::algorithms::util::affinity::ClassifyTrigger;
     use crate::algorithms::util::stage::{clear_fall_open, set_fall_open};
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
     use crate::core::testing::test_drive_with_models;
@@ -622,6 +623,36 @@ mod tests {
                 .count(),
             2,
             "each undecided turn is its own question"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_fallback_judge_ignores_the_user_turn_trigger() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let mut config = config_with_judge(&recorder, 0.9);
+        if let Some(fallback) = config.llm_fallback.as_mut() {
+            fallback.config.classify_trigger = ClassifyTrigger::UserTurn;
+        }
+        let router = recording_router(config)?;
+
+        // Two tool continuations of one user turn in one session. A standalone
+        // capability route with `user_turn` would judge once and retain the
+        // target; inside the stage cascade the judge is a plain classifier.
+        for _ in 0..2 {
+            test_drive_with_models(
+                router.clone(),
+                turn_request(false),
+                runtime_models(),
+                recorder.serve(),
+            )
+            .await?;
+        }
+
+        assert_eq!(
+            recorder.judge_calls(),
+            2,
+            "classify_trigger retains no verdict inside the stage cascade"
         );
         Ok(())
     }

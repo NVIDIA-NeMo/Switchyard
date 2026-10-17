@@ -14,7 +14,7 @@ Use Switchyard through a gateway integration, try it with a local proxy, or embe
 2. The algorithm examines the request or the agent's recent tool activity. Some algorithms call a model to judge the task.
 3. Your gateway or application sends the request to the selected model. Routing can change as the agent continues its work.
 
-Evaluate the complete agent, model pool, and routing configuration against your single-model baseline. A cheaper model call does not guarantee a cheaper successfully completed task.
+Evaluate the complete agent, model pool, and routing configuration against your single-model baseline. A cheaper model call does not guarantee a cheaper successfully completed task. The [tuning loop](docs/tuning/index.md) walks through that evaluation step by step, and [Troubleshooting](docs/operations/troubleshooting.md) covers the settings that quietly disable routing.
 
 ## How to use it
 

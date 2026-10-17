@@ -109,7 +109,9 @@ Both pickers read the same signals; only the default tier differs.
     benchmarked, so there are no calibrated thresholds for it and no measured
     accuracy or cost figures to set expectations against. The server logs a
     warning at startup when a route selects it. Use `efficient_first` unless you
-    are running your own calibration.
+    are running your own calibration. See
+    [Reachable scores per picker](#reachable-scores-per-picker) for what a
+    threshold can and cannot do with each picker.
 
 ## Tuning `confidence_threshold`
 
@@ -127,9 +129,81 @@ default.
 `0.5` is the recommended starting point, derived from many coding benchmarks,
 and what the example below uses.
 
+### How the score is built
+
+The scorer reads four dimensions from the recent tool results:
+
+| Dimension | Range | Meaning |
+|---|---|---|
+| `severity` | `0`, `0.3` (soft), `0.7` (hard) | The worst error in the window. A critical error (`1.0`) never reaches the scorer; it is a hard override. |
+| `spinning` | `0` or `1` | A deep turn with no reads, writes, plans, or new activity. |
+| `exploring` | `0` or `1` | A deep turn that reads or plans but does not write. Never set together with `spinning`. |
+| `production_intensity` | `0` to `1` | The share of recent recognized operations that were writes or edits. |
+
+The score is a signed sum of these dimensions in signal units, squashed by
+`tanh`:
+
+```text
+units = severity / 0.7 + spinning + exploring - 1.5 * production_intensity - clean_production
+score = tanh(5.0 * 0.10 * units)
+confidence = |score|
+```
+
+`clean_production` is `1.2` when the window has production and no error, and
+`0` otherwise. The constants live in
+[`crates/libsy/src/algorithms/util/stage.rs`](../../crates/libsy/src/algorithms/util/stage.rs):
+`SIGNAL_UNIT` 0.10, `SCORE_GAIN` 5.0, `HARD_SEVERITY` 0.7, `PRODUCTION_WEIGHT`
+1.5, `CLEAN_PRODUCTION_WEIGHT` 1.2, and `STALL_MIN_TURN_DEPTH` 8, below which
+`spinning` and `exploring` stay `0`.
+
+One signal unit is one maxed dimension. The confidence a given number of units
+produces:
+
+| Units | Confidence | Example |
+|---|---|---|
+| 0.43 | 0.21 | A soft error alone. |
+| 1.0 | 0.46 | A hard error alone, or a stall alone. |
+| 1.2 | 0.54 | Clean production at the smallest share. |
+| 1.5 | 0.64 | Every recent operation is a write, with an error in the window. |
+| 2.0 | 0.76 | A hard error plus a stall. The most the signals reach toward capable. |
+| 2.7 | 0.87 | Every recent operation is a write and no error. The most the signals reach toward efficient. |
+
+Reproduce the values with
+`python3 -c 'import math; print(math.tanh(0.5), math.tanh(0.75), math.tanh(1.0), math.tanh(1.35))'`.
+
+The dimensions limit how far the score can reach in each direction. Toward
+capable, the most the signals can produce is a hard error plus a stall, 0.76.
+Production turns the stall signals off, so with any production in the window
+the capable side stays below 0.46. Toward efficient, the most is full clean
+production, 0.87. An error in the window removes the clean-production bonus and
+pulls the other way: with a soft error the efficient side tops out at 0.49, and
+with a hard error at 0.24.
+
+### Reachable scores per picker
+
+Both pickers use the same score. The picker only sets which direction the
+signals must prove.
+
+| Picker | The signals move a turn to | Reachable confidence | What a threshold means |
+|---|---|---|---|
+| `efficient_first` | Capable (escalation) | Up to 0.76 | At `0.5`, a hard error alone (0.46) stays in the band, so an escalation needs a second signal, a hard override, or the classifier. At `0.76` and above, the signals never escalate; only overrides, capable holds, and the classifier can. |
+| `capable_first` | Efficient (offload) | Up to 0.87, and at most 0.49 when an error is in the window | At `0.5`, clean production offloads (0.54 and up) and nothing else does. At `0.87` and above, the signals never offload. |
+
+How to move the dial:
+
+- With `efficient_first`, lower the threshold to escalate on weaker evidence.
+  Below 0.46 a hard error alone escalates. Raise it to keep more turns on the
+  efficient tier.
+- With `capable_first`, lower the threshold to offload more. Below 0.49,
+  production with a soft error in the window also offloads. Raise it to keep
+  more turns on the capable tier. The server warns at startup that
+  `capable_first` has no calibrated threshold.
+
+Hard overrides, capable holds, and the classifier do not use the threshold.
+
 ### What `0.5` means with `efficient_first`
 
-![Illustrative Stage score distribution with an ambiguous band from -0.5 to 0.5. Scores below -0.5 route efficient, scores in the band fall back to efficient, and scores above 0.5 route capable.](../assets/stage-router-threshold.svg)
+![Illustrative Stage score distribution with an ambiguous band from -0.5 to 0.5. Scores below -0.5 route efficient, scores in the band fall back to efficient, and scores above 0.5 route capable. Dotted markers show the signal ceilings: +0.76 toward capable and -0.87 toward efficient.](../assets/stage-router-threshold.svg)
 
 With `picker = "efficient_first"`, no classifier, and a threshold of `0.5`:
 
@@ -173,6 +247,48 @@ that gives the routing split you want, then validate it on the same sample befor
 running the full task set.
 
 ## Route configuration
+
+### Knob reference
+
+Every key a `stage_router` route accepts. The `handoff_notes` and `classifier`
+tables are optional. The
+[TOML schema](../reference/toml_schema.md#stage_router) has the full table with
+required columns.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `capable_target` | required | Capable tier. |
+| `efficient_target` | required | Efficient tier. |
+| `picker` | required | `efficient_first` or `capable_first` (experimental). Tier used when the signals are not confident. |
+| `confidence_threshold` | required | Corroboration a decisive pick needs, `0` to `1`. Alias `efficient_first_threshold`. |
+| `capable_first_threshold` | `0.0` | Used only after an outer `composite` classifier selects the capable tier. No effect on a standalone route. |
+| `recent_turn_window` | `3` | Trailing tool results the signals are computed over. |
+| `capable_hold_turns` | `2` | Requests kept on the capable tier after a signal-driven escalation. `0` disables. |
+| `tool_semantics.observe` | `[]` | Domain tool names that count as investigation. |
+| `tool_semantics.mutate` | `[]` | Domain tool names that count as production. |
+| `tool_semantics.plan` | `[]` | Domain tool names that count as planning. |
+| `tool_semantics.new` | `[]` | Domain tool names that count as neutral forward activity. |
+| `handoff_notes.escalation_note` | required in the table | Note handed to the capable tier on a signal-driven escalation. |
+| `handoff_notes.deescalation_note` | unset | Note handed to the efficient tier on a signal-driven return. |
+| `handoff_notes.only_on_wrong_signal_escalation` | `true` | `false` also adds the escalation note to capable-hold turns. |
+| `classifier.target` | required in the table | Judge target. Not a routing destination. |
+| `classifier.base_threshold` | required for LLM judges | Lowest `p_solve` that still routes efficient. |
+| `classifier.threshold_step` | `0.0` | Added once for uncertain or unmatched verdicts, twice for unsupported. |
+| `classifier.fail_open` | `true` | On judge failure, fall open to the picker default instead of failing the request. |
+| `classifier.decision` | unset | Use a decision model instead of an LLM judge. |
+| `classifier.classify_trigger` | `every_request` | No effect here. The judge runs on every ambiguous turn. |
+| `classifier.message_hash_fallback` | `false` | No effect here. A load error with the default trigger. |
+| `classifier.recent_turn_window` | unset | Trailing turns the judge sees after the opening task. |
+| `classifier.prompt` | packaged | Replaces the judge prompt. |
+| `classifier.response_format_type` | `json_schema` | `json_object` for providers without JSON Schema. |
+| `classifier.max_output_tokens` | `4096` | Token budget for the verdict. |
+| `subagents` | unset | Separate policy for delegated sub-agent work. |
+
+`classifier.mode`, `classifier.response_schema` and `classifier.policy` belong to
+[composite](composite_routing.md#custom-llm-classifier) routes and are rejected
+here.
+
+### Minimal route
 
 ```toml
 schema_version = 1
@@ -320,6 +436,7 @@ paths through its cascade:
 | `override` | A repeated failure, critical-error severity, or context-compaction marker forced the capable tier. Structured logs set `override_reason` to `repeated_failure`, `critical_error`, or `compaction`. |
 | `capable_hold` | A recent escalation kept this recovery turn on the capable tier. |
 | `dimensions` | The signed score fell outside the ambiguous band and selected a tier. |
+| `ambiguous` | The signed score stayed inside the band. This is a step, not a final source: the turn continues to the classifier or the picker default, and `/v1/stats` records that later source. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a usable verdict. |
 | `fall_open` | The signal scorer abstained and the classifier was absent or could not decide, so the picker default was used. |
 
