@@ -7,11 +7,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use libsy::RuntimeModels;
 use switchyard_llm_client::{ClientRouter, RunObservation};
 use switchyard_protocol::{
-    Category, LlmClientError, LlmResponse, ModelId, Request, Response, RoutedLlmClient,
-    text_request, text_response,
+    LlmClientError, LlmResponse, ModelId, Request, Response, RoutedLlmClient, text_request,
+    text_response,
 };
 use switchyard_runner::{AlgorithmSpec, ModelCapabilities, Route};
 
@@ -40,8 +39,8 @@ fn plugin_route(client: Arc<dyn RoutedLlmClient>) -> Route {
         "semantic-target".to_string(),
         ModelId::from("semantic-target"),
     )]);
-    let algorithm = spec
-        .build("switchyard", &targets)
+    let (algorithm, models) = spec
+        .build_with_runtime_models("switchyard", &targets)
         .expect("identity target map should build");
     let clients = ClientRouter::new(
         BTreeMap::from([(ModelId::from("semantic-target"), client)])
@@ -56,8 +55,26 @@ fn plugin_route(client: Arc<dyn RoutedLlmClient>) -> Route {
         None,
         None,
         Vec::new(),
-        RuntimeModels::new([(Category::Any, vec![ModelId::from("semantic-target")])].into()),
+        models,
     )
+}
+
+#[test]
+fn runtime_model_builder_rejects_an_unknown_target() {
+    // Embedding hosts do not get DeploymentConfig's target prevalidation.
+    let spec = AlgorithmSpec::Passthrough {
+        target: "missing".to_string(),
+        subagents: None,
+    };
+    let error = match spec.build_with_runtime_models("embedded", &BTreeMap::new()) {
+        Ok(_) => panic!("unknown target should fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "route embedded references unknown target missing"
+    );
 }
 
 #[tokio::test]

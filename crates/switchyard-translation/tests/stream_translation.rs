@@ -203,6 +203,39 @@ fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
     Ok(())
 }
 
+// A finished item that contradicts text that was already streamed reaches a same-format client
+// as an error event in its place. Before, the contradicting event was replayed and the stream
+// ended with no error event.
+#[test]
+fn preserved_same_format_snapshot_conflict_replays_as_an_error() -> TestResult {
+    let format = WireFormat::OpenAiResponses;
+    let events = [
+        json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "Hello"}),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message",
+            "role": "assistant", "content": [{"type": "output_text", "text": "Goodbye"}]}}),
+    ];
+    let engine = TranslationEngine::default();
+    let mut decode_state = StreamTranslationState::new(format, format);
+    let mut encode_state = StreamTranslationState::new(format, format);
+    let mut replayed = Vec::new();
+    for event in events {
+        let preserved = engine.decode_stream_event(&mut decode_state, format, event)?;
+        replayed.extend(engine.encode_stream_event(&mut encode_state, format, preserved)?);
+    }
+
+    let types: Vec<_> = replayed.iter().map(|event| &event["type"]).collect();
+    assert_eq!(
+        types,
+        [&json!("response.output_text.delta"), &json!("error")],
+        "{replayed:?}"
+    );
+    assert_eq!(
+        replayed[1]["message"],
+        "Responses snapshot conflicts with streamed content"
+    );
+    Ok(())
+}
+
 #[test]
 fn anthropic_errors_include_type_and_terminate_stream() -> TestResult {
     let engine = TranslationEngine::default();
@@ -548,6 +581,63 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
+// Verifies Chat Completions refusal deltas remain visible and terminate as refusals.
+#[test]
+fn openai_chat_refusal_stream_translates_to_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let refusal = json!({
+        "id": "chatcmpl-refusal",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"refusal": "I cannot help with that request."},
+            "finish_reason": null
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &refusal,
+    )?;
+    let text_delta = events
+        .iter()
+        .find(|event| event["type"] == "content_block_delta")
+        .ok_or("missing refusal text delta")?;
+    assert_eq!(
+        text_delta["delta"]["text"],
+        "I cannot help with that request."
+    );
+
+    let terminal = json!({
+        "id": "chatcmpl-refusal",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    events.extend(engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &terminal,
+    )?);
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let message_delta = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(message_delta["delta"]["stop_reason"], "refusal");
+    assert_eq!(
+        message_delta["delta"]["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
+    Ok(())
+}
+
 // Restores Anthropic-safe IDs before emitting OpenAI tool-call deltas.
 #[test]
 fn anthropic_stream_tool_id_is_restored_for_openai_chat() -> TestResult {
@@ -825,6 +915,22 @@ fn openai_chat_to_responses_uses_served_model_without_losing_source_model() -> T
     assert_eq!(state.model.as_deref(), Some("gpt-upstream"));
     assert_eq!(state.target_model.as_deref(), Some("served-model"));
     assert_eq!(events[0]["response"]["model"], "served-model");
+    Ok(())
+}
+
+// Stored conversation history is keyed by the upstream ID, so clients must see it unchanged.
+#[test]
+fn openai_chat_to_responses_keeps_the_upstream_id() -> TestResult {
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+    let events = TranslationEngine::default().translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &json!({"id": "chatcmpl-test", "choices": [{"index": 0, "delta": {"content": "hi"}}]}),
+    )?;
+
+    assert_eq!(events[0]["response"]["id"], "chatcmpl-test");
     Ok(())
 }
 
@@ -1274,6 +1380,218 @@ fn openai_chat_stream_uses_summary_when_detail_text_is_empty() -> TestResult {
             && event["delta"]["type"] == "thinking_delta"
             && event["delta"]["thinking"] == "usable summary"
     }));
+    Ok(())
+}
+
+// A Chat `reasoning_details` stream may send summary text before the id of the item it
+// belongs to. The Responses encoder must not open the item under a synthesized id, because the
+// encrypted payload that follows binds only to the provider's id. It holds the summary until
+// that id arrives, or until later output shows none is coming, and it takes the id from a
+// summary detail that carries one.
+#[test]
+fn openai_chat_stream_summary_before_id_keeps_reasoning_id_and_payload() -> TestResult {
+    let engine = TranslationEngine::default();
+    let chunk = |delta: Value, finish_reason: Option<&str>| {
+        json!({
+            "id": "chatcmpl-reasoning",
+            "object": "chat.completion.chunk",
+            "model": REASONING_MODEL,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]
+        })
+    };
+    let summary = |id: Option<&str>| {
+        let mut detail = json!({"type": "reasoning.summary", "summary": "summary first"});
+        if let Some(id) = id {
+            detail["id"] = json!(id);
+        }
+        json!({"reasoning_details": [detail]})
+    };
+    let encrypted = json!({"reasoning_details": [{
+        "type": "reasoning.encrypted", "id": "rs_provider", "data": "opaque-stream"
+    }]});
+    // Translates each delta as its own chunk and returns the events per chunk, then the
+    // events of the stop chunk and of finishing the stream.
+    let translate =
+        |deltas: Vec<Value>| -> Result<Vec<Vec<Value>>, Box<dyn std::error::Error + Send + Sync>> {
+            let mut state =
+                StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::OpenAiResponses);
+            let mut batches = Vec::new();
+            for (delta, finish_reason) in deltas
+                .into_iter()
+                .map(|delta| (delta, None))
+                .chain([(json!({}), Some("stop"))])
+            {
+                batches.push(engine.translate_event(
+                    &mut state,
+                    WireFormat::OpenAiChat,
+                    WireFormat::OpenAiResponses,
+                    &chunk(delta, finish_reason),
+                )?);
+            }
+            batches.push(engine.finish_stream(&mut state, WireFormat::OpenAiResponses)?);
+            Ok(batches)
+        };
+    let types = |batch: &[Value]| -> Vec<String> {
+        batch
+            .iter()
+            .filter_map(|event| event["type"].as_str().map(ToOwned::to_owned))
+            .collect()
+    };
+    let final_reasoning = |batches: &[Vec<Value>]| -> Result<Value, &'static str> {
+        batches
+            .iter()
+            .flatten()
+            .find(|event| event["type"] == "response.completed")
+            .and_then(|event| event["response"]["output"].as_array())
+            .and_then(|output| output.iter().find(|item| item["type"] == "reasoning"))
+            .cloned()
+            .ok_or("expected a reasoning item in the completed output")
+    };
+    let opened = [
+        "response.output_item.added",
+        "response.reasoning_summary_part.added",
+        "response.reasoning_summary_text.delta",
+    ];
+    let expected = json!({
+        "type": "reasoning",
+        "id": "rs_provider",
+        "status": "completed",
+        "summary": [{"type": "summary_text", "text": "summary first"}],
+        "encrypted_content": "opaque-stream",
+    });
+
+    // Summary before the id: the item waits, then opens under the id the payload names.
+    let batches = translate(vec![
+        json!({"role": "assistant"}),
+        summary(None),
+        encrypted.clone(),
+    ])?;
+    assert_eq!(types(&batches[1]), Vec::<String>::new());
+    assert_eq!(types(&batches[2]), opened);
+    assert_eq!(final_reasoning(&batches)?, expected);
+    for event in batches.iter().flatten().filter(|event| {
+        event["type"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("response.reasoning_summary"))
+    }) {
+        assert_eq!(event["item_id"], "rs_provider", "{event}");
+    }
+
+    // Summary carrying the id: the item opens at once under it and the payload still attaches.
+    let batches = translate(vec![
+        json!({"role": "assistant"}),
+        summary(Some("rs_provider")),
+        encrypted,
+    ])?;
+    assert_eq!(types(&batches[1]), opened);
+    assert_eq!(batches[1][0]["item"]["id"], "rs_provider");
+    assert_eq!(final_reasoning(&batches)?, expected);
+
+    // No id ever comes: the answer opens the held item, under a synthesized id, ahead of itself.
+    let batches = translate(vec![
+        json!({"role": "assistant"}),
+        summary(None),
+        json!({"content": "answer"}),
+    ])?;
+    let opened_items: Vec<&str> = batches
+        .iter()
+        .flatten()
+        .filter(|event| event["type"] == "response.output_item.added")
+        .filter_map(|event| event["item"]["type"].as_str())
+        .collect();
+    assert_eq!(opened_items, ["reasoning", "message"]);
+    let reasoning = final_reasoning(&batches)?;
+    assert_eq!(
+        reasoning["summary"],
+        json!([{"type": "summary_text", "text": "summary first"}])
+    );
+    assert!(
+        reasoning["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("rs_")),
+        "{reasoning}"
+    );
+    assert!(reasoning.get("encrypted_content").is_none(), "{reasoning}");
+    Ok(())
+}
+
+// A held summary opens ahead of any later item. A tool delta that carries only an id emits no
+// item yet, so it leaves the summary held; a reasoning item at a later index opens the held one
+// first, under a synthesized id, so the output keeps stream order.
+#[test]
+fn responses_stream_held_reasoning_opens_ahead_of_later_items() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::new(format, format);
+    let mut events = engine.encode_stream_event(
+        &mut state,
+        format,
+        LlmResponseStreamEvent::new(vec![
+            LlmResponseChunk::MessageStart {
+                id: Some("resp_1".into()),
+                model: Some(REASONING_MODEL.into()),
+            },
+            LlmResponseChunk::ReasoningDetailsDelta {
+                index: 0,
+                details: vec![json!({"type": "reasoning.summary", "summary": "held"})],
+                text: "held".into(),
+            },
+            LlmResponseChunk::ToolCallDelta {
+                index: 1,
+                id: Some("call_1".into()),
+                name: None,
+                arguments_delta: None,
+            },
+        ]),
+    )?;
+    assert!(
+        events
+            .iter()
+            .all(|event| event["type"] != "response.output_item.added"),
+        "{events:?}"
+    );
+    events.extend(engine.encode_stream_event(
+        &mut state,
+        format,
+        LlmResponseStreamEvent::new(vec![LlmResponseChunk::ReasoningDetailsDelta {
+            index: 2,
+            details: vec![json!({"type": "reasoning.encrypted", "id": "rs_2", "data": "opaque"})],
+            text: String::new(),
+        }]),
+    )?);
+    events.extend(engine.finish_stream(&mut state, format)?);
+
+    let added: Vec<(u64, &str)> = events
+        .iter()
+        .filter(|event| event["type"] == "response.output_item.added")
+        .map(|event| {
+            (
+                event["output_index"].as_u64().unwrap_or(u64::MAX),
+                event["item"]["id"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(added.len(), 2, "{added:?}");
+    assert_eq!(added[0].0, 0);
+    assert!(
+        added[0].1.starts_with("rs_") && added[0].1 != "rs_2",
+        "{added:?}"
+    );
+    assert_eq!(added[1], (1, "rs_2"));
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "response.completed")
+        .ok_or("expected response.completed")?;
+    let output = completed["response"]["output"]
+        .as_array()
+        .ok_or("output should be an array")?;
+    assert_eq!(output.len(), 2, "{output:?}");
+    assert_eq!(
+        output[0]["summary"],
+        json!([{"type": "summary_text", "text": "held"}])
+    );
+    assert_eq!(output[1]["id"], "rs_2");
+    assert_eq!(output[1]["encrypted_content"], "opaque");
     Ok(())
 }
 
@@ -3191,7 +3509,7 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
         )?;
         assert!(matches!(
             decoded.normalized().last(),
-            Some(LlmResponseChunk::StreamError { .. })
+            Some(LlmResponseChunk::DecodeError { .. })
         ));
         assert!(
             !decoded
@@ -3199,6 +3517,68 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
                 .iter()
                 .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }))
         );
+    }
+    Ok(())
+}
+
+// LiteLLM in front of Bedrock streams a freeform call as function-style argument deltas that
+// spell `{"content": ...}`. OpenAI streams it with custom input deltas. Both must decode,
+// without a conflict, to one call whose only arguments are the finished input.
+#[test]
+fn responses_custom_tool_calls_decode_from_the_finished_item() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let done = json!({"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1", "name": "exec", "input": "ls"});
+    let added = json!({"type": "response.output_item.added", "output_index": 1,
+        "item": {"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1", "name": "exec", "input": ""}});
+    let item_done =
+        json!({"type": "response.output_item.done", "output_index": 1, "item": done.clone()});
+    let completed = json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}, done]}});
+    let litellm = vec![
+        added.clone(),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "{\"content\": "}),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "\"ls\"}"}),
+        json!({"type": "response.function_call_arguments.done", "output_index": 1, "arguments": "{\"content\": \"ls\"}"}),
+        item_done.clone(),
+        completed.clone(),
+    ];
+    let openai = vec![
+        added,
+        json!({"type": "response.custom_tool_call_input.delta", "output_index": 1, "delta": "ls"}),
+        json!({"type": "response.custom_tool_call_input.done", "output_index": 1, "input": "ls"}),
+        item_done,
+        completed,
+    ];
+    for (shape, events) in [("litellm", litellm), ("openai", openai)] {
+        let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+        let mut chunks = Vec::new();
+        for event in events {
+            chunks.extend(
+                engine
+                    .decode_stream_event(&mut state, source, event)?
+                    .normalized()
+                    .to_vec(),
+            );
+        }
+        assert!(
+            !chunks.iter().any(|chunk| matches!(
+                chunk,
+                LlmResponseChunk::DecodeError { .. } | LlmResponseChunk::StreamError { .. }
+            )),
+            "{shape}: {chunks:?}"
+        );
+        let arguments: String = chunks
+            .iter()
+            .filter_map(|chunk| match chunk {
+                LlmResponseChunk::ToolCallDelta {
+                    arguments_delta: Some(arguments),
+                    ..
+                } => Some(arguments.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arguments, r#"{"input":"ls"}"#, "{shape}");
     }
     Ok(())
 }

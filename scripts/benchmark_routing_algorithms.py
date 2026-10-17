@@ -1317,6 +1317,9 @@ def run_aiperf(
                 output_dir / f"{run_label}.log",
                 trial_root,
                 aiperf_timeout_seconds(config, scenario, profile, concurrency),
+                expected_timeout_count=(
+                    config.request_count if scenario.id == "client-cancellation" else None
+                ),
             )
         )
     if len(exports) == 1:

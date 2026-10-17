@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Provider-neutral conversation types shared by routing, clients, and translation.
+//!
+//! Debug output redacts MCP URLs and authorization tokens and hides raw provider tool definitions,
+//! extensions, and preserved bodies. Conversation content, including unknown provider
+//! blocks, remains visible and may contain secrets. Serialization retains the stored values.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -11,8 +16,9 @@ use serde_json::{Map, Value};
 use crate::format::FormatId;
 
 /// Actor role normalized across provider APIs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, strum_macros::Display)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum Role {
     /// System-level instructions.
     System,
@@ -116,6 +122,8 @@ pub enum ContentBlock {
     ToolCall(ToolCall),
     /// Result of an earlier tool invocation.
     ToolResult(ToolResult),
+    /// MCP activity executed by the backend, rather than by the calling agent.
+    Mcp(McpContent),
     /// Provider refusal content.
     Refusal {
         /// Human-readable refusal text.
@@ -226,6 +234,198 @@ pub struct ToolDefinition {
     pub strict: Option<bool>,
 }
 
+/// A tool available to the model, in catalog order.
+#[derive(Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Tool {
+    /// A remote MCP server and the tools it exposes.
+    Mcp(McpToolset),
+    /// A definition without a supported neutral representation.
+    Provider {
+        /// Source wire format; this definition is only replayed in that format.
+        provider: FormatId,
+        /// Complete provider definition.
+        raw: Value,
+    },
+    /// An agent-executed function. Its JSON retains the existing flat definition shape.
+    #[serde(untagged)]
+    Function(ToolDefinition),
+}
+
+impl<'de> Deserialize<'de> for Tool {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Keep these variants and the conversion below in sync with Tool.
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum TaggedTool {
+            Mcp(McpToolset),
+            Provider { provider: FormatId, raw: Value },
+            Function(ToolDefinition),
+        }
+
+        let value = Value::deserialize(deserializer)?;
+        // Only definitions without a type use the legacy function shape. A malformed
+        // tagged definition must fail instead of falling back to a function.
+        if value.get("type").is_none() {
+            return serde_json::from_value(value)
+                .map(Self::Function)
+                .map_err(serde::de::Error::custom);
+        }
+        let tool = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(match tool {
+            TaggedTool::Mcp(mcp) => Self::Mcp(mcp),
+            TaggedTool::Provider { provider, raw } => Self::Provider { provider, raw },
+            TaggedTool::Function(function) => Self::Function(function),
+        })
+    }
+}
+
+impl fmt::Debug for Tool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Function(definition) => f.debug_tuple("Function").field(definition).finish(),
+            Self::Mcp(mcp) => f.debug_tuple("Mcp").field(mcp).finish(),
+            // Raw provider definitions can contain credentials without normalized fields.
+            Self::Provider { provider, .. } => f
+                .debug_struct("Provider")
+                .field("provider", provider)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+impl From<ToolDefinition> for Tool {
+    fn from(definition: ToolDefinition) -> Self {
+        Self::Function(definition)
+    }
+}
+
+impl Tool {
+    /// Returns the function definition, if this is an agent-executed function.
+    pub fn function(&self) -> Option<&ToolDefinition> {
+        match self {
+            Self::Function(definition) => Some(definition),
+            _ => None,
+        }
+    }
+}
+
+/// Configuration for a URL-based remote MCP toolset.
+///
+/// This type covers the supported neutral settings. Definitions with additional settings,
+/// such as Responses headers, server descriptions, or conditional approval rules, belong
+/// in [`Tool::Provider`] with the complete original definition.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpToolset {
+    /// Server identity used by MCP calls.
+    pub name: String,
+    /// Remote MCP endpoint.
+    pub url: String,
+    /// Credential sent to the MCP server, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_token: Option<String>,
+    /// Defaults for tools without a per-tool setting in `configs`.
+    #[serde(default, skip_serializing_if = "McpToolConfig::is_empty")]
+    pub default_config: McpToolConfig,
+    /// Per-tool settings, keyed by tool name. Each omitted setting inherits
+    /// from `default_config`, then falls back to the provider's default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub configs: BTreeMap<String, McpToolConfig>,
+    /// Whether all calls require approval (`true`) or none do (`false`).
+    /// Absence retains provider defaults. Definitions with conditional approval rules
+    /// are stored in full as [`Tool::Provider`], rather than as this type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_approval: Option<bool>,
+}
+
+impl fmt::Debug for McpToolset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            name,
+            url: _,
+            authorization_token,
+            default_config,
+            configs,
+            require_approval,
+        } = self;
+        f.debug_struct("McpToolset")
+            .field("name", name)
+            // Credentials can appear in any part of the URL, including its path.
+            .field("url", &"[REDACTED]")
+            .field(
+                "authorization_token",
+                &authorization_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("default_config", default_config)
+            .field("configs", configs)
+            .field("require_approval", require_approval)
+            .finish()
+    }
+}
+
+/// Settings for an individual MCP tool or the defaults for a toolset.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct McpToolConfig {
+    /// Whether the tool is available for the model to call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Whether the tool definition is loaded through tool search instead of initially.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
+}
+
+impl McpToolConfig {
+    fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.defer_loading.is_none()
+    }
+}
+
+/// A tool discovered on an MCP server.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct McpListedTool {
+    /// Tool name as exposed by the server.
+    pub name: String,
+    /// Human-readable tool description, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema describing accepted arguments.
+    pub input_schema: Value,
+    /// Additional tool metadata reported by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Value>,
+}
+
+/// MCP discovery and execution history. Results reference the matching call's server identity.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum McpContent {
+    /// Tools discovered on a server at this point in the conversation.
+    Listing {
+        /// Identity of the MCP server.
+        server_name: String,
+        /// Listing identifier, when supplied by the provider.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// Discovered tools in the order reported by the server.
+        tools: Vec<McpListedTool>,
+        /// Discovery failure, when reported. An empty tool list alone is not a failure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// A call executed by the backend's MCP client.
+    Call {
+        /// Identity of the MCP server.
+        server_name: String,
+        /// Ordinary call ID, name, and arguments.
+        call: ToolCall,
+    },
+    /// Output from a backend-executed MCP call.
+    Result(ToolResult),
+}
+
 /// Normalized tool choice policy.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
@@ -263,6 +463,10 @@ pub struct OutputParams {
     pub max_output_tokens: Option<u64>,
     /// Provider-neutral or provider-specific structured-output configuration.
     pub response_format: Option<Value>,
+    /// Whether the provider must enforce the response schema, overriding native
+    /// flags when set and retaining native behavior when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_schema_enforced: Option<bool>,
 }
 
 /// Provider reasoning controls preserved by translation.
@@ -275,7 +479,7 @@ pub struct ReasoningParams {
 }
 
 /// Provider-specific fields that do not have first-class conversation fields.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderExtensions {
     /// Provider fields keyed by their original wire names.
@@ -285,19 +489,38 @@ pub struct ProviderExtensions {
     pub fields: Map<String, Value>,
 }
 
+// Extension values can include credentials or embedded original request bodies.
+impl fmt::Debug for ProviderExtensions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderExtensions")
+            .field("field_count", &self.fields.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Exact source payloads retained for lossless same-format round trips.
 ///
 /// Translation's default preservation policy prefers a stored same-format body
 /// over reconstructing one from normalized fields. A caller that mutates the IR
 /// must clear the corresponding entry or use a policy with preservation disabled
 /// when those mutations must be encoded.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PreservationMetadata {
     /// Original request bodies keyed by source format.
     pub requests: BTreeMap<FormatId, Value>,
     /// Original response bodies keyed by source format.
     pub responses: BTreeMap<FormatId, Value>,
+}
+
+// Original payloads can contain credentials even when normalized fields redact them.
+impl fmt::Debug for PreservationMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreservationMetadata")
+            .field("request_formats", &self.requests.keys())
+            .field("response_formats", &self.responses.keys())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Normalized request representation shared by Switchyard components.
@@ -314,7 +537,7 @@ pub struct LlmRequest {
     /// Ordered conversation messages.
     pub messages: Vec<Message>,
     /// Tools available to the model.
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Vec<Tool>,
     /// Policy controlling model tool selection.
     pub tool_choice: Option<ToolChoice>,
     /// Common sampling controls.
@@ -508,6 +731,125 @@ mod tests {
                 "arguments": {"query": "rust"}
             })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn tool_deserialization_rejects_invalid_tagged_definitions() {
+        for definition in [
+            json!({"type": "mcp", "name": "inv", "parameters": {}}),
+            json!({"type": "provider", "provider": "x", "name": "n", "parameters": {}}),
+            json!({"type": "unknown", "name": "n", "parameters": {}}),
+            json!({"type": null, "name": "n", "parameters": {}}),
+        ] {
+            assert!(serde_json::from_value::<Tool>(definition).is_err());
+        }
+        let error = serde_json::from_value::<Tool>(json!({
+            "type": "mcp", "name": "inv", "url": "https://example.invalid/mcp",
+            "authorization_token": 5, "parameters": {}
+        }))
+        .expect_err("an invalid credential must not become a function")
+        .to_string();
+        assert!(error.contains("string"), "field error was lost: {error}");
+    }
+
+    #[test]
+    fn tool_catalog_preserves_function_json_and_backend_history() -> Result<(), serde_json::Error> {
+        let function = json!({"name": "lookup", "description": null, "parameters": {"type": "object"}, "strict": null});
+        let definitions = json!([
+            function,
+            {"type": "mcp", "name": "inventory", "url": "https://example.invalid/mcp", "require_approval": false},
+            {"type": "provider", "provider": "openai_responses", "raw": {"type": "mcp", "connector_id": "connector_example", "server_label": "example"}},
+            {
+                "type": "mcp", "name": "configured", "url": "https://example.invalid/mcp",
+                "default_config": {"enabled": false, "defer_loading": true},
+                "configs": {"lookup": {"enabled": true}, "search": {"defer_loading": false}}
+            }
+        ]);
+        let tools: Vec<Tool> = serde_json::from_value(definitions.clone())?;
+        assert!(matches!(&tools[0], Tool::Function(_)));
+        assert!(matches!(&tools[1], Tool::Mcp(_)));
+        assert!(matches!(&tools[2], Tool::Provider { .. }));
+        assert_eq!(serde_json::to_value(&tools)?, definitions);
+        let explicit_function: Tool = serde_json::from_value(json!({
+            "type": "function", "name": "lookup", "parameters": {"type": "object"}
+        }))?;
+        assert_eq!(explicit_function, tools[0]);
+
+        let history = json!([
+            {
+                "type": "mcp", "kind": "listing", "server_name": "inventory",
+                "id": "listing_1",
+                "tools": [{
+                    "name": "lookup", "description": "Look up stock",
+                    "input_schema": {"type": "object"},
+                    "annotations": {"readOnlyHint": true}
+                }]
+            },
+            {"type": "mcp", "kind": "listing", "server_name": "empty", "tools": []},
+            {
+                "type": "mcp", "kind": "listing", "server_name": "unavailable",
+                "tools": [], "error": "Server unavailable"
+            },
+            {
+                "type": "mcp", "kind": "call", "server_name": "inventory",
+                "call": {"id": "call_1", "name": "lookup", "arguments": {}}
+            },
+            {
+                "type": "mcp", "kind": "result", "tool_call_id": "call_1",
+                "content": [{"type": "text", "text": "in stock"}], "is_error": false
+            }
+        ]);
+        let content: Vec<ContentBlock> = serde_json::from_value(history.clone())?;
+        assert_eq!(serde_json::to_value(&content)?, history);
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_credentials_are_omitted_from_debug() -> Result<(), serde_json::Error> {
+        let token = "synthetic-mcp-debug-secret";
+        let url_secret = "synthetic-mcp-url-secret";
+        let url = format!("https://example.invalid/mcp?api_key={url_secret}");
+        let mcp: McpToolset = serde_json::from_value(json!({
+            "name": "inventory", "url": url,
+            "authorization_token": token
+        }))?;
+        let raw = json!({"mcp_servers": [{"authorization_token": token}]});
+        let mut request = LlmRequest {
+            tools: vec![
+                Tool::Mcp(mcp.clone()),
+                Tool::Provider {
+                    provider: "openai_responses".into(),
+                    raw: json!({"type": "mcp", "authorization": token}),
+                },
+            ],
+            ..LlmRequest::default()
+        };
+        request
+            .preservation
+            .requests
+            .insert("anthropic_messages".into(), raw.clone());
+        request.extensions.fields.insert("metadata".into(), raw);
+        let serialized = serde_json::to_value(&request)?;
+        for debug in [
+            format!("{mcp:?}"),
+            format!("{mcp:#?}"),
+            format!("{:?}", request.tools),
+            format!("{:?}", request.extensions),
+            format!("{:?}", request.preservation),
+            format!("{request:?}"),
+            format!("{request:#?}"),
+        ] {
+            assert!(!debug.contains(token), "Debug exposed an MCP credential");
+            assert!(
+                !debug.contains(url_secret),
+                "Debug exposed an MCP URL secret"
+            );
+        }
+        assert_eq!(serde_json::to_value(&request)?, serialized);
+        assert_eq!(serialized["tools"][0]["url"], url);
+        assert_eq!(serialized["tools"][0]["authorization_token"], token);
+        assert_eq!(serialized["tools"][1]["raw"]["authorization"], token);
         Ok(())
     }
 }

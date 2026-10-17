@@ -3,6 +3,7 @@
 
 import csv
 import json
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -359,7 +360,11 @@ def test_aiperf_cells_use_disjoint_artifacts(tmp_path, monkeypatch) -> None:
     observed: list[tuple[Path, Path]] = []
 
     def fake_run_profile(
-        _command, log_path: Path, artifact_dir: Path, _timeout_seconds: int
+        _command: Sequence[str],
+        log_path: Path,
+        artifact_dir: Path,
+        _timeout_seconds: int,
+        **_kwargs: object,
     ) -> Path:
         observed.append((log_path, artifact_dir))
         artifact_dir.mkdir(parents=True)

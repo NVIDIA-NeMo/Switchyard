@@ -176,9 +176,11 @@ fn decode_probabilities(
         )));
     }
     let values = bytes
-        .chunks_exact(size_of::<f32>())
+        .as_chunks::<{ size_of::<f32>() }>()
+        .0
+        .iter()
         .map(|bytes| {
-            let value = f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+            let value = f32::from_ne_bytes(*bytes);
             if value.is_finite() && (0.0..=1.0).contains(&value) {
                 Ok(value)
             } else {
@@ -210,8 +212,10 @@ fn decode_expected_probabilities(
         ));
     }
     Ok(bytes
-        .chunks_exact(size_of::<f32>())
-        .map(|bytes| f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .as_chunks::<{ size_of::<f32>() }>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_ne_bytes(*bytes))
         .collect::<Vec<_>>()
         .chunks_exact(output_count)
         .map(<[f32]>::to_vec)

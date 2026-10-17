@@ -175,7 +175,7 @@ impl ClassifierContract {
     }
 }
 
-fn validate_prompt(prompt_template: &str) -> Result<()> {
+pub(super) fn validate_prompt(prompt_template: &str) -> Result<()> {
     if prompt_template.trim().is_empty() {
         return Err(algorithm_error("classifier prompt must not be empty"));
     }

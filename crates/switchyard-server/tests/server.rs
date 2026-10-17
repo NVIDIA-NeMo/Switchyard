@@ -14,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use libsy::{Algorithm, Random};
@@ -50,6 +50,7 @@ impl MockUpstream {
     async fn start() -> TestResult<Self> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
+            .route("/props", get(upstream_props))
             .route("/v1/chat/completions", post(upstream_chat))
             .route("/buffered/responses", post(upstream_buffered_responses))
             .route(
@@ -118,6 +119,11 @@ fn has_system_prompt(call: &Value, expected: &str) -> bool {
     })
 }
 
+async fn upstream_props(State(calls): State<Arc<Mutex<Vec<Value>>>>) -> Json<Value> {
+    calls.lock().await.push(json!({"path": "/props"}));
+    Json(json!({"default_generation_settings": {"n_ctx": 98_304}}))
+}
+
 async fn upstream_chat(
     State(calls): State<Arc<Mutex<Vec<Value>>>>,
     Json(body): Json<Value>,
@@ -140,6 +146,17 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    if model == "model/rate-limited" {
+        return (
+            if prompt == "unavailable" {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::TOO_MANY_REQUESTS
+            },
+            Json(json!({"error": {"message": "quota exhausted", "code": "usage_limit"}})),
+        )
+            .into_response();
+    }
     if model == "model/classifier" {
         let mut pending = HashSet::new();
         for message in body["messages"].as_array().into_iter().flatten() {
@@ -342,6 +359,23 @@ async fn upstream_chat(
         .into_response();
     }
 
+    // A generation that did not complete (`abort` from vLLM or SGLang, `error` from OpenRouter,
+    // `repetition` from vLLM).
+    if let Some(reason @ ("abort" | "error" | "repetition")) = model.strip_prefix("model/finish-") {
+        return Json(json!({
+            "id": "chatcmpl-finish",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "partial"},
+                "finish_reason": reason
+            }],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+        }))
+        .into_response();
+    }
+
     // Buffered tool call, the non-streaming counterpart of the branch above.
     if prompt == "mcp-tool-call" {
         let called = body["tool_choice"]["function"]["name"]
@@ -409,11 +443,16 @@ async fn upstream_chat(
         .pointer("/response_format/json_schema/schema/properties/escalate")
         .is_some()
     {
-        r#"{"escalate":false,"reason":"making progress"}"#.to_string()
+        r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"making progress"}"#
+            .to_string()
     } else if model == "model/classifier" && requests_schema_invalid_verdict {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.1,"unexpected":true}"#.to_string()
     } else if model == "model/classifier" {
         r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#.to_string()
+    } else if model == "model/vgr-judge" {
+        "yes".to_string()
+    } else if model == "model/vgr-reject" {
+        "no".to_string()
     } else {
         "ok".to_string()
     };
@@ -442,26 +481,28 @@ async fn upstream_messages_requires_forwarded_oauth(
     Json(body): Json<Value>,
 ) -> HttpResponse {
     calls.lock().await.push(body.clone());
-    let has_expected_headers = headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        == Some("Bearer claude-oauth-token")
-        && headers
-            .get("anthropic-beta")
+    // The diagnostics fixture intentionally has no OAuth credentials.
+    let has_expected_headers = body["model"] == "model/anthropic-diagnostics"
+        || (headers
+            .get("authorization")
             .and_then(|value| value.to_str().ok())
-            == Some("oauth-2025-04-20")
-        && headers
-            .get("anthropic-version")
-            .and_then(|value| value.to_str().ok())
-            == Some("2023-06-01")
-        && headers
-            .get("chatgpt-account-id")
-            .and_then(|value| value.to_str().ok())
-            == Some("account-123")
-        && headers
-            .get("x-openai-fedramp")
-            .and_then(|value| value.to_str().ok())
-            == Some("true");
+            == Some("Bearer claude-oauth-token")
+            && headers
+                .get("anthropic-beta")
+                .and_then(|value| value.to_str().ok())
+                == Some("oauth-2025-04-20")
+            && headers
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok())
+                == Some("2023-06-01")
+            && headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok())
+                == Some("account-123")
+            && headers
+                .get("x-openai-fedramp")
+                .and_then(|value| value.to_str().ok())
+                == Some("true"));
     if !has_expected_headers {
         return (
             StatusCode::UNAUTHORIZED,
@@ -598,7 +639,12 @@ async fn upstream_responses_silo(
             .get("escalate")
             .is_some()
         {
-            json!({"escalate": strong, "reason": "state probe"})
+            json!({
+                "escalate": strong,
+                "category": if strong { "capability_gap" } else { "none" },
+                "new_evidence": strong,
+                "reason": "state probe",
+            })
         } else {
             json!({
                 "crux": "state probe", "primary_rule": if strong { "LIM-1" } else { "SUP-1" },
@@ -752,6 +798,7 @@ fn random_state_with_retries(
         omit_body_fields: BTreeSet::new(),
         reasoning_effort: None,
         max_retries,
+        failure_cooldown: std::time::Duration::ZERO,
         timeout: None,
     });
     let target_models = routes
@@ -1134,6 +1181,85 @@ async fn failed_responses_return_errors_and_try_fallback_across_endpoints() -> T
     Ok(())
 }
 
+// A Chat backend that ends a generation with `abort`, `error` or `repetition` did
+// not complete it: every client path gets a 502, and a fallback route moves on.
+#[tokio::test]
+async fn chat_failed_finish_reasons_return_errors_and_try_fallback() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let requests = [
+        (
+            "/v1/chat/completions",
+            json!({
+                "model": ROUTE_MODEL, "messages": [{"role": "user", "content": "hello"}]
+            }),
+        ),
+        (
+            "/v1/messages",
+            json!({
+                "model": ROUTE_MODEL, "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hello"}]
+            }),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "hello"}),
+        ),
+    ];
+    for reason in ["abort", "error", "repetition"] {
+        let model = format!("model/finish-{reason}");
+        let message = format!("provider finished with finish_reason \"{reason}\"");
+        for fallback in [false, true] {
+            let route = if fallback {
+                "type = \"random\"\ntargets = [\"first\", \"second\"]\nweights = [1000, 1]\nseed = 17"
+            } else {
+                "type = \"passthrough\"\ntarget = \"first\""
+            };
+            let app = build_switchyard_router(load_test_config(&format!(
+                r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+[targets]
+first = {{ id = "{model}", llm_client = "mock" }}
+second = {{ id = "model/fallback", llm_client = "mock" }}
+[routes.chat]
+id = "{ROUTE_MODEL}"
+{route}
+"#,
+                base_url = upstream.base_url,
+            ))?);
+            for (path, body) in &requests {
+                let previous_calls = upstream.models().await.len();
+                let response = send(&app, "POST", path, Some(body.clone())).await?;
+                let calls = upstream.models().await[previous_calls..].to_vec();
+                if fallback {
+                    assert_eq!(response.status, StatusCode::OK, "{model}: {path}");
+                    assert_eq!(
+                        response.json()?["model"],
+                        "model/fallback",
+                        "{model}: {path}"
+                    );
+                    assert_eq!(calls, [model.as_str(), "model/fallback"], "{model}: {path}");
+                    continue;
+                }
+                assert_eq!(response.status, StatusCode::BAD_GATEWAY, "{model}: {path}");
+                let expected = if *path == "/v1/messages" {
+                    json!({"type": "error", "error": {"type": "api_error", "message": message}})
+                } else {
+                    json!({"error": {
+                        "type": "upstream_error", "code": "upstream_error", "message": message
+                    }})
+                };
+                assert_eq!(response.json()?, expected, "{model}: {path}");
+                assert_eq!(calls, [model.as_str()], "{model}: {path}");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn stats_reset_returns_confirmation_and_clears_all_stats() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
@@ -1313,6 +1439,117 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
     Ok(())
 }
 
+// A successful cross-provider request must expose any contract weakening in runtime telemetry.
+#[tokio::test]
+async fn metrics_exposes_lossy_outbound_request_translation() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "{base_url}"
+max_retries = 0
+
+[targets.anthropic]
+id = "model/anthropic-diagnostics"
+llm_client = "anthropic"
+
+[routes.diagnostics]
+id = "switchyard/diagnostics"
+type = "passthrough"
+target = "anthropic"
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+    let diagnostic_labels = [
+        ("code", "lossy_conversion"),
+        ("format", "anthropic_messages"),
+        ("operation", "request_encode"),
+        ("severity", "warning"),
+    ];
+    let request = |min_length| {
+        let answer = match min_length {
+            Some(min_length) => json!({"type": "string", "minLength": min_length}),
+            None => json!({"type": "string"}),
+        };
+        json!({
+            "model": "switchyard/diagnostics",
+            "messages": [{"role": "user", "content": "Return JSON"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "answer",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"answer": answer},
+                        "required": ["answer"]
+                    }
+                }
+            }
+        })
+    };
+    let mut metrics = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+
+    for (min_length, expected_delta) in [(None, 0.0), (Some(5), 1.0)] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(request(min_length)),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
+        let after = send(&app, "GET", "/metrics", None)
+            .await?
+            .text()?
+            .to_string();
+        assert_eq!(
+            metric_delta(
+                &metrics,
+                &after,
+                "switchyard_translation_diagnostics_total",
+                &diagnostic_labels,
+            )
+            .unwrap_or_default(),
+            expected_delta
+        );
+        metrics = after;
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0].pointer("/output_config/format/schema/properties/answer"),
+        Some(&json!({"type": "string"}))
+    );
+    assert!(
+        calls[1]
+            .pointer("/output_config/format/schema/properties/answer/minLength")
+            .is_none()
+    );
+    let diagnostic_line = metric_line(
+        &metrics,
+        "switchyard_translation_diagnostics_total",
+        &diagnostic_labels,
+    )
+    .ok_or("missing translation diagnostic metric")?;
+    for forbidden_label in ["diagnostic=", "path="] {
+        assert!(
+            !diagnostic_line.contains(forbidden_label),
+            "unexpected high-cardinality label in {diagnostic_line}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn accepts_requests_larger_than_the_axum_default_body_limit() -> TestResult {
     let (_upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
@@ -1352,6 +1589,8 @@ schema_version = 1
 format = "openai_chat"
 base_url = "{base_url}"
 max_retries = 0
+# Exercise upstream fallback on every request.
+failure_cooldown_ms = 0
 
 [targets.first]
 id = "{first}"
@@ -1442,6 +1681,176 @@ impl Response {
     fn text(&self) -> TestResult<&str> {
         Ok(std::str::from_utf8(&self.bytes)?)
     }
+}
+
+#[tokio::test]
+async fn models_probes_routes_concurrently_and_caches_failed_discovery() -> TestResult {
+    for stalled in [false, true] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let captured = Arc::clone(&calls);
+        let upstream_app = Router::new().route(
+            "/props",
+            get(move || {
+                let barrier = Arc::clone(&barrier);
+                let calls = Arc::clone(&captured);
+                async move {
+                    calls.lock().await.push(json!({"path": "/props"}));
+                    barrier.wait().await;
+                    if stalled {
+                        std::future::pending::<()>().await;
+                    }
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let upstream = MockUpstream {
+            base_url: format!("http://{addr}/v1"),
+            calls,
+            task: tokio::spawn(async move {
+                axum::serve(listener, upstream_app).await.unwrap();
+            }),
+        };
+        let routes: String = (0..3)
+            .map(|index| {
+                format!(
+                    r#"
+[routes.vgr{index}]
+id = "switchyard/vgr{index}"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+"#
+                )
+            })
+            .collect();
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{}"
+context_discovery = "llama_cpp"
+[targets.local]
+id = "local"
+llm_client = "local"
+[targets.cloud]
+id = "cloud"
+llm_client = "local"
+{routes}
+"#,
+            upstream.base_url
+        ))?);
+
+        let (first, concurrent) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(
+                send(&app, "GET", "/v1/models", None),
+                send(&app, "GET", "/v1/models", None)
+            )
+        })
+        .await?;
+        let models = first?.json()?;
+        assert_eq!(concurrent?.json()?, models);
+        assert_eq!(models["data"].as_array().unwrap().len(), 3);
+        assert!(
+            models["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|model| model["context_length"].is_null())
+        );
+        assert_eq!(send(&app, "GET", "/v1/models", None).await?.json()?, models);
+        assert_eq!(upstream.calls.lock().await.len(), 3);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_serves_verified_attempts_locally_and_escalates_rejected_ones() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for (discovery, configured, expected_context, probes) in [
+        ("", "context_window = 32768", Some(32_768), false),
+        ("", "", None, false),
+        ("context_discovery = \"llama_cpp\"", "", Some(98_304), true),
+        (
+            "context_discovery = \"llama_cpp\"",
+            "context_window = 32768",
+            Some(32_768),
+            false,
+        ),
+    ] {
+        for (judge, served) in [
+            ("model/vgr-judge", "model/vgr-local"),
+            ("model/vgr-reject", "model/vgr-cloud"),
+        ] {
+            upstream.calls.lock().await.clear();
+            let app = build_switchyard_router(load_test_config(&format!(
+                r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+{discovery}
+
+[targets.local]
+id = "model/vgr-local"
+llm_client = "primary"
+
+[targets.cloud]
+id = "model/vgr-cloud"
+llm_client = "primary"
+
+[targets.judge]
+id = "{judge}"
+llm_client = "primary"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+{configured}
+local_target = "local"
+cloud_target = "cloud"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#,
+                upstream.base_url
+            ))?);
+            let response = send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": "switchyard/vgr",
+                    "messages": [{"role": "user", "content": "answer the question"}]
+                })),
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK);
+            assert_eq!(
+                response.headers.get("x-model-router-selected-model"),
+                Some(&HeaderValue::from_str(served)?)
+            );
+            let models = send(&app, "GET", "/v1/models", None).await?.json()?;
+            assert_eq!(models["data"][0]["context_length"], json!(expected_context));
+            assert_eq!(send(&app, "GET", "/v1/models", None).await?.json()?, models);
+            assert_eq!(
+                upstream
+                    .calls
+                    .lock()
+                    .await
+                    .iter()
+                    .filter(|call| call["path"] == "/props")
+                    .count(),
+                usize::from(probes)
+            );
+        }
+    }
+    Ok(())
 }
 
 fn metric_line<'a>(metrics: &'a str, name: &str, labels: &[(&str, &str)]) -> Option<&'a str> {
@@ -3274,6 +3683,102 @@ target = "openai"
     Ok(())
 }
 
+/// Serves `/v1/responses` and `/v1/messages` for a stub gateway on one host and records the
+/// path and `authorization` values of each call. `/v1/responses` calls get a judge verdict.
+async fn upstream_gateway_records_auth(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    let authorization: Vec<_> = headers
+        .get_all("authorization")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    calls
+        .lock()
+        .await
+        .push(json!({"path": uri.path(), "authorization": authorization}));
+    let model = body["model"].as_str().unwrap_or_default();
+    if uri.path() == "/v1/responses" {
+        let verdict = json!({
+            "crux": "bounded task", "primary_rule": "SUP-1",
+            "capability_boundary": "supported", "p_solve": 0.9,
+        });
+        return Json(responses_body("resp_judge", model, &verdict.to_string())).into_response();
+    }
+    Json(json!({
+        "id": "msg_gateway", "type": "message", "role": "assistant", "model": model,
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn", "stop_sequence": null,
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+    .into_response()
+}
+
+/// A route that mixes formats on one gateway forwards the caller's bearer token to both of the
+/// gateway's APIs: `/v1/responses` for the judge and `/v1/messages` for the answer.
+#[tokio::test]
+async fn route_on_one_host_forwards_the_bearer_token_to_responses_and_messages() -> TestResult {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let gateway = Router::new()
+        .route("/v1/responses", post(upstream_gateway_records_auth))
+        .route("/v1/messages", post(upstream_gateway_records_auth))
+        .with_state(Arc::clone(&calls));
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let host = format!("http://{}", listener.local_addr()?);
+    tokio::spawn(async move { axum::serve(listener, gateway).await });
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.gateway_responses]
+format = "openai_responses"
+base_url = "{host}/v1"
+forward_auth = true
+max_retries = 0
+
+[llm_clients.gateway_messages]
+format = "anthropic_messages"
+base_url = "{host}"
+forward_auth = true
+max_retries = 0
+
+[targets]
+judge = {{ id = "model/judge", llm_client = "gateway_responses" }}
+capable = {{ id = "model/capable", llm_client = "gateway_messages" }}
+efficient = {{ id = "model/efficient", llm_client = "gateway_messages" }}
+
+[routes.agent]
+id = "switchyard/agent"
+type = "composite"
+classifier = {{ target = "judge", base_threshold = 0.5, classify_trigger = "user_turn" }}
+stage = {{ capable_target = "capable", efficient_target = "efficient", confidence_threshold = 0.5 }}
+"#
+    ))?;
+
+    let response = send_with_headers(
+        &build_switchyard_router(state),
+        "POST",
+        "/v1/responses",
+        Some(json!({"model": "switchyard/agent", "input": "hi there"})),
+        &[("authorization", "Bearer gateway-key")],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+
+    // The judge call and the answer call each carry the caller's bearer token once, unchanged.
+    assert_eq!(
+        *calls.lock().await,
+        [
+            json!({"path": "/v1/responses", "authorization": ["Bearer gateway-key"]}),
+            json!({"path": "/v1/messages", "authorization": ["Bearer gateway-key"]}),
+        ]
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn routes_dispatch_and_discovery_endpoints_are_stable() -> TestResult {
     let (upstream, app) = test_app(&[
@@ -3935,6 +4440,7 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
         .uri("/v1/chat/completions")
         .header("content-type", "application/json")
         .header("x-switchyard-session-id", "canonical-session")
+        .header("x-switchyard-turn-id", "canonical-turn")
         .header("proxy_x_session_id", "legacy-session")
         .header("x-switchyard-origin", r#"custom-agent/"quoted"\path"#)
         .body(Body::from(serde_json::to_vec(&json!({
@@ -3994,8 +4500,10 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     let first: Value =
         serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
     assert_eq!(first["session_id"], "canonical-session");
+    assert_eq!(first["turn_id"], "canonical-turn");
     assert_eq!(first["origin"], r#"custom-agent/"quoted"\path"#);
     let second: Value = serde_json::from_str(records.lines().nth(1).ok_or("missing record")?)?;
+    assert_eq!(second["turn_id"], Value::Null);
     assert_eq!(second.get("origin"), Some(&Value::Null));
     assert!(
         first["ts"]
@@ -4103,6 +4611,7 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
         })),
         &[
             ("x-switchyard-session-id", "streaming-session"),
+            ("x-switchyard-turn-id", "streaming-turn"),
             ("x-switchyard-origin", "codex-cli"),
         ],
     )
@@ -4127,6 +4636,7 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
 
     let record: Value = serde_json::from_str(&std::fs::read_to_string(log_path)?)?;
     assert_eq!(record["route_id"], ROUTE_MODEL);
+    assert_eq!(record["turn_id"], "streaming-turn");
     assert_eq!(record["algorithm"], "random");
     assert_eq!(record["origin"], "codex-cli");
     Ok(())
@@ -4971,7 +5481,7 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
     assert!(feedback.starts_with("A senior reviewer examined your work"));
     assert!(feedback.ends_with("run the tests"));
 
-    // A failed HTTP advisor call stops the request before the algorithm can approve it.
+    // Fail-open returns the buffered executor turn when the HTTP advisor call fails.
     let response = send_with_headers(
         &app,
         "POST",
@@ -4980,8 +5490,8 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
         &[("proxy_x_session_id", "fail-flow")],
     )
     .await?;
-    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(response.json()?["error"]["type"], "upstream_error");
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(response.json()?["choices"][0]["message"]["content"], "ok");
     assert_eq!(
         upstream.models().await,
         [
@@ -4994,8 +5504,8 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
     );
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    // Only the successful redo request returns an executor answer.
-    assert_eq!(stats["models"]["model/executor"]["calls"], 1);
+    // Both requests return an executor answer.
+    assert_eq!(stats["models"]["model/executor"]["calls"], 2);
     assert_eq!(stats["classifier"]["total_errors"], 1);
     // Projection deltas for the metrics only this test emits.
     let redo = gate_count(&stats, &["reviews", "redo", "total"])
@@ -5022,10 +5532,9 @@ async fn advisor_route_redo_client_error_and_stats_projection() -> TestResult {
         gate_count(&stats, &["discarded", "tokens", "output"]),
         gate_count(&before, &["discarded", "tokens", "output"]) + 2
     );
-    // The host stops before the algorithm records a fail-open advisor decision.
     assert_eq!(
         gate_count(&stats, &["consult_failures", "upstream_5xx"]),
-        gate_count(&before, &["consult_failures", "upstream_5xx"])
+        gate_count(&before, &["consult_failures", "upstream_5xx"]) + 1
     );
 
     // Reset re-baselines the projection: the redo/discard counts this test
@@ -5243,5 +5752,80 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
             .and_then(|value| value.to_str().ok()),
         Some("model/a")
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rate_limit_fallback_policy() -> TestResult {
+    for (policy, forward_auth, prompt, is_terminal) in [
+        ("", false, "hello", false),
+        ("", true, "hello", false),
+        ("fallback_on_rate_limit = true", false, "hello", false),
+        ("fallback_on_rate_limit = false", false, "hello", true),
+        ("fallback_on_rate_limit = false", true, "hello", true),
+        (
+            "fallback_on_rate_limit = false",
+            false,
+            "unavailable",
+            false,
+        ),
+    ] {
+        let upstream = MockUpstream::start().await?;
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{base_url}"
+forward_auth = {forward_auth}
+{policy}
+max_retries = 1
+failure_cooldown_ms = 60000
+[llm_clients.secondary]
+format = "openai_chat"
+base_url = "{base_url}"
+[targets]
+first = {{ id = "model/rate-limited", llm_client = "primary" }}
+second = {{ id = "model/fallback", llm_client = "secondary" }}
+[routes.test]
+id = "{ROUTE_MODEL}"
+type = "random"
+targets = ["first", "second"]
+weights = [1000, 1]
+seed = 17
+"#,
+            base_url = upstream.base_url,
+        ))?);
+        let mut expected_calls = Vec::new();
+        // The second request exercises cooldown as well as streaming HTTP errors.
+        for stream in [false, true] {
+            let response = send_with_headers(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": ROUTE_MODEL, "stream": stream,
+                    "messages": [{"role": "user", "content": prompt}]
+                })),
+                &[("authorization", "Bearer test-caller")],
+            )
+            .await?;
+            if !stream || is_terminal || forward_auth {
+                expected_calls.extend(["model/rate-limited"; 2]);
+            }
+            if is_terminal {
+                assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS);
+                assert_eq!(response.json()?["error"]["code"], "usage_limit");
+            } else {
+                assert_eq!(response.status, StatusCode::OK);
+                expected_calls.push("model/fallback");
+            }
+            assert_eq!(
+                upstream.models().await,
+                expected_calls,
+                "{policy}, forward_auth={forward_auth}, {prompt}, stream={stream}"
+            );
+        }
+    }
     Ok(())
 }

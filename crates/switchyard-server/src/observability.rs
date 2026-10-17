@@ -185,7 +185,7 @@ mod tests {
             HeaderValue::from_static("vendor=opaque-value"),
         );
 
-        tracing::subscriber::with_default(subscriber, || {
+        crate::testing::with_subscriber(subscriber, || {
             let span = request_span(&headers);
             let context = span.context();
             let current = context.span();

@@ -31,7 +31,14 @@ const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "please reduce the length of the input",
     "exceeds the maximum allowed input length",
     "exceeds the maximum allowed length",
+    "exceeds the available context size",
     "is longer than the model's context length",
+    // llama-server, both of its ERROR_TYPE_EXCEED_CONTEXT_SIZE messages
+    // (tools/server/server-context.cpp). The structured check below catches
+    // them from `error.type`; these cover a proxy that rewrites the envelope
+    // and keeps the message.
+    "exceeds the available context size",
+    "larger than the max context size",
 ];
 
 // Anthropic has no structured `error.code`, so detection is phrase-based only.
@@ -52,7 +59,9 @@ pub struct HttpBackendConfig {
     pub api_key: Option<String>,
     /// Whether this backend forwards the caller's provider credential and application headers.
     ///
-    /// All backends reachable through a forwarding route must use the same provider.
+    /// The forwarding backends in one route must use one credential family (OpenAI or
+    /// Anthropic) unless they all use the same scheme, host, and port, such as one LLM
+    /// gateway. Backends that send a configured key are not restricted.
     pub forward_auth: bool,
     /// Custom headers added to every outbound call to this backend.
     ///
@@ -72,6 +81,8 @@ pub struct HttpBackendConfig {
     pub reasoning_effort: Option<String>,
     /// Additional attempts after the initial upstream request.
     pub max_retries: u32,
+    /// Cooldown after an exhausted transient completion failure. Zero disables it.
+    pub failure_cooldown: Duration,
     /// Deadline for one complete response, including retries, retry delays, and stream reads.
     /// `None` leaves the wait unbounded.
     pub timeout: Option<Duration>,
@@ -88,6 +99,7 @@ impl fmt::Debug for HttpBackendConfig {
             .field("omit_body_fields", &self.omit_body_fields)
             .field("reasoning_effort", &self.reasoning_effort)
             .field("max_retries", &self.max_retries)
+            .field("failure_cooldown", &self.failure_cooldown)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -194,6 +206,10 @@ impl Backend {
         } else {
             self.config().api_key.as_deref()
         }
+    }
+
+    pub(crate) fn base_url(&self) -> &str {
+        &self.config().base_url
     }
 
     /// The fully resolved upstream URL for this backend's endpoint.
@@ -319,6 +335,11 @@ impl Backend {
         self.config().max_retries
     }
 
+    /// Cooldown after an exhausted transient completion failure.
+    pub fn failure_cooldown(&self) -> Duration {
+        self.config().failure_cooldown
+    }
+
     /// Deadline for all attempts and the complete response; `None` leaves the wait unbounded.
     pub fn timeout(&self) -> Option<Duration> {
         self.config().timeout
@@ -347,11 +368,19 @@ impl Backend {
             Backend::OpenAiChat(_) | Backend::OpenAiResponses(_) => is_overflow_body(
                 body,
                 |value| {
-                    value
-                        .get("error")
-                        .and_then(|err| err.get("code"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some("context_length_exceeded")
+                    let error = value.get("error");
+                    let field = |name| {
+                        error
+                            .and_then(|err| err.get(name))
+                            .and_then(serde_json::Value::as_str)
+                    };
+                    // llama-server puts the HTTP status in `code` as a number and
+                    // names the reason in `type`, so the canonical code never
+                    // matches. Its two overflow messages are worded unlike any
+                    // other provider's, which leaves the type as the signal that
+                    // holds across releases.
+                    field("code") == Some("context_length_exceeded")
+                        || field("type") == Some("exceed_context_size_error")
                 },
                 OPENAI_OVERFLOW_PHRASES,
             ),
@@ -431,6 +460,7 @@ mod tests {
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
+            failure_cooldown: Duration::ZERO,
             timeout: None,
         }
     }
@@ -587,6 +617,31 @@ mod tests {
         ));
         assert!(backend.is_context_overflow(
             r#"{"object":"error","message":"The input (12345 tokens) is longer than the model's context length (8192 tokens).","type":"BadRequestError","param":null,"code":400}"#
+        ));
+    }
+
+    #[test]
+    fn openai_detects_llama_server_overflow() {
+        let backend = Backend::OpenAiChat(config("x"));
+        // llama-server, numeric `code` and the reason in `type`. Both of the
+        // messages ERROR_TYPE_EXCEED_CONTEXT_SIZE can carry are here.
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"request (600000 tokens) exceeds the available context size (524288 tokens), try increasing it","type":"exceed_context_size_error"}}"#
+        ));
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"input (600000 tokens) is larger than the max context size (524288 tokens). skipping","type":"exceed_context_size_error"}}"#
+        ));
+        // The type alone is enough, so a reworded message still falls back.
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"something new","type":"exceed_context_size_error"}}"#
+        ));
+        // And the message alone is enough, for a proxy that drops the type.
+        assert!(backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"request (600000 tokens) exceeds the available context size (524288 tokens), try increasing it"}}"#
+        ));
+        // llama-server's other 400s must still surface to the caller.
+        assert!(!backend.is_context_overflow(
+            r#"{"error":{"code":400,"message":"Invalid tool_choice","type":"invalid_request_error"}}"#
         ));
     }
 
