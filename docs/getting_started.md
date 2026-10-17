@@ -102,6 +102,9 @@ capable_target = "strong"
 efficient_target = "weak"
 ```
 
+The two targets are placeholders. See [Model Selection](routing_algorithms/model_selection.md)
+to choose models for the capable and efficient tiers.
+
 `format` selects the upstream protocol and must be `openai_chat`,
 `openai_responses`, or `anthropic_messages`. `api_key_env` names the environment
 variable the server reads; the secret does not belong in the TOML file.
@@ -145,6 +148,100 @@ curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"switchyard","messages":[{"role":"user","content":"hello"}]}'
 ```
+
+### Verify routing is active
+
+The first request usually lands on the efficient model. That does not mean
+routing is off. Auto decides from tool results, and a request without tool
+history has none, so the efficient tier serves it by design. Use these checks
+to see routing work. Your model IDs and token counts will differ from the
+examples.
+
+1. **Confirm the configuration loads.** The dry run prints the route IDs the
+   server will serve:
+
+    ```bash
+    switchyard-server --config routes.toml --dry-run
+    ```
+
+    ```text
+    server OK: switchyard
+    ```
+
+2. **Read the served model from the response header.** Every response carries
+   `x-model-router-selected-model`. A chat-only request is served by the
+   efficient model:
+
+    ```bash
+    curl -si http://localhost:4000/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d '{"model":"switchyard","messages":[{"role":"user","content":"hello"}]}' \
+      | grep -i x-model-router-selected-model
+    ```
+
+    ```text
+    x-model-router-selected-model: openai/gpt-4o-mini
+    ```
+
+3. **Send a request that escalates.** A tool result that reports a critical
+   error forces the capable tier. Save this request as `escalate.json`:
+
+    ```json
+    {
+      "model": "switchyard",
+      "messages": [
+        {"role": "user", "content": "Run the test suite."},
+        {"role": "assistant", "content": null, "tool_calls": [
+          {"id": "call_1", "type": "function",
+           "function": {"name": "bash", "arguments": "{\"command\":\"pytest -q\"}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_1",
+         "content": "MemoryError: cannot allocate memory\nKilled"},
+        {"role": "user", "content": "Fix it."}
+      ]
+    }
+    ```
+
+    ```bash
+    curl -si http://localhost:4000/v1/chat/completions \
+      -H "Content-Type: application/json" -d @escalate.json \
+      | grep -i x-model-router-selected-model
+    ```
+
+    ```text
+    x-model-router-selected-model: openai/gpt-4o
+    ```
+
+    The same hard failure appearing twice in recent tool results, or a
+    context-compaction marker, also forces the capable tier. See
+    [decision sources](routing_algorithms/stage_router_routing.md#decision-sources).
+
+4. **Count decisions by source.** `GET /v1/stats` reports calls per model and
+   routing decisions by source:
+
+    ```bash
+    curl -s http://localhost:4000/v1/stats | jq -c '.models | map_values(.calls)'
+    curl -s http://localhost:4000/v1/stats | jq -c '.algorithm_stats.stage_router.routing_decisions'
+    ```
+
+    ```json
+    {"openai/gpt-4o":1,"openai/gpt-4o-mini":1}
+    {"fall_open":{"total":1,"targets":{"openai/gpt-4o-mini":1}},"override":{"total":1,"targets":{"openai/gpt-4o":1}}}
+    ```
+
+    `fall_open` counts turns with no usable signals that landed on the picker's
+    default tier. `override` counts turns a hard error forced to the capable
+    tier. Counts reset when the server restarts or on `POST /v1/stats/reset`.
+
+5. **Keep a record of every request.** Start the server with
+   `--routing-log-file routing.jsonl` to append one JSON line per served request:
+
+    ```json
+    {"ts":"2026-10-15T06:16:22.643Z","route_id":"switchyard","algorithm":"stage_router","origin":null,"task":null,"trial_id":null,"session_id":null,"model":"openai/gpt-4o","tier":"","prompt_tokens":42,"cached_tokens":0,"cache_creation_tokens":0,"completion_tokens":5,"reasoning_tokens":0,"total_tokens":47}
+    ```
+
+    The record names the served model and its token counts. It does not record
+    why that model was chosen; use `GET /v1/stats` for the decision counts.
 
 ### Routing algorithms
 
@@ -235,6 +332,42 @@ judge call your host performs over its own transport. The run ends with `Step::D
 response when routing already produced the answer. Otherwise the host makes the terminal answer
 call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
 already owns its HTTP stack, retries, and credentials.
+
+Pass each call's work to `respond` before awaiting it. In Rust:
+
+```rust
+use switchyard_libsy::{CallModel, LibsyError, Result};
+use switchyard_protocol::RoutedLlmClient;
+
+async fn serve(call: CallModel, client: &dyn RoutedLlmClient) -> Result<()> {
+    let request = call.request.clone();
+    let model = call.models[0].clone();
+    call.respond(async move {
+        client.call(request).await.map_err(|error| LibsyError::client_call(model, error))
+    }).await
+}
+```
+
+In Python, the client coroutine returns `LlmResponse.Agg` or `LlmResponse.Stream`:
+
+```python
+await call.respond(client.call(call.request, call.models[0]))
+```
+
+`respond` now accepts a future or awaitable instead of a completed response. Move
+the provider await into this method. Python `call.fail(error)` is also awaitable.
+Decision calls use the same pattern with their existing decision response type.
+
+When an algorithm stops waiting for a call, `respond` cancels that work and
+returns normally. Python waits for task cleanup before returning. For concurrent
+algorithms, schedule each Python handler with `asyncio.create_task` and cancel and
+await remaining handlers when the run ends; see the complete
+[Python example](../examples/libsy.py). Awaiting handlers one at a time inside the
+step loop serializes their execution. Rust hosts can use `libsy::drive` to manage
+concurrent handlers and their lifetime.
+
+After a response stream is delivered, its consumer controls its lifetime.
+Cancellation cannot guarantee that an upstream provider stops generating or billing.
 
 Successful runs also include `OutcomeMetadata`: a unique `outcome_id`, the algorithm
 name, and optional JSON evidence. In Python, read `outcome.metadata.outcome_id`,

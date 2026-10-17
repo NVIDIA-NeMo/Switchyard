@@ -252,6 +252,8 @@ retained nor logged.
 ## Related
 
 - [Routing Overview](overview.md): compare all supported routing strategies.
+- [Model Selection](model_selection.md): choose the weak, strong, and judge
+  models, with measured pairs.
 - [LLM Classifier Routing](llm_classifier_routing.md): pick a tier up front
   instead of judging the run.
 - [Architecture](../architecture.md): the end-to-end request lifecycle and system

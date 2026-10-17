@@ -24,15 +24,57 @@ controls whether the judge runs for each request, each user turn, or once per
 session. Execution uses the stage router, which reads tool-result history and
 can optionally call an LLM judge. The TOML configuration keys are unchanged.
 
+Whichever strategy you choose, the two models you put behind it matter more than
+any threshold. See [Model Selection](model_selection.md).
+
 ### Auto
 
-Auto is a preset, not a separate routing algorithm. It currently uses Execution
-with `picker = "efficient_first"`, `confidence_threshold = 0.5`, and no LLM
-judge. It does not compare strategies at runtime. Use `stage_router` directly
-to tune these settings.
+Auto is a preset, not a separate routing algorithm. An `auto` route builds a
+stage router with these settings. It does not compare strategies at runtime.
 
-See the [Auto configuration reference](../reference/toml_schema.md#auto) for
-the required targets.
+| Setting | Value | What it does |
+|---|---|---|
+| `picker` | `efficient_first` | The efficient tier serves a turn when the tool signals are not confident. |
+| `confidence_threshold` | `0.5` | How strongly the tool signals must agree before they pick a tier on their own. |
+| `recent_turn_window` | `3` | How many recent tool results the signals are computed over. |
+| `capable_hold_turns` | `2` | How many turns stay on the capable tier after an escalation. A clean test pass ends the hold early. |
+| Classifier | none | No LLM judge is called. |
+
+Auto accepts no tuning keys. To change a setting, write the equivalent
+`stage_router` route shown in the [TOML schema](../reference/toml_schema.md#auto)
+and edit it there. Choose the two models with the
+[model selection guide](model_selection.md).
+
+Only the `efficient_first` picker has published results. The `capable_first`
+picker is [experimental](stage_router_routing.md#pickers).
+
+#### When Auto does not route
+
+Auto decides from tool results in the request. In these cases every request goes
+to one tier:
+
+- **No tool results in the request.** Chat-only requests, and the first request
+  of an agent session, carry no tool history. The signals abstain and the
+  efficient tier serves the turn. This is by design. `GET /v1/stats` counts these
+  turns under `algorithm_stats.stage_router.routing_decisions.fall_open`. See
+  [Verify routing is active](../getting_started.md#verify-routing-is-active).
+- **Both tiers name the same target.** The server accepts a route whose
+  `capable_target` and `efficient_target` are the same target. Every request then
+  goes to that one model, and `GET /v1/stats` lists a single entry under `.models`.
+- **No session ID on the request.** The capable hold is kept per session. A
+  request without a session ID gets fresh state, so a hold set by one request is
+  gone on the next. Requests with a session ID but no agent ID share one hold
+  within that session.
+
+A critical error, a repeated identical failure, or a context-compaction marker in
+the tool history still sends the turn to the capable tier. See
+[decision sources](stage_router_routing.md#decision-sources).
+
+Auto uses the settings of the published stage-router results, with two
+differences: those runs set `recent_turn_window = 5` and added a handoff note.
+Every published result comes from a coding agent whose requests carry tool
+results. The [model selection guide](model_selection.md#measured-pairs) lists the
+measured model pairs.
 
 ## More options
 
@@ -47,6 +89,7 @@ These options remain available when you need a different routing policy.
 | [Advisor Gate](advisor_gate_routing.md) | Keep one executor model and have a stronger advisor review its plans and completion claims. | `advisor` |
 | [Sub-Agent-Aware Routing](subagent_routing.md) | Delegated sub-agents should use a separate routing policy from the parent agent. | `passthrough`, `stage_router`, or `composite` with `subagents` |
 | [Random Routing](random_routing.md) | You need a fixed traffic split for A/B tests, baselines, or cost experiments. | `random` |
+| [Verification-Gated Routing](vgr_routing.md) | Serve a local attempt only after bounded verification, and send the request to the capable model otherwise. | `vgr` |
 | [Fixed Model](#direct-model-routes) | Send every request to one target without a routing decision. | `passthrough` |
 
 ### Experimental

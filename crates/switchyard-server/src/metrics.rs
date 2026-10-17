@@ -10,6 +10,8 @@ use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stre
 use prometheus::{Encoder, Registry, TextEncoder};
 use switchyard_llm_client::metrics::{http_outcome_label, http_status_code_label};
 
+pub(crate) use switchyard_llm_client::metrics::record_translation_diagnostics;
+
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
 /// Outcome label for a request the client abandoned. Kept separate from the

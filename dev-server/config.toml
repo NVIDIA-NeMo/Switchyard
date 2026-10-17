@@ -1,23 +1,54 @@
 schema_version = 1
 
-# Everything is on Inference Hub
+# Clients
 
 [llm_clients.inference_hub]
 format = "openai_responses"
 base_url = "https://inference-api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"
 
-# The two models our algos use
+[decision_clients.decisions]
+format = "system_one"
+endpoint = "https://openrouter.ai/api/alpha/decisions"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_ms = 15000
+
+# The three models our algos use
 
 [targets.capable]
-id = "openai/openai/gpt-5.6-sol"
+id = "openai/openai/gpt-6.1-sol"
 llm_client = "inference_hub"
 extra_body = { reasoning = { effort = "medium" } }
 
 [targets.efficient]
-id = "openai/openai/gpt-5.6-luna"
+id = "openai/openai/gpt-6-luna"
 llm_client = "inference_hub"
 extra_body = { reasoning = { effort = "medium" } }
+
+[decision_targets.classifier]
+id = "inception/mercury-decide:free"
+decision_client = "decisions"
+
+# Best route
+[routes.auto]
+id = "switchyard/auto"
+type = "composite"
+
+[routes.auto.classifier]
+target = "classifier"
+classify_trigger = "user_turn"
+fail_open = false
+
+[routes.auto.classifier.decision]
+cutoff = 0.4
+candidates = { a = "capable", b = "efficient" }
+evidence = { description = "Candidate a is the larger reasoning-oriented coding and thinking model. It is intended for complex problems. Candidate b is the smaller fast coding model. It is intended for simple questions, simple local reads and edits, routine tests and straightforward fixes. These are qualitative deployment roles, not empirical success rates." }
+
+[routes.auto.stage]
+capable_target = "capable"
+efficient_target = "efficient"
+efficient_first_threshold = 0.5
+capable_first_threshold = 0.2
 
 # Basic routes
 

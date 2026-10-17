@@ -9,7 +9,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use libsy::RuntimeModels;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -17,8 +16,9 @@ use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     ReasoningFormat, SystemOneClient, TranslatingLlmClient,
 };
-use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
+use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::runner::ModelPropertiesProbe;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
     Runner, RunnerError,
@@ -26,6 +26,39 @@ use crate::{
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
+
+/// This function returns a deployment's declared credential variable names without reading their values.
+/// It parses the deployment and checks its schema version before returning names from LLM and decision clients.
+pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|_| {
+        RunnerError::configuration(
+            "Could not parse the server config to read credential references.",
+        )
+    })?;
+    if config.schema_version != SUPPORTED_SCHEMA_VERSION {
+        return Err(RunnerError::configuration(
+            "Unsupported server config schema version.",
+        ));
+    }
+    let mut variables: BTreeSet<_> = config
+        .llm_clients
+        .values()
+        .filter_map(|client| client.api_key_env.clone())
+        .collect();
+    for client in config.decision_clients.values() {
+        let DecisionClientConfig::SystemOne { api_key_env, .. } = client;
+        variables.insert(api_key_env.clone());
+    }
+    if variables
+        .iter()
+        .any(|name| name.trim().is_empty() || name.contains(['\0', '=']))
+    {
+        return Err(RunnerError::configuration(
+            "Invalid credential environment variable name.",
+        ));
+    }
+    Ok(variables)
+}
 
 type RunnerResult<T> = Result<T, RunnerError>;
 
@@ -49,6 +82,27 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
+    config.build()
+}
+
+pub(crate) fn model_selection_from_toml(source: &str) -> RunnerResult<Runner> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|error: toml::de::Error| {
+        // Report the location while keeping document excerpts in the source error.
+        let mut message = "failed to parse TOML".to_string();
+        if let Some(prefix) = error.span().and_then(|span| source.get(..span.start)) {
+            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = prefix
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .chars()
+                .count()
+                + 1;
+            message = format!("{message} at line {line}, column {column}");
+        }
+        RunnerError::configuration_source(message, error)
+    })?;
+    config.validate_model_selection()?;
     config.build()
 }
 
@@ -146,6 +200,36 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
+    fn validate_model_selection(&self) -> RunnerResult<()> {
+        for (name, client) in &self.llm_clients {
+            if client.forward_auth {
+                return Err(RunnerError::configuration(format!(
+                    "llm client {name}: model selection requires configured classifier credentials"
+                )));
+            }
+        }
+        for (name, route) in &self.routes {
+            if !route.algorithm.supports_model_selection() {
+                return Err(RunnerError::configuration(format!(
+                    "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
+                )));
+            }
+            for target_name in route.routing_target_names() {
+                if let Some(target) = self.targets.get(target_name)
+                    && (target.system_prompt.is_some()
+                        || target.reasoning_effort.is_some()
+                        || !target.extra_body.is_empty()
+                        || !target.omit_body_fields.is_empty())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name}: model selection requires completion settings to be owned by the caller"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn decision_target(&self, name: &str) -> Option<DecisionTarget> {
         let target = self.targets.get(name)?;
         let client = self.llm_clients.get(&target.llm_client)?;
@@ -235,6 +319,7 @@ impl DeploymentConfig {
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
+        let mut model_properties_probes = BTreeMap::new();
         for (route_name, config) in &self.routes {
             let decision_judge = config.algorithm.decision_judge();
             for name in config.callable_target_names() {
@@ -266,10 +351,15 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let algorithm = config
+            let (algorithm, models) = config
                 .algorithm
-                .build(route_name, &targets)
+                .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
+                && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
+            {
+                model_properties_probes.insert(config.id.clone(), probe);
+            }
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients, &decision_clients)?;
             let anthropic_auxiliary_target =
@@ -281,14 +371,6 @@ impl DeploymentConfig {
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
-            let names = config
-                .algorithm
-                .runtime_model_names(route_name)
-                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            let mut models = RuntimeModels::new(resolve_category_models(names.parent, &targets)?);
-            if let Some(subagent) = names.subagent {
-                models = models.with_subagent(resolve_category_models(subagent, &targets)?);
-            }
             let route = Route::new(
                 algorithm,
                 route_clients,
@@ -303,7 +385,8 @@ impl DeploymentConfig {
         }
         let runner = Runner::new(routes)
             .with_fallback_url(fallback_base_url)
-            .with_provider_api_keys(provider_api_keys);
+            .with_provider_api_keys(provider_api_keys)
+            .with_model_properties_probes(model_properties_probes);
         Ok(runner)
     }
 
@@ -383,11 +466,12 @@ impl DeploymentConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let client = Arc::new(
-                TranslatingLlmClient::new(&model_configs)
-                    .map_err(|error| RunnerError::configuration(error.to_string()))?,
-            );
-            clients.insert(name, client);
+            let mut client = TranslatingLlmClient::new(&model_configs)
+                .map_err(|error| RunnerError::configuration(error.to_string()))?;
+            if !self.llm_clients[&name].fallback_on_rate_limit {
+                client = client.without_rate_limit_cooldown();
+            }
+            clients.insert(name, Arc::new(client));
         }
         Ok(clients)
     }
@@ -525,6 +609,17 @@ impl DeploymentConfig {
             prompts,
             routing_answer_target,
             &completion_targets,
+        )
+        .without_rate_limit_fallback(
+            route
+                .routing_target_names()
+                .into_iter()
+                .filter_map(|name| {
+                    let target = &self.targets[name];
+                    (!self.llm_clients[&target.llm_client].fallback_on_rate_limit)
+                        .then(|| target.id.clone())
+                })
+                .collect(),
         );
         Ok((router, caller_auth))
     }
@@ -593,6 +688,27 @@ impl DeploymentConfig {
             ))
         })?;
         Ok(Some(config.base_url.as_str().to_string()))
+    }
+
+    fn build_model_properties_probe(
+        &self,
+        local_target_name: &str,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<ModelPropertiesProbe> {
+        let local_target = self.targets.get(local_target_name)?;
+        let client_config = self.llm_clients.get(&local_target.llm_client)?;
+        if !matches!(
+            client_config.context_discovery,
+            Some(ContextDiscovery::LlamaCpp)
+        ) {
+            return None;
+        }
+        let client = clients.get(&local_target.llm_client)?;
+        Some(ModelPropertiesProbe {
+            model: local_target.id.clone(),
+            format: client_config.format.wire_format(),
+            client: Arc::clone(client),
+        })
     }
 
     fn build_anthropic_auxiliary_target(
@@ -688,6 +804,8 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
 struct LlmClientConfig {
     format: ClientFormat,
     base_url: HttpBaseUrl,
+    /// Opt-in context discovery for VGR's local target. Unset disables discovery.
+    context_discovery: Option<ContextDiscovery>,
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -695,11 +813,19 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    #[serde(default = "default_fallback_on_rate_limit")]
+    fallback_on_rate_limit: bool,
     /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
     #[serde(default = "default_failure_cooldown_ms")]
     failure_cooldown_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ContextDiscovery {
+    LlamaCpp,
 }
 
 #[derive(Debug, Deserialize)]
@@ -767,29 +893,6 @@ impl ClientFormat {
     }
 }
 
-/// Resolves one scope's configured target names to the models the driver serves.
-fn resolve_category_models(
-    names: HashMap<Category, Vec<String>>,
-    targets: &BTreeMap<String, ModelId>,
-) -> RunnerResult<HashMap<Category, Vec<ModelId>>> {
-    names
-        .into_iter()
-        .map(|(category, names)| {
-            let models = names
-                .into_iter()
-                .map(|name| {
-                    targets.get(&name).cloned().ok_or_else(|| {
-                        RunnerError::configuration(format!(
-                            "route references unknown target {name}"
-                        ))
-                    })
-                })
-                .collect::<RunnerResult<Vec<_>>>()?;
-            Ok((category, models))
-        })
-        .collect()
-}
-
 fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
@@ -843,9 +946,20 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
             "{client} api_key_env must not be empty"
         )));
     }
+    // A name with `=` is often a pasted `NAME=key` line, so this error omits the name.
+    if variable.contains(['\0', '=']) {
+        return Err(RunnerError::configuration(format!(
+            "{client} api_key_env must not contain '=' or NUL"
+        )));
+    }
     let api_key = std::env::var(variable).map_err(|error| {
+        // VarError can contain the raw credential, so errors report only its category.
+        let reason = match error {
+            std::env::VarError::NotPresent => "environment variable not found",
+            std::env::VarError::NotUnicode(_) => "environment variable is not valid Unicode",
+        };
         RunnerError::configuration(format!(
-            "{client} could not read api_key_env {variable}: {error}"
+            "{client} could not read api_key_env {variable}: {reason}"
         ))
     })?;
     if api_key.trim().is_empty() {
@@ -859,6 +973,10 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
 // A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
+}
+
+const fn default_fallback_on_rate_limit() -> bool {
+    true
 }
 
 const fn default_failure_cooldown_ms() -> u64 {
@@ -933,6 +1051,7 @@ bogus = true
 mod deployment_tests {
     use super::*;
     use serde_json::json;
+    use switchyard_protocol::Category;
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -1087,6 +1206,58 @@ target = "strong"
         }
     }
 
+    fn vgr_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "weak"
+cloud_target = "strong"
+judge_target = "classifier"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#
+        )
+    }
+
+    #[test]
+    fn vgr_route_builds_and_rejects_unsafe_configuration() -> RunnerResult<()> {
+        let runner = runner_from_toml(&vgr_config())?;
+        assert!(runner.route("switchyard/vgr").is_some());
+
+        let compact = format!("{}\ncompact_handoff = true\n", vgr_config());
+        assert!(error_message(&compact).contains("unknown field `compact_handoff`"));
+
+        let identical_ids =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"strong\"");
+        assert!(error_message(&identical_ids).contains("distinct local and cloud model IDs"));
+
+        let bad_approval =
+            vgr_config().replace("prospective-validation-and-canary-approved", "approved");
+        assert!(error_message(&bad_approval).contains("approval attestation"));
+
+        let missing_target =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
+        assert!(error_message(&missing_target).contains("unknown target missing"));
+        Ok(())
+    }
+
+    #[test]
+    fn vgr_local_server_example_builds_and_rejects_unknown_discovery() -> RunnerResult<()> {
+        let example = include_str!("../../../examples/vgr-local-servers.toml");
+        let runner = runner_from_toml(example)?;
+        assert!(runner.route("switchyard/vgr").is_some());
+        let invalid = example.replace(
+            "context_discovery = \"llama_cpp\"",
+            "context_discovery = \"guess\"",
+        );
+        assert!(error_message(&invalid).contains("unknown variant `guess`"));
+        Ok(())
+    }
+
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));
@@ -1185,6 +1356,72 @@ capable_hold_turns = 2
 new = ["send_message"]
 "#
         )
+    }
+
+    #[test]
+    fn composite_decision_judge_reuses_capability_validation() {
+        let source = composite_config().replace(
+            "[routes.composed.classifier]\ntarget = \"tier_judge\"\nbase_threshold = 0.5",
+            "[routes.composed.classifier]\ntarget = \"tier_judge\"",
+        ) + r#"
+[routes.composed.classifier.decision]
+cutoff = 0.4
+candidates = { a = "strong", b = "weak" }
+evidence = { description = "candidate comparison" }
+"#;
+        for (source, valid) in [
+            (source.clone(), true),
+            (
+                source.replace(
+                    "target = \"tier_judge\"",
+                    "target = \"tier_judge\"\nbase_threshold = 0.5",
+                ),
+                false,
+            ),
+            (source.replace("b = \"weak\"", "b = \"strong\""), false),
+        ] {
+            let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
+            let spec = &deployment.routes["composed"].algorithm;
+            assert_eq!(spec.decision_judge().unwrap().0, "tier_judge");
+            assert_eq!(
+                spec.build_with_runtime_models("composed", &deployment.build_targets())
+                    .is_ok(),
+                valid
+            );
+        }
+    }
+
+    #[test]
+    fn composite_custom_judge_builds_and_rejects_capability_settings() -> RunnerResult<()> {
+        let source = composite_config().replace(
+            "base_threshold = 0.5\nclassify_trigger",
+            r#"mode = "custom"
+prompt = 'Select efficient or capable.'
+response_schema = '{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["efficient","capable"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}'
+policy = { type = "target_selector", selector = "/decision/target" }
+classify_trigger"#,
+        );
+        runner_from_toml(&source)?;
+        runner_from_toml(
+            &source.replace("mode = \"custom\"", "mode = \"custom\"\nfail_open = true"),
+        )?;
+        for (setting, expected) in [
+            (
+                "base_threshold = 0.5",
+                "composite custom classifier cannot use capability thresholds",
+            ),
+            (
+                "fail_open = false",
+                "composite custom classifiers always fail open",
+            ),
+        ] {
+            let invalid = source.replace(
+                "mode = \"custom\"",
+                &format!("mode = \"custom\"\n{setting}"),
+            );
+            assert!(error_message(&invalid).contains(expected));
+        }
+        Ok(())
     }
 
     #[test]
@@ -2097,6 +2334,49 @@ confidence_threshold = 0.5
             std::env::remove_var(EMPTY_KEY_ENV);
         }
         assert!(message.contains("is empty"));
+
+        // macOS reads `FOO` for the name `FOO=x`, so the config would use another variable. A
+        // name with `=` is often a pasted `NAME=key` line, so the error leaves it out.
+        let with_equals = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\napi_key_env = \"NVIDIA_API_KEY=DUMMY_SECRET_DO_NOT_LOG\"",
+            1,
+        );
+        let message = error_message(&with_equals);
+        assert!(message.contains("llm client primary api_key_env must not contain '=' or NUL"));
+        assert!(!message.contains("DUMMY_SECRET_DO_NOT_LOG"), "{message}");
+    }
+
+    // `VarError::NotUnicode` holds the variable's value, so printing that error prints the key.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn invalid_unicode_api_key_is_not_printed() {
+        const RAW_KEY_ENV: &str = "SWITCHYARD_CONFIG_TEST_RAW_KEY";
+        #[cfg(unix)]
+        let raw = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = b"DUMMY_SECRET_DO_NOT_LOG".to_vec();
+            bytes.push(0xff);
+            std::ffi::OsString::from_vec(bytes)
+        };
+        #[cfg(windows)]
+        let raw = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut words: Vec<_> = "DUMMY_SECRET_DO_NOT_LOG".encode_utf16().collect();
+            words.push(0xd800);
+            std::ffi::OsString::from_wide(&words)
+        };
+        unsafe {
+            // "unsafe" is for concurrent reads and writes, very rare
+            std::env::set_var(RAW_KEY_ENV, raw);
+        }
+        let result = read_api_key("llm client fixture", RAW_KEY_ENV);
+        unsafe {
+            std::env::remove_var(RAW_KEY_ENV);
+        }
+        let error = result.expect_err("invalid Unicode credential").to_string();
+        assert!(error.contains("not valid Unicode"), "{error}");
+        assert!(!error.contains("DUMMY_SECRET_DO_NOT_LOG"), "{error}");
     }
 
     #[test]
