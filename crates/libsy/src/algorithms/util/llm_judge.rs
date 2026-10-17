@@ -205,6 +205,9 @@ pub trait JudgePolicy: Send + Sync {
         verdict: Option<&Self::Verdict>,
         driver: &Driver,
     ) -> Result<Classification>;
+
+    /// Adds a configured handoff note after the policy resolves a target.
+    fn apply_handoff_note(&self, _verdict: &Self::Verdict, _request: &mut Request) {}
 }
 
 type EvidenceFn<V, P> = fn(&P, Option<&V>) -> Option<Value>;
@@ -363,6 +366,11 @@ where
         }
         let verdict = self.verdict(state, request, driver, judge_models).await;
         let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
+        if matches!(&classification, Classification::Scores(scores) if !scores.is_empty())
+            && let Some(verdict) = verdict.as_ref()
+        {
+            self.policy.apply_handoff_note(verdict, request);
+        }
         if let Some(evidence) = self
             .evidence
             .and_then(|evidence| evidence(&self.policy, verdict.as_ref()))

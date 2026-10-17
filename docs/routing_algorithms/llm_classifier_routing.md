@@ -224,6 +224,49 @@ name works.
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.
 
+### Judge-selected handoff notes
+
+Use `policy.type = "handoff_note"` to add a hint to a fixed target. The target is
+specified in TOML. A separate LLM judge selects only an optional note ID.
+
+Create a TOML file mapping IDs to note text:
+
+```toml
+compile_failure = "Read the compiler error and fix the first failing operation."
+repeated_failure = """
+Review the previous attempts before trying another change.
+Explain what the new attempt tests.
+"""
+```
+
+Use a nullable `note` string in `response_schema`, then configure the policy:
+
+```toml
+[routes.notes.policy]
+type = "handoff_note"
+target = "target"
+selector = "/note"
+db_path = "handoff-notes.toml"
+```
+
+`policy.target` names an entry in `[targets]` that also appears in `models.any`.
+Switchyard loads the file at startup and includes the mapping in the judge's
+prompt. A verdict such as `{"note":"compile_failure"}` appends the stored text
+using the same helper as stage-router handoff notes. A null, missing, or unknown
+note ID adds nothing. Invalid verdicts add nothing. The configured target is
+used in all these cases; the judge does not select a model.
+
+`classify_trigger` controls note selection. A retained target bypasses the judge
+and adds no note. `every_request` may select the same note on later requests.
+Relative database paths resolve beside the deployment TOML file when using
+`Runner::load`; string-based configuration resolves them from the working
+directory. Reload the deployment to pick up file edits.
+
+See the complete [route example](../../examples/classifier-handoff-notes.toml)
+and [note database](../../examples/handoff-notes.toml). Set their client URL and
+model IDs for your provider. This policy is supported by custom `llm_classifier`
+routes, including sub-agent routes.
+
 ### Forecast and policy assumptions
 
 The packaged prompt forecasts whole-task success for a generic efficient agent.
