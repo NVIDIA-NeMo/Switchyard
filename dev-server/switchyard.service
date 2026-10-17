@@ -20,6 +20,7 @@ ExecStart=/usr/local/bin/switchyard-server \
 
 Restart=on-failure
 Environment="NVIDIA_API_KEY=<PUT-THE-KEY-HERE>"
+Environment="OPENROUTER_API_KEY=<PUT-THE-OTHER-KEY-HERE>"
 
 PrivateDevices=yes
 ProtectHome=yes

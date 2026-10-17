@@ -127,6 +127,10 @@ impl TranslationEngine {
     }
 
     /// Encodes a neutral request IR into a target wire format.
+    ///
+    /// Preserved target bodies take precedence over normalized fields, including
+    /// `output.is_schema_enforced`. Clear the target's preservation entry or use
+    /// [`crate::policy::PreservationPolicy::Disabled`] to encode IR edits.
     pub fn encode_request(
         &self,
         target: impl Into<FormatId>,

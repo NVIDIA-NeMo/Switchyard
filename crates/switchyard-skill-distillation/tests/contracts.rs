@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::json;
 use switchyard_skill_distillation::{
     ActivationOperation, ActivationRecord, DistillationRequest, ExecutionMetadata, Metadata,
@@ -130,7 +129,6 @@ struct StaticSource {
     values: Vec<Trajectory>,
 }
 
-#[async_trait]
 impl TrajectorySource for StaticSource {
     async fn load(&self, _namespace: &SkillNamespace) -> Result<Vec<Trajectory>> {
         Ok(self.values.clone())
@@ -139,7 +137,6 @@ impl TrajectorySource for StaticSource {
 
 struct StubDistiller;
 
-#[async_trait]
 impl SkillDistiller for StubDistiller {
     async fn distill(&self, request: &DistillationRequest) -> Result<SkillCandidate> {
         request.validate()?;
@@ -149,7 +146,6 @@ impl SkillDistiller for StubDistiller {
 
 struct StubValidator;
 
-#[async_trait]
 impl SkillValidator for StubValidator {
     async fn validate(
         &self,
@@ -184,7 +180,6 @@ struct MemoryStore {
     state: Arc<Mutex<StoreState>>,
 }
 
-#[async_trait]
 impl SkillStore for MemoryStore {
     async fn active(&self, namespace: &SkillNamespace) -> Result<Option<SkillCandidate>> {
         Ok(self.state.lock().await.active.get(namespace).cloned())

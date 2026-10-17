@@ -10,14 +10,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
-    AdvisorGate, AdvisorGateConfig, Algorithm, ClassifierContractConfig, ClassifierResponseFormat,
-    ClassifyTrigger, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
-    CustomClassifierPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode,
-    PlanExecute, PlanExecuteConfig, Random, StageRouter, StageRouterConfig, SubagentRouter,
-    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
+    ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
+    CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
+    DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    Vgr, VgrConfig,
 };
 use serde::Deserialize;
+use serde_json::Value;
 use switchyard_protocol::{Category, ModelId};
 
 /// Error returned when an algorithm description cannot be constructed.
@@ -99,16 +102,62 @@ enum LlmClassifierModeConfig {
 #[derive(Clone, Debug)]
 struct CapabilityClassifierRouteConfig {
     classifier_target: String,
+    fail_open: bool,
     strong_target: String,
     weak_target: String,
-    base_threshold: f64,
-    threshold_step: f64,
+    judge: CapabilityJudgeRouteConfig,
     classify_trigger: ClassifyTrigger,
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
-    prompt: Option<String>,
-    response_format_type: ClassifierResponseFormat,
-    max_output_tokens: u64,
+}
+
+impl CapabilityClassifierRouteConfig {
+    fn into_task_config(
+        self,
+        route_name: &str,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<TaskClassifierConfig> {
+        let config = self;
+        let judge = match config.judge {
+            CapabilityJudgeRouteConfig::Llm(judge) => CapabilityJudgeConfig::Llm(judge),
+            CapabilityJudgeRouteConfig::Decision(judge) => {
+                for target in [&config.strong_target, &config.weak_target] {
+                    if !judge.candidates.values().any(|name| name == target) {
+                        return Err(AlgorithmConfigError::new(format!(
+                            "route {route_name}: decision.candidates must include target {target}"
+                        )));
+                    }
+                }
+                let candidates = judge
+                    .candidates
+                    .into_iter()
+                    .map(|(label, name)| {
+                        resolve_target_model_id(route_name, &name, targets)
+                            .map(|model| (label, model))
+                    })
+                    .collect::<AlgorithmResult<_>>()?;
+                CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
+                    cutoff: judge.cutoff,
+                    instructions: judge.instructions,
+                    candidates,
+                    evidence: judge.evidence,
+                })
+            }
+        };
+        Ok(TaskClassifierConfig {
+            judge,
+            fail_open: config.fail_open,
+            classify_trigger: config.classify_trigger,
+            message_hash_fallback: config.message_hash_fallback,
+            recent_turn_window: config.recent_turn_window,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+enum CapabilityJudgeRouteConfig {
+    Llm(LlmCapabilityConfig),
+    Decision(DecisionJudgeRouteConfig),
 }
 
 #[derive(Clone, Debug)]
@@ -218,6 +267,20 @@ impl CategoryModelConfig {
     }
 }
 
+/// Relative-advantage judgment using a decision model instead of an LLM prompt.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionJudgeRouteConfig {
+    /// Route capable only when its advantage score is strictly above this cutoff.
+    pub cutoff: f64,
+    /// Replaces the default relative-advantage instructions.
+    pub instructions: Option<Value>,
+    /// Anonymous evidence labels mapped to configured LLM target names.
+    pub candidates: BTreeMap<String, String>,
+    /// Candidate descriptions and reference outcomes, passed unchanged to the judge.
+    pub evidence: Value,
+}
+
 /// Settings for an `llm_classifier` route. Which fields are required depends on
 /// the [`ClassifierMode`]; using a field from the wrong mode is an error.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -237,6 +300,9 @@ pub struct LlmClassifierRouteConfig {
     /// Capability mode: how much to raise the threshold when the judge is
     /// uncertain. Added once for an uncertain verdict and twice for unsupported.
     pub threshold_step: Option<f64>,
+    /// Capability mode: routes to the capable tier on judge client failures and deadlines.
+    /// Defaults to true when capability mode is selected.
+    pub fail_open: Option<bool>,
     /// How often the judge runs: every request, once per user turn, or once per session.
     pub classify_trigger: ClassifyTrigger,
     /// Reuses the session's target by hashing the first user message when no
@@ -256,6 +322,8 @@ pub struct LlmClassifierRouteConfig {
     /// Escalation mode: how many escalate verdicts latch the session, and how
     /// much of the transcript the judge sees.
     pub escalation: Option<EscalationJudgeConfig>,
+    /// Capability mode: use a decision target as the judge, with relative-advantage scoring.
+    pub decision: Option<DecisionJudgeRouteConfig>,
     /// Custom mode: runtime model groups.
     pub models: Option<CategoryModelConfig>,
     /// Custom mode: category used when the judge fails or its verdict cannot be routed.
@@ -336,6 +404,9 @@ pub enum AlgorithmSpec {
         capable_target: String,
         /// Target used from the first edit or write onward.
         efficient_target: String,
+        /// Additional tool names whose mutations trigger handoff.
+        #[serde(default)]
+        tool_semantics: ToolSemantics,
         /// Replaces the built-in planning instruction.
         #[serde(default)]
         planning_prompt: Option<String>,
@@ -428,6 +499,10 @@ pub enum AlgorithmSpec {
         #[serde(default = "default_fail_open")]
         fail_open: bool,
     },
+    Vgr {
+        #[serde(flatten)]
+        config: VgrRouteConfig,
+    },
     /// Routes using a checkpoint-backed prefill classifier.
     PrefillRouter {
         /// Target names in checkpoint output order.
@@ -444,6 +519,49 @@ pub enum AlgorithmSpec {
         /// Maximum prompts per encoder forward pass.
         batch_size: Option<usize>,
     },
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VgrRouteConfig {
+    pub local_target: String,
+    pub cloud_target: String,
+    /// Defaults to `local_target`.
+    #[serde(default)]
+    pub judge_target: Option<String>,
+    #[serde(default)]
+    pub cloud_judge_target: Option<String>,
+    #[serde(default)]
+    pub mode: VgrModeConfig,
+    #[serde(default)]
+    pub active_approval: Option<String>,
+    #[serde(default = "default_vgr_deadline")]
+    pub deadline_seconds: f64,
+    #[serde(default = "default_true")]
+    pub task_typing: bool,
+    #[serde(default = "default_vgr_breaker_threshold")]
+    pub breaker_threshold: u32,
+    #[serde(default = "default_vgr_breaker_cooldown")]
+    pub breaker_cooldown_seconds: f64,
+    /// Clean trailing tool results that let a long run recover on the cloud judge.
+    #[serde(default)]
+    pub confirmed_recovery_min_clean_tail: Option<u32>,
+    /// Tells the capable tier it inherits unverified tool-using work.
+    #[serde(default)]
+    pub agentic_handoff: bool,
+    /// Wall-clock budget for the local tier within one user turn.
+    #[serde(default)]
+    pub local_turn_budget_seconds: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VgrModeConfig {
+    #[default]
+    Off,
+    Evaluate,
+    Shadow,
+    Active,
 }
 
 /// What fires an advisor route's review.
@@ -463,12 +581,23 @@ pub enum AdvisorTriggerConfig {
 pub struct StageClassifierConfig {
     /// Target the judge is called through. Not a routing destination.
     pub target: String,
+    /// Composite accepts custom-schema judges as well as capability judges.
+    #[serde(default)]
+    pub mode: Option<ClassifierMode>,
+    #[serde(default)]
+    pub response_schema: Option<String>,
+    #[serde(default)]
+    pub policy: Option<ClassifierPolicyConfig>,
+    #[serde(default)]
+    pub decision: Option<DecisionJudgeRouteConfig>,
+    #[serde(default)]
+    pub fail_open: Option<bool>,
     /// Lowest solve probability that still routes to the efficient tier, from 0 to 1.
-    pub base_threshold: f64,
+    pub base_threshold: Option<f64>,
     /// How much to raise the threshold when the judge is uncertain. Added once
     /// for an uncertain verdict and twice for unsupported.
     #[serde(default)]
-    pub threshold_step: f64,
+    pub threshold_step: Option<f64>,
     /// How often the judge runs. `new_session` has no effect here.
     #[serde(default)]
     pub classify_trigger: ClassifyTrigger,
@@ -504,7 +633,11 @@ pub struct StageTierConfig {
     /// The efficient tier.
     pub efficient_target: String,
     /// How much agreement a decisive pick needs, from 0 to 1.
-    pub confidence_threshold: f64,
+    #[serde(default, alias = "efficient_first_threshold")]
+    pub confidence_threshold: Option<f64>,
+    /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
+    #[serde(default)]
+    pub capable_first_threshold: f64,
     /// How many trailing tool results the signals are scored over.
     #[serde(default)]
     pub recent_turn_window: Option<usize>,
@@ -520,21 +653,119 @@ pub struct StageTierConfig {
 }
 
 impl StageClassifierConfig {
-    fn task_classifier_config(&self) -> TaskClassifierConfig {
-        TaskClassifierConfig {
+    fn task_classifier_config(
+        &self,
+        route_name: &str,
+        tiers: &StageTierConfig,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<TaskClassifierConfig> {
+        if self
+            .mode
+            .is_some_and(|mode| !matches!(mode, ClassifierMode::Capability))
+            || self.response_schema.is_some()
+            || self.policy.is_some()
+        {
+            return Err(AlgorithmConfigError::new(
+                "custom classifier settings require composite with mode = custom",
+            ));
+        }
+        let config = LlmClassifierRouteConfig {
+            classifier_target: self.target.clone(),
+            strong_target: Some(tiers.capable_target.clone()),
+            weak_target: Some(tiers.efficient_target.clone()),
             base_threshold: self.base_threshold,
             threshold_step: self.threshold_step,
+            fail_open: self.fail_open,
+            decision: self.decision.clone(),
             classify_trigger: self.classify_trigger,
             message_hash_fallback: self.message_hash_fallback,
             recent_turn_window: self.recent_turn_window,
-            contract: classifier_contract(self.prompt.as_deref())
-                .with_response_format_type(self.response_format_type),
+            prompt: self.prompt.clone(),
+            response_format_type: self.response_format_type,
             max_output_tokens: self.max_output_tokens,
+            ..Default::default()
+        };
+        match config.validated_classifier_mode(route_name)? {
+            LlmClassifierModeConfig::Capability(config) => {
+                config.into_task_config(route_name, targets)
+            }
+            _ => Err(AlgorithmConfigError::new("expected a capability judge")),
         }
+    }
+
+    fn custom_classifier_config(
+        &self,
+        route_name: &str,
+    ) -> AlgorithmResult<CustomClassifierConfig> {
+        if self.fail_open == Some(false) {
+            return Err(AlgorithmConfigError::new(
+                "composite custom classifiers always fail open; remove fail_open = false",
+            ));
+        }
+        if self.decision.is_some()
+            || self.base_threshold.is_some()
+            || self.threshold_step.is_some()
+            || self.response_format_type != ClassifierResponseFormat::JsonSchema
+        {
+            return Err(AlgorithmConfigError::new(
+                "composite custom classifier cannot use capability thresholds, decision settings, or response_format_type",
+            ));
+        }
+        let schema =
+            required_classifier_field(route_name, "response_schema", &self.response_schema)?;
+        let schema = serde_json::from_str(&schema).map_err(|error| {
+            AlgorithmConfigError::with_source(
+                format!("composite route {route_name}: response_schema is invalid JSON"),
+                error,
+            )
+        })?;
+        let mut config = CustomClassifierConfig::new(
+            required_classifier_field(route_name, "prompt", &self.prompt)?,
+            schema,
+            required_classifier_field(route_name, "policy", &self.policy)?.into_libsy(),
+        );
+        config.classify_trigger = self.classify_trigger;
+        config.message_hash_fallback = self.message_hash_fallback;
+        config.recent_turn_window = self.recent_turn_window;
+        config.max_output_tokens = self.max_output_tokens;
+        Ok(config)
     }
 }
 
 impl AlgorithmSpec {
+    /// Whether this configuration only selects a model, with state owned by the caller.
+    pub(crate) fn supports_model_selection(&self) -> bool {
+        match self {
+            Self::Passthrough {
+                subagents: None, ..
+            }
+            | Self::Auto { .. } => true,
+            Self::LlmClassifier { config } => {
+                matches!(config.classifier_mode(), ClassifierMode::Capability)
+                    && config.classify_trigger == ClassifyTrigger::EveryRequest
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
+        match self {
+            Self::LlmClassifier { config, .. } => config
+                .decision
+                .as_ref()
+                .map(|decision| (config.classifier_target.as_str(), decision)),
+            Self::Composite { classifier, .. }
+            | Self::StageRouter {
+                classifier: Some(classifier),
+                ..
+            } => classifier
+                .decision
+                .as_ref()
+                .map(|decision| (classifier.target.as_str(), decision)),
+            _ => None,
+        }
+    }
+
     /// Completion targets in algorithm order; judge-only targets are excluded.
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
@@ -606,6 +837,9 @@ impl AlgorithmSpec {
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
+            Self::Vgr { config } => {
+                vec![config.local_target.as_str(), config.cloud_target.as_str()]
+            }
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
         }
     }
@@ -642,6 +876,10 @@ impl AlgorithmSpec {
                 names.push(&classifier.target);
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
+            Self::Vgr { config } => {
+                names.extend(config.judge_target.as_deref());
+                names.extend(config.cloud_judge_target.as_deref());
+            }
             _ => {}
         }
         // A sub-agent classifier calls its own judge, which is never a completion target.
@@ -664,10 +902,7 @@ impl AlgorithmSpec {
     }
 
     /// Target names grouped as the runtime [`Driver`](libsy::Driver) expects them.
-    pub(crate) fn runtime_model_names(
-        &self,
-        route_name: &str,
-    ) -> AlgorithmResult<RuntimeModelNames> {
+    fn runtime_model_names(&self, route_name: &str) -> AlgorithmResult<RuntimeModelNames> {
         let parent = match self {
             Self::Noop { .. } => HashMap::new(),
             Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
@@ -738,6 +973,22 @@ impl AlgorithmSpec {
                 (Category::Any, vec![executor_target.clone()]),
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),
+            Self::Vgr { config } => {
+                let judge = config.judge_target.as_ref().unwrap_or(&config.local_target);
+                let judges = std::iter::once(judge)
+                    .chain(&config.cloud_judge_target)
+                    .cloned()
+                    .collect();
+                category_models([
+                    (Category::Efficient, vec![config.local_target.clone()]),
+                    (Category::Capable, vec![config.cloud_target.clone()]),
+                    (
+                        Category::Any,
+                        vec![config.local_target.clone(), config.cloud_target.clone()],
+                    ),
+                    (Category::Judge, judges),
+                ])
+            }
         };
 
         let subagents = match self {
@@ -771,6 +1022,13 @@ impl AlgorithmSpec {
                 advisor_target,
                 ..
             } => Some((executor_target, advisor_target)),
+            Self::Vgr { config } => Some((
+                &config.local_target,
+                config
+                    .judge_target
+                    .as_deref()
+                    .unwrap_or(&config.local_target),
+            )),
             Self::Noop { .. }
             | Self::Random { .. }
             | Self::Passthrough { .. }
@@ -786,19 +1044,35 @@ impl AlgorithmSpec {
     /// Builds this algorithm after resolving configured target names.
     pub fn build(
         &self,
-        context: &str,
+        route_name: &str,
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-        build_algorithm(context, self, targets)
+        build_algorithm(route_name, self, targets)
+    }
+
+    /// Resolves target names to host model IDs and builds the algorithm and runtime groups.
+    pub fn build_with_runtime_models(
+        &self,
+        route_name: &str,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<(Arc<dyn Algorithm>, RuntimeModels)> {
+        let algorithm = self.build(route_name, targets)?;
+        let names = self.runtime_model_names(route_name)?;
+        let mut models =
+            RuntimeModels::new(resolve_runtime_models(route_name, names.parent, targets)?);
+        if let Some(subagent) = names.subagent {
+            models = models.with_subagent(resolve_runtime_models(route_name, subagent, targets)?);
+        }
+        Ok((algorithm, models))
     }
 }
 
 /// One route's target names, grouped by category and by routing scope.
-pub(crate) struct RuntimeModelNames {
+struct RuntimeModelNames {
     /// Groups the algorithm itself routes over.
-    pub(crate) parent: HashMap<Category, Vec<String>>,
+    parent: HashMap<Category, Vec<String>>,
     /// Groups delegated sub-agent work routes over, when the route has a `subagents` table.
-    pub(crate) subagent: Option<HashMap<Category, Vec<String>>>,
+    subagent: Option<HashMap<Category, Vec<String>>>,
 }
 
 fn category_models(
@@ -878,6 +1152,7 @@ impl LlmClassifierRouteConfig {
             weak_target,
             base_threshold,
             threshold_step,
+            fail_open,
             classify_trigger,
             message_hash_fallback,
             recent_turn_window,
@@ -885,6 +1160,7 @@ impl LlmClassifierRouteConfig {
             response_format_type,
             max_output_tokens,
             escalation,
+            decision,
             models,
             default_target,
             response_schema,
@@ -896,6 +1172,18 @@ impl LlmClassifierRouteConfig {
             (None, true) => ClassifierMode::Escalation,
             (None, false) => ClassifierMode::Capability,
         };
+
+        if decision.is_some() && !matches!(selected_mode, ClassifierMode::Capability) {
+            return Err(AlgorithmConfigError::new(format!(
+                "llm_classifier route {route_name}: decision requires capability mode"
+            )));
+        }
+
+        if !matches!(selected_mode, ClassifierMode::Capability) && *fail_open == Some(true) {
+            return Err(AlgorithmConfigError::new(format!(
+                "llm_classifier route {route_name}: fail_open = true requires capability mode"
+            )));
+        }
 
         match selected_mode {
             ClassifierMode::Capability => {
@@ -914,9 +1202,35 @@ impl LlmClassifierRouteConfig {
                     response_schema,
                     policy,
                 )?;
+                let judge = if let Some(decision) = decision {
+                    if base_threshold.is_some()
+                        || threshold_step.is_some()
+                        || prompt.is_some()
+                        || *response_format_type != ClassifierResponseFormat::JsonSchema
+                        || *max_output_tokens != default_classifier_max_output_tokens()
+                    {
+                        return Err(AlgorithmConfigError::new(format!(
+                            "llm_classifier route {route_name}: decision cannot use LLM judge settings; use decision.cutoff and decision.instructions"
+                        )));
+                    }
+                    CapabilityJudgeRouteConfig::Decision(decision.clone())
+                } else {
+                    CapabilityJudgeRouteConfig::Llm(LlmCapabilityConfig {
+                        base_threshold: required_classifier_field(
+                            route_name,
+                            "base_threshold",
+                            base_threshold,
+                        )?,
+                        threshold_step: threshold_step.unwrap_or_default(),
+                        contract: classifier_contract(prompt.as_deref())
+                            .with_response_format_type(*response_format_type),
+                        max_output_tokens: *max_output_tokens,
+                    })
+                };
                 Ok(LlmClassifierModeConfig::Capability(
                     CapabilityClassifierRouteConfig {
                         classifier_target: classifier_target.clone(),
+                        fail_open: fail_open.unwrap_or(true),
                         strong_target: required_classifier_field(
                             route_name,
                             "strong_target",
@@ -927,18 +1241,10 @@ impl LlmClassifierRouteConfig {
                             "weak_target",
                             weak_target,
                         )?,
-                        base_threshold: required_classifier_field(
-                            route_name,
-                            "base_threshold",
-                            base_threshold,
-                        )?,
-                        threshold_step: threshold_step.unwrap_or_default(),
+                        judge,
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
-                        prompt: prompt.clone(),
-                        response_format_type: *response_format_type,
-                        max_output_tokens: *max_output_tokens,
                     },
                 ))
             }
@@ -1202,12 +1508,14 @@ fn build_algorithm(
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
         AlgorithmSpec::PlanExecute {
+            tool_semantics,
             planning_prompt,
             handoff_prompt,
             planner_reasoning_as_text,
             ..
         } => {
             let mut config = PlanExecuteConfig::default();
+            config.tool_semantics.clone_from(tool_semantics);
             if let Some(prompt) = planning_prompt {
                 config.planning_prompt = prompt.clone();
             }
@@ -1228,16 +1536,7 @@ fn build_algorithm(
             let mode = classifier_config.validated_classifier_mode(route_name)?;
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
-                    let classifier_config = TaskClassifierConfig {
-                        base_threshold: config.base_threshold,
-                        threshold_step: config.threshold_step,
-                        classify_trigger: config.classify_trigger,
-                        message_hash_fallback: config.message_hash_fallback,
-                        recent_turn_window: config.recent_turn_window,
-                        contract: classifier_contract(config.prompt.as_deref())
-                            .with_response_format_type(config.response_format_type),
-                        max_output_tokens: config.max_output_tokens,
-                    };
+                    let classifier_config = config.into_task_config(route_name, targets)?;
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         config: classifier_config,
                     })
@@ -1305,7 +1604,13 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
-            let mut config = StageRouterConfig::new(*picker, *confidence_threshold);
+            let threshold = confidence_threshold.ok_or_else(|| {
+                AlgorithmConfigError::new(format!(
+                    "stage_router route {route_name}: confidence_threshold is required"
+                ))
+            })?;
+            let mut config = StageRouterConfig::new(*picker, threshold);
+            config.capable_first_threshold = tiers.capable_first_threshold;
             config.recent_window = *recent_turn_window;
             if let Some(turns) = capable_hold_turns {
                 config.capable_hold_turns = *turns;
@@ -1314,9 +1619,14 @@ fn build_algorithm(
             config.handoff_notes = handoff_notes.clone();
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.
-            config.llm_fallback = classifier.as_ref().map(|classifier| LlmFallback {
-                config: classifier.task_classifier_config(),
-            });
+            config.llm_fallback = classifier
+                .as_ref()
+                .map(|classifier| {
+                    classifier
+                        .task_classifier_config(route_name, tiers, targets)
+                        .map(|config| LlmFallback { config })
+                })
+                .transpose()?;
             let algorithm = StageRouter::new(config).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("stage_router route {route_name}: {error}"),
@@ -1341,19 +1651,29 @@ fn build_algorithm(
             stage,
             subagents,
         } => {
-            let mut stage_config =
-                StageRouterConfig::new(PickerMode::EfficientFirst, stage.confidence_threshold);
+            let mut stage_config = StageRouterConfig::new(
+                PickerMode::EfficientFirst,
+                stage.confidence_threshold.unwrap_or(0.5),
+            );
+            stage_config.capable_first_threshold = stage.capable_first_threshold;
             stage_config.recent_window = stage.recent_turn_window;
             if let Some(turns) = stage.capable_hold_turns {
                 stage_config.capable_hold_turns = turns;
             }
             stage_config.tool_semantics = stage.tool_semantics.clone();
             stage_config.handoff_notes = stage.handoff_notes.clone();
-            let config = CompositeRouterConfig {
-                judge: classifier.task_classifier_config(),
-                stage: stage_config,
+            let judge = if matches!(classifier.mode, Some(ClassifierMode::Custom)) {
+                CompositeJudgeConfig::Custom(classifier.custom_classifier_config(route_name)?)
+            } else {
+                CompositeJudgeConfig::Capability(
+                    classifier.task_classifier_config(route_name, stage, targets)?,
+                )
             };
-            let algorithm = CompositeRouter::new(config).map_err(|error| {
+            let algorithm = CompositeRouter::new(CompositeRouterConfig {
+                judge,
+                stage: stage_config,
+            })
+            .map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("composite route {route_name}: {error}"),
                     error,
@@ -1412,6 +1732,7 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
+        AlgorithmSpec::Vgr { config } => build_vgr(route_name, config, targets),
         AlgorithmSpec::PrefillRouter {
             targets: names,
             checkpoint,
@@ -1457,6 +1778,61 @@ fn build_algorithm(
     }
 }
 
+fn build_vgr(
+    route_name: &str,
+    config: &VgrRouteConfig,
+    targets: &BTreeMap<String, ModelId>,
+) -> AlgorithmResult<Arc<dyn Algorithm>> {
+    let local = resolve_target_model_id(route_name, &config.local_target, targets)?;
+    let cloud = resolve_target_model_id(route_name, &config.cloud_target, targets)?;
+    let optional = |name: &Option<String>| {
+        name.as_deref()
+            .map(|name| resolve_target_model_id(route_name, name, targets))
+            .transpose()
+    };
+    let mut runtime = VgrConfig::new(local, cloud);
+    runtime.targets.judge = optional(&config.judge_target)?;
+    runtime.targets.cloud_judge = optional(&config.cloud_judge_target)?;
+    runtime.mode = match config.mode {
+        VgrModeConfig::Off => libsy::ServingMode::Off,
+        VgrModeConfig::Evaluate => libsy::ServingMode::Evaluate,
+        VgrModeConfig::Shadow => libsy::ServingMode::Shadow,
+        VgrModeConfig::Active => libsy::ServingMode::Active {
+            approval: config.active_approval.clone().unwrap_or_default(),
+        },
+    };
+    runtime.deadline = duration(route_name, "deadline_seconds", config.deadline_seconds)?;
+    runtime.task_typing = config.task_typing;
+    runtime.confirmed_recovery_min_clean_tail = config.confirmed_recovery_min_clean_tail;
+    runtime.agentic_handoff = config.agentic_handoff;
+    runtime.local_turn_budget = config
+        .local_turn_budget_seconds
+        .map(|seconds| duration(route_name, "local_turn_budget_seconds", seconds))
+        .transpose()?;
+    runtime.breaker = BreakerConfig {
+        threshold: config.breaker_threshold,
+        cooldown: duration(
+            route_name,
+            "breaker_cooldown_seconds",
+            config.breaker_cooldown_seconds,
+        )?,
+    };
+    Vgr::new(runtime)
+        .map(|algorithm| Arc::new(algorithm) as Arc<dyn Algorithm>)
+        .map_err(|error| {
+            AlgorithmConfigError::with_source(format!("vgr route {route_name}: {error}"), error)
+        })
+}
+
+fn duration(route: &str, field: &str, seconds: f64) -> AlgorithmResult<std::time::Duration> {
+    std::time::Duration::try_from_secs_f64(seconds).map_err(|error| {
+        AlgorithmConfigError::with_source(
+            format!("vgr route {route}: {field} must be a non-negative number"),
+            error,
+        )
+    })
+}
+
 const fn default_max_reviews() -> u32 {
     1
 }
@@ -1480,7 +1856,7 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 }
 
 fn default_classifier_max_output_tokens() -> u64 {
-    TaskClassifierConfig::default().max_output_tokens
+    LlmCapabilityConfig::default().max_output_tokens
 }
 
 fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig) {
@@ -1490,6 +1866,22 @@ fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig)
             "custom classifier has only one routing target; judge calls add cost without a routing choice. Use passthrough or add another completion target in routes.<name>, or in routes.<name>.subagents for a subagent classifier."
         );
     }
+}
+
+const fn default_vgr_deadline() -> f64 {
+    30.0
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_vgr_breaker_threshold() -> u32 {
+    5
+}
+
+const fn default_vgr_breaker_cooldown() -> f64 {
+    30.0
 }
 
 fn resolve_target_model_id(
@@ -1502,4 +1894,21 @@ fn resolve_target_model_id(
             "route {route_name} references unknown target {name}"
         ))
     })
+}
+
+fn resolve_runtime_models(
+    route_name: &str,
+    names: HashMap<Category, Vec<String>>,
+    targets: &BTreeMap<String, ModelId>,
+) -> AlgorithmResult<HashMap<Category, Vec<ModelId>>> {
+    names
+        .into_iter()
+        .map(|(category, names)| {
+            let models = names
+                .into_iter()
+                .map(|name| resolve_target_model_id(route_name, &name, targets))
+                .collect::<AlgorithmResult<Vec<_>>>()?;
+            Ok((category, models))
+        })
+        .collect()
 }

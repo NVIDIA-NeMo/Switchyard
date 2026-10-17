@@ -7,13 +7,14 @@ it with `type = "llm_classifier"` and `mode = "capability"`.
 The same classifier also supports [escalation](escalation_router_routing.md)
 and [custom routing](#custom-multi-target-routing) across two or more targets.
 
+For a task-level decision-model example with structured instructions, see the
+[Jev routing profile](../../benchmark/routing-profiles/tb21-jev-opus-glm.toml).
+
 ## Configure a classifier route
 
 This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
 decision for later requests in the same conversation.
-
-> Requires unreleased features. [Build from source](../getting_started.md#build-from-source) to run this example.
 
 ```toml
 schema_version = 1

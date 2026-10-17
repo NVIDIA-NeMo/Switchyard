@@ -29,7 +29,8 @@ providers:
 
 - `auth: none` marks the provider as keyless. Switchyard ignores client keys unless an
   LLM client sets `forward_auth = true`. Without `auth: none`, `omp` refuses to send a
-  request.
+  request. To send your gateway key through a route that forwards it, see
+  [Forwarded keys](#forwarded-keys).
 - `models[].id` must equal a route `id` from your TOML file. `contextWindow` and
   `maxTokens` set `omp`'s compaction limit and output cap. `reasoning: true` turns on the
   `--thinking` flag.
@@ -68,8 +69,8 @@ the default model.
 ## Check the routing
 
 The checks in [Use Switchyard with pi](pi.md#check-the-routing) work the same way for
-`omp`. On the Chat Completions API, `omp` sends no session header for a custom provider,
-so the routing log records `"session_id": null`. Routes with
+`omp`. On the Chat Completions and Responses APIs, `omp` sends no session header for a
+custom provider, so the routing log records `"session_id": null`. Routes with
 `classify_trigger = "user_turn"` or `"new_session"`, advisor budgets, and the stage
 router's `capable_hold_turns` then treat each request as its own session. If you need
 per-session routing, use `anthropic-messages`. On that API `omp` sends the
@@ -94,3 +95,44 @@ Port 4000 is also the default port for `omp`'s `litellm` provider and for
 as a LiteLLM proxy. In that case, run Switchyard on another port or set
 `LITELLM_BASE_URL`. Set `cost` on the model entry if you want `omp` to show a non-zero
 cost.
+
+## Claude through an LLM gateway
+
+The pi guide's [Claude through an LLM gateway](pi.md#claude-through-an-llm-gateway)
+section applies to `omp`: give Claude targets an LLM client with
+`format = "anthropic_messages"`. It shows how to check prompt caching and estimate the
+cost. This section covers what differs for `omp`, tested with Oh My Pi 18.2.11.
+
+### Thinking on `anthropic-messages`
+
+On `openai-completions` and `openai-responses`, Switchyard turns `omp`'s thinking level
+into adaptive thinking for an `anthropic_messages` target. On `anthropic-messages`,
+Switchyard sends `omp`'s own `thinking` object unchanged. `omp` does not
+recognize a route ID such as `switchyard` as a Claude model. With thinking on, it sends
+`thinking: {type: "enabled"}`, and Claude Opus 5.5 and Sonnet 5 return HTTP 400. Set
+adaptive thinking on the model entry:
+
+```yaml
+      - id: switchyard
+        reasoning: true
+        thinking:
+          mode: anthropic-adaptive
+          efforts: [low, medium, high]
+```
+
+`omp` requires `efforts` next to `mode`. With both set, it sends
+`thinking: {type: "adaptive"}` and `output_config.effort`.
+
+### Forwarded keys
+
+To forward `omp`'s key, remove `auth: none` and set `apiKey: GATEWAY_API_KEY`, the name of
+the environment variable that holds your gateway key. Unlike pi, `omp` reads the name
+without a leading `$`. With `auth: none`, `omp` sends no key, and the gateway returns HTTP
+401. Only standalone `switchyard-server` forwards keys. The native Nemo Relay plugin
+rejects routes that use `forward_auth = true` (see
+[Request Handling](nemo_relay.md#request-handling)).
+
+The pi guide's [Forwarded keys](pi.md#forwarded-keys) table shows which request APIs a
+route accepts when it forwards the key. A route that forwards the key to an OpenAI-format
+LLM client, such as a classifier's GPT judge, accepts only `openai-completions` and
+`openai-responses` requests.

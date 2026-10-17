@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **VGR routing (planned for 0.4.0)** — adds `type = "vgr"` deployment routes
+  and the `AlgorithmSpec::Vgr` variant. **Rust source-breaking change:** callers
+  that match exhaustively on `AlgorithmSpec` must handle the new variant.
+- **Caller-owned routing state** - `Algorithm::run_stream` takes a `State` and
+  `RoutingOutcome.state` returns the updated `State`, with `Serialize` and
+  `Deserialize` on `State` and `StateValue` for hosts that store routing state
+  across turns outside the router.
+  **Host API change (source-breaking):** `Processor`, `Classifier`,
+  `FallThrough` and `SubagentGate` use `State` in place of a type parameter.
+  `State.extra` is a `BTreeMap`. `State.turn_count` and `DECISION_SOURCE_KEY`
+  are removed. `StateValue::Bool` replaces `StateValue::Int` and
+  `StateValue::Scalar`.
+- **Speculative workflows** - algorithms can run model and decision calls in
+  parallel, stop one call, and let another continue. This includes decision
+  models used as speculative tool callers. The same controls support general
+  speculative and parallel workflows built on libsy. Cancellation stops local work;
+  provider generation and billing may continue after disconnect.
+  **Host API change (source-breaking):** Rust uses `call.respond(work).await?`;
+  Python uses `await call.respond(work)` and `await call.fail(error)`. Pass work
+  before awaiting it. See the
+  [host integration guide](docs/getting_started.md#drive-the-algorithm).
+  ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
+
 ### Changed
 
 - The standalone `switchyard-server` now binds to `127.0.0.1` by default.
