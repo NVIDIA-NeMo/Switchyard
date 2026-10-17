@@ -578,6 +578,7 @@ impl TranslatingLlmClient {
                 status: status.as_u16(),
                 body,
                 upstream_headers,
+                mcp_patterns,
             });
         }
 
@@ -593,16 +594,8 @@ impl TranslatingLlmClient {
                 });
             }
         };
-        let mut body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
-        if may_contain_mcp_tokens(body.as_bytes(), &mcp_patterns) {
-            body = match serde_json::from_str::<Value>(&body) {
-                Ok(mut value) => {
-                    redact_mcp_json(&mut value, &mcp_patterns);
-                    value.to_string()
-                }
-                Err(_) => redact_mcp_tokens(&body, &mcp_patterns).into_owned(),
-            };
-        }
+        let body =
+            redact_error_credentials(body, metadata, backend.is_forwarding_auth(), &mcp_patterns);
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
@@ -682,23 +675,25 @@ impl TranslatingLlmClient {
             EncodedResponse::Buffered {
                 body,
                 upstream_headers,
+                mcp_patterns,
                 ..
             } => {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
                 // Map a provider's failed generation to 502, even under HTTP 200.
-                // Redact forwarded credentials before returning the provider error.
+                // Redact request credentials before returning the provider error.
                 let agg =
                     observed_translation::decode_response(&body, wire_format).map_err(|error| {
                         match error {
                             TranslationError::UpstreamFailure { error } => {
                                 LlmClientError::UpstreamHttp {
                                     status: StatusCode::BAD_GATEWAY,
-                                    body: redact_forwarded_headers(
+                                    body: redact_error_credentials(
                                         json!({ "error": error }).to_string(),
                                         metadata.as_ref(),
                                         backend.is_forwarding_auth(),
+                                        &mcp_patterns,
                                     ),
                                 }
                             }
@@ -821,6 +816,7 @@ enum EncodedResponse {
         status: u16,
         body: Vec<u8>,
         upstream_headers: HeaderMap,
+        mcp_patterns: Vec<String>,
     },
     Streaming {
         status: u16,
@@ -929,40 +925,57 @@ async fn prepare_response_stream(
 // Precompute literal and JSON-escaped forms once per HTTP attempt.
 fn mcp_token_patterns(body: &Value) -> Vec<String> {
     let mut patterns = Vec::new();
-    for token in body
+    let servers = body
         .get("mcp_servers")
         .and_then(Value::as_array)
         .into_iter()
+        .flatten();
+    let tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
         .flatten()
-        .filter_map(|server| server.get("authorization_token").and_then(Value::as_str))
         .chain(
-            body.get("tools")
+            body.get("input")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .chain(
-                    body.get("input")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter(|item| item["type"] == "additional_tools")
-                        .filter_map(|item| item["tools"].as_array())
-                        .flatten(),
-                )
-                .filter(|tool| tool["type"] == "mcp")
-                .flat_map(|tool| {
-                    tool.get("authorization")
-                        .and_then(Value::as_str)
-                        .into_iter()
-                        .chain(
-                            tool.get("headers")
-                                .and_then(Value::as_object)
-                                .into_iter()
-                                .flat_map(|headers| headers.values())
-                                .filter_map(Value::as_str),
-                        )
-                }),
+                .filter(|item| item["type"] == "additional_tools")
+                .filter_map(|item| item["tools"].as_array())
+                .flatten(),
         )
+        .filter(|tool| tool["type"] == "mcp");
+    // Mask whole queries before credentials that may also occur within them.
+    let queries = servers
+        .clone()
+        .filter_map(|server| server.get("url").and_then(Value::as_str))
+        .chain(
+            tools
+                .clone()
+                .filter_map(|tool| tool.get("server_url").and_then(Value::as_str)),
+        )
+        .filter_map(|url| {
+            url.split('#')
+                .next()?
+                .split_once('?')
+                .map(|(_, query)| query)
+        });
+    for token in queries
+        .chain(
+            servers.filter_map(|server| server.get("authorization_token").and_then(Value::as_str)),
+        )
+        .chain(tools.flat_map(|tool| {
+            tool.get("authorization")
+                .and_then(Value::as_str)
+                .into_iter()
+                .chain(
+                    tool.get("headers")
+                        .and_then(Value::as_object)
+                        .into_iter()
+                        .flat_map(|headers| headers.values())
+                        .filter_map(Value::as_str),
+                )
+        }))
         // Providers may echo only the credential from an Authorization header.
         .flat_map(|token| {
             [Some(token), token.strip_prefix("Bearer ")]
@@ -1092,13 +1105,16 @@ fn redact_mcp_json(value: &mut Value, patterns: &[String]) {
                     Cow::Borrowed(_) => None,
                 })
                 .collect::<Vec<_>>();
-            for (key, mut redacted) in redacted_keys {
+            for (key, redacted) in redacted_keys {
                 if let Some(value) = object.remove(&key) {
                     // Keep both fields if a redacted key already exists.
-                    while object.contains_key(&redacted) {
-                        redacted.push('_');
+                    let mut collision_counter = 0usize;
+                    let mut candidate = redacted.clone();
+                    while object.contains_key(&candidate) {
+                        candidate = format!("{redacted}{collision_counter}");
+                        collision_counter += 1;
                     }
-                    object.insert(redacted, value);
+                    object.insert(candidate, value);
                 }
             }
         }
@@ -1616,6 +1632,25 @@ fn is_non_forwardable_header(name: &str, headers: &HeaderMap) -> bool {
                 .split(|byte| *byte == b',')
                 .any(|option| option.trim_ascii().eq_ignore_ascii_case(name.as_bytes()))
         })
+}
+
+fn redact_error_credentials(
+    body: String,
+    metadata: Option<&Metadata>,
+    is_forwarding_auth: bool,
+    mcp_patterns: &[String],
+) -> String {
+    let body = redact_forwarded_headers(body, metadata, is_forwarding_auth);
+    if !may_contain_mcp_tokens(body.as_bytes(), mcp_patterns) {
+        return body;
+    }
+    match serde_json::from_str::<Value>(&body) {
+        Ok(mut value) => {
+            redact_mcp_json(&mut value, mcp_patterns);
+            value.to_string()
+        }
+        Err(_) => redact_mcp_tokens(&body, mcp_patterns).into_owned(),
+    }
 }
 
 // Unknown application headers can carry credentials when auth forwarding is enabled.
@@ -3771,6 +3806,31 @@ mod tests {
     }
 
     #[test]
+    fn mcp_url_queries_are_redacted_from_errors() {
+        let url = "https://user:password@example.invalid/mcp?api_key=secret&version=1#fragment";
+        let tools = json!([{"type": "mcp", "server_url": url, "authorization": "secret"}]);
+        for body in [
+            json!({"mcp_servers": [{"url": url}]}),
+            json!({"mcp_servers": [{"url": url, "authorization_token": "secret"}]}),
+            json!({"tools": tools}),
+            json!({"input": [{"type": "additional_tools", "tools": tools}]}),
+        ] {
+            let patterns = mcp_token_patterns(&body);
+            let mut error = json!({"error": {"message": format!("Rejected {url}")}});
+            redact_mcp_json(&mut error, &patterns);
+            assert_eq!(
+                error["error"]["message"],
+                "Rejected https://user:password@example.invalid/mcp?[REDACTED]#fragment"
+            );
+        }
+        let url = "https://example.invalid/mcp#fragment?version=1";
+        let patterns = mcp_token_patterns(&json!({"tools": [{
+            "type": "mcp", "server_url": url
+        }]}));
+        assert!(patterns.is_empty(), "a fragment is not a query");
+    }
+
+    #[test]
     fn responses_mcp_credentials_are_redacted_from_errors() {
         let body = json!({"tools": [
             {"type": "mcp", "server_label": "remote", "server_url": "https://example.invalid/mcp",
@@ -3857,6 +3917,57 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn translated_errors_redact_mcp_credentials()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": "failed", "error": null, "output": []
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        // Match text generated by translation, which is absent from the upstream body.
+        for forward_auth in [false, true] {
+            let mut config = config(&server.uri());
+            config.forward_auth = forward_auth;
+            config.extra_body.insert(
+                "tools".to_string(),
+                json!([{
+                    "type": "mcp", "server_label": "remote",
+                    "server_url": "https://example.invalid/mcp", "authorization": "error details"
+                }]),
+            );
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "gpt",
+                Backend::OpenAiResponses(config),
+                None,
+            )])?;
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-api-key",
+                http::HeaderValue::from_static("provider reported"),
+            );
+            let Err(LlmClientError::UpstreamHttp { status, body }) = client
+                .call_rewrite_model_raw(
+                    json!({"model": "gpt", "input": "hello"}),
+                    Some(headers),
+                    None,
+                    WireFormat::OpenAiResponses,
+                )
+                .await
+            else {
+                panic!("expected a translated upstream error");
+            };
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert!(!body.contains("error details"), "MCP credential leaked");
+            assert_eq!(body.contains("provider reported"), !forward_auth);
+        }
+        server.verify().await;
+        Ok(())
+    }
+
     #[test]
     fn mcp_redaction_handles_escaped_and_short_tokens() {
         for token in ["x", "synthetic-mcp-\"\\-secret"] {
@@ -3908,15 +4019,17 @@ mod tests {
         let mut value = json!({"error": {
             token: {"detail": "echoed key"},
             "[REDACTED]": {"detail": "existing key"},
+            "[REDACTED]0": {"detail": "existing numbered key"},
             "other": {"detail": "unchanged"}
         }});
         redact_mcp_json(&mut value, &patterns);
         assert!(!value.to_string().contains(token));
         let object = value["error"].as_object().expect("expected error object");
-        assert_eq!(object.len(), 3);
+        assert_eq!(object.len(), 4);
         assert_eq!(object["[REDACTED]"]["detail"], "existing key");
+        assert_eq!(object["[REDACTED]0"]["detail"], "existing numbered key");
+        assert_eq!(object["[REDACTED]1"]["detail"], "echoed key");
         assert_eq!(object["other"]["detail"], "unchanged");
-        assert!(object.values().any(|value| value["detail"] == "echoed key"));
 
         let patterns = vec!["🚀".to_string()];
         assert_eq!(
