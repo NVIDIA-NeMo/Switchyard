@@ -355,24 +355,58 @@ mode, or in the prompt in `json_object` mode.
 ### `stage_router`
 
 Scores tool signals to pick a tier per turn. See
-[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for the
-optional `handoff_notes` and `classifier` tables and for tuning.
+[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for how
+the signals work and for tuning.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `capable_target` | Yes | — | Capable tier. |
 | `efficient_target` | Yes | — | Efficient tier. |
 | `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
-| `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. |
+| `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. `efficient_first_threshold` is accepted as an alias. |
+| `capable_first_threshold` | No | `0.0` | Threshold used after an outer classifier selects the capable tier. Only a `composite` route sets that tier, so this key has no effect on a standalone `stage_router` route. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `capable_hold_turns` | No | `2` | Requests kept on the capable tier after escalation. A clean test pass clears the hold early; `0` disables it. |
+| `capable_hold_turns` | No | `2` | Requests kept on the capable tier after a signal-driven escalation. A clean test pass clears the hold early; `0` disables it. |
 | `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
 | `tool_semantics.mutate` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as state-changing production. |
 | `tool_semantics.plan` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as planning or task decomposition. |
 | `tool_semantics.new` | No | `[]` | Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier. |
-| `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
-| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `handoff_notes` | No | unset | Table of notes appended to the forwarded request when the signals pick a tier. Keys below. |
+| `classifier` | No | unset | Table for the optional capability judge consulted on ambiguous turns. Keys below. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
+
+#### `handoff_notes` keys
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `handoff_notes.escalation_note` | Yes, when the table is present | — | Note appended to the request on a signal-driven escalation to the capable tier. |
+| `handoff_notes.deescalation_note` | No | unset | Note appended to the request on a signal-driven return to the efficient tier. |
+| `handoff_notes.only_on_wrong_signal_escalation` | No | `true` | When `true`, only signal-driven escalations carry the escalation note. `false` also adds it to capable-hold turns. |
+
+#### `classifier` keys
+
+The judge runs when the signals are ambiguous or the request has no tool
+history. It runs as a step inside the stage cascade, not as a standalone route,
+so it is consulted on every ambiguous turn and never retains a verdict.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `classifier.target` | Yes, when the table is present | — | Target the judge is called through. Not a routing destination. |
+| `classifier.base_threshold` | For LLM judges | — | Lowest `p_solve` that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
+| `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `classifier.fail_open` | No | `true` | When `true`, judge client failures and deadlines let the turn fall open to the picker default and record fail-open evidence. When `false`, they stop the request. |
+| `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
+| `classifier.classify_trigger` | No | `every_request` | Accepted for compatibility with `llm_classifier`. No effect on the stage fallback judge: `user_turn` and `new_session` retain nothing here, and the judge runs on every ambiguous turn. |
+| `classifier.message_hash_fallback` | No | `false` | Accepted for compatibility. No effect on the stage fallback judge. Setting it with the default trigger is a load error. |
+| `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and the latest user follow-up. When set, it also sees that many trailing turns. Match the route's `recent_turn_window` so the judge reads the span the signals scored. |
+| `classifier.prompt` | No | packaged prompt | Replaces the capability judge prompt. The verdict schema is unchanged. |
+| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
+
+`classifier.mode`, `classifier.response_schema` and `classifier.policy` are
+rejected on a `stage_router` route with
+`custom classifier settings require composite with mode = custom`. Use a
+[composite](#composite) route for a custom judge.
 
 ### `auto`
 

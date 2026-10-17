@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 330" role="img" aria-labelledby="title desc">
-  <title id="title">Stage score distribution at confidence threshold 0.5</title>
-  <desc id="desc">An illustrative histogram of signed Stage scores. Scores below negative 0.5 select efficient, scores from negative 0.5 through positive 0.5 form the ambiguous band and fall back to efficient in efficient-first mode, and scores above positive 0.5 select capable.</desc>
+  <title id="title">Stage score distribution at confidence threshold 0.5, with signal ceilings</title>
+  <desc id="desc">An illustrative histogram of signed Stage scores. Scores below negative 0.5 select efficient, scores from negative 0.5 through positive 0.5 form the ambiguous band and fall back to efficient in efficient-first mode, and scores above positive 0.5 select capable. Dotted markers show the most the signals can reach: positive 0.76 toward capable and negative 0.87 toward efficient.</desc>
   <rect width="880" height="330" rx="12" fill="#ffffff"/>
   <text x="440" y="30" text-anchor="middle" font-family="sans-serif" font-size="17" font-weight="700" fill="#1f2937">Illustrative score distribution · efficient_first · threshold = 0.5</text>
 
@@ -39,6 +39,10 @@
   <line x1="255" y1="58" x2="255" y2="248" stroke="#92400e" stroke-width="2" stroke-dasharray="6 5"/>
   <line x1="625" y1="58" x2="625" y2="248" stroke="#92400e" stroke-width="2" stroke-dasharray="6 5"/>
   <line x1="440" y1="235" x2="440" y2="248" stroke="#111827" stroke-width="2"/>
+  <line x1="722" y1="58" x2="722" y2="248" stroke="#5b21b6" stroke-width="2" stroke-dasharray="2 4"/>
+  <line x1="117" y1="58" x2="117" y2="248" stroke="#1e40af" stroke-width="2" stroke-dasharray="2 4"/>
+  <text x="722" y="52" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#5b21b6">signal ceiling +0.76</text>
+  <text x="117" y="52" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#1e40af">signal ceiling -0.87</text>
 
   <g font-family="sans-serif" font-size="13" fill="#374151" text-anchor="middle">
     <text x="70" y="265">-1.0</text>
