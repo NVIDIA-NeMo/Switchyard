@@ -20,8 +20,7 @@ use switchyard_protocol::{
     ModelId, Request, Response, RoutedLlmClient,
 };
 use switchyard_translation::{
-    TranslationError, WireFormat, decode_aggregated_response, decode_request, decode_stream,
-    encode_aggregated_response_with_extensions, encode_request, encode_stream_with_extensions,
+    TranslationError, WireFormat, decode_stream, encode_stream_with_extensions,
 };
 use tokio::time::Instant;
 use tracing::Instrument;
@@ -29,6 +28,7 @@ use tracing::Instrument;
 use crate::backend::{Backend, openai_url};
 use crate::error::{LlmClientError, Result};
 use crate::metrics;
+use crate::observed_translation;
 use crate::raw::RawResponse;
 
 // Caller headers safe to send when caller auth forwarding is disabled.
@@ -137,6 +137,7 @@ pub struct TranslatingLlmClient {
     model_to_config: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
     forward_auth_client: reqwest::Client,
+    is_rate_limit_cooldown_enabled: bool,
     cooldown_epoch: Instant,
     // Milliseconds since cooldown_epoch. Each atomic is independent, so relaxed ordering suffices.
     unavailable_until: HashMap<ModelId, AtomicU64>,
@@ -175,9 +176,16 @@ impl TranslatingLlmClient {
             model_to_config,
             client,
             forward_auth_client,
+            is_rate_limit_cooldown_enabled: true,
             cooldown_epoch: Instant::now(),
             unavailable_until,
         })
+    }
+
+    /// Disable HTTP 429 cooldown so subsequent calls can receive the upstream error.
+    pub fn without_rate_limit_cooldown(mut self) -> Self {
+        self.is_rate_limit_cooldown_enabled = false;
+        self
     }
 
     /// The backend serving `model` over `format` — the default backend when its
@@ -199,6 +207,56 @@ impl TranslatingLlmClient {
     /// Whether `model` has a backend for `operation`.
     pub fn supports_auxiliary(&self, model: &ModelId, operation: AuxiliaryOperation) -> bool {
         self.backend_for(model, operation.wire_format()).is_some()
+    }
+
+    /// Reads llama.cpp model properties through the backend's configured auth and headers.
+    ///
+    /// Redirects are disabled so credentials cannot move to another origin.
+    pub async fn get_model_properties(
+        &self,
+        model: &ModelId,
+        format: WireFormat,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let backend =
+            self.backend_for(model, format)
+                .ok_or_else(|| LlmClientError::Configuration {
+                    message: format!("model {model} has no backend for {format:?}"),
+                })?;
+        let mut url = reqwest::Url::parse(backend.base_url()).map_err(|error| {
+            LlmClientError::Configuration {
+                message: format!("model {model} has an invalid backend URL: {error}"),
+            }
+        })?;
+        let root = url.path().trim_end_matches('/');
+        let root = root
+            .strip_suffix("/chat/completions")
+            .or_else(|| root.strip_suffix("/responses"))
+            .unwrap_or(root);
+        let path = format!(
+            "{}/props",
+            root.strip_suffix("/v1")
+                .unwrap_or(root)
+                .trim_end_matches('/')
+        );
+        url.set_path(&path);
+        url.set_query(None);
+
+        let builder = self.forward_auth_client.get(url).timeout(timeout);
+        let builder = apply_extra_headers(builder, backend);
+        let response = backend
+            .apply_auth(builder)
+            .send()
+            .await
+            .map_err(convert_reqwest_error)?
+            .error_for_status()
+            .map_err(convert_reqwest_error)?;
+        response
+            .json()
+            .await
+            .map_err(|source| LlmClientError::InvalidResponse {
+                source: Box::new(source),
+            })
     }
 
     /// Calls a model-bearing auxiliary provider operation.
@@ -277,7 +335,7 @@ impl TranslatingLlmClient {
             return Err(LlmClientError::TemporarilyUnavailable);
         }
 
-        let mut body = encode_request(&llm_request, wire_format)
+        let mut body = observed_translation::encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
@@ -305,6 +363,9 @@ impl TranslatingLlmClient {
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
         if matches!(backend, Backend::Anthropic(_)) {
+            if nvidia_inference_api_backend(backend) {
+                strip_anthropic_tool_strict(&mut body);
+            }
             enable_anthropic_prompt_caching(&mut body);
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
@@ -318,11 +379,11 @@ impl TranslatingLlmClient {
         let result = self
             .send_with_retries(&url, backend, &body, metadata, model, streaming)
             .await;
-        // Forwarded credentials can hit a user's quota while the backend remains healthy.
+        // Keep quota failures request-local when forwarding auth or returning 429 to callers.
         if let Some(until) = unavailable_until
             && let Err(error) = &result
             && is_transient_failure(error)
-            && !(backend.is_forwarding_auth()
+            && !((backend.is_forwarding_auth() || !self.is_rate_limit_cooldown_enabled)
                 && matches!(error, LlmClientError::UpstreamHttp { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS))
         {
             let deadline = duration_millis(self.cooldown_epoch.elapsed().saturating_add(cooldown));
@@ -616,8 +677,8 @@ impl TranslatingLlmClient {
                 // Map a provider's failed generation to 502, even under HTTP 200.
                 // Redact forwarded credentials before returning the provider error.
                 let agg =
-                    decode_aggregated_response(&body, wire_format).map_err(
-                        |error| match error {
+                    observed_translation::decode_response(&body, wire_format).map_err(|error| {
+                        match error {
                             TranslationError::UpstreamFailure { error } => {
                                 LlmClientError::UpstreamHttp {
                                     status: StatusCode::BAD_GATEWAY,
@@ -629,8 +690,8 @@ impl TranslatingLlmClient {
                                 }
                             }
                             error => LlmClientError::ResponseTranslation(error.to_string()),
-                        },
-                    )?;
+                        }
+                    })?;
                 (LlmResponse::Agg(agg), upstream_headers)
             }
         };
@@ -666,7 +727,7 @@ impl TranslatingLlmClient {
         model: Option<&ModelId>,
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
-        let llm_request = decode_request(wire_format, &raw_http_request)
+        let llm_request = observed_translation::decode_request(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
         let request_extensions = llm_request.extensions.clone();
         // The model that serves the call — the rewrite target when the caller pinned
@@ -694,7 +755,7 @@ impl TranslatingLlmClient {
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
-                let body = encode_aggregated_response_with_extensions(
+                let body = observed_translation::encode_response(
                     &agg,
                     wire_format,
                     served_model.as_deref(),
@@ -1101,6 +1162,26 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     if let Value::Object(object) = body {
         object.remove("reasoning_effort");
         object.remove("context_management");
+    }
+}
+
+// NVIDIA Inference API's Anthropic-compatible schema rejects the strict tool-use
+// extension that native Anthropic accepts.
+fn nvidia_inference_api_backend(backend: &Backend) -> bool {
+    reqwest::Url::parse(backend.base_url())
+        .ok()
+        .is_some_and(|url| {
+            url.host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case("inference-api.nvidia.com"))
+        })
+}
+
+fn strip_anthropic_tool_strict(body: &mut Value) {
+    let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for tool in tools.iter_mut().filter_map(Value::as_object_mut) {
+        tool.remove("strict");
     }
 }
 
@@ -1511,6 +1592,43 @@ mod tests {
         ]
     }
 
+    #[tokio::test]
+    async fn model_properties_uses_configured_auth_and_backend_path()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (base_path, props_path) in [
+            ("/v1", "/props"),
+            ("/v1/", "/props"),
+            ("/v1/chat/completions", "/props"),
+            ("/v1/responses/", "/props"),
+            ("/prefix/v1", "/prefix/props"),
+            ("/prefix/v1/chat/completions", "/prefix/props"),
+            ("/prefix/v1/responses", "/prefix/props"),
+            ("/prefix/", "/prefix/props"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(props_path))
+                .and(wiremock::matchers::header("authorization", "Bearer secret"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "default_generation_settings": {"n_ctx": 65_536}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client =
+                TranslatingLlmClient::new(&chat_map(&format!("{}{base_path}", server.uri())))?;
+            let properties = client
+                .get_model_properties(
+                    &ModelId::from("gpt"),
+                    WireFormat::OpenAiChat,
+                    Duration::from_secs(1),
+                )
+                .await?;
+            assert_eq!(properties["default_generation_settings"]["n_ctx"], 65_536);
+        }
+        Ok(())
+    }
+
     fn chat_map_with_retries(base_url: &str, max_retries: u32) -> Vec<ModelConfig> {
         vec![ModelConfig::new(
             "gpt",
@@ -1602,6 +1720,18 @@ mod tests {
             .expect_err("closed port");
 
         assert!(!convert_reqwest_error(error).to_string().contains("CANARY"));
+    }
+
+    #[test]
+    fn nvidia_anthropic_tools_drop_unsupported_strict_field() {
+        let backend = Backend::Anthropic(config("https://inference-api.nvidia.com"));
+        assert!(nvidia_inference_api_backend(&backend));
+        assert!(!nvidia_inference_api_backend(&Backend::Anthropic(config(
+            "https://inference-api.nvidia.com.example.test"
+        ))));
+        let mut body = json!({"tools": [{"name": "a", "input_schema": {}, "strict": true}]});
+        strip_anthropic_tool_strict(&mut body);
+        assert!(body["tools"][0].get("strict").is_none());
     }
 
     #[test]
@@ -2263,69 +2393,139 @@ mod tests {
         let history = json!([
             {"type": "message", "role": "user", "content": "continue"},
             {"type": "reasoning", "encrypted_content": "opaque", "content": [{"type": "reasoning_text", "text": "private"}]},
-            {"type": "reasoning", "id": "rs_stored", "summary": []},
+            {"type": "reasoning", "id": "rs_stored", "status": "completed", "summary": []},
             {"type": "reasoning", "encrypted_content": null},
             {"type": "reasoning", "encrypted_content": ""},
             {"type": "reasoning"},
             {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
             {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
         ]);
-        for is_drop in [false, true] {
-            for has_input_override in [false, true] {
-                let server = MockServer::start().await;
-                Mock::given(method("POST"))
-                    .and(path("/v1/responses"))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                        "id": "resp_1", "object": "response", "model": "gpt",
-                        "status": "completed", "output": [],
-                        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
-                    })))
-                    .expect(1)
-                    .mount(&server)
-                    .await;
-                let base_url = format!("{}/v1", server.uri());
-                let mut models = if is_drop {
-                    responses_map_with_drop_policy(&base_url)
-                } else {
-                    responses_map(&base_url)
-                };
-                if has_input_override {
-                    let Backend::OpenAiResponses(backend) = &mut models[0].default_backend else {
-                        return Err("expected Responses backend".into());
+        for store in [Some(true), Some(false), None] {
+            for is_drop in [false, true] {
+                for has_input_override in [false, true] {
+                    let server = MockServer::start().await;
+                    Mock::given(method("POST"))
+                        .and(path("/v1/responses"))
+                        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                            "id": "resp_1", "object": "response", "model": "gpt",
+                            "status": "completed", "output": [],
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                        })))
+                        .expect(1)
+                        .mount(&server)
+                        .await;
+                    let base_url = format!("{}/v1", server.uri());
+                    let mut models = if is_drop {
+                        responses_map_with_drop_policy(&base_url)
+                    } else {
+                        responses_map(&base_url)
                     };
-                    backend.omit_body_fields.insert("input".to_string());
-                    backend
-                        .extra_body
-                        .insert("input".to_string(), history.clone());
+                    if has_input_override {
+                        let Backend::OpenAiResponses(backend) = &mut models[0].default_backend
+                        else {
+                            return Err("expected Responses backend".into());
+                        };
+                        backend.omit_body_fields.insert("input".to_string());
+                        backend
+                            .extra_body
+                            .insert("input".to_string(), history.clone());
+                    }
+                    let client = TranslatingLlmClient::new(&models)?;
+                    let mut request = json!({"model": "gpt", "input": history});
+                    if let Some(store) = store {
+                        request["store"] = json!(store);
+                    }
+                    client
+                        .call_rewrite_model_raw(
+                            request,
+                            None,
+                            Some(&ModelId::from("gpt")),
+                            WireFormat::OpenAiResponses,
+                        )
+                        .await?;
+                    let requests = server.received_requests().await.ok_or("missing requests")?;
+                    let body: Value = serde_json::from_slice(&requests[0].body)?;
+                    let mut expected = vec![history[0].clone()];
+                    if !is_drop {
+                        let mut encrypted = history[1].clone();
+                        encrypted["content"] = json!([]);
+                        expected.push(encrypted);
+                        if store != Some(false) {
+                            let mut stored = history[2].clone();
+                            stored["content"] = json!([]);
+                            expected.push(stored);
+                        }
+                    }
+                    expected.extend([history[6].clone(), history[7].clone()]);
+                    assert_eq!(
+                        body["input"],
+                        json!(expected),
+                        "store={store:?}, drop={is_drop}, replace={has_input_override}"
+                    );
                 }
-                let client = TranslatingLlmClient::new(&models)?;
-                client
-                    .call_rewrite_model_raw(
-                        json!({"model": "gpt", "input": history, "store": true}),
-                        None,
-                        Some(&ModelId::from("gpt")),
-                        WireFormat::OpenAiResponses,
-                    )
-                    .await?;
-                let requests = server.received_requests().await.ok_or("missing requests")?;
-                let body: Value = serde_json::from_slice(&requests[0].body)?;
-                let mut expected = vec![history[0].clone()];
-                if !is_drop {
-                    let mut encrypted = history[1].clone();
-                    encrypted["content"] = json!([]);
-                    expected.push(encrypted);
-                    let mut stored = history[2].clone();
-                    stored["content"] = json!([]);
-                    expected.push(stored);
-                }
-                expected.extend([history[6].clone(), history[7].clone()]);
-                assert_eq!(
-                    body["input"],
-                    json!(expected),
-                    "drop={is_drop}, replace={has_input_override}"
-                );
             }
         }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nvidia_anthropic_requests_strip_strict_from_extra_body()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut backend = config(&format!(
+            "http://inference-api.nvidia.com:{}",
+            server.address().port()
+        ));
+        backend.extra_body.insert(
+            "tools".into(),
+            json!([{
+                "name": "lookup",
+                "input_schema": {"type": "object", "properties": {}},
+                "strict": true
+            }]),
+        );
+        let mut client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        client.client = reqwest::Client::builder()
+            .no_proxy()
+            .resolve("inference-api.nvidia.com", *server.address())
+            .build()?;
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "claude",
+                    "max_tokens": 7,
+                    "messages": [{"role": "user", "content": "hi"}]
+                }),
+                None,
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
+            )
+            .await?;
+
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body)?;
+        assert_eq!(body["tools"][0]["name"], "lookup");
+        assert!(body["tools"][0].get("strict").is_none());
         Ok(())
     }
 
@@ -2812,12 +3012,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_overflow_400_is_mapped()
+    async fn llama_cpp_context_overflow_400_is_mapped()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-                "error": {"code": "context_length_exceeded", "message": "too big"}
+                "error": {
+                    "message": "request (6016 tokens) exceeds the available context size (4096 tokens), try increasing it"
+                }
             })))
             .mount(&server)
             .await;

@@ -154,6 +154,12 @@ async fn stream(
 runs. The terminal outcome either already contains the answer or supplies the selected model and
 ordered fallbacks for the client to try. `ClientRouter::single` is the single-provider case:
 
+Routing-time calls run concurrently. If an algorithm drops one of its waiting
+call futures, the corresponding HTTP work is dropped while other calls continue.
+Ending or dropping the run drops all outstanding call handlers. A returned
+response stream stays alive until its consumer finishes or drops it. These are
+local cancellation guarantees; a provider may continue generation after disconnect.
+
 ```rust
 use std::sync::Arc;
 use switchyard_libsy::{Algorithm, RuntimeModels};
@@ -265,7 +271,8 @@ fn build_multi_format_client(
   the response has been returned.
 - `ModelConfig::with_responses_reasoning` controls Responses reasoning replay.
   Every Responses model defaults to `PreserveEncrypted`: plaintext is removed,
-  encrypted provider state and stored reasoning IDs are retained. Set `Drop` for
+  encrypted provider state is retained. Stored reasoning IDs are retained unless
+  the request sets `store: false`. Set `Drop` for
   a backend that cannot consume provider reasoning. Messages and tool history are retained.
 - `HttpBackendConfig::failure_cooldown` skips completion calls to a backend briefly
   after an exhausted transient failure. Zero disables it. State is shared per model

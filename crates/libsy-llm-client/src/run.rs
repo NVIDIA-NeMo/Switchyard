@@ -18,7 +18,7 @@
 //! [`ClientRouter`] sends native Responses state back to its provider; for Chat or Anthropic
 //! targets it retains the canonical history needed to materialize the continuation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -163,21 +163,25 @@ async fn serve_decision(
     observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
 ) -> Result<()> {
     let client = clients.route_decision(&call.model);
-    let started = Instant::now();
-    let result = async { client?.call(call.request.clone()).await }.await;
-    tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
-    if let Some(observations) = observations {
-        observations
-            .lock()
-            .push(RunObservation::DecisionCall(ModelCallObservation {
-                selected_model: call.model.clone(),
-                is_success: result.is_ok(),
-                duration: started.elapsed(),
-                usage: result.as_ref().ok().map(|response| response.usage.clone()),
-            }));
-    }
-    let result = result.map_err(|error| LibsyError::client_call(call.model.clone(), error));
-    call.respond(result)
+    let model = call.model.clone();
+    let request = call.request.clone();
+    call.respond(async {
+        let started = Instant::now();
+        let result = async { client?.call(request).await }.await;
+        tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
+        if let Some(observations) = observations {
+            observations
+                .lock()
+                .push(RunObservation::DecisionCall(ModelCallObservation {
+                    selected_model: model.clone(),
+                    is_success: result.is_ok(),
+                    duration: started.elapsed(),
+                    usage: result.as_ref().ok().map(|response| response.usage.clone()),
+                }));
+        }
+        result.map_err(|error| LibsyError::client_call(model, error))
+    })
+    .await
 }
 
 /// Emits completed routing calls after the outcome reveals whether one response became the answer.
@@ -223,24 +227,21 @@ async fn serve(
                 .push(RunObservation::LlmCall(observation));
         }
     };
-    let target = call.models.first().ok_or(LibsyError::NoTargets)?;
-    let request = clients.prepare_routing_request(call.request.clone(), target);
-    match call_one(
+    let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+    let request = clients.prepare_routing_request(call.request.clone(), &target);
+    let algorithm = call.algorithm.clone();
+    let candidates = call.models.len();
+    call.respond(call_one(
         &clients,
-        target,
+        &target,
         request,
-        &call.algorithm,
+        &algorithm,
         &observe,
         0,
-        call.models.len(),
-        true,
-    )
+        candidates,
+        CallPhase::Routing,
+    ))
     .await
-    {
-        Ok(response) => call.respond(Ok(response)),
-        Err(error) if call.recover_errors => call.respond(Err(error)),
-        Err(error) => call.fail(error),
-    }
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.
@@ -261,12 +262,20 @@ async fn call_first_available(
             observe,
             index,
             models.len(),
-            false,
+            CallPhase::Completion,
         )
         .await
         {
             Ok(response) => return Ok(response),
             Err(error) if index + 1 == models.len() => return Err(error),
+            Err(error)
+                if clients.rate_limit_fallback_disabled.contains(target)
+                    && matches!(&error, LibsyError::ClientCall {
+                        source: LlmClientError::UpstreamHttp { status, .. }, ..
+                    } if *status == StatusCode::TOO_MANY_REQUESTS) =>
+            {
+                return Err(error);
+            }
             Err(error) => match fallback_reason(&error) {
                 Some(reason) => tracing::info!(
                     from = %target,
@@ -281,6 +290,25 @@ async fn call_first_available(
     Err(LibsyError::NoTargets)
 }
 
+/// The stage of the Switchyard run in which a model call was issued.
+///
+/// A routing-phase call may still supply the final answer. This is deliberately
+/// distinct from the `routing`/`answer` role assigned after the outcome is known.
+#[derive(Clone, Copy)]
+enum CallPhase {
+    Routing,
+    Completion,
+}
+
+impl CallPhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Routing => "routing",
+            Self::Completion => "completion",
+        }
+    }
+}
+
 /// Call one candidate model and record its observation and span.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
@@ -292,6 +320,7 @@ async fn call_first_available(
         switchyard.algorithm = algorithm,
         switchyard.candidate = index + 1,
         switchyard.candidate_count = count,
+        switchyard.call_phase = phase.as_str(),
         selected_model = %model_id,
         otel.kind = "client",
         otel.name = %format_args!("chat {model_id}"),
@@ -331,8 +360,9 @@ async fn call_one(
     index: usize,
     // count is for span log
     count: usize,
-    buffer: bool,
+    phase: CallPhase,
 ) -> Result<Response> {
+    let is_routing = matches!(phase, CallPhase::Routing);
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &request.llm_request);
     if let Some(session_id) = request
@@ -348,7 +378,7 @@ async fn call_one(
     let started = Instant::now();
     let result = async {
         let mut response = client?.call(request).await?;
-        if buffer && let LlmResponse::Stream(chunks) = response.llm_response {
+        if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
             response.llm_response = LlmResponse::Stream(buffer_routing_stream(chunks).await?);
         }
         Ok(response)
@@ -362,10 +392,10 @@ async fn call_one(
         response
     });
     let result = observability::observe_client_call(result);
-    let result = if !buffer {
-        metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
-    } else {
+    let result = if is_routing {
         result
+    } else {
+        metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
     };
     observe(ModelCallObservation {
         selected_model: model_id.clone(),
@@ -588,6 +618,7 @@ fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
 #[derive(Clone)]
 pub struct ClientRouter {
     inner: Arc<ClientRouting>,
+    rate_limit_fallback_disabled: Arc<HashSet<ModelId>>,
 }
 
 struct ClientRouting {
@@ -674,6 +705,7 @@ impl ClientRouter {
             .next()
             .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)));
         Self {
+            rate_limit_fallback_disabled: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
                 decision_clients,
@@ -700,6 +732,7 @@ impl ClientRouter {
         decision_clients: HashMap<ModelId, Arc<dyn RoutedDecisionClient>>,
     ) -> Self {
         Self {
+            rate_limit_fallback_disabled: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::Single(client),
                 decision_clients,
@@ -709,6 +742,16 @@ impl ClientRouter {
                 track_provider_state: false,
             }),
         }
+    }
+
+    /// Stop completion fallback on HTTP 429 for the given models.
+    ///
+    /// For translating clients, also use
+    /// [`TranslatingLlmClient::without_rate_limit_cooldown`](crate::TranslatingLlmClient::without_rate_limit_cooldown)
+    /// so later calls are not skipped with a generic cooldown error.
+    pub fn without_rate_limit_fallback(mut self, models: HashSet<ModelId>) -> Self {
+        self.rate_limit_fallback_disabled = Arc::new(models);
+        self
     }
 
     /// The client that serves `model`.

@@ -18,13 +18,11 @@ a configured Switchyard route. For example, if the route is `switchyard/core`
 and its target is `azure/openai/gpt-5.5`, requesting the target name directly
 still delegates the request to Relay.
 
-This is a known issue. A proposed correction is tracked in
-[NeMo Relay PR #1109](https://github.com/NVIDIA/NeMo-Relay/pull/1109).
-The correction has not been released. Until a fix is available, send unmanaged
-traffic through a separate Relay instance with the plugin disabled.
-Do not assume that upgrading Switchyard alone fixes this.
-The plugin's `>=0.8.0, <1.0.0` compatibility range describes which hosts can load
-it; it does not mean those older hosts preserve upstream errors correctly.
+This plugin build uses `nemo-relay-plugin` 0.10.0 and requires Relay
+`>=0.10.0, <1.0.0`. Older hosts cannot load it because Relay 0.10 changes the
+native callback layout. If you use an older plugin build on Relay 0.8.x or
+0.9.0, send unmanaged traffic through a separate Relay instance with the plugin
+disabled. Upgrading Switchyard alone does not upgrade the Relay host.
 
 ## Why Use Switchyard with NeMo Relay?
 
@@ -173,7 +171,7 @@ and how it
 
 !!! note "Relay compatibility"
 
-    The plugin requires `relay = ">=0.8.0, <1.0.0"` and native plugin API `1`.
+    The plugin requires `relay = ">=0.10.0, <1.0.0"` and native plugin API `1`.
     The packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
     is the source of truth.
@@ -307,17 +305,29 @@ can receive these records, but each output format presents them differently.
 | Output | What the current integration shows |
 | --- | --- |
 | ATIF | The request and response seen by the agent. Internal routing is not added as separate steps or included in `final_metrics`. Relay-managed ATIF files may retain the raw records under `extra.observed_events`. |
-| OpenTelemetry traces, including OpenInference | Relay's LLM span plus eligible routing marks, depending on the projection. Marks are point-in-time records, not duration spans. |
+| OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call` and `libsy.upstream_attempt` duration scopes, plus eligible routing marks. |
 | OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Combine the reported routing usage with Relay's answer cost to estimate the observed routed cost. |
 | OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
 
-Switchyard creates `libsy.run`, `libsy.llm_call`, `libsy.client_call`, and
-`libsy.upstream_attempt` spans internally. Together they cover the algorithm
-run, model calls requested by the algorithm, candidate attempts including
-fallbacks, and individual HTTP attempts. They are not one connected hierarchy
-today, and the plugin does not send them to Relay. As a result, Relay traces do
-not show those internal operations as nested duration spans or give an internal
-stream its own cancellation lifecycle.
+The plugin captures two existing Switchyard spans. Each routing or answer LLM
+call becomes a `libsy.client_call` scope. Physical HTTP attempts and retries
+become `libsy.upstream_attempt` child scopes. Buffered calls close with the response;
+streaming calls close when the stream finishes, fails, or is dropped. The
+projection contains allowlisted, payload-free routing metadata only and does not
+copy prompts, responses, provider error bodies, or credentials into Relay.
+
+`switchyard.call_phase` records when Switchyard issued a client call:
+`routing` while the algorithm was still deciding, or `completion` after a
+target was selected. A routing-phase response can later become the final
+answer, so this is intentionally different from the `call_role` on
+`switchyard.routing.llm_call` marks, which records the post-outcome
+classification as `routing` or `answer`.
+
+| Switchyard signal | Relay record | Parent | Lifetime |
+| --- | --- | --- | --- |
+| Routing or answer model call | `libsy.client_call` scope | Relay's managed request scope | Starts with the Switchyard call and closes with the buffered response or terminal stream event. |
+| Physical provider request or retry | `libsy.upstream_attempt` scope | Its `libsy.client_call` scope | Starts before the HTTP attempt and closes on response, error, or cancellation. |
+| Routing request, decision, overhead, or failure | Existing `switchyard.routing.*` mark | Active Relay scope at emission | Point-in-time mark using the existing outcome fields. |
 
 ### How Routing Appears in Traces
 
@@ -336,12 +346,16 @@ omits marks. With `mark_projection = "tool"`, the trace has this shape:
 flowchart LR
     agent["Relay agent scope"]
     llm["LLM call"]
+    call["libsy.client_call<br/>routing or completion"]
+    attempt["libsy.upstream_attempt<br/>one per HTTP attempt"]
     requested["mark:switchyard.routing.requested<br/>zero duration"]
     calls["mark:switchyard.routing.llm_call<br/>zero duration"]
     overhead["mark:switchyard.routing.overhead<br/>zero duration"]
     decision["mark:switchyard.routing.decision<br/>zero duration"]
     error["mark:switchyard.routing.error<br/>zero duration"]
     agent --> llm
+    llm --> call
+    call --> attempt
     agent --> requested
     agent --> calls
     agent --> overhead

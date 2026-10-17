@@ -25,14 +25,15 @@ pub enum ResponsesReasoningPolicy {
 impl ResponsesReasoningPolicy {
     /// Normalizes a Responses request body for this replay policy.
     pub(crate) fn normalize(self, body: &mut Value) {
+        let has_stored_reasoning = body.get("store").and_then(Value::as_bool) != Some(false);
         let Some(Value::Array(input)) = body.get_mut("input") else {
             return;
         };
-        input.retain_mut(|item| self.normalize_item(item));
+        input.retain_mut(|item| self.normalize_item(item, has_stored_reasoning));
     }
 
     // Stored reasoning can be replayed by ID without encrypted content.
-    fn normalize_item(self, item: &mut Value) -> bool {
+    fn normalize_item(self, item: &mut Value, has_stored_reasoning: bool) -> bool {
         let Some(object) = item.as_object_mut() else {
             return true;
         };
@@ -48,7 +49,9 @@ impl ResponsesReasoningPolicy {
             .get("id")
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty());
-        if self == Self::PreserveEncrypted && (has_encrypted_content || has_stored_id) {
+        if self == Self::PreserveEncrypted
+            && (has_encrypted_content || (has_stored_reasoning && has_stored_id))
+        {
             object.insert("content".to_string(), Value::Array(Vec::new()));
             true
         } else {

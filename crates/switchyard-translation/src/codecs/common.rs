@@ -6,7 +6,7 @@
 use serde_json::{Map, Value};
 
 use crate::error::{Result, TranslationError};
-use crate::llm::{ContentBlock, LlmRequest, ToolChoice, ToolDefinition};
+use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
@@ -19,7 +19,7 @@ pub(crate) fn is_anthropic_request(request: &LlmRequest) -> bool {
 /// Converts an OpenAI allowed-tools policy to a restricted function list and mode.
 pub(crate) fn allowed_function_tools(
     request: &LlmRequest,
-) -> Result<Option<(Vec<ToolDefinition>, ToolChoice)>> {
+) -> Result<Option<(Vec<Tool>, ToolChoice)>> {
     let Some(ToolChoice::Raw(choice)) = &request.tool_choice else {
         return Ok(None);
     };
@@ -63,7 +63,12 @@ pub(crate) fn allowed_function_tools(
             }
             _ => name.to_string(),
         };
-        if !request.tools.iter().any(|tool| tool.name == name) {
+        if !request
+            .tools
+            .iter()
+            .filter_map(Tool::function)
+            .any(|tool| tool.name == name)
+        {
             return Err(error());
         }
         names.push(name);
@@ -73,7 +78,10 @@ pub(crate) fn allowed_function_tools(
     let tools = request
         .tools
         .iter()
-        .filter(|tool| names.contains(&tool.name))
+        .filter(|tool| {
+            tool.function()
+                .is_some_and(|tool| names.contains(&tool.name))
+        })
         .cloned()
         .collect();
     Ok(Some((tools, mode)))
