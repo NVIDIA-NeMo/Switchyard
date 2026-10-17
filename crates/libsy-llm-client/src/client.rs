@@ -1329,8 +1329,11 @@ fn apply_reasoning_format(body: &mut Value, reasoning_format: ReasoningFormat) {
         if message.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
-        let value = message.remove(other_field);
-        if message.contains_key(target_field) {
+        let value = message.remove(other_field).filter(|value| !value.is_null());
+        if message
+            .get(target_field)
+            .is_some_and(|value| !value.is_null())
+        {
             continue;
         }
         let value = value.or_else(|| {
@@ -1354,7 +1357,7 @@ fn apply_reasoning_format(body: &mut Value, reasoning_format: ReasoningFormat) {
             (!text.is_empty()).then_some(Value::String(text))
         });
         if let Some(value) = value {
-            message.entry(target_field).or_insert(value);
+            message.insert(target_field.to_owned(), value);
         }
     }
 }
@@ -3407,6 +3410,68 @@ mod tests {
                         .any(|message| message["reasoning_content"] == "thoughts"),
                     "{format:?}: {body}"
                 );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reasoning_format_replays_null_fields_with_tools()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (format, target_field, other_field) in [
+            (ReasoningFormat::Deepseek, "reasoning_content", "reasoning"),
+            (ReasoningFormat::OpenAi, "reasoning", "reasoning_content"),
+        ] {
+            for alternate in [None, Some(Value::Null), Some(json!("plain thoughts"))] {
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .and(path("/v1/chat/completions"))
+                    .respond_with(chat_success_response())
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let client = TranslatingLlmClient::new(&chat_map_with_reasoning_format(
+                    &format!("{}/v1", server.uri()),
+                    format,
+                ))?;
+                let mut request = json!({
+                    "model": "gpt",
+                    "tools": [{"type": "function", "function": {
+                        "name": "lookup", "parameters": {"type": "object"}
+                    }}],
+                    "messages": [
+                        {"role": "assistant", "content": null, (target_field): null,
+                         "reasoning_details": [{"type": "reasoning.text", "text": "thoughts"}],
+                         "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                             "name": "lookup", "arguments": "{}"
+                         }}]},
+                        {"role": "tool", "tool_call_id": "call_1", "content": "result"}
+                    ]
+                });
+                let expected = alternate
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .unwrap_or("thoughts");
+                if let Some(value) = &alternate {
+                    request["messages"][0][other_field] = value.clone();
+                }
+                client
+                    .call_rewrite_model_raw(
+                        request,
+                        None,
+                        Some(&ModelId::new("gpt")),
+                        WireFormat::OpenAiChat,
+                    )
+                    .await?;
+                let received = server
+                    .received_requests()
+                    .await
+                    .ok_or("recording disabled")?;
+                let body: Value = serde_json::from_slice(&received[0].body)?;
+                assert_eq!(body["messages"][0][target_field], expected);
+                assert!(body["messages"][0].get(other_field).is_none());
+                assert_eq!(body["tools"][0]["function"]["name"], "lookup");
+                assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
             }
         }
         Ok(())
