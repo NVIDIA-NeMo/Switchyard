@@ -265,7 +265,7 @@ required columns.
 | `tool_semantics.plan` | `[]` | Domain tool names that count as planning. |
 | `tool_semantics.new` | `[]` | Domain tool names that count as neutral forward activity. |
 | `handoff_notes.escalation_note` | required in the table | Note handed to the capable tier when the signals or a hard override escalate. |
-| `handoff_notes.deescalation_note` | unset | Note handed to the efficient tier on a signal-driven return. |
+| `handoff_notes.deescalation_note` | unset | Note handed to the efficient tier whenever the signals select it, with or without a capable turn before. |
 | `handoff_notes.only_on_wrong_signal_escalation` | `true` | `false` also adds the escalation note to capable-hold turns. |
 | `classifier.target` | required in the table | Judge target. Not a routing destination. |
 | `classifier.base_threshold` | required for LLM judges | Lowest `p_solve` that still routes efficient. |

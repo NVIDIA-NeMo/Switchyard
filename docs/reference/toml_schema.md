@@ -380,7 +380,7 @@ the signals work and for tuning.
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `handoff_notes.escalation_note` | Yes, when the table is present | — | Note appended to the request when the signals or a hard override escalate to the capable tier. |
-| `handoff_notes.deescalation_note` | No | unset | Note appended to the request on a signal-driven return to the efficient tier. |
+| `handoff_notes.deescalation_note` | No | unset | Note appended to the request whenever the signals select the efficient tier, whether or not a capable turn came before. |
 | `handoff_notes.only_on_wrong_signal_escalation` | No | `true` | When `true`, only the escalating turn itself carries the escalation note. `false` also adds it to the capable-hold turns that follow. |
 
 #### `classifier` keys
