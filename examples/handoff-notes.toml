@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+compile_failure = "Read the compiler error and fix the first failing operation."
+repeated_failure = """
+Review the previous attempts before trying another change.
+Explain what the new attempt tests.
+"""

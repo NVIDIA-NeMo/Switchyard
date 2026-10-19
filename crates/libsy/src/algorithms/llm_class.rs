@@ -23,6 +23,7 @@ use super::util::classifier_contract::{
     ClassifierContract, ClassifierContractConfig, ClassifierResponseFormat,
 };
 use super::util::escalation::EscalationJudgeConfig;
+pub use super::util::handoff_note::HandoffNotePolicy;
 use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
     SerdeDecoder, StructuredJudge,
@@ -487,7 +488,7 @@ impl TaskClassifierConfig {
     }
 }
 
-/// Policy that maps a custom classifier verdict to a routing target.
+/// Policy applied to a validated custom classifier verdict.
 #[derive(Clone, Debug)]
 pub enum CustomClassifierPolicy {
     /// Resolves a JSON Pointer and treats its string value as a model category.
@@ -495,6 +496,8 @@ pub enum CustomClassifierPolicy {
         /// JSON Pointer evaluated against each schema-validated verdict.
         selector: String,
     },
+    /// Adds an optional note to a target fixed in configuration.
+    HandoffNote(HandoffNotePolicy),
 }
 
 impl CustomClassifierPolicy {
@@ -506,7 +509,7 @@ impl CustomClassifierPolicy {
     }
 }
 
-/// Settings for a classifier whose JSON Schema and target-selection policy are user supplied.
+/// Settings for a classifier with a user-supplied JSON Schema and verdict policy.
 #[derive(Clone, Debug)]
 pub struct CustomClassifierConfig {
     /// System prompt sent to the classifier judge.
@@ -515,7 +518,7 @@ pub struct CustomClassifierConfig {
     pub response_schema: Value,
     /// Deterministic policy applied after the verdict passes schema validation.
     pub policy: CustomClassifierPolicy,
-    /// How often the classifier re-decides this session's target.
+    /// How often the classifier judge runs.
     pub classify_trigger: ClassifyTrigger,
     /// Uses the first user message when session metadata is unavailable.
     pub message_hash_fallback: bool,
@@ -563,10 +566,18 @@ impl CustomClassifierConfig {
 
 enum CustomPolicyRuntime {
     TargetSelector(TargetSelectorPolicy),
+    HandoffNote(HandoffNotePolicy),
 }
 
 impl JudgePolicy for CustomPolicyRuntime {
     type Verdict = Value;
+
+    fn apply_handoff_note(&self, verdict: &Value, request: &mut Request) {
+        match self {
+            Self::TargetSelector(_) => {}
+            Self::HandoffNote(policy) => policy.apply_handoff_note(verdict, request),
+        }
+    }
 
     fn to_classification(
         &self,
@@ -575,6 +586,7 @@ impl JudgePolicy for CustomPolicyRuntime {
     ) -> Result<Classification> {
         match self {
             Self::TargetSelector(policy) => policy.to_classification(verdict, driver),
+            Self::HandoffNote(policy) => policy.to_classification(verdict, driver),
         }
     }
 }
@@ -736,13 +748,18 @@ impl LlmTaskClassifier {
         fail_open: bool,
     ) -> Result<Arc<dyn Classifier>> {
         config.validate()?;
-        let contract =
-            ClassifierContract::from_inner_schema(&config.prompt, config.response_schema.clone())?;
-        let policy = match &config.policy {
-            CustomClassifierPolicy::TargetSelector { selector } => {
-                CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector)?)
-            }
+        let (policy, prompt) = match &config.policy {
+            CustomClassifierPolicy::TargetSelector { selector } => (
+                CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector)?),
+                config.prompt.clone(),
+            ),
+            CustomClassifierPolicy::HandoffNote(notes) => (
+                CustomPolicyRuntime::HandoffNote(notes.clone()),
+                notes.extend_prompt(&config.prompt)?,
+            ),
         };
+        let contract =
+            ClassifierContract::from_inner_schema(&prompt, config.response_schema.clone())?;
         let classifier = JudgeClassifier::new(
             StructuredJudge::new(
                 TaskInput {
