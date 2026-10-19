@@ -146,8 +146,8 @@ async fn a_truncated_local_attempt_is_judged_before_it_escalates() -> Result<()>
     };
     let selected = drive(&route, task, calls.clone(), cut_off, 0.0).await?;
     assert_eq!(selected, "cloud");
-    // Attempt, readout and deliberation; read as absent, only the attempt runs.
-    assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+    // Attempt, readout, deliberation and its verdict; read as absent, only the attempt runs.
+    assert_eq!(calls.0.load(Ordering::Relaxed), 4);
     Ok(())
 }
 
@@ -844,5 +844,73 @@ async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
     let sent = sent.lock().map(|sent| sent.clone()).unwrap_or_default();
     assert!(sent.contains("41 plus 42"), "escalated to the cloud");
     assert!(!sent.contains("Routing notice"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cloud_decision_falls_back_to_local_without_the_handoff_note() -> Result<()> {
+    use crate::core::algorithm::Call;
+    use crate::core::testing::serve_decision;
+
+    let task = || {
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ])
+    };
+    let noted = |request: &Request| {
+        serde_json::to_string(&request.llm_request.messages)
+            .is_ok_and(|text| text.contains("Routing notice"))
+    };
+    for killed in [false, true] {
+        let switch = super::super::KillSwitch::new();
+        let algorithm = route(|config| {
+            config.agentic_handoff = true;
+            config.kill_switch = Some(switch.clone());
+        })?;
+        drive(
+            &algorithm,
+            session(vec![Message::text(Role::User, "fix the build")]),
+            Arc::new(Calls::default()),
+            complete_call,
+            0.0,
+        )
+        .await?;
+        if killed {
+            switch.engage();
+        }
+        let outcome = crate::drive(
+            algorithm,
+            task(),
+            Arc::new(category_models(Category::Any, &["local", "cloud"]).into()),
+            |call| async move {
+                match call {
+                    Call::Model(call) => {
+                        let response = match call.models[0].as_str() {
+                            "local" => reply("the build passes"),
+                            "judge" => scored(0.0),
+                            _ => reply("no"),
+                        };
+                        call.respond(std::future::ready(Ok(response))).await
+                    }
+                    Call::Decision(call) => serve_decision(*call).await,
+                }
+            },
+        )
+        .await?;
+        assert!(noted(&outcome.request));
+        if killed {
+            assert_eq!(outcome.selected_model_ids, vec![ModelId::new("cloud")]);
+            assert!(outcome.fallback_request.is_none());
+        } else {
+            assert_eq!(
+                outcome.selected_model_ids,
+                vec![ModelId::new("cloud"), ModelId::new("local")]
+            );
+            let fallback = outcome.fallback_request.expect("a local fallback request");
+            assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
+        }
+    }
     Ok(())
 }
