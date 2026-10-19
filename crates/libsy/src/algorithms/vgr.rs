@@ -19,6 +19,7 @@ use crate::algorithms::fall_through::FallThrough;
 use crate::algorithms::util::affinity::AffinityRouter;
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
 
+mod compaction;
 mod config;
 mod decide;
 mod readout;
@@ -53,6 +54,9 @@ impl Vgr {
                 .with_latch_only([cloud.clone()]),
         );
         let mut route = FallThrough::new_with_state().with_name("vgr");
+        if config.compact_handoff {
+            route = route.with_classifier(Arc::new(compaction::Compactor));
+        }
         if config.latch_escalation {
             let latch = Arc::new(AffinityRouter::new().with_latch_only([cloud.clone()]));
             route = route

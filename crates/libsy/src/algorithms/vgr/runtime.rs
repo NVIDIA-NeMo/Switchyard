@@ -306,7 +306,9 @@ impl VgrClassifier {
         set_flag(state, HANDOFF_SENT_KEY, true);
         set_flag(state, LOCAL_SERVED_KEY, false);
         let note = handoff_note(unverified_final);
-        append_note(request, &note);
+        if !(self.config.compact_handoff && super::compaction::compact(request, state, &note)) {
+            append_note(request, &note);
+        }
     }
 
     /// Judges one proposed tool call; `true` escalates the rest of the session.
