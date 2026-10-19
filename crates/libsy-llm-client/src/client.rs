@@ -977,9 +977,11 @@ fn mcp_token_patterns(body: &Value) -> Vec<String> {
         }))
         // Providers may echo only the credential from an Authorization header.
         .flat_map(|token| {
-            [Some(token), token.strip_prefix("Bearer ")]
-                .into_iter()
-                .flatten()
+            let credential = token
+                .to_ascii_lowercase()
+                .find("bearer")
+                .map(|start| token[start + "bearer".len()..].trim());
+            [Some(token), credential].into_iter().flatten()
         })
         .filter(|token| !token.is_empty())
         .map(str::to_owned)
@@ -3749,7 +3751,9 @@ mod tests {
             {"type": "mcp", "server_label": "remote", "server_url": "https://example.invalid/mcp",
                 "authorization": "synthetic-oauth-secret"},
             {"type": "mcp", "server_label": "private", "tunnel_id": "tunnel_test",
-                "headers": {"X-Api-Key": "synthetic-header-secret", "Authorization": "Bearer synthetic-bearer-secret"}}
+                "headers": {"X-Api-Key": "synthetic-header-secret", "Authorization": "Bearer synthetic-bearer-secret"}},
+            {"type": "mcp", "server_label": "spaced", "server_url": "https://example.invalid/mcp",
+                "headers": {"Authorization": "  bearer  ABCXYZ  "}}
         ]});
         for body in [
             body.clone(),
@@ -3757,7 +3761,7 @@ mod tests {
         ] {
             let patterns = mcp_token_patterns(&body);
             let mut error = json!({"error": {
-                "message": body.to_string(), "detail": "synthetic-bearer-secret"
+                "message": body.to_string(), "detail": "synthetic-bearer-secret ABCXYZ"
             }});
             redact_mcp_json(&mut error, &patterns);
             let error = error.to_string();
@@ -3765,6 +3769,7 @@ mod tests {
                 "synthetic-oauth-secret",
                 "synthetic-header-secret",
                 "synthetic-bearer-secret",
+                "ABCXYZ",
             ] {
                 assert!(!error.contains(secret));
             }
