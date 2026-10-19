@@ -13,7 +13,7 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
+    DecisionJudgeConfig, DecisionPolicy, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
     PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
     StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
@@ -137,7 +137,7 @@ impl CapabilityClassifierRouteConfig {
                     })
                     .collect::<AlgorithmResult<_>>()?;
                 CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
-                    cutoff: judge.cutoff,
+                    policy: judge.policy,
                     instructions: judge.instructions,
                     candidates,
                     evidence: judge.evidence,
@@ -267,13 +267,13 @@ impl CategoryModelConfig {
     }
 }
 
-/// Relative-advantage judgment using a decision model instead of an LLM prompt.
+/// Decision-model judgment using ordered candidate-score cutoffs.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionJudgeRouteConfig {
-    /// Route capable only when its advantage score is strictly above this cutoff.
-    pub cutoff: f64,
-    /// Replaces the default relative-advantage instructions.
+    /// Ordered rules and fallback, using labels from `candidates`.
+    pub policy: DecisionPolicy,
+    /// Replaces the default candidate-selection instructions.
     pub instructions: Option<Value>,
     /// Anonymous evidence labels mapped to configured LLM target names.
     pub candidates: BTreeMap<String, String>,
@@ -322,7 +322,7 @@ pub struct LlmClassifierRouteConfig {
     /// Escalation mode: how many escalate verdicts latch the session, and how
     /// much of the transcript the judge sees.
     pub escalation: Option<EscalationJudgeConfig>,
-    /// Capability mode: use a decision target as the judge, with relative-advantage scoring.
+    /// Capability mode: use a decision target with an explicit selection policy.
     pub decision: Option<DecisionJudgeRouteConfig>,
     /// Custom mode: runtime model groups.
     pub models: Option<CategoryModelConfig>,
@@ -668,6 +668,23 @@ impl StageClassifierConfig {
             return Err(AlgorithmConfigError::new(
                 "custom classifier settings require composite with mode = custom",
             ));
+        }
+        if let Some(judge) = &self.decision
+            && judge
+                .policy
+                .rules
+                .iter()
+                .map(|rule| &rule.candidate)
+                .chain(std::iter::once(&judge.policy.fallback))
+                .any(|label| {
+                    judge.candidates.get(label).is_none_or(|target| {
+                        target != &tiers.capable_target && target != &tiers.efficient_target
+                    })
+                })
+        {
+            return Err(AlgorithmConfigError::new(format!(
+                "route {route_name}: a stage classifier policy must route within its capable/efficient tier pair"
+            )));
         }
         let config = LlmClassifierRouteConfig {
             classifier_target: self.target.clone(),
@@ -1210,7 +1227,7 @@ impl LlmClassifierRouteConfig {
                         || *max_output_tokens != default_classifier_max_output_tokens()
                     {
                         return Err(AlgorithmConfigError::new(format!(
-                            "llm_classifier route {route_name}: decision cannot use LLM judge settings; use decision.cutoff and decision.instructions"
+                            "llm_classifier route {route_name}: decision cannot use LLM judge settings; use decision.policy and decision.instructions"
                         )));
                     }
                     CapabilityJudgeRouteConfig::Decision(decision.clone())

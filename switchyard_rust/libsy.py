@@ -194,7 +194,7 @@ if TYPE_CHECKING:
 
     @final
     class TaskClassifierConfig:
-        """Configure capability classification between efficient and capable targets.
+        """Configure task classification with an LLM or decision judge.
 
         Thresholds must remain within ``[0, 1]``, ``max_output_tokens`` must be
         positive, and ``message_hash_fallback`` requires ``session_affinity``.
@@ -203,12 +203,16 @@ if TYPE_CHECKING:
         @staticmethod
         def decision(
             *,
-            cutoff: float,
+            policy: Mapping[str, object],
             candidates: Mapping[str, str],
             evidence: object,
             instructions: object | None = None,
         ) -> TaskClassifierConfig:
-            """Use relative advantage with the default routing and fallback settings."""
+            """Select the first matching rule, or the policy's fallback candidate.
+
+            Rule candidate and fallback labels refer to ``candidates``.
+            Rules match strictly above their cutoff, in declaration order.
+            """
             ...
 
         def __init__(

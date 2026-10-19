@@ -38,7 +38,7 @@ test("selects the configured target through the classifier", async (t) => {
   const { runner, calls } = await setup(t, (res) => {
     res.setHeader("content-type", "application/json");
     res.end(JSON.stringify({ answers: { route: {
-      type: "choice", choice: "advantage", probabilities: { advantage: 0.9, no_advantage: 0.1 },
+      type: "choice", choice: "a", probabilities: { a: 0.9, b: 0.1 },
     } } }));
   });
   assert.equal(calls.length, 0);
