@@ -9,17 +9,20 @@
 //! by what is left of the turn's deadline, and a call that fails or times out
 //! is evidence never gathered, which does not commit.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use switchyard_protocol::{AggLlmResponse, ContentBlock, ModelId, Request, Response, StopReason};
+use switchyard_protocol::{
+    AggLlmResponse, ContentBlock, Message, ModelId, Request, Response, StopReason,
+};
 
 use super::config::{ServingMode, VgrConfig};
 use super::decide::{self, AgenticRun, Route, Signals, Tri};
 use super::rungs::{self, Question};
 use super::safety::{CircuitBreaker, endpoint_failure, fallback_eligible};
 use super::{Branch, Capabilities, TaskType, derive_capabilities, readout, text};
-use crate::algorithms::util::affinity::has_new_user_turn;
+use crate::algorithms::util::affinity::{AffinityRouter, has_new_user_turn, initiated_by_user};
 use crate::algorithms::util::buffered_response::buffer_response;
 use crate::algorithms::util::decisive;
 use crate::algorithms::util::prompts::append_note;
@@ -30,6 +33,7 @@ use crate::{LibsyError, Result};
 
 /// Consecutive escalation votes. Reaching [`TURN_CONFIRMATIONS`] latches the session to the
 /// capable tier; once latched, verification is skipped, so the count never resets.
+const TURN_LATCHED_KEY: &str = "vgr_turn_latched";
 pub(super) const TURN_STREAK_KEY: &str = "vgr_turn_streak";
 /// Unix seconds at the first request of the current user turn.
 const TURN_STARTED_KEY: &str = "vgr_turn_started";
@@ -80,6 +84,25 @@ pub(super) struct VgrClassifier {
     pub(super) breaker: CircuitBreaker,
 }
 
+/// An escalation hold, recorded as a VGR decision with its reason whenever it serves a call.
+pub(super) struct Held(pub(super) Arc<AffinityRouter>, pub(super) &'static str);
+
+#[async_trait]
+impl Classifier for Held {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<Scored> {
+        let scored = self.0.score(state, request, driver).await?;
+        if matches!(&scored.0, Classification::Scores(scores) if !scores.is_empty()) {
+            log(driver, self.1, None, Route::Cloud);
+        }
+        Ok(scored)
+    }
+}
+
 #[async_trait]
 impl Classifier for VgrClassifier {
     async fn score(
@@ -90,9 +113,18 @@ impl Classifier for VgrClassifier {
     ) -> Result<Scored> {
         let started = Instant::now();
         let local = &self.config.targets.local;
-        if has_new_user_turn(&request.llm_request.messages) {
+        let messages = &request.llm_request.messages;
+        let (new_turn, answered) = match initiated_by_user(request) {
+            Some(by_user) => (by_user, by_user),
+            None => (has_new_user_turn(messages), answers_final_reply(messages)),
+        };
+        if new_turn {
             state.extra.remove(TURN_STARTED_KEY);
             set_flag(state, HANDOFF_SENT_KEY, false);
+        }
+        if answered {
+            set_flag(state, TURN_LATCHED_KEY, false);
+            set_count(state, TURN_STREAK_KEY, 0);
         }
         let turn_budget_spent = self.turn_budget_spent(state);
         let short_circuit = if self.config.mode == ServingMode::Off {
@@ -104,12 +136,14 @@ impl Classifier for VgrClassifier {
             .is_some_and(|switch| switch.is_engaged())
         {
             Some("kill_switch")
-        } else if turn_streak(state) >= TURN_CONFIRMATIONS {
+        } else if flag(state, TURN_LATCHED_KEY) || turn_streak(state) >= TURN_CONFIRMATIONS {
             Some("turn_verification_latched")
         } else if turn_budget_spent {
             Some("local_turn_budget")
         } else if !self.config.local_supports_images && request_has_image(request) {
             Some("local_image_unsupported")
+        } else if text::newest_prompt_is_blank(request) {
+            Some("empty_prompt")
         } else {
             None
         };
@@ -125,7 +159,7 @@ impl Classifier for VgrClassifier {
         };
         let attempted = tokio::time::timeout(budget, async {
             let response = driver
-                .call_model(request.clone(), vec![local.clone()])
+                .call_model_with_error_recovery(request.clone(), vec![local.clone()], true)
                 .await?;
             buffer_response(local.as_str(), response).await
         })
@@ -251,7 +285,7 @@ impl VgrClassifier {
         if !self.config.agentic_handoff
             || flag(state, HANDOFF_SENT_KEY)
             || !flag(state, LOCAL_SERVED_KEY)
-            || !text::has_tool_trajectory(request)
+            || !text::turn_has_tool_trajectory(request)
         {
             return;
         }
@@ -283,7 +317,7 @@ impl VgrClassifier {
             Some(Err(error)) => {
                 if *judge == self.config.targets.local && endpoint_failure(&error) {
                     self.breaker.failure();
-                    set_count(state, TURN_STREAK_KEY, TURN_CONFIRMATIONS);
+                    set_flag(state, TURN_LATCHED_KEY, true);
                     return true;
                 }
                 return false;
@@ -298,6 +332,9 @@ impl VgrClassifier {
         }
         let streak = turn_streak(state).saturating_add(1);
         set_count(state, TURN_STREAK_KEY, streak);
+        if streak >= TURN_CONFIRMATIONS {
+            set_flag(state, TURN_LATCHED_KEY, true);
+        }
         streak >= TURN_CONFIRMATIONS
     }
 
@@ -453,13 +490,17 @@ fn unix_seconds() -> u32 {
 fn handoff_note(unverified_final: Option<&str>) -> String {
     let mut note = String::from(
         "\n\n[Routing notice from the serving infrastructure, not from the user] Until now the \
-         work in this session was carried out by a smaller, faster model. That work has NOT been \
-         verified: it may be incomplete or incorrect, and it may have left the environment in a \
-         broken state. You are taking over from here. Do not assume that any earlier step \
-         succeeded or that the task is finished. Inspect the actual current state of the \
-         environment against every requirement of the original task, fix whatever is missing or \
-         wrong, and give your final answer only after you have confirmed that the requirements \
-         are met.",
+         work on the user's current request was carried out by a smaller, faster model. That work \
+         has NOT been verified: it may be incomplete or incorrect, and it may have left the \
+         environment in a broken state. You are taking over from here. Do not assume that any \
+         step taken on that request succeeded or that the task is finished. Inspect the actual \
+         current state of the environment against every requirement of the request, fix \
+         whatever is missing or wrong, and give your final answer only after you have confirmed \
+         that the requirements are met. Earlier steps may already have done part of the work. \
+         Keep what they did and build on it: confirm a step's effect by inspecting the \
+         environment rather than by running the step again, and repeat or reverse a step only \
+         when the request cannot be met otherwise. Replies to the user's earlier requests are \
+         not in question; do not revisit or correct them unless the user asks.",
     );
     if let Some(claim) = unverified_final.filter(|claim| !claim.trim().is_empty()) {
         const CLIPPING_MARKER_RESERVE: usize = 64;
@@ -484,8 +525,24 @@ fn log(driver: &Driver, reason: &'static str, branch: Option<Branch>, served: Ro
         "reason_code": reason,
         "verdict": if served == Route::Local { "local" } else { "cloud" },
         "branch": branch.map(|branch| format!("{branch:?}")),
+        "policy_version": decide::POLICY_VERSION,
     }));
-    tracing::info!(target: "libsy", reason, branch = ?branch, served = ?served, "vgr decision");
+    tracing::info!(
+        target: "libsy",
+        reason,
+        branch = ?branch,
+        served = ?served,
+        policy_version = decide::POLICY_VERSION,
+        "vgr decision"
+    );
+}
+
+/// Whether the user is answering a finished assistant reply.
+fn answers_final_reply(messages: &[Message]) -> bool {
+    messages
+        .len()
+        .checked_sub(1)
+        .is_some_and(|last| text::starts_user_turn(messages, last))
 }
 
 fn tool_use_is_complete(response: &AggLlmResponse) -> bool {

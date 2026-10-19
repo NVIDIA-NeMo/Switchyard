@@ -8,6 +8,9 @@
 
 use super::{Branch, Capabilities};
 
+/// Version of these rules and dials, carried on every decision record.
+pub(super) const POLICY_VERSION: &str = "1.0";
+
 const READOUT: f64 = 0.9;
 /// Most tool results a run may contain and still recover without the capable tier.
 const SHORT_RUN_MAX_TOOL_RESULTS: i32 = 100;

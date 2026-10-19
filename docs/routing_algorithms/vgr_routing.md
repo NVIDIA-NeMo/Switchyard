@@ -72,6 +72,36 @@ new local work has been served since the previous handoff. The handoff preserves
 the conversation's existing messages and content. `local_turn_budget_seconds`
 escalates a user turn once the local tier has spent that much wall-clock time on it.
 
+The notice covers the current request and asks the cloud tier to preserve earlier
+work, inspect its effects, and repeat or undo steps only when needed.
+
+Escalations release when a new user turn is decided locally. Set
+`latch_escalation = true` to retain the cloud tier across later user turns instead.
+All configured VGR durations must be positive.
+
+## Hermes session headers
+
+Use a Hermes build that supports both provider options below. The session header
+must stay the same throughout a conversation; each conversation needs its own ID.
+
+```yaml
+model:
+  default: assistant
+  provider: custom
+  base_url: http://localhost:4000/v1
+providers:
+  switchyard:
+    api: http://localhost:4000/v1
+    session_affinity_header: x-switchyard-session-id
+    initiator_header: true
+```
+
+`x-initiator: user` releases the turn hold for a person's new request or steer.
+`x-initiator: agent` keeps the hold through tool calls, recovery nudges, and
+automatic continuations. Retries retain the original call's tag. Without a
+recognized tag, Switchyard uses the message shape to identify a user turn.
+`x-session-id` is also accepted as a session-header alias.
+
 ## Serving modes
 
 - `off` skips candidate generation and serves cloud. This is the default.

@@ -1226,6 +1226,11 @@ task_typing = false
         let missing_target =
             vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
         assert!(error_message(&missing_target).contains("unknown target missing"));
+
+        let zero_cooldown = format!("{}breaker_cooldown_seconds = 0\n", vgr_config());
+        assert!(
+            error_message(&zero_cooldown).contains("breaker_cooldown_seconds must be a positive")
+        );
         Ok(())
     }
 

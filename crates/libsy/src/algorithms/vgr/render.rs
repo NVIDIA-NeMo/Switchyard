@@ -11,6 +11,8 @@ use switchyard_protocol::{ContentBlock, Request, Role};
 use super::text::{Turn, clip_mid, content_text, redact, tool_result_failed};
 
 const ASSISTANT_TURN_BUDGET: usize = 1200;
+// Agent frameworks send system prompts of many thousand tokens; each local rung would re-read them.
+const SYSTEM_TURN_BUDGET: usize = 1000;
 pub(super) const ATTEMPT_BUDGET: usize = 2200;
 const AGENTIC_TRAJECTORY_BUDGET: usize = 12_000;
 const AGENTIC_EVENT_BUDGET: usize = 1400;
@@ -25,10 +27,12 @@ pub(super) fn render_session(turns: &[Turn], attempt: &str) -> String {
         if turn.text.trim().is_empty() || Some(index) == latest_user {
             continue;
         }
-        let mut text = redact(&turn.text);
-        if matches!(turn.role, Role::Assistant | Role::Tool) {
-            text = clip_mid(&text, ASSISTANT_TURN_BUDGET, 0.5);
-        }
+        let text = redact(&turn.text);
+        let text = match turn.role {
+            Role::User => text,
+            Role::System | Role::Developer => clip_mid(&text, SYSTEM_TURN_BUDGET, 0.5),
+            Role::Assistant | Role::Tool => clip_mid(&text, ASSISTANT_TURN_BUDGET, 0.5),
+        };
         lines.push(format!("[{}] {text}", turn.role));
     }
     if let Some(index) = latest_user {
@@ -111,4 +115,31 @@ fn agentic_trajectory(request: &Request) -> Vec<String> {
         }
     }
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_session_view_clips_the_system_prompt_but_not_the_user() {
+        let system = "framework rules ".repeat(500);
+        let request = "please keep every word of this ".repeat(100);
+        let turns = [
+            Turn {
+                role: Role::System,
+                text: system.clone(),
+            },
+            Turn {
+                role: Role::User,
+                text: request.clone(),
+            },
+        ];
+
+        let view = render_session(&turns, "done");
+
+        assert!(view.contains("chars omitted"));
+        assert!(view.chars().count() < SYSTEM_TURN_BUDGET + request.len() + 200);
+        assert!(view.contains(&request));
+    }
 }
