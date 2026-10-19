@@ -92,10 +92,7 @@ The [routing overview](docs/routing_algorithms/overview.md) retains the full cat
 
 ## Evaluation and reference
 
-[![Task completion versus cost for Switchyard classification, stage, escalation, and Jev task routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.svg)](docs/benchmarks.md#terminal-bench-21)
-
-[Browse benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1 and DeepSWE.
-The Jev point is a separate recorded-run replay; the benchmark page explains its evaluation setup.
+[Compare benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1 and DeepSWE.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
 
 ### Further reading

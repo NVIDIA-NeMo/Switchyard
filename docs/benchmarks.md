@@ -17,11 +17,7 @@ also measured on its own. The escalation route uses **DeepSeek V4 Flash** as its
 
 [Published comparison and background](https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/).
 
-| Routing strategy | Config |
-| --- | --- |
-| LLM classification | Coming soon |
-| Stage | Coming soon |
-| Escalation | [TOML](../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) |
+[Escalation config](../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml)
 
 ### Jev task routing
 
@@ -69,14 +65,7 @@ scoring, and pricing.
 
 ## Run a benchmark
 
-1. Choose a config above and set its API key environment variables: `OPENROUTER_API_KEY`,
-   plus `TYPESAFE_API_KEY` for Jev.
-2. Follow the [Terminal-Bench setup](../benchmark/README.md#one-time-setup) and
-   [routing run instructions](../benchmark/README.md#run-with-switchyard-routing), substituting
-   the TB2.1 dataset and chosen config. For DeepSWE, use the
-   [Pier instructions](../benchmark/README.md#deepswe-v11).
-3. Use the route's `id` as the model name. It is `switchyard` for these configs except the
-   DeepSWE Stage profile, which uses `gpt-5.6-luna`.
-
-[Inspect the run artifacts](../benchmark/README.md#inspect-a-run) for Harbor results, the
-saved command, and config snapshot. DeepSWE results follow Pier's `jobs/<job-name>/` layout.
+- **Terminal-Bench 2.1:** [Prepare the dataset](../benchmark/README.md#one-time-setup),
+  [run with a config above](../benchmark/README.md#run-with-switchyard-routing), and
+  [inspect the artifacts](../benchmark/README.md#inspect-a-run).
+- **DeepSWE:** [Run with Pier](../benchmark/README.md#deepswe-v11).
