@@ -8,7 +8,13 @@ Switchyard is an open-source library that helps an AI agent choose which model h
 
 Use Switchyard through a gateway integration, try it with a local proxy, or embed it in your own harness. You choose the model pool. Switchyard supplies the routing decision. Your gateway or application owns the surrounding service.
 
-[Quickstart](docs/getting_started.md) · [Documentation](https://nvidia-nemo.github.io/Switchyard/) · [Roadmap](https://github.com/NVIDIA-NeMo/Switchyard/issues/1026) · [Releases](https://github.com/NVIDIA-NeMo/Switchyard/releases) · [Contributing](CONTRIBUTING.md)
+<p align="center">
+  <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
+  <a href="https://nvidia-nemo.github.io/Switchyard/">Documentation</a> &emsp;·&emsp;
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/issues/1026">Roadmap</a> &emsp;·&emsp;
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases">Releases</a> &emsp;·&emsp;
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 ## How it works
 
