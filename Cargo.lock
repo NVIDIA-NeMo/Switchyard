@@ -3383,14 +3383,15 @@ dependencies = [
 name = "switchyard-node"
 version = "0.3.0"
 dependencies = [
+ "futures",
  "napi",
  "napi-build",
  "napi-derive",
+ "parking_lot",
+ "serde",
  "serde_json",
+ "switchyard-libsy",
  "switchyard-protocol",
- "switchyard-runner",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
