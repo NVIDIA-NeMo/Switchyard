@@ -1,57 +1,41 @@
 # Benchmarks
 
-Compare task completion and cost, open the routing configs, and run a benchmark with your own model endpoints.
+Task completion, cost, and runnable configs. All configs use `OPENROUTER_API_KEY`.
 
 [Terminal-Bench 2.1](#terminal-bench-21) · [DeepSWE](#deepswe) · [Run a benchmark](#run-a-benchmark)
 
-The linked configs use the current Switchyard schema and OpenRouter endpoints, including Jev.
-All use `OPENROUTER_API_KEY`. The recorded results used the original evaluation stacks.
-Changing the provider, models, or routing settings can change the outcome.
-
 ## Terminal-Bench 2.1
 
-The published comparison routes between **Claude Opus 4.8** and **GLM 5.2**, with each model
-also measured on its own. The escalation route uses **DeepSeek V4 Flash** as its judge.
+**Claude Opus 4.8 + GLM 5.2**
 
-![Terminal-Bench 2.1 task completion versus cost for LLM classification, Stage, and Escalation routing, with Opus 4.8 and GLM 5.2 baselines and a separate Jev recorded-run replay.](assets/switchyard-cost-accuracy.svg)
+![Terminal-Bench 2.1 task completion versus cost.](assets/switchyard-cost-accuracy.svg)
 
-[Published comparison and background](https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/).
-
-Configs: [Escalation](../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) ·
-[Jev task router](../benchmark/routing-profiles/tb21-jev-opus-glm.toml)
-
-The Jev point is a recorded-run replay: **73/89 tasks (82.02%)** at an estimated **$92.12**,
-including Jev calls. Jev selects one model for each task and replays its recorded outcome.
-Its evaluation setup and cost accounting differ from the other points.
-
-The replay includes **62 training tasks** and a reused **27-task test split** (Jev: 22/27;
-paired Opus baseline: 23/27). The Jev config uses a different question and endpoints; it needs
-a fresh benchmark.
+| Strategy | Tasks solved | Cost per run | Config |
+| --- | ---: | ---: | --- |
+| LLM classifier | 79.40% | $109.04 | — |
+| Stage | 79.03% | $109.81 | — |
+| Escalation | 79.80% | $122.63 | [TOML](../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) |
+| Jev (replay) | 82.02% | ≈$92.12 | [TOML](../benchmark/routing-profiles/tb21-jev-opus-glm.toml) |
+| Opus 4.8 only | 77.15% | $148.83 | — |
+| GLM 5.2 only | 74.16% | $71.31 | — |
 
 ## DeepSWE
 
-**DeepSWE v1.1 · 113 tasks · Codex CLI · GPT-5.6 Luna and Sol**
+**v1.1 · 113 tasks · Codex CLI · GPT-5.6 Luna + Sol**
 
-Plan/Execute uses Sol to plan and Luna to execute. Advisor uses Luna to execute and Sol to
-review. Stage chooses between the two models from recent tool activity.
+![DeepSWE task completion versus cost.](assets/deepswe-cost-accuracy.svg)
 
-![DeepSWE task completion versus cost for Plan/Execute (60.8%, $180.51), Advisor (57.5%, $208), Stage (61.36%, $466.28), and the best reported baselines: Sol (62.8%, $720.95) and Luna (52.2%, about $49).](assets/deepswe-cost-accuracy.svg)
+| Strategy | Tasks solved | Cost per run | Config |
+| --- | ---: | ---: | --- |
+| Plan/Execute | 60.8% | $180.51 | [TOML](../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) |
+| Advisor | 57.5% | $208.00 | [TOML](../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) |
+| Stage | 61.36% | $466.28 | [TOML](../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) |
+| Sol only | 62.8% | $720.95 | — |
+| Luna only | 52.2% | ≈$49 | — |
 
-[Evaluation settings](../benchmark/DEEPSWE_V11_QUALIFICATION.md).
-
-Configs: [Plan/Execute](../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) ·
-[Advisor](../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) ·
-[Stage](../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
-
-The chart keeps each model's highest reported completion score, breaking ties by lower cost.
-Luna is one Advisor-study run; Sol and all three routes are three-run means.
-
-All runs used closed-book evaluation, a three-hour agent budget, and strict scoring:
-failures and missing results count as unsolved.
+Luna: one run; others: three-run means. [Evaluation settings](../benchmark/DEEPSWE_V11_QUALIFICATION.md).
 
 ## Run a benchmark
 
-- **Terminal-Bench 2.1:** [Prepare the dataset](../benchmark/README.md#one-time-setup),
-  [run with a config above](../benchmark/README.md#run-with-switchyard-routing), and
-  [inspect the artifacts](../benchmark/README.md#inspect-a-run).
-- **DeepSWE:** [Run with Pier](../benchmark/README.md#deepswe-v11).
+- **Terminal-Bench 2.1:** [Setup](../benchmark/README.md#one-time-setup) · [Run](../benchmark/README.md#run-with-switchyard-routing)
+- **DeepSWE:** [Run with Pier](../benchmark/README.md#deepswe-v11)
