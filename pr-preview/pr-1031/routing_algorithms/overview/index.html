@@ -954,34 +954,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#more-options" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        More options
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="More options">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#experimental" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Experimental
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#common-route-shape" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1840,34 +1812,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#more-options" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        More options
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="More options">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#experimental" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Experimental
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#common-route-shape" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1985,67 +1929,67 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 </thead>
 <tbody>
 <tr>
-<td>Auto</td>
+<td><a href="#auto">Auto</a></td>
 <td><code>auto</code></td>
 <td>The Execution preset with fixed settings.</td>
 </tr>
 <tr>
-<td>Task</td>
+<td><a href="../llm_classifier_routing/">Task</a></td>
 <td><code>llm_classifier</code>, <code>mode = "capability"</code></td>
 <td>A judge reads the task before the turn is served and picks the strong or weak model.</td>
 </tr>
 <tr>
-<td>Execution</td>
+<td><a href="../stage_router_routing/">Execution</a></td>
 <td><code>stage_router</code></td>
 <td>Tool results from the last few turns pick the capable or efficient model for each turn.</td>
 </tr>
 <tr>
-<td>Composite</td>
+<td><a href="../composite_routing/">Composite</a></td>
 <td><code>composite</code></td>
 <td>A judge picks the starting tier at each user turn. Execution runs the turns in between.</td>
 </tr>
 <tr>
-<td>Plan/Execute</td>
+<td><a href="../plan_execute_routing/">Plan/Execute</a></td>
 <td><code>plan_execute</code></td>
 <td>The capable model plans. The first file edit hands the session to the efficient model.</td>
 </tr>
 <tr>
-<td>Escalation</td>
+<td><a href="../escalation_router_routing/">Escalation</a></td>
 <td><code>llm_classifier</code>, <code>mode = "escalation"</code></td>
-<td>The weak model serves until a judge sees it struggle on consecutive turns. Then the session latches to the strong model.</td>
+<td>The weak model serves until a judge reports the same failure on consecutive turns. Then the session latches to the strong model.</td>
 </tr>
 <tr>
-<td>Custom</td>
+<td><a href="../llm_classifier_routing/#custom-multi-target-routing">Custom</a></td>
 <td><code>llm_classifier</code>, <code>mode = "custom"</code></td>
 <td>Your own judge prompt and schema choose among any number of targets.</td>
 </tr>
 <tr>
-<td>Advisor Gate</td>
+<td><a href="../advisor_gate_routing/">Advisor Gate</a></td>
 <td><code>advisor</code></td>
 <td>One executor serves every turn. A stronger advisor reviews its plans and "done" claims.</td>
 </tr>
 <tr>
-<td>Verification-Gated</td>
+<td><a href="../vgr_routing/">Verification-Gated</a></td>
 <td><code>vgr</code></td>
 <td>A local model drafts. Verified answers stay local, and everything else goes to the cloud model.</td>
 </tr>
 <tr>
-<td>Prefill</td>
+<td><a href="../prefill_routing/">Prefill</a></td>
 <td><code>prefill_router</code></td>
-<td>A classifier you train on the prompt's hidden states picks the target.</td>
+<td>A classifier you train on the prompt's hidden states picks the target. Experimental: Switchyard supplies no checkpoint, exporter, or encoder assets.</td>
 </tr>
 <tr>
-<td>Random</td>
+<td><a href="../random_routing/">Random</a></td>
 <td><code>random</code></td>
 <td>A fixed traffic split.</td>
 </tr>
 <tr>
-<td>Fixed</td>
+<td><a href="#direct-model-routes">Fixed</a></td>
 <td><code>passthrough</code></td>
 <td>One target, no decision.</td>
 </tr>
 <tr>
-<td>Sub-agent</td>
+<td><a href="../subagent_routing/">Sub-agent</a></td>
 <td><code>subagents</code> table</td>
 <td>A separate policy for delegated sub-agent work on <code>passthrough</code>, <code>stage_router</code>, and <code>composite</code> routes.</td>
 </tr>
@@ -2083,7 +2027,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Every request</td>
 <td>Optional. Keeps the capable hold.</td>
 <td>Picker default</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2093,7 +2037,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Per trigger</td>
 <td>Optional. Needed to retain a verdict.</td>
 <td>Strong target</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml">Smoke-test config</a> only, no published result</td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml">Smoke-test config</a> only, no published result</td>
 <td>That config</td>
 </tr>
 <tr>
@@ -2101,9 +2045,9 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>A judge's view of the finished weak turn</td>
 <td>One judge call per unlatched turn</td>
 <td>Latches once. Reversible with de-escalation.</td>
-<td>Required for <code>confirmations</code> above 1</td>
+<td>Required to latch. Without it, <code>confirmations = 1</code> escalates single turns only.</td>
 <td>An unreadable verdict keeps the current tier. A failed judge call stops the request in the server.</td>
-<td><a href="https://www.langchain.com/blog/switchyard-agent-routing-benchmark">Public report</a> and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">v0.2.0 profile</a></td>
+<td><a href="https://www.langchain.com/blog/switchyard-agent-routing-benchmark">Public report</a> and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">v0.2.0 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2113,7 +2057,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Per trigger</td>
 <td>Optional. Needed to retain a verdict.</td>
 <td><code>default_target</code></td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 profiles</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 profiles</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2133,7 +2077,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Once per session</td>
 <td>Recommended. Latches the handoff.</td>
 <td>Stays on the planner</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2142,8 +2086,8 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>One advisor review per gated turn, up to <code>max_reviews</code></td>
 <td>Never. One executor serves.</td>
 <td>Scopes the review budget</td>
-<td>An unreadable verdict lets the turn through. A failed advisor call stops the request in the server.</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td>An unreadable verdict or a failed advisor call lets the buffered executor turn through (<code>fail_open</code>, default <code>true</code>). <code>fail_open = false</code> stops the request.</td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2154,7 +2098,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>See <a href="../vgr_routing/">the page</a></td>
 <td>Cloud tier</td>
 <td>Not benchmarked. Planned for 0.4.0.</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/examples/vgr-local-servers.toml"><code>examples/vgr-local-servers.toml</code></a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/examples/vgr-local-servers.toml"><code>examples/vgr-local-servers.toml</code></a></td>
 </tr>
 <tr>
 <td><code>prefill_router</code></td>
@@ -2198,11 +2142,11 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 </tr>
 </tbody>
 </table>
-<p>Every route streams the served model's reply. Three hold a turn back first:
-escalation buffers the weak reply until the judge rules on it, <code>advisor</code> holds
-a gated turn until the review finishes, and <code>vgr</code> holds a local candidate until
-it is verified. Task judges before the turn is served, which adds the judge's
-latency to every judged request.</p>
+<p>Every route streams the served model's reply. Three hold a turn back first.
+Escalation buffers the weak reply until the judge rules on it. <code>advisor</code> holds a
+gated turn until the review finishes. <code>vgr</code> holds a local candidate until it is
+verified. Task judges before the turn is served, which adds the judge's latency
+to every judged request.</p>
 <p>"Measured" links the checked-in profile or public report the result comes from.
 The <code>capable_first</code> picker and <code>prefill_router</code> are experimental. See
 <a href="../model_selection/#measured-pairs">Model Selection</a> for the numbers.</p>
@@ -2212,8 +2156,8 @@ The <code>capable_first</code> picker and <code>prefill_router</code> are experi
 <a href="../escalation_router_routing/#when-not-to-use-escalation-routing">escalation</a>.
 These cases apply across strategies:</p>
 <ul>
-<li><strong>Requests carry no session ID.</strong> Escalation with <code>confirmations</code> above 1
-  never latches. Composite cannot retain the tier. Task with <code>user_turn</code> or
+<li><strong>Requests carry no session ID.</strong> Escalation never latches, at any
+  <code>confirmations</code>. Composite cannot retain the tier. Task with <code>user_turn</code> or
   <code>new_session</code> judges every request. Plan/Execute needs the first edit to stay
   in the request history. Execution keeps no capable hold. Send
   <code>x-switchyard-session-id</code>, or use a strategy that decides from the request
@@ -2243,7 +2187,8 @@ These cases apply across strategies:</p>
   <a href="../llm_classifier_routing/#when-the-judge-runs">When the judge runs</a>.</li>
 <li><strong>Sub-agent traffic without identity.</strong> A <code>subagents</code> policy applies only when
   the harness sends sub-agent identity. Otherwise delegated requests follow the
-  parent route, and the server logs a warning. See
+  parent route. The server logs a warning for Claude Code versions known to lack
+  child identity; other harnesses give no log line. See
   <a href="../subagent_routing/">Sub-Agent-Aware Routing</a>.</li>
 </ul>
 <h3 id="start-here">Start here<a class="headerlink" href="#start-here" title="Permanent link">&para;</a></h3>
@@ -2252,22 +2197,22 @@ and the one dial to move first.</p>
 <ol>
 <li><strong>A coding agent, and cost comes first.</strong> Start with <code>auto</code>. When you need to
    tune, copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE stage profile</a>
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE stage profile</a>
    and move <code>confidence_threshold</code> as described in
    <a href="../stage_router_routing/#tuning-confidence_threshold">Tuning <code>confidence_threshold</code></a>.</li>
-<li><strong>Long sessions where the cheap model should run until it visibly struggles.</strong>
+<li><strong>Long sessions where the cheap model should run until a judge reports that it is failing.</strong>
    Use escalation. Copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a>,
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a>,
    send a session ID, and move <code>confirmations</code> as described in
    <a href="../escalation_router_routing/#tuning-options">Tuning options</a>.</li>
 <li><strong>One executor you want to keep, with a stronger model as a quality gate.</strong>
    Use the advisor gate. Copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE advisor profile</a>
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE advisor profile</a>
    and move <code>max_reviews</code> together with <code>gate_min_tool_results</code> as described in
    <a href="../advisor_gate_routing/#tuning">Tuning</a>.</li>
 </ol>
 <p>For multi-turn support traffic with few tool results, the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 custom-classifier profiles</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 custom-classifier profiles</a>
 are the measured starting point. Their dial is the judge rubric in <code>prompt</code>.</p>
 <h3 id="auto">Auto<a class="headerlink" href="#auto" title="Permanent link">&para;</a></h3>
 <p>Auto is a preset, not a separate routing algorithm. An <code>auto</code> route builds a
@@ -2324,8 +2269,9 @@ to one tier:</p>
   turns under <code>algorithm_stats.stage_router.routing_decisions.fall_open</code>. See
   <a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>.</li>
 <li><strong>Both tiers name the same target.</strong> The server accepts a route whose
-  <code>capable_target</code> and <code>efficient_target</code> are the same target. Every request then
-  goes to that one model, and <code>GET /v1/stats</code> lists a single entry under <code>.models</code>.</li>
+  <code>capable_target</code> and <code>efficient_target</code> are the same target and logs a warning
+  at startup. Every request then goes to that one model, and <code>GET /v1/stats</code>
+  lists a single entry under <code>.models</code>.</li>
 <li><strong>No session ID on the request.</strong> The capable hold is kept per session. A
   request without a session ID gets fresh state, so a hold set by one request is
   gone on the next. Requests with a session ID but no agent ID share one hold
@@ -2339,68 +2285,6 @@ differences: those runs set <code>recent_turn_window = 5</code> and added a hand
 Every published result comes from a coding agent whose requests carry tool
 results. The <a href="../model_selection/#measured-pairs">model selection guide</a> lists the
 measured model pairs.</p>
-<h2 id="more-options">More options<a class="headerlink" href="#more-options" title="Permanent link">&para;</a></h2>
-<p>These options remain available when you need a different routing policy.</p>
-<table>
-<thead>
-<tr>
-<th>Strategy</th>
-<th>Use it when</th>
-<th>Route <code>type</code></th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="../plan_execute_routing/">Plan/Execute</a></td>
-<td>Use a capable model to inspect and plan, then switch to an efficient model after the first file mutation.</td>
-<td><code>plan_execute</code></td>
-</tr>
-<tr>
-<td><a href="../composite_routing/">Composite</a></td>
-<td>Combine Task and Execution. A classifier sets the stage router's default tier.</td>
-<td><code>composite</code></td>
-</tr>
-<tr>
-<td><a href="../escalation_router_routing/">Escalation</a></td>
-<td>Start on the efficient model and escalate when an LLM judge detects trouble.</td>
-<td><code>llm_classifier</code> with <code>mode = "escalation"</code></td>
-</tr>
-<tr>
-<td><a href="../llm_classifier_routing/#custom-multi-target-routing">Custom</a></td>
-<td>Route among two or more models using your own classification schema and rules.</td>
-<td><code>llm_classifier</code> with <code>mode = "custom"</code></td>
-</tr>
-<tr>
-<td><a href="../advisor_gate_routing/">Advisor Gate</a></td>
-<td>Keep one executor model and have a stronger advisor review its plans and completion claims.</td>
-<td><code>advisor</code></td>
-</tr>
-<tr>
-<td><a href="../subagent_routing/">Sub-Agent-Aware Routing</a></td>
-<td>Delegated sub-agents should use a separate routing policy from the parent agent.</td>
-<td><code>passthrough</code>, <code>stage_router</code>, or <code>composite</code> with <code>subagents</code></td>
-</tr>
-<tr>
-<td><a href="../random_routing/">Random Routing</a></td>
-<td>You need a fixed traffic split for A/B tests, baselines, or cost experiments.</td>
-<td><code>random</code></td>
-</tr>
-<tr>
-<td><a href="../vgr_routing/">Verification-Gated Routing</a></td>
-<td>Serve a local attempt only after bounded verification, and send the request to the capable model otherwise.</td>
-<td><code>vgr</code></td>
-</tr>
-<tr>
-<td><a href="#direct-model-routes">Fixed Model</a></td>
-<td>Send every request to one target without a routing decision.</td>
-<td><code>passthrough</code></td>
-</tr>
-</tbody>
-</table>
-<h3 id="experimental">Experimental<a class="headerlink" href="#experimental" title="Permanent link">&para;</a></h3>
-<p><a href="../../reference/toml_schema/#prefill_router">Prefill Router</a> uses a
-checkpoint-backed classifier. It is experimental in v0.3.0. Switchyard does not
-provide or support a checkpoint, exporter, or compatible encoder assets.</p>
 <h2 id="common-route-shape">Common route shape<a class="headerlink" href="#common-route-shape" title="Permanent link">&para;</a></h2>
 <p>A deployment has three layers. LLM clients describe how to reach a provider,
 targets name models on those clients, and routes decide which target serves a

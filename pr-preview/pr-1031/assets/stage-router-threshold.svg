@@ -13,7 +13,6 @@
   <text x="717" y="82" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="700" fill="#5b21b6">signal → capable</text>
 
   <g fill="#4b5563" opacity="0.82">
-    <rect x="85" y="220" width="24" height="20" rx="2"/>
     <rect x="121" y="207" width="24" height="33" rx="2"/>
     <rect x="157" y="188" width="24" height="52" rx="2"/>
     <rect x="193" y="171" width="24" height="69" rx="2"/>
@@ -31,16 +30,14 @@
     <rect x="625" y="180" width="24" height="60" rx="2"/>
     <rect x="661" y="197" width="24" height="43" rx="2"/>
     <rect x="697" y="211" width="24" height="29" rx="2"/>
-    <rect x="733" y="220" width="24" height="20" rx="2"/>
-    <rect x="769" y="228" width="24" height="12" rx="2"/>
   </g>
 
   <line x1="70" y1="240" x2="810" y2="240" stroke="#111827" stroke-width="2"/>
   <line x1="255" y1="58" x2="255" y2="248" stroke="#92400e" stroke-width="2" stroke-dasharray="6 5"/>
   <line x1="625" y1="58" x2="625" y2="248" stroke="#92400e" stroke-width="2" stroke-dasharray="6 5"/>
   <line x1="440" y1="235" x2="440" y2="248" stroke="#111827" stroke-width="2"/>
-  <line x1="722" y1="58" x2="722" y2="248" stroke="#5b21b6" stroke-width="2" stroke-dasharray="2 4"/>
-  <line x1="117" y1="58" x2="117" y2="248" stroke="#1e40af" stroke-width="2" stroke-dasharray="2 4"/>
+  <line x1="722" y1="92" x2="722" y2="248" stroke="#5b21b6" stroke-width="2" stroke-dasharray="2 4"/>
+  <line x1="117" y1="92" x2="117" y2="248" stroke="#1e40af" stroke-width="2" stroke-dasharray="2 4"/>
   <text x="722" y="52" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#5b21b6">signal ceiling +0.76</text>
   <text x="117" y="52" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#1e40af">signal ceiling -0.87</text>
 

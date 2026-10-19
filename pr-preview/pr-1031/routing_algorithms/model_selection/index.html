@@ -2072,7 +2072,7 @@ serving stack.</p>
 <tr>
 <td>GPT-5.6 Luna</td>
 <td>GPT-5.6 Sol</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml"><code>stage_router</code></a>: <code>efficient_first</code>, threshold 0.5, window 5, hold 2, handoff note</td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml"><code>stage_router</code></a>: <code>efficient_first</code>, threshold 0.5, window 5, hold 2, handoff note</td>
 <td>DeepSWE v1.1, 113 tasks, Codex CLI, k=1</td>
 <td>76/113 solved (67.3% strict)</td>
 <td>None in the same run</td>
@@ -2080,7 +2080,7 @@ serving stack.</p>
 <tr>
 <td>GPT-5.6 Luna, executes</td>
 <td>GPT-5.6 Sol, plans</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml"><code>plan_execute</code></a>, both at effort <code>max</code></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml"><code>plan_execute</code></a>, both at effort <code>max</code></td>
 <td>DeepSWE v1.1, 113 tasks, Codex CLI, k=3</td>
 <td>60.8% ± 5.3 at $180.51 ± 9.43 per run</td>
 <td>Sol alone 62.8% ± 3.1 at $720.95. Luna alone 51.0% ± 3.7 at $50.02.</td>
@@ -2088,7 +2088,7 @@ serving stack.</p>
 <tr>
 <td>GPT-5.6 Luna, executes</td>
 <td>GPT-5.6 Sol, reviews</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml"><code>advisor</code></a>, both at effort <code>max</code></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml"><code>advisor</code></a>, both at effort <code>max</code></td>
 <td>DeepSWE v1.1, 113 tasks, Codex CLI, k=3</td>
 <td>57.5% ± 3.2 at $208 ± 22 per run</td>
 <td>Sol alone 62.8% ± 3.1 at $743. Luna alone 46.9% and 52.2% at about $49.</td>
@@ -2096,7 +2096,7 @@ serving stack.</p>
 <tr>
 <td>Qwen3.6-35B-A3B, also the judge</td>
 <td>Claude Opus 4.7</td>
-<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
+<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
 <td>tau2-bench telecom, 114 tasks</td>
 <td>0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%.</td>
 <td>Within noise of the strong tier, per the profile headers</td>
@@ -2125,10 +2125,10 @@ serving stack.</p>
 </ul>
 <p>Other checked-in configurations:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml"><code>tb21-escalation-opus-glm-deepseek.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml"><code>tb21-escalation-opus-glm-deepseek.toml</code></a>
   (Claude Opus 4.8 strong, GLM 5.2 weak, DeepSeek V4 Flash judge) is the
   escalation configuration used for the v0.2.0 Terminal-Bench 2.1 runs. Its
   header links the post about those runs.</li>
@@ -2248,7 +2248,7 @@ endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys
 <li><a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>: see the served model and the decision counts.</li>
 <li><a href="../stage_router_routing/#tuning-confidence_threshold">Stage Router</a>: tune the threshold once the pair is right.</li>
 <li><a href="../escalation_router_routing/#judge-model-compatibility">Escalation-Router Routing</a>: judge requirements for escalation routes.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
 </ul>
 
 

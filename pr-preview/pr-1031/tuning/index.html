@@ -1694,8 +1694,8 @@ explains it, names what it produces, and says what it costs to run.</p>
    on the efficient model, then the
    <a href="../routing_algorithms/model_selection/#check-for-an-inverted-pair">inverted-pair check</a>.
    Produces: a pass or fail per check, and solved tasks plus cost for each
-   fixed arm. Costs: one short agent run per check, and one agent run per arm
-   on at least 20 tasks.</p>
+   fixed arm. Costs: single requests for most checks, one short agent run for
+   the tool-calling check, and one agent run per arm on at least 20 tasks.</p>
 </li>
 <li>
 <p><strong>Start from a measured profile.</strong> Pick the closest row in
@@ -1707,13 +1707,14 @@ explains it, names what it produces, and says what it costs to run.</p>
 </li>
 <li>
 <p><strong>Run the routed arm against the fixed arms.</strong> Use the same tasks, agent,
-   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/README.md">benchmark guide</a>
+   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/README.md">benchmark guide</a>
    shows the harness the checked-in results used. Produces: solved tasks and
-   cost per run for each arm. Costs: <code>k</code> runs per arm. The checked-in profiles
-   use three runs and report the mean with the sample standard deviation, as in
-   the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
-   A single run cannot separate a small change from noise.</p>
+   cost per run for each arm. Costs: <code>k</code> runs per arm. The plan/execute and
+   advisor profiles use three runs and report the mean with the sample standard
+   deviation, as in the
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
+   The stage profile records a single run. A single run cannot separate a small
+   change from noise.</p>
 </li>
 <li>
 <p><strong>Read the decision mix.</strong> For stage routes, read
@@ -1722,8 +1723,10 @@ explains it, names what it produces, and says what it costs to run.</p>
    <a href="../routing_algorithms/escalation_router_routing/#observability">observability</a>
    section. For advisor routes, <code>/v1/stats</code> reports verdicts and consult
    failures under <code>advisor_gate</code>. Start the server with <code>--routing-log-file</code>
-   to keep one record per request. Produces: the <code>routing_decisions</code> capture
-   and the routing log. Costs: none beyond the runs in step 4.</p>
+   to keep one record per model call: the served call, and each judge call
+   under the judge's model ID. Filter by <code>model</code> before adding up usage.
+   Produces: the <code>routing_decisions</code> capture and the routing log. Costs: none
+   beyond the runs in step 4.</p>
 </li>
 <li>
 <p><strong>Move one dial.</strong> Change one setting, then repeat step 4.</p>
@@ -1768,19 +1771,26 @@ Costs: <code>k</code> runs per setting you try.</p>
 </li>
 <li>
 <p><strong>Record the result.</strong> Write down what you ran, in the form the profile
-   headers use: the Switchyard commit, each model with its provider, wire
-   format and reasoning effort, the agent and its version, the benchmark and
-   task count, <code>k</code>, the result band next to the fixed arms, and the cost per
-   run. The
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8cd18f83d4ba7082bc163458c4a515183af0c5e2/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">stage profile header</a>
-   is a complete example. Produces: the header. Costs: none.</p>
+   headers use:</p>
+<ul>
+<li>the Switchyard commit;</li>
+<li>each model with its provider, wire format, and reasoning effort;</li>
+<li>the agent and its version;</li>
+<li>the benchmark, the task count, and <code>k</code>;</li>
+<li>the result band next to the fixed arms;</li>
+<li>the cost per run.</li>
+</ul>
+<p>The
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ccb84a19807c722e8dd49b4e1604d00500809475/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>
+records all of these. Produces: the header. Costs: none.</p>
 </li>
 <li>
 <p><strong>Recalibrate on change.</strong> A new model version, provider, wire format,
    reasoning effort, agent version, or workload moves the operating point, and
    the thresholds do not carry over. See
    <a href="../routing_algorithms/model_selection/#pin-the-provider-and-endpoint">Pin the provider and endpoint</a>.
-   Return to step 4 with the recorded header as your baseline.</p>
+   Return to step 4 with the recorded header as your baseline. Produces: a new
+   header next to the old one. Costs: the runs of step 4.</p>
 </li>
 </ol>
 <h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>

@@ -1711,9 +1711,9 @@
 
 <h1 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h1>
 <p>Two tables. The first starts from what you see. The second lists settings that
-load without error and return HTTP 200 while quietly disabling what you meant
-to configure. Every check names a server artifact: a response header, a
-<code>/v1/stats</code> key, a log line, or a <code>--dry-run</code> message.</p>
+load without error while disabling what you meant to configure. Each check
+names where to look: a response header or body, a <code>/v1/stats</code> key, a routing
+log field, a log line, or a <code>--dry-run</code> message.</p>
 <h2 id="symptoms">Symptoms<a class="headerlink" href="#symptoms" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1733,7 +1733,7 @@ to configure. Every check names a server artifact: a response header, a
 </tr>
 <tr>
 <td>Every request lands on one model</td>
-<td><code>curl -s localhost:4000/v1/stats \| jq -c '.models \| map_values(.calls)'</code> and <code>.algorithm_stats.stage_router.routing_decisions</code></td>
+<td><code>curl -s localhost:4000/v1/stats | jq -c '.models | map_values(.calls)'</code> and <code>.algorithm_stats.stage_router.routing_decisions</code></td>
 <td>Chat-only traffic (<code>fall_open</code> only); both tiers name the same target or the same model ID; <code>capable_first</code> with a threshold the signals cannot reach; one tier is down and the other serves its fallbacks.</td>
 <td>See the matching rows in <a href="#silent-misconfigurations">Silent misconfigurations</a> and <a href="../../routing_algorithms/overview/#when-auto-does-not-route">When Auto does not route</a>.</td>
 </tr>
@@ -1746,14 +1746,14 @@ to configure. Every check names a server artifact: a response header, a
 <tr>
 <td>Escalation never latches</td>
 <td>The log line <code>stateful escalation has no session ID; routing state will not persist</code></td>
-<td><code>confirmations</code> is 2 or more and the client sends no session ID.</td>
-<td>Send <code>x-switchyard-session-id</code>, or set <code>confirmations = 1</code>. See <a href="../../routing_algorithms/escalation_router_routing/#tuning-options">Tuning options</a>.</td>
+<td>The client sends no session ID. No escalation state survives a request without one, so the route never latches at any <code>confirmations</code>. The warning fires only when <code>confirmations</code> is 2 or more.</td>
+<td>Send <code>x-switchyard-session-id</code>. See <a href="../../routing_algorithms/escalation_router_routing/#tuning-options">Tuning options</a>.</td>
 </tr>
 <tr>
 <td>Requests hang or take much longer than the model needs</td>
 <td>Server log for retries and cooldown; <code>/v1/stats</code> call counts per model</td>
 <td>A judge or tier without <code>timeout_ms</code>; a judge call on every tool step; a dead tier retried before fallback.</td>
-<td>Give the judge its own <code>[llm_clients]</code> entry with <code>timeout_ms</code>; use <code>classify_trigger = "user_turn"</code> with a session ID; see the dead-tier row below.</td>
+<td>Give the judge its own <code>[llm_clients]</code> entry with <code>timeout_ms</code>. On a Task or Custom <code>llm_classifier</code> route, set <code>classify_trigger = "user_turn"</code> and send a session ID. See the dead-tier row below.</td>
 </tr>
 <tr>
 <td>HTTP 400 from the upstream when the client sends a thinking level</td>
@@ -1774,10 +1774,10 @@ to configure. Every check names a server artifact: a response header, a
 <td>Remove it, or declare <code>true</code> only when every target accepts images. See the <a href="../../reference/toml_schema/#routesname">route keys</a>.</td>
 </tr>
 <tr>
-<td>The server does not start: <code>unknown field</code></td>
+<td>The server does not start: <code>unknown field</code>, or a key that <code>applies only to composite routes</code> or has <code>no effect on the stage fallback judge</code></td>
 <td>The <code>--dry-run</code> message</td>
-<td>An <code>auto</code> route with a tuning key; a typo; a key from another route type.</td>
-<td><a href="../../reference/toml_schema/#auto">Auto</a> and the <a href="../../reference/toml_schema/#validation-errors">validation errors</a>.</td>
+<td>An <code>auto</code> route with a tuning key; a typo; a key from another route type; <code>capable_first_threshold</code>, <code>classifier.classify_trigger</code>, or <code>classifier.message_hash_fallback</code> on a standalone <code>stage_router</code> route.</td>
+<td><a href="../../reference/toml_schema/#auto">Auto</a>, the <a href="../../reference/toml_schema/#stage_router">stage_router keys</a>, and the <a href="../../reference/toml_schema/#validation-errors">validation errors</a>.</td>
 </tr>
 <tr>
 <td>The server does not start: two targets <code>both name model</code></td>
@@ -1813,18 +1813,19 @@ to configure. Every check names a server artifact: a response header, a
 <td>The routing log does not say why a model was chosen</td>
 <td>A routing-log record</td>
 <td>The log records the served model and token counts only.</td>
-<td>Use the decision counts in <code>/v1/stats</code>, and the <code>decision_source</code> log lines. See <a href="../../routing_algorithms/stage_router_routing/#decision-sources">Decision sources</a>.</td>
+<td>Use the decision counts in <code>/v1/stats</code>. For overrides, the <code>stage router override</code> log line also names the reason. See <a href="../../routing_algorithms/stage_router_routing/#decision-sources">Decision sources</a>.</td>
 </tr>
 <tr>
 <td>Sub-agent requests ignore the <code>subagents</code> policy</td>
-<td>The log line <code>this route has sub-agent routing but the calling harness does not send sub-agent identity</code></td>
+<td>The log line <code>this route has sub-agent routing but the calling harness does not send sub-agent identity</code>. It fires only for Claude Code versions known to lack child identity. For other harnesses, check whether delegated requests carry a session ID and an agent ID.</td>
 <td>The harness sends no sub-agent identity, so delegated requests follow the parent route.</td>
 <td><a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing</a>.</td>
 </tr>
 </tbody>
 </table>
 <h2 id="silent-misconfigurations">Silent misconfigurations<a class="headerlink" href="#silent-misconfigurations" title="Permanent link">&para;</a></h2>
-<p>These load, pass <code>--dry-run</code>, and answer every request with HTTP 200.</p>
+<p>These load and pass <code>--dry-run</code>. Most answer every request with HTTP 200; the
+rows that return an error or hold a request open say so.</p>
 <table>
 <thead>
 <tr>
@@ -1836,21 +1837,21 @@ to configure. Every check names a server artifact: a response header, a
 </thead>
 <tbody>
 <tr>
-<td><code>picker = "capable_first"</code> with <code>confidence_threshold</code> at <code>0.87</code> or above</td>
-<td>The signals reach at most 0.87 toward efficient, so they never offload. Between <code>0.49</code> and <code>0.87</code> only clean production offloads.</td>
+<td><code>picker = "capable_first"</code> with <code>confidence_threshold</code> at <code>0.88</code> or above</td>
+<td>The signals reach at most 0.8741 toward efficient, so they never offload. Between <code>0.49</code> and <code>0.8741</code> only clean production offloads.</td>
 <td>Startup: <code>uses picker "capable_first", which is experimental</code>. Nothing about the threshold.</td>
 <td>Use <code>efficient_first</code>, or lower the threshold. See <a href="../../routing_algorithms/stage_router_routing/#reachable-scores-per-picker">Reachable scores per picker</a>.</td>
 </tr>
 <tr>
 <td><code>capable_target</code> and <code>efficient_target</code> name the same target, or two targets with the same model ID and identical settings</td>
 <td>One model serves every decision.</td>
-<td>None for the same target. Startup <code>reuses model id ...; only one target per id is kept</code> for two targets with one model ID.</td>
+<td>Startup: <code>capable_target and efficient_target name the same target</code> for one target, or <code>reuses model id ...; only one target per id is kept</code> for two targets with one model ID.</td>
 <td>Use two different models. See <a href="../../routing_algorithms/overview/#when-auto-does-not-route">When Auto does not route</a>.</td>
 </tr>
 <tr>
 <td><code>llm_classifier</code> with an <code>escalation</code> table, no <code>mode</code>, and <code>base_threshold</code>, <code>threshold_step</code>, <code>recent_turn_window</code>, or <code>message_hash_fallback</code></td>
 <td>The route runs in escalation mode because <code>escalation</code> is present. The capability keys are accepted and ignored.</td>
-<td>None.</td>
+<td>Startup: <code>runs in escalation mode because it has an escalation table; ... are ignored in this mode</code>.</td>
 <td>Set <code>mode</code> explicitly. With <code>mode = "escalation"</code> the same keys become a load error.</td>
 </tr>
 <tr>
@@ -1860,10 +1861,10 @@ to configure. Every check names a server artifact: a response header, a
 <td><code>classify_trigger = "user_turn"</code> with a session ID. See <a href="../../routing_algorithms/llm_classifier_routing/#when-the-judge-runs">When the judge runs</a>.</td>
 </tr>
 <tr>
-<td><code>escalation.confirmations</code> at <code>2</code> (the default) or above with clients that send no session ID</td>
-<td>The streak is kept per session, so it restarts from zero on every request and the route never latches.</td>
-<td>Runtime, once per route: <code>stateful escalation has no session ID; routing state will not persist</code>.</td>
-<td>Send <code>x-switchyard-session-id</code>, or set <code>confirmations = 1</code>.</td>
+<td>Escalation with clients that send no session ID</td>
+<td>No escalation state survives a request without a session ID, so the route never latches. With <code>confirmations = 1</code> each judged turn can escalate on its own, at the price of a weak, a judge, and a strong call per turn, and the warning goes away, but nothing is retained.</td>
+<td>Runtime, once per route, when <code>confirmations</code> is 2 or more: <code>stateful escalation has no session ID; routing state will not persist</code>.</td>
+<td>Send <code>x-switchyard-session-id</code>.</td>
 </tr>
 <tr>
 <td><code>classify_trigger = "user_turn"</code> or <code>"new_session"</code> with clients that send no session ID and no <code>message_hash_fallback</code></td>
@@ -1873,27 +1874,15 @@ to configure. Every check names a server artifact: a response header, a
 </tr>
 <tr>
 <td><code>response_format_type = "json_schema"</code> (the default) with a provider that supports only JSON object mode</td>
-<td>Every judge call is rejected by the provider. Task routes to the strong target and Execution falls open to the picker default, both with HTTP 200. Escalation returns the judge's error after retries.</td>
-<td>Runtime, per call: <code>judge verdict unavailable; routing without one</code>, and <code>switchyard_classifier_fail_open_total</code> rises.</td>
+<td>Every judge call is rejected by the provider. Task routes to the strong target and Execution falls open to the picker default, both with HTTP 200. Escalation stops the request and returns the provider's error on the first attempt; a 400 is not retried.</td>
+<td>Runtime, per call on Task and Execution routes: <code>judge verdict unavailable; routing without one</code>, and <code>switchyard_classifier_fail_open_total</code> rises. Escalation routes return the error instead.</td>
 <td><code>response_format_type = "json_object"</code>. See <a href="../../routing_algorithms/llm_classifier_routing/#judge-model-compatibility">Judge model compatibility</a>.</td>
 </tr>
 <tr>
-<td><code>classifier.classify_trigger</code> or <code>classifier.message_hash_fallback</code> on a <code>stage_router</code> route</td>
-<td>The stage fallback judge runs on every ambiguous turn and retains nothing. The keys are accepted for compatibility.</td>
-<td>None.</td>
-<td>Use a <a href="../../routing_algorithms/composite_routing/">composite</a> route for a judge that runs once per user turn.</td>
-</tr>
-<tr>
-<td><code>capable_first_threshold</code> on a standalone <code>stage_router</code> route</td>
-<td>Only a composite classifier selects the tier that uses it.</td>
-<td>None.</td>
-<td>Use <code>confidence_threshold</code>, or a composite route. See the <a href="../../routing_algorithms/stage_router_routing/#knob-reference">knob reference</a>.</td>
-</tr>
-<tr>
-<td>A tier that is down, with the default <code>max_retries = 2</code> and no <code>timeout_ms</code></td>
-<td>Each request retries the dead tier, then falls through to the other target for transport failures, timeouts, and HTTP 408, 429, or 5xx. One model serves everything, slowly. After the retries fail, a 5-second cooldown sends later requests straight to the other target.</td>
+<td>A tier that refuses connections or returns HTTP 408, 429, or 5xx, with the default <code>max_retries = 2</code></td>
+<td>Each request retries that tier, then falls through to the route's other target, so one model serves everything, slowly. After the retries fail, a 5-second cooldown sends later requests straight to the other target. A tier that hangs behaves differently: without <code>timeout_ms</code> the request waits, and with it the request that reaches the deadline returns <code>504</code>. Only requests inside the cooldown that follows fall through.</td>
 <td>Runtime log lines for the failed attempts and the fallback.</td>
-<td>Set <code>timeout_ms</code> on the client, fix the endpoint, and watch <code>.models</code> call counts in <code>/v1/stats</code>. See <a href="../../reference/toml_schema/#llm_clientsname"><code>[llm_clients.&lt;name&gt;]</code></a>.</td>
+<td>Fix the endpoint and watch <code>.models</code> call counts in <code>/v1/stats</code>. Set <code>timeout_ms</code> so a hang becomes a <code>504</code> instead of a wait. See <a href="../../reference/toml_schema/#llm_clientsname"><code>[llm_clients.&lt;name&gt;]</code></a>.</td>
 </tr>
 <tr>
 <td>A judge client without <code>timeout_ms</code></td>
@@ -1938,7 +1927,7 @@ the capable tier for every ordinary turn:</p>
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">picker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capable_first&quot;</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.9</span><span class="w">    </span><span class="c1"># the signals reach 0.87 at most toward efficient</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.9</span><span class="w">    </span><span class="c1"># the signals reach 0.8741 at most toward efficient</span>
 </span></code></pre></div>
 <h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
 <ul>
