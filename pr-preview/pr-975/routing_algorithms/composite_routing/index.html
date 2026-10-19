@@ -831,6 +831,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../model_selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../llm_classifier_routing/" class="md-nav__link">
         
   
@@ -1702,6 +1730,12 @@ efficient for a new session. Set <code>classifier.fail_open = false</code> to re
 conversation keeps its own. A client that sends no session ID can set
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
 instead. Conversations that open with the same text then share a tier.</p>
+<p>Rust code that calls <code>Algorithm::run_stream</code> directly can store the tier
+itself. Pass the stored <code>State</code> to <code>run_stream</code>, save <code>RoutingOutcome.state</code>
+after each turn, and send no session ID. With a session ID, the router uses its
+own session state and returns the passed <code>State</code> unchanged. <code>switchyard-server</code>
+starts each request with an empty <code>State</code>, so server clients still send
+<code>x-switchyard-session-id</code>.</p>
 <h2 id="example-use">Example use<a class="headerlink" href="#example-use" title="Permanent link">&para;</a></h2>
 <p>An interactive coding agent in auto-mode. The classifier reads the user turn and
 picks the tier. The stage router runs the tool execution loop on its own signals
