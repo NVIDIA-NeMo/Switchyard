@@ -35,26 +35,17 @@ a fresh benchmark.
 Plan/Execute uses Sol to plan and Luna to execute. Advisor uses Luna to execute and Sol to
 review. Stage chooses between the two models from recent tool activity.
 
-| Routing strategy | Tasks solved | Cost per run | Config |
-| --- | --- | --- | --- |
-| Plan/Execute | 60.8% ± 5.3 | $180.51 ± 9.43 | [TOML](../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) |
-| Advisor | 57.5% ± 3.2 | $208 ± 22 | [TOML](../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) |
-| Stage | 76/113 (67.3%) | Not reported | [TOML](../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) |
+![DeepSWE task completion versus cost for Plan/Execute (60.8%, $180.51) and Advisor (57.5%, $208), with each study's single-model baselines. Stage solved 67.3%; its cost was not reported.](assets/deepswe-cost-accuracy.svg)
 
-Plan/Execute and Advisor report the mean ± sample standard deviation over three runs. Stage
-reports one run. All use strict scoring: failures and missing results count as unsolved.
+[Evaluation settings](../benchmark/DEEPSWE_V11_QUALIFICATION.md).
 
-The single-model baselines belong to their respective studies:
+Configs: [Plan/Execute](../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) ·
+[Advisor](../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) ·
+[Stage](../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
 
-| Study | Sol alone | Luna alone |
-| --- | --- | --- |
-| Plan/Execute | 62.8% ± 3.1; $720.95 ± 19.47/run | 51.0% ± 3.7; $50.02 ± 1.04/run |
-| Advisor | 62.8% ± 3.1; $743/run | 46.9% and 52.2%; about $49/run (two valid runs) |
-
-The Stage run has no paired single-model baseline. These studies used closed-book evaluation
-and a three-hour agent budget. The config headers record each result; the
-[evaluation settings](../benchmark/DEEPSWE_V11_QUALIFICATION.md) cover versions, timeouts,
-scoring, and pricing.
+Each panel uses its own study's baselines. Stage has no paired single-model baseline.
+All runs used closed-book evaluation, a three-hour agent budget, and strict scoring:
+failures and missing results count as unsolved. The config headers record each result.
 
 ## Run a benchmark
 
