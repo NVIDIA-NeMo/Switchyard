@@ -40,9 +40,12 @@ classify_trigger = "user_turn"
 fail_open = false
 
 [routes.auto.classifier.decision]
-cutoff = 0.4
 candidates = { a = "capable", b = "efficient" }
 evidence = { description = "Candidate a is the larger reasoning-oriented coding and thinking model. It is intended for complex problems. Candidate b is the smaller fast coding model. It is intended for simple questions, simple local reads and edits, routine tests and straightforward fixes. These are qualitative deployment roles, not empirical success rates." }
+
+[routes.auto.classifier.decision.policy]
+rules = [{ candidate = "a", cutoff = 0.4 }]
+fallback = "b"
 
 [routes.auto.stage]
 capable_target = "capable"
