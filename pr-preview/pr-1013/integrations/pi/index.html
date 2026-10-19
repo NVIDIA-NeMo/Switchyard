@@ -991,6 +991,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/model_selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Selection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/llm_classifier_routing/" class="md-nav__link">
         
   
@@ -1195,6 +1223,34 @@
     
   
     Advisor-Gate Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/vgr_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification-Gated Routing
   
 
     
@@ -1720,7 +1776,9 @@ with route id <code>switchyard</code>.</p>
 <p><code>--thinking off|minimal|low|medium|high|xhigh</code> sets the reasoning level that pi sends.</p>
 <h2 id="check-the-routing">Check the routing<a class="headerlink" href="#check-the-routing" title="Permanent link">&para;</a></h2>
 <p>The command <code>curl -s localhost:4000/v1/stats | jq '.models | map_values({calls, prompt_tokens})'</code>
-lists each target model with its call count. Every response carries the header
+lists each target model with its call count. For a step-by-step check with an
+escalating request, see
+<a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>. Every response carries the header
 <code>x-model-router-selected-model</code>. With <code>--routing-log-file PATH</code>, the server writes one
 record per call. In the record below, <code>session_id</code> is the value of pi's <code>x-session-id</code>
 header:</p>
@@ -1762,7 +1820,7 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e12b2ea3a6c5cedb8d36cf884f9f275dded8f5c7/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/880200803fc6bab0db0eb00e64b7bca25461f0fa/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
 <p>An LLM gateway, such as a LiteLLM proxy, can serve Claude on three endpoints:
