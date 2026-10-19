@@ -1986,7 +1986,7 @@ serving stack.</p>
 <tr>
 <td>Qwen3.6-35B-A3B, also the judge</td>
 <td>Claude Opus 4.7</td>
-<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af184ad119d061315ca123f4ab8c1248592a954e/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af184ad119d061315ca123f4ab8c1248592a954e/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
+<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00f8f486003a53e715fa284b19a1ade1b4e829e9/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00f8f486003a53e715fa284b19a1ade1b4e829e9/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
 <td>tau2-bench telecom, 114 tasks</td>
 <td>0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%.</td>
 <td>Within noise of the strong tier, per the profile headers</td>
@@ -2014,7 +2014,7 @@ serving stack.</p>
 </ul>
 <p>Other checked-in configurations:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af184ad119d061315ca123f4ab8c1248592a954e/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00f8f486003a53e715fa284b19a1ade1b4e829e9/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.</li>
 </ul>
@@ -2133,7 +2133,7 @@ endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys
 <li><a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>: see the served model and the decision counts.</li>
 <li><a href="../stage_router_routing/#tuning-confidence_threshold">Stage Router</a>: tune the threshold once the pair is right.</li>
 <li><a href="../escalation_router_routing/#judge-model-compatibility">Escalation-Router Routing</a>: judge requirements for escalation routes.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af184ad119d061315ca123f4ab8c1248592a954e/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00f8f486003a53e715fa284b19a1ade1b4e829e9/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
 </ul>
 
 
