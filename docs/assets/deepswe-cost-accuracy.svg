@@ -3,7 +3,7 @@
   "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg xmlns:xlink="http://www.w3.org/1999/xlink" width="1250pt" height="560pt" viewBox="0 0 1250 560" xmlns="http://www.w3.org/2000/svg" version="1.1" role="img" aria-labelledby="title description">
  <title id="title">DeepSWE v1.1 task completion versus cost</title>
- <desc id="description">Two studies on 113 tasks using Codex CLI and GPT-5.6 Luna and Sol. Plan/Execute: 60.8% ± 5.3 at $180.51 ± 9.43 per run; paired Sol: 62.8% ± 3.1 at $720.95 ± 19.47; paired Luna: 51.0% ± 3.7 at $50.02 ± 1.04. Advisor: 57.5% ± 3.2 at $208 ± 22 per run; paired Sol: 62.8% ± 3.1 at $743; paired Luna: 46.9% and 52.2%, about $49 per run, two valid runs. Points are study means over three runs, except the two individual Advisor Luna runs. Reported ± values are sample standard deviations, available in the config headers. Stage: 76/113 tasks (67.3%), one run, no paired baseline; cost was not reported, so Stage is not plotted.</desc>
+ <desc id="description">DeepSWE v1.1 on 113 tasks using Codex CLI and GPT-5.6 Luna and Sol. Plan/Execute: 60.8% ± 5.3 at $180.51 ± 9.43 per run. Advisor: 57.5% ± 3.2 at $208 ± 22 per run. One baseline per model, selected by highest reported completion score, with lower cost breaking ties: Sol: 62.8% ± 3.1 at $720.95 ± 19.47, from the Plan/Execute study; Luna: 52.2% at about $49, the better of two valid runs from the Advisor study. Sol and the routed points are three-run means; Luna is an individual run. Reported ± values are sample standard deviations. All source results remain in the config headers. Stage: 76/113 tasks (67.3%), one run, no paired baseline; cost was not reported, so Stage is not plotted.</desc>
  <metadata>
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
@@ -168,21 +168,6 @@ z
      <use xlink:href="#mabb4518413" x="991.888937" y="146.72" style="fill: #ffc000"/>
     </g>
    </g>
-   <g id="advisor-sol" data-cost="743" data-score="62.8">
-    <g clip-path="url(#p9201e5e723)">
-     <use xlink:href="#mabb4518413" x="1017.16375" y="146.72" style="fill: #ffc000"/>
-    </g>
-   </g>
-   <g id="plan-luna" data-cost="50.02" data-score="51">
-    <g clip-path="url(#p9201e5e723)">
-     <use xlink:href="#mabb4518413" x="222.835425" y="324.9" style="fill: #ffc000"/>
-    </g>
-   </g>
-   <g id="advisor-luna-1" data-cost="49" data-score="46.9">
-    <g clip-path="url(#p9201e5e723)">
-     <use xlink:href="#mabb4518413" x="221.66625" y="386.81" style="fill: #ffc000"/>
-    </g>
-   </g>
    <g id="advisor-luna-2" data-cost="49" data-score="52.2">
     <g clip-path="url(#p9201e5e723)">
      <use xlink:href="#mabb4518413" x="221.66625" y="306.78" style="fill: #ffc000"/>
@@ -201,22 +186,16 @@ z
     <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="450" y="259" transform="rotate(-0 450 259)">Luna + Sol · 57.5% · $208</text>
    </g>
    <g id="text_17">
-    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="1005" y="197" transform="rotate(-0 1005 197)">GPT-5.6 Sol Only</text>
+    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="992" y="197" transform="rotate(-0 992 197)">GPT-5.6 Sol Only</text>
    </g>
    <g id="text_18">
-    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #777777" x="1005" y="216" transform="rotate(-0 1005 216)">Plan/Execute: 62.8% · $720.95</text>
+    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #777777" x="992" y="216" transform="rotate(-0 992 216)">62.8% · $720.95</text>
    </g>
    <g id="text_19">
-    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #777777" x="1005" y="235" transform="rotate(-0 1005 235)">Advisor: 62.8% · $743</text>
+    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="285" y="314" transform="rotate(-0 285 314)">GPT-5.6 Luna Only</text>
    </g>
    <g id="text_20">
-    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="285" y="333" transform="rotate(-0 285 333)">GPT-5.6 Luna Only</text>
-   </g>
-   <g id="text_21">
-    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="285" y="352" transform="rotate(-0 285 352)">Plan/Execute: 51.0% · $50.02</text>
-   </g>
-   <g id="text_22">
-    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="285" y="371" transform="rotate(-0 285 371)">Advisor: 46.9%, 52.2% · ≈$49</text>
+    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="285" y="333" transform="rotate(-0 285 333)">52.2% · ≈$49</text>
    </g>
    <g id="patch_2">
     <path d="M 425 177
@@ -237,21 +216,21 @@ L 427.995618 225.692238
 " style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
    </g>
    <g id="patch_4">
-    <path d="M 275 325
-Q 256.5 325 239.118034 325
+    <path d="M 275 307
+Q 256.5 307 239.118034 307
 " style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
-    <path d="M 246.518034 328.7
-L 239.118034 325
-L 246.518034 321.3
+    <path d="M 246.518034 310.7
+L 239.118034 307
+L 246.518034 303.3
 " style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
    </g>
-   <g id="text_23">
+   <g id="text_21">
     <text style="font-size: 18px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="379.2" y="522" transform="rotate(-0 379.2 522)">NeMo Switchyard Routing Algorithm</text>
    </g>
-   <g id="text_24">
+   <g id="text_22">
     <text style="font-size: 18px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="718" y="522" transform="rotate(-0 718 522)">Single Model</text>
    </g>
-   <g id="text_25">
+   <g id="text_23">
     <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #777777" x="625" y="549" transform="rotate(-0 625 549)">Stage: 67.3% (76/113) · one run · cost not reported</text>
    </g>
   </g>
