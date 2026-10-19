@@ -3,6 +3,7 @@
 
 //! Response usage and full-turn latency metrics for routed requests.
 
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -33,7 +34,8 @@ pub(crate) fn observe(
         LlmResponse::Agg(agg) => {
             record_terminal(&stats, &agg.usage, &model, started, cache_eligible);
             if let Some((log, context)) = routing_log {
-                log.append(context, &model, None, &agg.usage);
+                let usage = with_gateway_charge(&agg.usage, &upstream_headers);
+                log.append(context, &model, None, &usage);
             }
             LlmResponse::Agg(agg)
         }
@@ -65,6 +67,10 @@ pub(crate) fn observe(
                                 _ => {}
                             }
                         }
+                    }
+                    if failed && !recorded
+                        && let Some((log, context)) = routing_log.as_ref() {
+                        log.append(context.clone(), &model, None, &Usage::default());
                     }
                     if failed {
                         record_stream_error(&stats, &model);
@@ -101,6 +107,27 @@ pub(crate) fn observe(
         llm_response,
         metadata,
         upstream_headers,
+    }
+}
+
+/// LiteLLM sends the charge for a buffered response in this header and leaves the cost out of
+/// the response body. Its streamed responses omit the header and report `cost` in the final
+/// usage instead, which the response codecs read.
+const LITELLM_COST_HEADER: &str = "x-litellm-response-cost";
+
+/// This function adds the gateway's header charge to `usage` when the body reported none.
+fn with_gateway_charge<'a>(usage: &'a Usage, headers: &http::HeaderMap) -> Cow<'a, Usage> {
+    let charge = headers
+        .get(LITELLM_COST_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .filter(|usd| usd.is_finite() && *usd >= 0.0);
+    match charge {
+        Some(usd) if usage.provider_cost.is_none() => Cow::Owned(Usage {
+            provider_cost: Some(usd),
+            ..usage.clone()
+        }),
+        _ => Cow::Borrowed(usage),
     }
 }
 
@@ -186,6 +213,47 @@ mod tests {
     use switchyard_protocol::{LlmResponseChunk, LlmResponseStreamEvent, Metadata, Response};
 
     use super::*;
+
+    /// A stream error must leave one unpriced record even when no usage was reported.
+    #[tokio::test]
+    async fn stream_failure_records_one_unknown_call_and_terminates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let log = SharedRoutingLog::new(dir.path().join("routing.jsonl"))?;
+        let context = RoutingLogContext::from_metadata(&Metadata {
+            session_id: Some("failed-stream".to_string()),
+            ..Metadata::default()
+        });
+        let error = LlmResponseStreamEvent::new(vec![LlmResponseChunk::StreamError {
+            message: "failed".to_string(),
+        }]);
+        let source = stream::iter([Ok(error.clone()), Ok(error)]);
+        let observed = observe(
+            Response {
+                llm_response: LlmResponse::Stream(Box::pin(source)),
+                metadata: None,
+                upstream_headers: http::HeaderMap::new(),
+            },
+            "model/worker",
+            Instant::now(),
+            StatsAccumulator::default(),
+            0.0,
+            Some((log.clone(), context)),
+        );
+        let LlmResponse::Stream(mut observed) = observed.llm_response else {
+            return Err("expected stream".into());
+        };
+        assert!(observed.next().await.is_some());
+        assert!(observed.next().await.is_none());
+        let snapshot = log
+            .snapshot_session("failed-stream")?
+            .ok_or("missing session")?;
+        let snapshot = serde_json::to_value(snapshot)?;
+        assert_eq!(snapshot["total_calls"], 1);
+        assert_eq!(snapshot["cost"]["unknown_calls"], 1);
+        assert!(snapshot["cost"]["total_usd"].is_null());
+        Ok(())
+    }
 
     /// An OpenAI Responses client may stop polling immediately after receiving the
     /// terminal `response.completed` event. Switchyard must record usage and routing

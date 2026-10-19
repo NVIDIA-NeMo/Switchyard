@@ -237,6 +237,17 @@ impl ServerState {
         Ok(self)
     }
 
+    /// This method loads rates in USD per million tokens for saved routing records.
+    pub fn with_pricing_file(self, path: impl AsRef<std::path::Path>) -> ServerResult<Self> {
+        let prices = switchyard_runner::pricing::Pricing::load(path.as_ref())?;
+        let log = self
+            .routing_log
+            .as_ref()
+            .ok_or_else(|| ServerError::new("pricing requires a routing log"))?;
+        log.writer.lock().pricing = prices;
+        Ok(self)
+    }
+
     /// Returns the route model IDs served by the configured algorithms.
     pub fn models(&self) -> impl Iterator<Item = &str> {
         self.runner.models().map(|model| model.id.as_str())
@@ -429,13 +440,11 @@ struct RequestStart(Instant);
 /// Routing-log marker distinguishing classifier and judge calls from answer calls.
 const CLASSIFIER_TIER: &str = "classifier";
 
-/// Maps answer-call observations to backend stats, routing calls to classifier/judge
-/// stats, and records routing overhead once the algorithm run completes.
+/// This observer updates backend stats and records classifier and judge calls.
 ///
-/// Successful classifier/judge calls are also appended to `classifier_log` when one is
-/// configured, so per-session routing snapshots account for judge token overhead. Routed
-/// calls stay off this path: the served call is logged with its terminal usage in
-/// [`usage_metrics::observe`], which would make a second append here a double count.
+/// The routing log also records failed answer calls with unknown cost. Successful
+/// answer calls are recorded by [`usage_metrics::observe`] with their terminal usage;
+/// recording them here would count each answer twice.
 fn stats_observer(
     stats: StatsAccumulator,
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
@@ -447,22 +456,28 @@ fn stats_observer(
             if call.is_success {
                 stats.record_success(&call.selected_model, latency_ms);
             } else {
+                if let Some((log, context)) = classifier_log.as_ref() {
+                    log.append(
+                        context.clone(),
+                        &call.selected_model,
+                        None,
+                        &Usage::default(),
+                    );
+                }
                 stats.record_error(&call.selected_model);
             }
         }
         RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+            if let Some((log, context)) = classifier_log.as_ref() {
+                log.append(
+                    context.clone(),
+                    &call.selected_model,
+                    Some(CLASSIFIER_TIER),
+                    call.usage.as_ref().unwrap_or(&Usage::default()),
+                );
+            }
             if call.is_success {
-                if let (Some((log, context)), Some(usage)) =
-                    (classifier_log.as_ref(), call.usage.as_ref())
-                {
-                    log.append(
-                        context.clone(),
-                        &call.selected_model,
-                        Some(CLASSIFIER_TIER),
-                        usage,
-                    );
-                }
                 stats.record_classifier_success(
                     call.selected_model,
                     call.usage.as_ref().map(usage_metrics::token_usage),
@@ -1810,8 +1825,9 @@ targets = ["only"]
     }
 
     /// The observer logs judge calls with their model IDs, classifier tier, and
-    /// recorded session and turn IDs. The served response logs routed calls with
-    /// their final usage, so logging them here would count each routed call twice.
+    /// recorded session and turn IDs, even when a call reports no usage. The served
+    /// response logs routed calls with their final usage, so logging them here would
+    /// count each routed call twice.
     #[test]
     fn stats_observer_logs_judge_calls_to_the_routing_log() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1843,6 +1859,12 @@ targets = ["only"]
         };
         observer(call("judge-model", false));
         observer(call("routed-model", true));
+        observer(RunObservation::LlmCall(ModelCallObservation {
+            selected_model: ModelId::from("streamed-judge"),
+            is_success: true,
+            duration: Duration::from_millis(3),
+            usage: None,
+        }));
 
         let snapshot = log
             .snapshot_session("session-1")
@@ -1853,7 +1875,12 @@ targets = ["only"]
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
-        let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&log.path)?)?;
+        assert_eq!(snapshot["models"]["streamed-judge"]["calls"], 1);
+        assert_eq!(snapshot["routing_cost"]["unknown_calls"], 2);
+        assert!(snapshot["routing_cost"]["total_usd"].is_null());
+        let text = std::fs::read_to_string(&log.path)?;
+        let record: serde_json::Value =
+            serde_json::from_str(text.lines().next().ok_or("empty log")?)?;
         assert_eq!(record["session_id"], "session-1");
         assert_eq!(record["turn_id"], "turn-1");
         Ok(())
