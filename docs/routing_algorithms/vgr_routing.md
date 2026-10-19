@@ -72,6 +72,25 @@ new local work has been served since the previous handoff. The handoff preserves
 the conversation's existing messages and content. `local_turn_budget_seconds`
 escalates a user turn once the local tier has spent that much wall-clock time on it.
 
+Optional experimental compaction condenses local history into a cached digest
+when handing off. Enable it on the VGR route:
+
+```toml
+[routes.assistant]
+agentic_handoff = true
+compact_handoff = true
+```
+
+`compact_handoff` defaults to `false` and requires `agentic_handoff = true`.
+Omitting it or setting it to `false` preserves the full history. Later requests
+reuse a digest only when their original history prefix matches; a new user turn
+clears it. An `x-initiator: agent` message keeps the digest, while
+`x-initiator: user` clears it.
+
+The digest is lossy: user updates and tool output are clipped, and non-text
+content is replaced with a marker. Cache savings and task-success effects have
+not been measured in a matched evaluation.
+
 The notice covers the current request and asks the cloud tier to preserve earlier
 work, inspect its effects, and repeat or undo steps only when needed.
 

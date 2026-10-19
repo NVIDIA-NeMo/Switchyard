@@ -19,6 +19,7 @@ use crate::algorithms::fall_through::FallThrough;
 use crate::algorithms::util::affinity::AffinityRouter;
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
 
+mod compaction;
 mod config;
 mod decide;
 mod readout;
@@ -52,12 +53,15 @@ impl Vgr {
             "turn_verification_latched"
         };
         let affinity = Arc::new(affinity);
+        let mut route = FallThrough::new_with_state().with_name("vgr");
+        if config.compact_handoff {
+            route = route.with_classifier(Arc::new(compaction::Compactor));
+        }
         let classifier = Arc::new(runtime::VgrClassifier {
             breaker: safety::CircuitBreaker::new(config.breaker),
             config,
         });
-        let route = FallThrough::new_with_state()
-            .with_name("vgr")
+        let route = route
             .with_processor(affinity.clone())
             .with_classifier(Arc::new(runtime::Held(affinity, reason)))
             .with_classifier(classifier.clone());
