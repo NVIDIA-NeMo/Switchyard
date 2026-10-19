@@ -11,7 +11,7 @@ Use Switchyard through a gateway integration, try it with a local proxy, or embe
 <p align="center">
   <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
   <a href="https://nvidia-nemo.github.io/Switchyard/">Documentation</a> &emsp;·&emsp;
-  <a href="#latest-on-main">Latest on main</a> &emsp;·&emsp;
+  <a href="#whats-new">What’s new</a> &emsp;·&emsp;
   <a href="https://github.com/NVIDIA-NeMo/Switchyard/issues/1026">Roadmap</a> &emsp;·&emsp;
   <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases">Releases</a> &emsp;·&emsp;
   <a href="CONTRIBUTING.md">Contributing</a>
@@ -53,9 +53,9 @@ Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 
 [Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application. For Python, see the [embedding example](examples/libsy.py).
 
-## Latest on main
+## What’s new
 
-New features and integrations merged into `main`.
+Features and integrations recently merged into `main`.
 
 - **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
   Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)
