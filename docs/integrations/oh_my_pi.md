@@ -93,8 +93,10 @@ replay or compaction.
 Port 4000 is also the default port for `omp`'s `litellm` provider and for
 `omp auth-gateway`. If `LITELLM_API_KEY` is set, `omp` probes `http://localhost:4000/v1`
 as a LiteLLM proxy. In that case, run Switchyard on another port or set
-`LITELLM_BASE_URL`. Set `cost` on the model entry if you want `omp` to show a non-zero
-cost.
+`LITELLM_BASE_URL`. Set `cost` on the model entry for `omp`'s native estimate.
+One rate table under a router alias is an approximation when targets have different prices. For a
+separate total that includes routing calls, see
+[Display Switchyard session costs](costs.md).
 
 ## Claude through an LLM gateway
 

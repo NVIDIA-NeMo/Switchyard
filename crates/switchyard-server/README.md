@@ -124,6 +124,11 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+Add `--pricing-file prices.json` to record each call's `cost` in USD. The server records the
+charge that the upstream reports and otherwise estimates it from the file's rates for the served
+model. The session stats then include cost totals. [Display Switchyard session
+costs](../../docs/integrations/costs.md) describes the file format.
+
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
 `"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.

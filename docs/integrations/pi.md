@@ -97,7 +97,10 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id `switchyard` instead.
 
-Set `cost` on the model entry if you want pi to show a non-zero cost.
+Set `cost` on the model entry for pi's native estimate. One rate table under a
+router alias is an approximation when targets have different prices. For a
+separate total that uses each served model and includes routing calls, see
+[Display Switchyard session costs](costs.md).
 [`benchmark/run-baseline.sh`](../../benchmark/README.md) runs Terminal-Bench tasks with
 pi through Switchyard when you pass `--agent pi`.
 
@@ -155,19 +158,9 @@ second shows `cached_tokens` close to `prompt_tokens`. If the second record show
 
 #### Estimate the cost
 
-The routing log records token counts, not prices. To estimate what a request cost,
-multiply each count in its record by the matching price and add the results:
-
-| Tokens in the record | Price |
-|---|---|
-| `prompt_tokens - cached_tokens - cache_creation_tokens` | Input |
-| `cached_tokens` | Cache read |
-| `cache_creation_tokens` | Cache write |
-| `completion_tokens` | Output |
-
-Write the prices to `prices.json` in USD per million tokens, and key each entry by the
-record's `model` value. This example uses Anthropic's list prices for Claude Sonnet 5 on
-2026-10-02:
+Start the server with `--pricing-file prices.json` as well, and each record gets a `cost`.
+The file maps each record's `model` value to prices in USD per million tokens. This
+example uses Anthropic's list prices for Claude Sonnet 5 on 2026-10-02:
 
 ```json
 {
@@ -176,25 +169,16 @@ record's `model` value. This example uses Anthropic's list prices for Claude Son
 ```
 
 The example's `cache_write` price is for a 5-minute cache. A 1-hour cache costs 2 times
-the input price instead of 1.25 times. The routing log does not say which cache the
-gateway used. A gateway may also charge its own prices, so the result is an estimate, not
-the gateway's bill. This command prints one estimated cost per record, or a warning for a
-model that has no entry in `prices.json`:
+the input price instead of 1.25 times; set it as `cache_write_1h`. When the gateway
+reports its own charge, the server records that charge instead of the estimate. Read
+each request's cost with:
 
 ```bash
-jq -r --slurpfile prices prices.json '
-  . as $r
-  | ($prices[0][$r.model // ""]) as $p
-  | if $p == null then
-      "warning: no price for model \($r.model); add it to prices.json"
-    else
-      ((($r.prompt_tokens // 0) - ($r.cached_tokens // 0) - ($r.cache_creation_tokens // 0)) * $p.input
-       + ($r.cached_tokens // 0) * $p.cache_read
-       + ($r.cache_creation_tokens // 0) * $p.cache_write
-       + ($r.completion_tokens // 0) * $p.output) / 1000000
-      | "\($r.route_id) \($r.model) estimated $\(. * 1000000 | round / 1000000)"
-    end' PATH
+jq -c '{route_id, model, cost}' PATH
 ```
+
+[Display Switchyard session costs](costs.md) describes the pricing file and how the
+server totals a session.
 
 ### Thinking
 

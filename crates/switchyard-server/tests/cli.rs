@@ -127,3 +127,61 @@ fn dry_run_rejects_unsendable_configured_headers() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn pricing_requires_a_log_and_validates_before_serving() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let config = directory.path().join("routes.toml");
+    let prices = directory.path().join("prices.json");
+    let log = directory.path().join("routing.jsonl");
+    fs::write(
+        &config,
+        r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://127.0.0.1:1/v1"
+[targets.answer]
+id = "answer"
+llm_client = "upstream"
+[routes.direct]
+id = "direct"
+type = "passthrough"
+target = "answer"
+"#,
+    )?;
+    let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
+        .arg("--config")
+        .arg(&config)
+        .arg("--pricing-file")
+        .arg(&prices)
+        .arg("--dry-run")
+        .output()?;
+    assert!(!output.status.success());
+    assert!(String::from_utf8(output.stderr)?.contains("--routing-log-file"));
+    assert!(!log.exists());
+    for (rates, succeeds) in [
+        (
+            r#"{"answer":{"input":0,"output":0,"cache_read":0,"cache_write":0}}"#,
+            true,
+        ),
+        (r#"{"answer":{"input":0,"output":0,"cache_read":0}}"#, false),
+    ] {
+        fs::write(&prices, rates)?;
+        let output = Command::new(env!("CARGO_BIN_EXE_switchyard-server"))
+            .arg("--config")
+            .arg(&config)
+            .arg("--pricing-file")
+            .arg(&prices)
+            .arg("--routing-log-file")
+            .arg(&log)
+            .arg("--dry-run")
+            .output()?;
+        assert_eq!(output.status.success(), succeeds);
+        if !succeeds {
+            assert!(String::from_utf8(output.stderr)?.contains("invalid pricing file"));
+        }
+        assert!(fs::read(&log)?.is_empty());
+    }
+    Ok(())
+}

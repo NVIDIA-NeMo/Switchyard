@@ -16,6 +16,7 @@ use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
+use switchyard_runner::pricing::{CostTotals, Pricing, RecordedCost};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const ORIGIN_HEADER: &str = "x-switchyard-origin";
@@ -23,7 +24,10 @@ const TASK_HEADER: &str = "x-switchyard-intake-task";
 const TRIAL_ID_HEADER: &str = "x-switchyard-trial-id";
 
 /// Append-only writer for one routing JSONL file.
-pub(crate) struct RoutingLog(fs::File);
+pub(crate) struct RoutingLog {
+    file: fs::File,
+    pub(crate) pricing: Pricing,
+}
 
 impl RoutingLog {
     pub(crate) fn new(path: impl Into<PathBuf>) -> ServerResult<Self> {
@@ -39,7 +43,10 @@ impl RoutingLog {
             .append(true)
             .open(&path)
             .map_err(|error| routing_log_error(&path, error))?;
-        Ok(Self(file))
+        Ok(Self {
+            file,
+            pricing: Pricing::default(),
+        })
     }
 
     pub(crate) fn append(
@@ -49,8 +56,15 @@ impl RoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) -> std::io::Result<()> {
+        let cost = self.pricing.cost(model, usage);
+        let cache_creation_1h_tokens = usage
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.cache_creation_1h_input_tokens)
+            .unwrap_or(0);
         let usage = token_usage(usage);
         let record = RoutingRecord {
+            cost,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
             algorithm: context.algorithm.into(),
@@ -64,6 +78,7 @@ impl RoutingLog {
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
+            cache_creation_1h_tokens,
             completion_tokens: usage.completion_tokens,
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
@@ -71,7 +86,7 @@ impl RoutingLog {
         let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         line.push(b'\n');
 
-        self.0.write_all(&line)
+        self.file.write_all(&line)
     }
 }
 
@@ -151,6 +166,8 @@ impl RoutingLogContext {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct RoutingRecord<'a> {
+    #[serde(default)]
+    cost: Option<RecordedCost>,
     ts: Cow<'a, str>,
     route_id: Cow<'a, str>,
     algorithm: Cow<'a, str>,
@@ -169,15 +186,25 @@ struct RoutingRecord<'a> {
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
+    /// The part of `cache_creation_tokens` written at the one-hour rate, when reported.
+    #[serde(skip_serializing_if = "is_zero")]
+    cache_creation_1h_tokens: u64,
     completion_tokens: u64,
     reasoning_tokens: u64,
     total_tokens: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Session totals returned by the routing stats endpoint.
 #[derive(Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
+    cost: CostTotals,
+    answer_cost: CostTotals,
+    routing_cost: CostTotals,
     total_calls: u64,
     total_prompt_tokens: u64,
     total_cached_tokens: u64,
@@ -188,6 +215,7 @@ pub(crate) struct SessionStatsSnapshot {
 
 #[derive(Default, Serialize)]
 struct SessionModelStats {
+    cost: CostTotals,
     calls: u64,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -199,6 +227,9 @@ impl SessionStatsSnapshot {
     fn new(session_id: &str) -> Self {
         Self {
             session_id: session_id.to_string(),
+            cost: CostTotals::default(),
+            answer_cost: CostTotals::default(),
+            routing_cost: CostTotals::default(),
             total_calls: 0,
             total_prompt_tokens: 0,
             total_cached_tokens: 0,
@@ -217,6 +248,13 @@ impl SessionStatsSnapshot {
             model => model,
         };
         let stats = self.models.entry(ModelId::from(model)).or_default();
+        stats.cost.add(record.cost);
+        self.cost.add(record.cost);
+        if record.tier == "classifier" {
+            self.routing_cost.add(record.cost);
+        } else {
+            self.answer_cost.add(record.cost);
+        }
         stats.calls = stats.calls.saturating_add(1);
         stats.prompt_tokens = stats.prompt_tokens.saturating_add(record.prompt_tokens);
         stats.cached_tokens = stats.cached_tokens.saturating_add(record.cached_tokens);
@@ -301,7 +339,7 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2}"#,
+                r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2,"cost":{"usd":0.25,"source":"estimated"}}"#,
                 "\n",
                 r#"{"session_id":"b","model":"m1","prompt_tokens":99,"completion_tokens":99}"#,
                 "\n",
@@ -318,6 +356,39 @@ mod tests {
         assert_eq!(stats.total_completion_tokens, 2);
         assert_eq!(stats.models["m1"].calls, 1);
         assert_eq!(stats.models["unknown"].prompt_tokens, 5);
+        assert_eq!(stats.cost.known_usd, 0.25);
+        assert_eq!(stats.cost.estimated_calls, 1);
+        assert_eq!(stats.cost.unknown_calls, 1);
+        assert_eq!(stats.cost.total_usd, None);
         assert!(snapshot(&path, "missing").expect("read log").is_none());
+    }
+
+    /// One-hour cache writes keep their own count, so a reader can price them at their rate.
+    #[test]
+    fn records_name_one_hour_cache_writes_only_when_reported()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("routing.jsonl");
+        let mut log = RoutingLog::new(&path)?;
+        let mut usage = Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(1),
+            cache: Usage::cache_details(None, Some(30)),
+            ..Usage::default()
+        };
+        let context = || RoutingLogContext::from_metadata(&Metadata::default());
+        log.append(context(), "m", None, &usage)?;
+        if let Some(cache) = usage.cache.as_mut() {
+            cache.cache_creation_1h_input_tokens = Some(20);
+        }
+        log.append(context(), "m", None, &usage)?;
+        let records = fs::read_to_string(&path)?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<Vec<serde_json::Value>, _>>()?;
+        assert_eq!(records[0]["cache_creation_tokens"], 30);
+        assert!(records[0].get("cache_creation_1h_tokens").is_none());
+        assert_eq!(records[1]["cache_creation_1h_tokens"], 20);
+        Ok(())
     }
 }
