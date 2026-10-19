@@ -15,25 +15,18 @@ also measured on its own. The escalation route uses **DeepSeek V4 Flash** as its
 
 ![Terminal-Bench 2.1 task completion versus cost for LLM classification, Stage, and Escalation routing, with Opus 4.8 and GLM 5.2 baselines and a separate Jev recorded-run replay.](assets/switchyard-cost-accuracy.svg)
 
-The Jev point is a separate [recorded-run replay](#jev-task-routing), with a different
-evaluation setup and cost accounting.
-
 [Published comparison and background](https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/).
 
-[Escalation config](../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml)
+Configs: [Escalation](../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) ·
+[Jev task router](../benchmark/routing-profiles/tb21-jev-opus-glm.toml)
 
-### Jev task routing
+The Jev point is a recorded-run replay: **73/89 tasks (82.02%)** at an estimated **$92.12**,
+including Jev calls. Jev selects one model for each task and replays its recorded outcome.
+Its evaluation setup and cost accounting differ from the other points.
 
-This separate experiment uses Jev to choose Opus 4.8 or GLM 5.2 for the whole task, then
-replays their recorded outcomes.
-
-| Evaluation | Tasks solved | Estimated model cost | Config |
-| --- | --- | --- | --- |
-| Recorded-run replay | 73/89 (82.02%) | $92.12, including Jev calls | [Adapted TOML](../benchmark/routing-profiles/tb21-jev-opus-glm.toml) |
-
-The 89 tasks include **62 training tasks** and a reused **27-task test split**. On that test
-split, Jev solved 22/27 tasks and its paired Opus baseline solved 23/27. The adapted config uses
-a different question and endpoints; a fresh benchmark of that config is still needed.
+The replay includes **62 training tasks** and a reused **27-task test split** (Jev: 22/27;
+paired Opus baseline: 23/27). The Jev config uses a different question and endpoints; it needs
+a fresh benchmark.
 
 ## DeepSWE
 
