@@ -141,7 +141,8 @@ pub(super) fn fallback_eligible(error: &LibsyError) -> bool {
         LibsyError::ClientCall { source, .. } if match source {
             LlmClientError::ContextWindowExceeded { .. }
                 | LlmClientError::Transport { .. }
-                | LlmClientError::Timeout { .. } => true,
+                | LlmClientError::Timeout { .. }
+                | LlmClientError::TemporarilyUnavailable => true,
             LlmClientError::UpstreamHttp { status, .. } =>
                 matches!(
                     *status,
@@ -159,7 +160,9 @@ pub(super) fn endpoint_failure(error: &LibsyError) -> bool {
     matches!(
         error,
         LibsyError::ClientCall { source, .. } if match source {
-            LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
+            LlmClientError::Transport { .. }
+            | LlmClientError::Timeout { .. }
+            | LlmClientError::TemporarilyUnavailable => true,
             LlmClientError::UpstreamHttp { status, .. } => matches!(
                 *status,
                 StatusCode::BAD_GATEWAY

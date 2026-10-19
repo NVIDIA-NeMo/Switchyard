@@ -50,7 +50,7 @@ pub enum ClassifyTrigger {
 
 /// Anthropic carries tool results as a `Role::User` message, so role alone cannot tell a
 /// human turn from a tool continuation.
-fn is_user_turn(message: &Message) -> bool {
+pub(crate) fn is_user_turn(message: &Message) -> bool {
     message.role == Role::User
         && !message
             .content
@@ -60,6 +60,37 @@ fn is_user_turn(message: &Message) -> bool {
 
 pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
     messages.last().is_some_and(is_user_turn)
+}
+
+/// Who started the request, `user` or `agent` (GitHub Copilot's convention).
+const INITIATOR_HEADER: &str = "x-initiator";
+
+/// The client's `x-initiator` header: `Some(true)` when a person wrote the
+/// request, `Some(false)` for the agent's own follow-up calls, `None` when the
+/// header is absent or unrecognized and the message shape decides.
+pub(crate) fn initiated_by_user(request: &Request) -> Option<bool> {
+    let value = request
+        .metadata
+        .as_ref()?
+        .http_headers
+        .as_ref()?
+        .get(INITIATOR_HEADER)?
+        .to_str()
+        .ok()?
+        .trim();
+    if value.eq_ignore_ascii_case("user") {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("agent") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether `request` opens a user turn: the `x-initiator` header says so, or else
+/// its newest message is the user's.
+fn starts_user_turn(request: &Request) -> bool {
+    initiated_by_user(request).unwrap_or_else(|| has_new_user_turn(&request.llm_request.messages))
 }
 
 /// Retains a model per request identity and forces it on later matching requests.
@@ -185,6 +216,10 @@ impl Processor for AffinityRouter {
             if self.should_latch(selected_model_id) && writable {
                 evict_if_full(&mut assignments);
                 assignments.insert(key, (selected_model_id.clone(), category));
+            } else if self.release_on_user_turn && starts_user_turn(request) {
+                // The new turn was decided for a model that is not retained, so the
+                // previous turn's hold must not reach this turn's tool calls.
+                assignments.remove(&key);
             }
         }
         Ok(())
@@ -236,7 +271,7 @@ impl Classifier for AffinityRouter {
         };
         // Abstaining rather than clearing keeps this read path free of writes, so the judge
         // decides the turn whatever order concurrent latches land in.
-        if self.release_on_user_turn && has_new_user_turn(&request.llm_request.messages) {
+        if self.release_on_user_turn && starts_user_turn(request) {
             return Ok((Classification::Scores(Vec::new()), None));
         }
         // An empty `any` group carries no information about which models are still
@@ -873,6 +908,42 @@ mod tests {
             Some("no, shared across processes"),
         );
         assert!(scores(&router, &mut state, &mut spoke).await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_user_turn_decided_for_an_unlatched_model_ends_the_previous_hold()
+    -> Result<(), BoxErr> {
+        let router = AffinityRouter::new()
+            .with_release_on_user_turn()
+            .with_latch_only(["strong"]);
+        let mut state = State::default();
+        let mut escalated =
+            task_request(Some(session("session-1", "agent-a")), "add caching", None);
+        retain(&router, &mut state, &mut escalated, "strong").await?;
+
+        let mut spoke = task_request(
+            Some(session("session-1", "agent-a")),
+            "add caching",
+            Some("now add a test"),
+        );
+        retain(&router, &mut state, &mut spoke, "weak").await?;
+
+        // The new turn's tool continuation is not held on the earlier turn's model.
+        let mut continued = spoke.clone();
+        continued.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: Vec::new(),
+                is_error: None,
+            })],
+        });
+        assert!(
+            scores(&router, &mut state, &mut continued)
+                .await?
+                .is_empty()
+        );
         Ok(())
     }
 

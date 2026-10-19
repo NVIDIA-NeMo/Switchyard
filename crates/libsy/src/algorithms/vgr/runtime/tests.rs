@@ -398,6 +398,7 @@ async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Resu
         assert_eq!(evidence["source"], "vgr");
         assert_eq!(evidence["reason_code"], reason);
         assert_eq!(evidence["verdict"], served);
+        assert_eq!(evidence["policy_version"], "1.0");
         if reason == "decided" {
             assert_eq!(evidence["branch"], "DefaultVerified");
         }
@@ -624,4 +625,224 @@ fn handoff_preserves_existing_messages_and_non_text_content() {
     let after_first = task.llm_request.messages.clone();
     classifier.hand_off(&mut task, &mut state, Some("duplicate notice"));
     assert_eq!(task.llm_request.messages, after_first);
+}
+
+#[tokio::test]
+async fn a_blank_prompt_escalates_without_a_local_attempt() -> Result<()> {
+    let continuing = route(|_| {})?;
+    let route = route(|_| {})?;
+    let calls = Arc::new(Calls::default());
+    let blank_follow_up = vec![
+        Message::text(Role::User, "what is 2 + 2?"),
+        Message::text(Role::Assistant, "4"),
+        Message::text(Role::User, " "),
+    ];
+    for messages in [
+        vec![Message::text(Role::User, "  \n ")],
+        vec![Message::text(Role::User, "\u{200B}\u{FEFF}")],
+        blank_follow_up,
+    ] {
+        assert_eq!(
+            drive(&route, session(messages), calls.clone(), complete_call, 0.0).await?,
+            "cloud"
+        );
+    }
+    assert_eq!(calls.0.load(Ordering::Relaxed), 0);
+
+    // Tool results sent as a user message continue the task; they are not a blank prompt.
+    let mut results = result("a", "file.txt");
+    results.role = Role::User;
+    let continuation = session(vec![
+        Message::text(Role::User, "list files"),
+        call("a"),
+        results,
+    ]);
+    drive(&continuing, continuation, calls.clone(), complete_call, 0.0).await?;
+    assert_eq!(calls.0.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_agent_marked_nudge_keeps_a_single_escalation_on_cloud() -> Result<()> {
+    let route = route(|_| {})?;
+    let calls = Arc::new(Calls::default());
+    let truncated = || tool_call(json!(r#"{"command":"l"#), StopReason::MaxTokens);
+    let task = session(vec![Message::text(Role::User, "fix the build")]);
+    drive(&route, task, calls.clone(), truncated, 0.0).await?;
+    let nudge = vec![
+        Message::text(Role::User, "fix the build"),
+        Message::text(Role::Assistant, "fixed"),
+        Message::text(Role::User, "Verify the change before you stop."),
+    ];
+    let nudge = initiated_by(session(nudge), "agent");
+    assert_eq!(
+        drive(&route, nudge, calls.clone(), complete_call, 0.0).await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+fn initiated_by(mut request: Request, initiator: &str) -> Request {
+    let metadata = request.metadata.get_or_insert_with(Metadata::default);
+    metadata
+        .http_headers
+        .get_or_insert_with(http::HeaderMap::new)
+        .insert("x-initiator", initiator.parse().unwrap());
+    request
+}
+
+#[tokio::test]
+async fn a_held_follow_up_records_the_latch_as_its_reason() -> Result<()> {
+    use crate::core::algorithm::Call;
+    use crate::core::testing::serve_decision;
+
+    let algorithm = route(|config| config.mode = ServingMode::Shadow)?;
+    let models = Arc::new(category_models(Category::Any, &["local", "cloud"]).into());
+    let serve = |call| async move {
+        match call {
+            Call::Model(call) => call.respond(std::future::ready(Ok(reply("done")))).await,
+            Call::Decision(call) => serve_decision(*call).await,
+        }
+    };
+    let escalated = crate::drive(
+        Arc::clone(&algorithm),
+        session(vec![Message::text(Role::User, "fix the build")]),
+        Arc::clone(&models),
+        serve,
+    )
+    .await?;
+    assert_eq!(escalated.selected_model_ids, vec![ModelId::new("cloud")]);
+
+    let held = crate::drive(
+        algorithm,
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ]),
+        models,
+        serve,
+    )
+    .await?;
+    assert_eq!(held.selected_model_ids, vec![ModelId::new("cloud")]);
+    let evidence = held
+        .metadata
+        .and_then(|metadata| metadata.evidence)
+        .unwrap_or_default();
+    assert_eq!(evidence["source"], "vgr");
+    assert_eq!(evidence["reason_code"], "turn_verification_latched");
+    assert_eq!(evidence["verdict"], "cloud");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_escalation_latch_holds_the_session_past_new_questions() -> Result<()> {
+    let route = route(|config| config.latch_escalation = true)?;
+    let calls = Arc::new(Calls::default());
+    let truncated = || tool_call(json!(r#"{"command":"l"#), StopReason::MaxTokens);
+    let task = session(vec![Message::text(Role::User, "fix the build")]);
+    assert_eq!(
+        drive(&route, task, calls.clone(), truncated, 0.0).await?,
+        "cloud"
+    );
+    let follow_up = session(vec![
+        Message::text(Role::User, "fix the build"),
+        Message::text(Role::Assistant, "fixed"),
+        Message::text(Role::User, "now add a test"),
+    ]);
+    assert_eq!(
+        drive(&route, follow_up, calls.clone(), complete_call, 0.0).await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_initiator_header_decides_when_the_turn_latch_releases() -> Result<()> {
+    let route = route(|_| {})?;
+    let calls = Arc::new(Calls::default());
+    let task = || session(vec![Message::text(Role::User, "fix the build")]);
+    drive(&route, task(), calls.clone(), complete_call, 0.9).await?;
+    drive(&route, task(), calls.clone(), complete_call, 0.9).await?;
+    assert_eq!(calls.0.load(Ordering::Relaxed), 2);
+
+    // A client nudge after a final reply looks like a new question; marked agent, it keeps the latch.
+    let nudge = vec![
+        Message::text(Role::User, "fix the build"),
+        Message::text(Role::Assistant, "fixed"),
+        Message::text(Role::User, "Verify the change before you stop."),
+    ];
+    assert_eq!(
+        drive(
+            &route,
+            initiated_by(session(nudge), "agent"),
+            calls.clone(),
+            complete_call,
+            0.0
+        )
+        .await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 2);
+
+    // A person's correction after tool results looks like a continuation; marked user, it is verified afresh.
+    let steer = vec![
+        Message::text(Role::User, "fix the build"),
+        call("c1"),
+        result("c1", "ok"),
+        Message::text(Role::User, "use the staging config instead"),
+    ];
+    assert_eq!(
+        drive(
+            &route,
+            initiated_by(session(steer), "user"),
+            calls.clone(),
+            complete_call,
+            0.0
+        )
+        .await?,
+        "local"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
+    let route = route(|config| config.agentic_handoff = true)?;
+    let sent = Arc::new(std::sync::Mutex::new(String::new()));
+    let recorded = Arc::clone(&sent);
+    test_drive_with_models(
+        route,
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+            Message::text(Role::Assistant, "the build passes"),
+            Message::text(Role::User, "What is 41 plus 42?"),
+        ]),
+        category_models(Category::Any, &["local", "cloud"]),
+        move |target: ModelId, request: Request| {
+            let recorded = Arc::clone(&recorded);
+            async move {
+                Ok(match target.as_str() {
+                    "local" => reply("83"),
+                    "cloud" => {
+                        let text = serde_json::to_string(&request.llm_request.messages)
+                            .unwrap_or_default();
+                        recorded.lock().map(|mut sent| *sent = text).ok();
+                        reply("83")
+                    }
+                    _ => scored(0.0),
+                })
+            }
+        },
+    )
+    .await?;
+    let sent = sent.lock().map(|sent| sent.clone()).unwrap_or_default();
+    assert!(sent.contains("41 plus 42"), "escalated to the cloud");
+    assert!(!sent.contains("Routing notice"));
+    Ok(())
 }

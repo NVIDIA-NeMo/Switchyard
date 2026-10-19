@@ -51,14 +51,23 @@ impl Vgr {
                 .with_release_on_user_turn()
                 .with_latch_only([cloud.clone()]),
         );
+        let mut route = FallThrough::new_with_state().with_name("vgr");
+        if config.latch_escalation {
+            let latch = Arc::new(AffinityRouter::new().with_latch_only([cloud.clone()]));
+            route = route
+                .with_processor(latch.clone())
+                .with_classifier(Arc::new(runtime::Held(latch, "session_latched")));
+        }
         let classifier = Arc::new(runtime::VgrClassifier {
             breaker: safety::CircuitBreaker::new(config.breaker),
             config,
         });
-        let route = FallThrough::new_with_state()
-            .with_name("vgr")
+        let route = route
             .with_processor(turn_affinity.clone())
-            .with_classifier(turn_affinity)
+            .with_classifier(Arc::new(runtime::Held(
+                turn_affinity,
+                "turn_verification_latched",
+            )))
             .with_classifier(classifier);
         Ok(Self { route })
     }

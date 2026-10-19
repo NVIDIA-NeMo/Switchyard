@@ -11,6 +11,7 @@ use regex::Regex;
 use serde_json::Value;
 use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, ToolResult};
 
+use crate::algorithms::util::affinity::is_user_turn;
 use crate::algorithms::util::tool_signals::classify_text;
 
 /// One flattened turn: instructions first, then messages.
@@ -93,21 +94,74 @@ pub(super) fn user_task_text(turns: &[Turn]) -> &str {
         .unwrap_or_default()
 }
 
+/// Whether the newest user message is empty, ignoring whitespace and zero-width characters.
+///
+/// Any non-text block, such as an image or a tool result, is content.
+pub(super) fn newest_prompt_is_blank(request: &Request) -> bool {
+    request
+        .llm_request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+        .is_none_or(|message| {
+            message.content.iter().all(|block| match block {
+                ContentBlock::Text { text } => text.chars().all(|c| {
+                    c.is_whitespace()
+                        || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
+                }),
+                _ => false,
+            })
+        })
+}
+
 pub(super) fn has_assistant_turn(turns: &[Turn]) -> bool {
     turns.iter().any(|turn| turn.role == Role::Assistant)
 }
 
 /// Whether the conversation contains an executed or proposed tool step.
 pub(super) fn has_tool_trajectory(request: &Request) -> bool {
-    request.llm_request.messages.iter().any(|message| {
-        message.role == Role::Tool
-            || message.content.iter().any(|block| {
-                matches!(
-                    block,
-                    ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
-                )
-            })
-    })
+    request.llm_request.messages.iter().any(is_tool_step)
+}
+
+/// Whether the user message at `index` answers a finished assistant reply.
+///
+/// Agent clients also inject user-role continuations (after context compaction,
+/// at an iteration limit) that follow tool results, not a final reply; those
+/// continue the current user turn.
+pub(super) fn starts_user_turn(messages: &[Message], index: usize) -> bool {
+    let (Some(message), Some(previous)) = (
+        messages.get(index),
+        index.checked_sub(1).and_then(|i| messages.get(i)),
+    ) else {
+        return false;
+    };
+    is_user_turn(message)
+        && previous.role == Role::Assistant
+        && !previous
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+}
+
+/// Whether the current user turn contains an executed or proposed tool step.
+pub(super) fn turn_has_tool_trajectory(request: &Request) -> bool {
+    let messages = &request.llm_request.messages;
+    let start = (0..messages.len())
+        .rev()
+        .find(|&index| starts_user_turn(messages, index))
+        .unwrap_or(0);
+    messages[start..].iter().any(is_tool_step)
+}
+
+fn is_tool_step(message: &Message) -> bool {
+    message.role == Role::Tool
+        || message.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+            )
+        })
 }
 
 /// Idempotent secret and PII scrub applied before text reaches a verifier.
