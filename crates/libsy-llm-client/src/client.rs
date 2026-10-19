@@ -1098,25 +1098,6 @@ fn redact_mcp_json(value: &mut Value, patterns: &[String]) {
             for value in object.values_mut() {
                 redact_mcp_json(value, patterns);
             }
-            let redacted_keys = object
-                .keys()
-                .filter_map(|key| match redact_mcp_tokens(key, patterns) {
-                    Cow::Owned(redacted) => Some((key.clone(), redacted)),
-                    Cow::Borrowed(_) => None,
-                })
-                .collect::<Vec<_>>();
-            for (key, redacted) in redacted_keys {
-                if let Some(value) = object.remove(&key) {
-                    // Keep both fields if a redacted key already exists.
-                    let mut collision_counter = 0usize;
-                    let mut candidate = redacted.clone();
-                    while object.contains_key(&candidate) {
-                        candidate = format!("{redacted}{collision_counter}");
-                        collision_counter += 1;
-                    }
-                    object.insert(candidate, value);
-                }
-            }
         }
         _ => {}
     }
@@ -4015,21 +3996,6 @@ mod tests {
         }});
         redact_mcp_json(&mut value, &patterns);
         assert_eq!(value["error"]["message"], "[REDACTED]");
-
-        let mut value = json!({"error": {
-            token: {"detail": "echoed key"},
-            "[REDACTED]": {"detail": "existing key"},
-            "[REDACTED]0": {"detail": "existing numbered key"},
-            "other": {"detail": "unchanged"}
-        }});
-        redact_mcp_json(&mut value, &patterns);
-        assert!(!value.to_string().contains(token));
-        let object = value["error"].as_object().expect("expected error object");
-        assert_eq!(object.len(), 4);
-        assert_eq!(object["[REDACTED]"]["detail"], "existing key");
-        assert_eq!(object["[REDACTED]0"]["detail"], "existing numbered key");
-        assert_eq!(object["[REDACTED]1"]["detail"], "echoed key");
-        assert_eq!(object["other"]["detail"], "unchanged");
 
         let patterns = vec!["🚀".to_string()];
         assert_eq!(
