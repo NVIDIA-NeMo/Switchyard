@@ -474,23 +474,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Terminal-Bench 2.1">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#jev-task-routing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Jev task routing
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -1558,23 +1541,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Terminal-Bench 2.1">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#jev-task-routing" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Jev task routing
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -1629,34 +1595,15 @@ Changing the provider, models, or routing settings can change the outcome.</p>
 <p>The published comparison routes between <strong>Claude Opus 4.8</strong> and <strong>GLM 5.2</strong>, with each model
 also measured on its own. The escalation route uses <strong>DeepSeek V4 Flash</strong> as its judge.</p>
 <p><img alt="Terminal-Bench 2.1 task completion versus cost for LLM classification, Stage, and Escalation routing, with Opus 4.8 and GLM 5.2 baselines and a separate Jev recorded-run replay." src="../assets/switchyard-cost-accuracy.svg" /></p>
-<p>The Jev point is a separate <a href="#jev-task-routing">recorded-run replay</a>, with a different
-evaluation setup and cost accounting.</p>
 <p><a href="https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/">Published comparison and background</a>.</p>
-<p><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">Escalation config</a></p>
-<h3 id="jev-task-routing">Jev task routing<a class="headerlink" href="#jev-task-routing" title="Permanent link">&para;</a></h3>
-<p>This separate experiment uses Jev to choose Opus 4.8 or GLM 5.2 for the whole task, then
-replays their recorded outcomes.</p>
-<table>
-<thead>
-<tr>
-<th>Evaluation</th>
-<th>Tasks solved</th>
-<th>Estimated model cost</th>
-<th>Config</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Recorded-run replay</td>
-<td>73/89 (82.02%)</td>
-<td>$92.12, including Jev calls</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Adapted TOML</a></td>
-</tr>
-</tbody>
-</table>
-<p>The 89 tasks include <strong>62 training tasks</strong> and a reused <strong>27-task test split</strong>. On that test
-split, Jev solved 22/27 tasks and its paired Opus baseline solved 23/27. The adapted config uses
-a different question and endpoints; a fresh benchmark of that config is still needed.</p>
+<p>Configs: <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">Escalation</a> ·
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev task router</a></p>
+<p>The Jev point is a recorded-run replay: <strong>73/89 tasks (82.02%)</strong> at an estimated <strong>$92.12</strong>,
+including Jev calls. Jev selects one model for each task and replays its recorded outcome.
+Its evaluation setup and cost accounting differ from the other points.</p>
+<p>The replay includes <strong>62 training tasks</strong> and a reused <strong>27-task test split</strong> (Jev: 22/27;
+paired Opus baseline: 23/27). The Jev config uses a different question and endpoints; it needs
+a fresh benchmark.</p>
 <h2 id="deepswe">DeepSWE<a class="headerlink" href="#deepswe" title="Permanent link">&para;</a></h2>
 <p><strong>DeepSWE v1.1 · 113 tasks · Codex CLI · GPT-5.6 Luna and Sol</strong></p>
 <p>Plan/Execute uses Sol to plan and Luna to execute. Advisor uses Luna to execute and Sol to
@@ -1675,19 +1622,19 @@ review. Stage chooses between the two models from recent tool activity.</p>
 <td>Plan/Execute</td>
 <td>60.8% ± 5.3</td>
 <td>$180.51 ± 9.43</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Advisor</td>
 <td>57.5% ± 3.2</td>
 <td>$208 ± 22</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Stage</td>
 <td>76/113 (67.3%)</td>
 <td>Not reported</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">TOML</a></td>
 </tr>
 </tbody>
 </table>
@@ -1717,14 +1664,14 @@ reports one run. All use strict scoring: failures and missing results count as u
 </table>
 <p>The Stage run has no paired single-model baseline. These studies used closed-book evaluation
 and a three-hour agent budget. The config headers record each result; the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/DEEPSWE_V11_QUALIFICATION.md">evaluation settings</a> cover versions, timeouts,
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/DEEPSWE_V11_QUALIFICATION.md">evaluation settings</a> cover versions, timeouts,
 scoring, and pricing.</p>
 <h2 id="run-a-benchmark">Run a benchmark<a class="headerlink" href="#run-a-benchmark" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/README.md#one-time-setup">Prepare the dataset</a>,
-  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/README.md#run-with-switchyard-routing">run with a config above</a>, and
-  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/README.md#inspect-a-run">inspect the artifacts</a>.</li>
-<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/543657c37a0bb8f6ebefb60b0c5a24b362865228/benchmark/README.md#deepswe-v11">Run with Pier</a>.</li>
+<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/README.md#one-time-setup">Prepare the dataset</a>,
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/README.md#run-with-switchyard-routing">run with a config above</a>, and
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/README.md#inspect-a-run">inspect the artifacts</a>.</li>
+<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/61fbe3956727d640391f0841c70499f68ea45b1b/benchmark/README.md#deepswe-v11">Run with Pier</a>.</li>
 </ul>
 
 
