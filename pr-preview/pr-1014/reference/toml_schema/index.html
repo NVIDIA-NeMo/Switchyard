@@ -1992,8 +1992,9 @@ server sends a framed error and ends the stream without a success marker.</p>
 continues, preserving provider events for replay. After the configured retries,
 an HTTP client failure stops routing unless the call enables recovery.
 Capability classifiers and advisor gates default to <code>fail_open = true</code>.
-A capability classifier routes to the capable tier on judge failures, including
-deadlines. An advisor returns the buffered executor turn when its consult fails.
+An LLM capability judge routes to the capable tier on client failures, including
+deadlines. A decision judge selects <code>decision.policy.fallback</code> instead.
+An advisor returns the buffered executor turn when its consult fails.
 Set <code>fail_open = false</code> to stop the request on these failures.
 Answer calls keep their usual error behavior.</p>
 <p>Set <code>forward_auth = true</code> to use each caller's credential instead of a
@@ -2339,7 +2340,7 @@ dependencies available in the active virtual environment.</p>
 </span></code></pre></div>
 <h3 id="llm_classifier"><code>llm_classifier</code><a class="headerlink" href="#llm_classifier" title="Permanent link">&para;</a></h3>
 <p>Runs one of three judge-backed modes: <code>capability</code>, <code>escalation</code>, or <code>custom</code>.
-<code>max_output_tokens</code> applies to all three.</p>
+<code>max_output_tokens</code> applies to LLM judges in all three modes.</p>
 <table>
 <thead>
 <tr>
@@ -2390,27 +2391,33 @@ dependencies available in the active virtual environment.</p>
 <tbody>
 <tr>
 <td><code>strong_target</code></td>
-<td style="text-align: center;">Yes</td>
+<td style="text-align: center;">For LLM judges</td>
 <td>—</td>
-<td>Capable tier.</td>
+<td>Capable tier. Optional with a decision judge.</td>
 </tr>
 <tr>
 <td><code>weak_target</code></td>
-<td style="text-align: center;">Yes</td>
+<td style="text-align: center;">For LLM judges</td>
 <td>—</td>
-<td>Efficient tier.</td>
+<td>Efficient tier. Optional with a decision judge.</td>
 </tr>
 <tr>
 <td><code>base_threshold</code></td>
-<td style="text-align: center;">Yes</td>
+<td style="text-align: center;">For LLM judges</td>
 <td>—</td>
-<td>Lowest solve probability that routes to the weak target. In <code>[0, 1]</code>.</td>
+<td>Lowest solve probability that routes to the weak target. In <code>[0, 1]</code>. Omit with <code>decision</code>.</td>
+</tr>
+<tr>
+<td><code>decision</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Decision judge settings: candidate mappings, ordered policy rules, and an explicit fallback. See <a href="../../routing_algorithms/llm_classifier_routing/#decision-models-with-ordered-cutoffs">ordered decision cutoffs</a>.</td>
 </tr>
 <tr>
 <td><code>fail_open</code></td>
 <td style="text-align: center;">No</td>
 <td><code>true</code></td>
-<td>Capability mode only. When <code>true</code>, judge client failures and deadlines route to the capable tier and record fail-open evidence. When <code>false</code>, they stop the request. Invalid verdicts use the capable tier with either setting.</td>
+<td>When <code>true</code>, judge client failures and deadlines use the fallback and record fail-open evidence. When <code>false</code>, they stop the request. Invalid verdicts use the fallback with either setting.</td>
 </tr>
 <tr>
 <td><code>threshold_step</code></td>
@@ -2444,6 +2451,9 @@ dependencies available in the active virtual environment.</p>
 </tr>
 </tbody>
 </table>
+<p>LLM capability judges use the capable tier as their fallback. Decision judges use
+<code>decision.policy.fallback</code>. With <code>decision</code>, omit LLM-only settings such as
+<code>base_threshold</code>, <code>threshold_step</code>, <code>prompt</code>, and <code>max_output_tokens</code>.</p>
 <p>Escalation mode serves the weak target first and judges the completed turn. See
 <a href="../../routing_algorithms/escalation_router_routing/">Escalation-Router Routing</a>.</p>
 <table>
@@ -2817,7 +2827,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 <td><code>classifier.fail_open</code></td>
 <td style="text-align: center;">No</td>
 <td><code>true</code></td>
-<td>On judge failure, retain the last classified tier or default to efficient. Set <code>false</code> to return the error.</td>
+<td>On client failure, LLM judges retain the last classified tier or default to efficient. Decision judges select <code>decision.policy.fallback</code>. Set <code>false</code> to return the error.</td>
 </tr>
 <tr>
 <td><code>classifier.message_hash_fallback</code></td>
@@ -2934,8 +2944,7 @@ Stage-backed policies must keep their destinations within the configured tier pa
 <code>classifier.message_hash_fallback = true</code>, which keys on the first user message
 instead. The outer <code>[routes.&lt;name&gt;.classifier]</code> table is required. The nested
 <code>[routes.&lt;name&gt;.stage]</code> table accepts neither <code>picker</code> nor a second <code>classifier</code>.
-The outer classifier supplies the default tier. A turn the classifier cannot
-reach falls open to the efficient tier.</p>
+The outer classifier supplies the default tier.</p>
 <h3 id="advisor"><code>advisor</code><a class="headerlink" href="#advisor" title="Permanent link">&para;</a></h3>
 <p>Serves every client-visible turn from the executor and has a stronger advisor
 review terminal turns before the caller sees them: APPROVE releases the
