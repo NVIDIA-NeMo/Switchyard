@@ -967,6 +967,7 @@ fn mcp_token_patterns(body: &Value) -> Vec<String> {
                 .and_then(Value::as_str)
                 .into_iter()
                 .chain(
+                    // Any MCP header value may contain credentials.
                     tool.get("headers")
                         .and_then(Value::as_object)
                         .into_iter()
