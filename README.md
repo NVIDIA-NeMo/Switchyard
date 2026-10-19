@@ -11,6 +11,7 @@ Use Switchyard through a gateway integration, try it with a local proxy, or embe
 <p align="center">
   <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
   <a href="https://nvidia-nemo.github.io/Switchyard/">Documentation</a> &emsp;·&emsp;
+  <a href="docs/benchmarks.md">Benchmarks</a> &emsp;·&emsp;
   <a href="#whats-new">What’s new</a> &emsp;·&emsp;
   <a href="https://github.com/NVIDIA-NeMo/Switchyard/issues/1026">Roadmap</a> &emsp;·&emsp;
   <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases">Releases</a> &emsp;·&emsp;
@@ -91,9 +92,10 @@ The [routing overview](docs/routing_algorithms/overview.md) retains the full cat
 
 ## Evaluation and reference
 
-![Task completion versus cost for Switchyard classification, stage, escalation, and Jev task routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.svg)
+[![Task completion versus cost for Switchyard classification, stage, escalation, and Jev task routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.svg)](docs/benchmarks.md#terminal-bench-21)
 
-Results depend on the benchmark, model pool, serving stack, and routing configuration.
+[Browse benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1 and DeepSWE.
+The Jev point is a separate recorded-run replay; the benchmark page explains its evaluation setup.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
 
 ### Further reading

@@ -3,6 +3,8 @@
 
 # Harbor Benchmarks
 
+For recorded results and their routing configs, see [Benchmarks](../docs/benchmarks.md).
+
 Use this guide to run Harbor Terminal-Bench Lite from a fresh Switchyard clone.
 It covers the two smoke paths most people need first:
 

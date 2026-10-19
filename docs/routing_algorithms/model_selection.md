@@ -129,6 +129,9 @@ behave differently on different endpoints. See
 
 ## Measured pairs
 
+See [Benchmarks](../benchmarks.md) for consolidated Terminal-Bench 2.1 and DeepSWE results,
+config links, and evaluation settings.
+
 These pairs have results from checked-in profiles or a public report. Each row
 describes one pair on one workload. The thresholds and results do not transfer
 to another pair or another workload. The profile headers give the serving stack,
