@@ -4,9 +4,9 @@ Compare task completion and cost, open the routing configs, and run a benchmark 
 
 [Terminal-Bench 2.1](#terminal-bench-21) · [DeepSWE](#deepswe) · [Run a benchmark](#run-a-benchmark)
 
-The linked configs use the current Switchyard schema and OpenRouter endpoints. The recorded
-results used the original evaluation stacks. Changing the provider, models, or routing settings
-can change the outcome.
+The linked configs use the current Switchyard schema and OpenRouter endpoints, including Jev.
+All use `OPENROUTER_API_KEY`. The recorded results used the original evaluation stacks.
+Changing the provider, models, or routing settings can change the outcome.
 
 ## Terminal-Bench 2.1
 
