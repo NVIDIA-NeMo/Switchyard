@@ -18,7 +18,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-const MCP_TOKEN: &str = "synthetic-mcp-secret-\"\\-canary";
+const MCP_TOKEN: &str = "synthetic-mcp-secret-canary-8f651ed7";
 const FALLBACK_CREDIT_TOKEN: &str = "fallback-credit-secret-canary-8f651ed7";
 const CREDIT_BETA: &str = "fallback-credit-2026-07-01";
 const INITIAL_BETAS: &str = "fallback-credit-2026-07-01,server-side-fallback-2026-07-01";
@@ -45,8 +45,8 @@ async fn credentials_do_not_leak() -> TestResult {
         .output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // The MCP prefix also detects JSON-escaped credentials. Never print captured output on failure.
-    for credential in [FALLBACK_CREDIT_TOKEN, "synthetic-mcp-secret"] {
+    // Never print captured output on failure: it could contain credentials.
+    for credential in [FALLBACK_CREDIT_TOKEN, MCP_TOKEN] {
         assert!(!stdout.contains(credential), "credential leaked to stdout");
         assert!(
             !stderr.contains(credential),

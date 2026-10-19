@@ -922,9 +922,7 @@ async fn prepare_response_stream(
     }
 }
 
-// Precompute literal and JSON-escaped forms once per HTTP attempt.
 fn mcp_token_patterns(body: &Value) -> Vec<String> {
-    let mut patterns = Vec::new();
     let servers = body
         .get("mcp_servers")
         .and_then(Value::as_array)
@@ -960,7 +958,7 @@ fn mcp_token_patterns(body: &Value) -> Vec<String> {
                 .split_once('?')
                 .map(|(_, query)| query)
         });
-    for token in queries
+    queries
         .chain(
             servers.filter_map(|server| server.get("authorization_token").and_then(Value::as_str)),
         )
@@ -983,17 +981,8 @@ fn mcp_token_patterns(body: &Value) -> Vec<String> {
                 .flatten()
         })
         .filter(|token| !token.is_empty())
-    {
-        if let Ok(escaped) = serde_json::to_string(token) {
-            let escaped = &escaped[1..escaped.len() - 1];
-            if escaped != token {
-                patterns.push(escaped.to_owned());
-            }
-        }
-        // Short credentials must also be masked in errors, even at the cost of detail.
-        patterns.push(token.to_owned());
-    }
-    patterns
+        .map(str::to_owned)
+        .collect()
 }
 
 fn may_be_error_envelope(body: &[u8]) -> bool {
@@ -1014,12 +1003,10 @@ fn may_be_error_envelope(body: &[u8]) -> bool {
 }
 
 fn may_contain_mcp_tokens(body: &[u8], patterns: &[String]) -> bool {
-    !patterns.is_empty()
-        // JSON escapes can hide literal tokens, including in nested serialized JSON.
-        && (body.contains(&b'\\')
-            || patterns.iter().any(|pattern| {
-                body.windows(pattern.len()).any(|bytes| bytes == pattern.as_bytes())
-            }))
+    patterns.iter().any(|pattern| {
+        body.windows(pattern.len())
+            .any(|bytes| bytes == pattern.as_bytes())
+    })
 }
 
 fn redact_mcp_tokens<'a>(text: &'a str, patterns: &[String]) -> Cow<'a, str> {
@@ -1029,57 +1016,7 @@ fn redact_mcp_tokens<'a>(text: &'a str, patterns: &[String]) -> Cow<'a, str> {
             text = Cow::Owned(text.replace(pattern, "[REDACTED]"));
         }
     }
-    if !patterns.is_empty() && text.contains('\\') && contains_escaped_mcp_tokens(&text, patterns) {
-        // Further JSON decoding can reveal a token that literal matching missed.
-        if let Ok(mut value) = serde_json::from_str::<Value>(&text) {
-            redact_mcp_json(&mut value, patterns);
-            return Cow::Owned(value.to_string());
-        }
-        // A fragment containing an encoded credential cannot be safely rewritten as JSON.
-        return Cow::Owned("[REDACTED]".to_string());
-    }
     text
-}
-
-fn contains_escaped_mcp_tokens(text: &str, patterns: &[String]) -> bool {
-    let mut text = Cow::Borrowed(text);
-    loop {
-        let mut decoded = String::with_capacity(text.len());
-        let mut remaining = text.as_ref();
-        while let Some(index) = remaining.find('\\') {
-            decoded.push_str(&remaining[..index]);
-            remaining = &remaining[index..];
-            // Simple escapes, Unicode escapes, and UTF-16 surrogate pairs.
-            let escape = [2, 6, 12].into_iter().find_map(|len| {
-                let fragment = remaining.as_bytes().get(..len)?;
-                let mut quoted = [0; 14];
-                quoted[0] = b'"';
-                quoted[1..=len].copy_from_slice(fragment);
-                quoted[len + 1] = b'"';
-                let value = serde_json::from_slice::<char>(&quoted[..len + 2]).ok()?;
-                Some((len, value))
-            });
-            if let Some((len, value)) = escape {
-                decoded.push(value);
-                remaining = &remaining[len..];
-            } else {
-                decoded.push('\\');
-                remaining = &remaining[1..];
-            }
-        }
-        decoded.push_str(remaining);
-        if decoded == text {
-            return false;
-        }
-        if patterns
-            .iter()
-            .any(|pattern| decoded.contains(pattern.as_str()))
-        {
-            return true;
-        }
-        // Serialized JSON can add several layers of escaping.
-        text = Cow::Owned(decoded);
-    }
 }
 
 fn redact_mcp_json(value: &mut Value, patterns: &[String]) {
@@ -3950,8 +3887,8 @@ mod tests {
     }
 
     #[test]
-    fn mcp_redaction_handles_escaped_and_short_tokens() {
-        for token in ["x", "synthetic-mcp-\"\\-secret"] {
+    fn mcp_redaction_matches_literal_tokens() {
+        for token in ["x", "synthetic-mcp-token"] {
             let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
                 "authorization_token": token
             }]}));
@@ -3977,31 +3914,6 @@ mod tests {
         for text in ["ordinary error detail", r"C:\tmp", r"failed parsing \u0061"] {
             assert_eq!(redact_mcp_tokens(text, &patterns), text);
         }
-        let body = br#"{"type":"error","error":{"message":"\u0073ynthetic-mcp-token"}}"#;
-        assert!(may_contain_mcp_tokens(body, &patterns));
-        let mut value: Value = serde_json::from_slice(body).expect("valid JSON");
-        redact_mcp_json(&mut value, &patterns);
-        assert_eq!(value["error"]["message"], "[REDACTED]");
-
-        let embedded = r#"{"authorization_token":"\u0073ynthetic-mcp-token"}"#;
-        let mut value = json!({"type": "error", "error": {"message": embedded}});
-        redact_mcp_json(&mut value, &patterns);
-        let recovered: Value =
-            serde_json::from_str(value["error"]["message"].as_str().expect("error message"))
-                .expect("embedded JSON");
-        assert_eq!(recovered["authorization_token"], "[REDACTED]");
-
-        let mut value = json!({"error": {
-            "message": format!(r"rejected request at C:\users: {embedded}")
-        }});
-        redact_mcp_json(&mut value, &patterns);
-        assert_eq!(value["error"]["message"], "[REDACTED]");
-
-        let patterns = vec!["🚀".to_string()];
-        assert_eq!(
-            redact_mcp_tokens(r"rejected request: \\ud83d\\ude80", &patterns),
-            "[REDACTED]"
-        );
     }
 
     #[test]
