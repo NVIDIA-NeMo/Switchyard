@@ -456,6 +456,13 @@ async fn upstream_chat(
     } else {
         "ok".to_string()
     };
+    let logprobs = (body["logprobs"] == true).then(|| {
+        let yes = if content == "yes" { 0.9_f64 } else { 0.1_f64 };
+        json!({"content": [{"token": content, "logprob": 0.0, "top_logprobs": [
+            {"token": "yes", "logprob": yes.ln()},
+            {"token": "no", "logprob": (1.0 - yes).ln()}
+        ]}]})
+    });
     Json(json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -463,6 +470,7 @@ async fn upstream_chat(
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": content},
+            "logprobs": logprobs,
             "finish_reason": "stop"
         }],
         "usage": {

@@ -102,6 +102,17 @@ automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 `x-session-id` is also accepted as a session-header alias.
 
+## Verification and cloud outages
+
+Coding without tool history can commit locally on a clean readout of at least
+0.6, or a readout of at least 0.2 plus cloud-judge affirmation. Other final-answer
+branches can use a separate scored verdict after local deliberation.
+
+In `active` mode, an unavailable cloud tier can fall back to an unverified local
+answer. That call receives the original request without the cloud handoff note.
+Fallback is disabled by the kill switch, an open local circuit breaker, or an
+image request the local tier cannot serve.
+
 ## Serving modes
 
 - `off` skips candidate generation and serves cloud. This is the default.
