@@ -17,23 +17,6 @@ Use Switchyard through a gateway integration, try it with a local proxy, or embe
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-## Latest News
-
-- **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
-  Use your Claude login with the native Switchyard plugin. Enable or pause routing and see the selected model in the status line. Currently supports Linux x86_64. [Setup guide →](examples/claude/README.md)
-
-- **2026-10-15 · Combine decision models with execution-aware routing**\
-  Use Mercury Decide to judge tasks, then let Stage routing adjust model selection as tools run. [Example configuration →](dev-server/config.toml)
-
-- **2026-10-13 · Use Jev to choose between models**\
-  Configure a decision-model judge with candidate descriptions and a probability cutoff. Use it for task routing or as part of Composite routing. [Configuration guide →](docs/routing_algorithms/composite_routing.md#decision-model-classifier)
-
-- **2026-10-12 · Bring Switchyard to TypeScript and Pi**\
-  Build the Node.js bindings to select models from your application, or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
-
-- **2026-10-08 · Run Codex with Switchyard on macOS**\
-  Install a background router and Codex profile. Track model usage and estimated savings, check server health, and restart the router from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
-
 ## How it works
 
 1. Configure the models your application can use and choose a routing algorithm.
@@ -69,6 +52,23 @@ Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 ### Embed the library in your harness
 
 [Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application. For Python, see the [embedding example](examples/libsy.py).
+
+## Latest News
+
+- **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
+  Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)
+
+- **2026-10-15 · Use decision models in composite routing**\
+  Use Mercury Decide to judge tasks and Stage routing to adjust model selection as tools run. [Example configuration →](dev-server/config.toml)
+
+- **2026-10-13 · Use Jev to choose between models**\
+  Configure Jev as a task judge with candidate descriptions and a probability cutoff. [Configuration guide →](docs/routing_algorithms/composite_routing.md#decision-model-classifier)
+
+- **2026-10-12 · Bring Switchyard to TypeScript and Pi**\
+  Select models in Node.js or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
+
+- **2026-10-08 · Run Codex with Switchyard on macOS**\
+  Install a background router and Codex profile, then track usage and estimated savings from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
 
 ## Routing algorithms
 
