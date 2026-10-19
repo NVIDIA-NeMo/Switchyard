@@ -1266,6 +1266,7 @@ impl LlmClassifierRouteConfig {
                 }
                 let has_capability_settings = base_threshold.is_some()
                     || threshold_step.is_some()
+                    || fail_open.is_some()
                     || *message_hash_fallback
                     || recent_turn_window.is_some();
                 if mode.is_some() && has_capability_settings {
@@ -1277,7 +1278,7 @@ impl LlmClassifierRouteConfig {
                     // Existing files that select escalation through the `escalation` table alone
                     // keep loading, but their capability keys do nothing in this mode.
                     tracing::warn!(
-                        "llm_classifier route {route_name} runs in escalation mode because it has an escalation table; base_threshold, threshold_step, recent_turn_window and message_hash_fallback are ignored in this mode. Set mode = \"escalation\" and remove them."
+                        "llm_classifier route {route_name} runs in escalation mode because it has an escalation table; base_threshold, threshold_step, fail_open, recent_turn_window and message_hash_fallback are ignored in this mode. Set mode = \"escalation\" and remove them."
                     );
                 }
                 Ok(LlmClassifierModeConfig::Escalation(
