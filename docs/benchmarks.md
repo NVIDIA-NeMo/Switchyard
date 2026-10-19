@@ -43,9 +43,12 @@ Configs: [Plan/Execute](../benchmark/routing-profiles/deepswe-v11-plan-execute-l
 [Advisor](../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) ·
 [Stage](../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
 
-Each panel uses its own study's baselines. Stage has no paired single-model baseline.
+Points show three-run means, except the two individual Advisor Luna runs. Labels identify
+each study's baselines. Stage has no paired single-model baseline. The config headers record
+the results and sample standard deviations.
+
 All runs used closed-book evaluation, a three-hour agent budget, and strict scoring:
-failures and missing results count as unsolved. The config headers record each result.
+failures and missing results count as unsolved.
 
 ## Run a benchmark
 
