@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::DecisionTarget;
 use crate::eligibility::{EligibilityPolicy, Requirements, has_external_requirements};
+use crate::privacy::{PrivacyDecision, PrivacyLane, PrivacyPolicy, has_external_restriction};
 
 /// Capabilities declared for one route.
 ///
@@ -147,6 +148,7 @@ struct EligibilityExecution {
 /// One or more execution lanes behind a configured route.
 pub struct Route {
     standard: ExecutionLane,
+    privacy: Option<PrivacyPolicy>,
     eligibility: Option<EligibilityExecution>,
     decision_targets: Vec<DecisionTarget>,
     caller_auth: Option<CallerAuthKind>,
@@ -194,11 +196,17 @@ impl Route {
     ) -> Self {
         Self {
             standard: lane,
+            privacy: None,
             eligibility: None,
             decision_targets,
             caller_auth,
             capabilities,
         }
+    }
+
+    pub(crate) fn with_privacy_policy(mut self, policy: PrivacyPolicy) -> Self {
+        self.privacy = Some(policy);
+        self
     }
 
     pub(crate) fn with_eligibility(
@@ -210,9 +218,31 @@ impl Route {
         self
     }
 
-    fn select_lane(&self, request: &Request) -> Result<&ExecutionLane, RunnerError> {
+    async fn select_lane(&self, request: &Request) -> Result<&ExecutionLane, RunnerError> {
         if let Some(eligibility) = &self.eligibility {
-            let requirements = eligibility.policy.admit(request)?;
+            let mut requirements = eligibility.policy.admit(request)?;
+            let privacy = match &self.privacy {
+                Some(policy) => Some(
+                    policy
+                        .assess(
+                            request,
+                            &requirements,
+                            request.llm_request.model.as_deref().unwrap_or_default(),
+                            self.algorithm_name(),
+                        )
+                        .await?,
+                ),
+                None => None,
+            };
+            if privacy
+                .as_ref()
+                .is_some_and(|decision| matches!(decision.selected_lane(), PrivacyLane::Restricted))
+            {
+                requirements.insert("private".into());
+            }
+            if privacy.is_some() {
+                requirements = eligibility.policy.finish(requirements)?;
+            }
             let lane = if requirements.is_empty() {
                 &self.standard
             } else {
@@ -224,11 +254,16 @@ impl Route {
                 switchyard.route = request.llm_request.model.as_deref().unwrap_or_default(),
                 switchyard.algorithm = self.algorithm_name(),
                 eligibility.required_labels = ?requirements,
+                privacy.lane = privacy.as_ref().map(PrivacyDecision::lane),
+                privacy.source = privacy.as_ref().map(PrivacyDecision::source),
+                privacy.reason_code = privacy.as_ref().map(PrivacyDecision::reason_code),
+                privacy.clear_score = privacy.as_ref().and_then(PrivacyDecision::clear_score),
+                privacy.clear_threshold = privacy.as_ref().and_then(PrivacyDecision::clear_threshold),
                 "eligible targets selected"
             );
             return Ok(lane);
         }
-        if has_external_requirements(request) {
+        if has_external_requirements(request) || has_external_restriction(request) {
             return Err(LlmClientError::InvalidRequest {
                 message: "route does not accept target requirements".to_string(),
             }
@@ -281,7 +316,7 @@ impl Route {
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
-        let lane = self.select_lane(&request)?;
+        let lane = self.select_lane(&request).await?;
         let (selected_model, response) = switchyard_llm_client::run(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -298,7 +333,7 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        let lane = self.select_lane(&request)?;
+        let lane = self.select_lane(&request).await?;
         switchyard_llm_client::decide(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -320,7 +355,7 @@ impl Route {
         request: Request,
         client: Arc<dyn RoutedLlmClient>,
     ) -> Result<RoutingOutcome, RunnerError> {
-        let lane = self.select_lane(&request)?;
+        let lane = self.select_lane(&request).await?;
         switchyard_llm_client::decide(
             Arc::clone(&lane.algorithm),
             ClientRouter::single(client),
@@ -337,7 +372,7 @@ impl Route {
         request: Request,
         operation: AuxiliaryOperation,
     ) -> Result<Value, RunnerError> {
-        let lane = self.select_lane(&request)?;
+        let lane = self.select_lane(&request).await?;
         let target = match operation {
             AuxiliaryOperation::AnthropicCountTokens => &lane.anthropic_auxiliary_target,
             AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
@@ -363,11 +398,13 @@ mod tests {
     use libsy::{Driver, Passthrough};
     use reqwest::StatusCode;
     use switchyard_protocol::{
-        Category, DecisionRequest, DecisionResponse, LlmResponse, RoutedDecisionClient,
-        RoutedLlmClient, Usage, text_response,
+        Category, ContentBlock, DecisionAnswer, DecisionRequest, DecisionResponse, DecisionValue,
+        LlmResponse, Message, Probability, Role, RoutedDecisionClient, RoutedLlmClient, Usage,
+        text_response,
     };
 
     use super::*;
+    use crate::privacy::{SemanticPrivacyClassifier, mark_privacy_restricted};
 
     enum RoutingCall {
         Llm,
@@ -467,6 +504,104 @@ mod tests {
                 usage: Usage::default(),
             })
         }
+    }
+
+    struct PrivacyVerdictClient {
+        calls: Arc<AtomicUsize>,
+        selected: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl RoutedDecisionClient for PrivacyVerdictClient {
+        async fn call(
+            &self,
+            _request: DecisionRequest,
+        ) -> Result<DecisionResponse, LlmClientError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let probabilities = [
+                "no_sensitive_content",
+                "personal_data",
+                "credentials",
+                "confidential_data",
+                "regulated_data",
+                "uncertain",
+            ]
+            .into_iter()
+            .map(|id| {
+                let probability = if id == self.selected {
+                    0.95
+                } else if id == "uncertain" {
+                    0.05
+                } else {
+                    0.0
+                };
+                (id.into(), Probability(probability))
+            })
+            .collect();
+            Ok(DecisionResponse {
+                id: None,
+                model: None,
+                answers: BTreeMap::from([(
+                    "privacy".into(),
+                    DecisionAnswer {
+                        value: DecisionValue::Choice {
+                            selected: self.selected.into(),
+                            probabilities: Some(probabilities),
+                        },
+                        provider_confidence: None,
+                    },
+                )]),
+                usage: Usage::default(),
+            })
+        }
+    }
+
+    fn classifier_route(selected: &'static str, calls: Arc<AtomicUsize>) -> Route {
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(RecordingClient {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let build_lane = |name: &str| {
+            lane(
+                Arc::new(Passthrough),
+                Arc::clone(&client),
+                RuntimeModels::new(HashMap::from([(Category::Any, vec![name.into()])])),
+                name,
+            )
+        };
+        let combinations = [
+            (vec!["eu".to_string()], "eu"),
+            (vec!["us".to_string()], "us"),
+            (vec!["private".to_string()], "private"),
+            (vec!["eu".to_string(), "private".to_string()], "private-eu"),
+        ];
+        let requirement_sets = combinations
+            .iter()
+            .map(|(labels, _)| labels.clone())
+            .collect();
+        let groups = combinations
+            .into_iter()
+            .map(|(labels, name)| (labels.into_iter().collect(), build_lane(name)))
+            .collect();
+        let classifier = SemanticPrivacyClassifier::decision(
+            "private-eu-judge".into(),
+            Arc::new(PrivacyVerdictClient { calls, selected }),
+            None,
+            0.9,
+        );
+        Route::from_lane(
+            build_lane("standard"),
+            None,
+            ModelCapabilities::default(),
+            Vec::new(),
+        )
+        .with_eligibility(
+            EligibilityPolicy::new(true, requirement_sets).expect("requirement sets"),
+            groups,
+        )
+        .with_privacy_policy(PrivacyPolicy::new(
+            Some(classifier),
+            Requirements::from(["private".into(), "eu".into()]),
+        ))
     }
 
     fn lane(
@@ -674,5 +809,62 @@ mod tests {
             description.selected.base_url,
             "https://restricted.example/v1"
         );
+    }
+
+    // Known private requirements and unscannable content never reach the classifier.
+    #[tokio::test]
+    async fn external_and_input_restrictions_skip_semantic_assessment() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let route = classifier_route("no_sensitive_content", Arc::clone(&calls));
+        let clear = route
+            .decide(Request::default())
+            .await
+            .expect("clear decision");
+        assert_eq!(clear.selected_model_id().expect("model"), "standard");
+
+        let mut external = Request::default();
+        mark_privacy_restricted(&mut external);
+        let mut generic = Request::default();
+        crate::require_target_labels(&mut generic, ["private"]).expect("trusted labels");
+        let mut opaque = Request::default();
+        opaque.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Unknown {
+                provider: "custom".into(),
+                raw: Value::Null,
+            }],
+        });
+        for request in [external, generic, opaque] {
+            let outcome = route.decide(request).await.expect("private decision");
+            assert_eq!(outcome.selected_model_id().expect("model"), "private");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    // Classification adds private without discarding host labels or inspecting ineligible content.
+    #[tokio::test]
+    async fn classification_composes_with_host_requirements_and_checks_its_own_eligibility() {
+        for (selected, expected) in [
+            ("no_sensitive_content", "eu"),
+            ("personal_data", "private-eu"),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let route = classifier_route(selected, Arc::clone(&calls));
+            let mut request = Request::default();
+            crate::require_target_labels(&mut request, ["eu"]).expect("trusted labels");
+            let outcome = route.decide(request).await.expect("EU decision");
+            assert_eq!(outcome.selected_model_id().expect("model"), expected);
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+            let outcome = route
+                .decide(eligible_request())
+                .await
+                .expect("known private decision");
+            assert_eq!(outcome.selected_model_id().expect("model"), "private-eu");
+            let mut blocked = Request::default();
+            crate::require_target_labels(&mut blocked, ["us"]).expect("trusted labels");
+            assert!(route.decide(blocked).await.is_err());
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+        }
     }
 }

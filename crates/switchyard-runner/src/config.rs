@@ -19,6 +19,7 @@ use switchyard_llm_client::{
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
 use crate::eligibility::{EligibilityPolicy, Requirements, validate_labels};
+use crate::privacy::{PrivacyPolicy, SemanticPrivacyClassifier};
 use crate::route::ExecutionLane;
 use crate::runner::ModelPropertiesProbe;
 use crate::{
@@ -109,6 +110,7 @@ struct RouteConfig {
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
     vision: Option<bool>,
+    privacy: Option<PrivacyConfig>,
     eligibility: Option<EligibilityConfig>,
     algorithm: AlgorithmSpec,
 }
@@ -123,6 +125,22 @@ struct EligibilityConfig {
     requirement_sets: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     target_overrides: BTreeMap<String, TargetOverrides>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyConfig {
+    classifier: Option<PrivacyClassifierConfig>,
+    #[serde(default)]
+    accept_external_signal: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PrivacyClassifierConfig {
+    target: String,
+    clear_threshold: f64,
+    instructions: Option<Value>,
 }
 
 struct TargetPromptPolicy {
@@ -142,6 +160,7 @@ fn bound_target<'a>(name: &'a str, overrides: &'a TargetOverrides) -> &'a str {
 struct ResolvedDecisionTarget<'a> {
     model: &'a ModelId,
     client: &'a Arc<dyn RoutedDecisionClient>,
+    labels: &'a Requirements,
 }
 
 impl<'de> Deserialize<'de> for RouteConfig {
@@ -155,6 +174,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let privacy = take_optional(&mut table, "privacy")?;
         let eligibility = take_optional(&mut table, "eligibility")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
@@ -164,6 +184,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             tool_calling,
             reasoning,
             vision,
+            privacy,
             eligibility,
             algorithm,
         })
@@ -243,6 +264,14 @@ impl DeploymentConfig {
         for (route_name, config) in &self.routes {
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), &config.id)?;
+            if config.eligibility.is_some()
+                && let Some(privacy) = &config.privacy
+                && privacy.accept_external_signal
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} must configure external signals in eligibility, not privacy"
+                )));
+            }
             if let Some(first_route_name) =
                 route_names_by_id.insert(config.id.as_str(), route_name.as_str())
             {
@@ -340,6 +369,7 @@ impl DeploymentConfig {
             {
                 model_properties_probes.insert(config.id.clone(), probe);
             }
+            let privacy = self.build_privacy(route_name, config, &decision_clients)?;
             let eligibility = self.build_eligibility(
                 route_name,
                 config,
@@ -353,7 +383,7 @@ impl DeploymentConfig {
                 &standard_targets,
                 decision,
                 &clients,
-                config.eligibility.is_some(),
+                config.privacy.is_some() || config.eligibility.is_some(),
             )?;
             let completion_names = config.algorithm.routing_target_names();
             let mut target_names = completion_names.clone();
@@ -384,6 +414,9 @@ impl DeploymentConfig {
                 .filter_map(|name| self.decision_target(name))
                 .collect();
             let mut route = Route::from_lane(standard, caller_auth, capabilities, decision_targets);
+            if let Some(privacy) = privacy {
+                route = route.with_privacy_policy(privacy);
+            }
             if let Some((policy, lanes)) = eligibility {
                 route = route.with_eligibility(policy, lanes);
             }
@@ -405,60 +438,86 @@ impl DeploymentConfig {
         decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> RunnerResult<Option<(EligibilityPolicy, BTreeMap<Requirements, ExecutionLane>)>> {
-        let Some(config) = &route_config.eligibility else {
-            return Ok(None);
+        let (accept_external_signal, requirement_sets) =
+            match (&route_config.eligibility, &route_config.privacy) {
+                (Some(config), _) => (
+                    config.accept_external_signal,
+                    config.requirement_sets.values().cloned().collect(),
+                ),
+                (None, Some(config)) => {
+                    (config.accept_external_signal, vec![vec!["private".into()]])
+                }
+                (None, None) => return Ok(None),
+            };
+        let policy_name = if route_config.eligibility.is_some() {
+            "eligibility"
+        } else {
+            "privacy"
         };
         if !route_config.algorithm.supports_target_restrictions() {
             return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot use eligibility with prefill_router"
+                "route {route_name} cannot use {policy_name} with prefill_router"
             )));
         }
         if self.uses_forward_auth(standard_targets) {
             return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot use eligibility with forward_auth"
+                "route {route_name} cannot use {policy_name} with forward_auth"
             )));
         }
-        let policy = EligibilityPolicy::new(
-            config.accept_external_signal,
-            config.requirement_sets.values().cloned().collect(),
-        )
-        .map(|policy| policy.with_required_external_signal(config.require_external_signal))
-        .map_err(|error| {
-            RunnerError::configuration_source(
-                format!("route {route_name} has invalid eligibility: {error}"),
-                error,
-            )
-        })?;
+        let require_external_signal = route_config
+            .eligibility
+            .as_ref()
+            .is_some_and(|config| config.require_external_signal);
+        let policy = EligibilityPolicy::new(accept_external_signal, requirement_sets)
+            .map(|policy| policy.with_required_external_signal(require_external_signal))
+            .map_err(|error| {
+                RunnerError::configuration_source(
+                    format!("route {route_name} has invalid eligibility: {error}"),
+                    error,
+                )
+            })?;
         let empty_overrides = TargetOverrides::new();
         let mut overrides_by_set = BTreeMap::new();
-        if let Some(name) = config
-            .target_overrides
-            .keys()
-            .find(|name| !config.requirement_sets.contains_key(*name))
-        {
-            return Err(RunnerError::configuration(format!(
-                "route {route_name} target_overrides references unknown requirement set {name}"
-            )));
-        }
-        for (name, labels) in &config.requirement_sets {
-            let labels = labels.iter().cloned().collect::<Requirements>();
-            let overrides = config
+        if let Some(config) = &route_config.eligibility {
+            if let Some(name) = config
                 .target_overrides
-                .get(name)
-                .unwrap_or(&empty_overrides);
-            if labels.is_empty() && !overrides.is_empty() {
-                return Err(RunnerError::configuration(format!(
-                    "route {route_name} cannot override targets for the empty requirement set"
-                )));
-            }
-            if overrides_by_set
-                .insert(labels, overrides)
-                .is_some_and(|previous| previous != overrides)
+                .keys()
+                .find(|name| !config.requirement_sets.contains_key(*name))
             {
                 return Err(RunnerError::configuration(format!(
-                    "route {route_name} duplicate requirement sets have different target_overrides"
+                    "route {route_name} target_overrides references unknown requirement set {name}"
                 )));
             }
+            for (name, labels) in &config.requirement_sets {
+                let labels = labels.iter().cloned().collect::<Requirements>();
+                let overrides = config
+                    .target_overrides
+                    .get(name)
+                    .unwrap_or(&empty_overrides);
+                if labels.is_empty() && !overrides.is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} cannot override targets for the empty requirement set"
+                    )));
+                }
+                if overrides_by_set
+                    .insert(labels, overrides)
+                    .is_some_and(|previous| previous != overrides)
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} duplicate requirement sets have different target_overrides"
+                    )));
+                }
+            }
+        }
+        if route_config.privacy.is_some()
+            && !policy
+                .requirement_sets()
+                .iter()
+                .any(|labels| labels.contains("private"))
+        {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy requires an eligibility requirement set containing private"
+            )));
         }
         let mut lanes = BTreeMap::new();
         let mut callable = route_config
@@ -565,6 +624,60 @@ impl DeploymentConfig {
         Ok(Some((policy, lanes)))
     }
 
+    fn build_privacy(
+        &self,
+        route_name: &str,
+        route_config: &RouteConfig,
+        decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
+    ) -> RunnerResult<Option<PrivacyPolicy>> {
+        let Some(config) = &route_config.privacy else {
+            return Ok(None);
+        };
+        if !config.accept_external_signal && config.classifier.is_none() {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy must configure at least one request input"
+            )));
+        }
+        let (classifier, classifier_labels) = self.build_privacy_classifier(
+            route_name,
+            config.classifier.as_ref(),
+            decision_clients,
+        )?;
+        Ok(Some(PrivacyPolicy::new(classifier, classifier_labels)))
+    }
+
+    fn build_privacy_classifier(
+        &self,
+        route_name: &str,
+        classifier: Option<&PrivacyClassifierConfig>,
+        decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
+    ) -> RunnerResult<(Option<SemanticPrivacyClassifier>, Requirements)> {
+        let Some(classifier) = classifier else {
+            return Ok((None, Requirements::new()));
+        };
+        if !(0.0..=1.0).contains(&classifier.clear_threshold) {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy classifier clear_threshold must be between 0 and 1, got {}",
+                classifier.clear_threshold
+            )));
+        }
+        let target =
+            self.resolve_decision_target(route_name, &classifier.target, decision_clients)?;
+        if !target.labels.contains("private") {
+            return Err(RunnerError::configuration(format!(
+                "route {route_name} privacy classifier target {} must have the private label",
+                classifier.target
+            )));
+        }
+        let classifier = SemanticPrivacyClassifier::decision(
+            target.model.clone(),
+            Arc::clone(target.client),
+            classifier.instructions.as_ref(),
+            classifier.clear_threshold,
+        );
+        Ok((Some(classifier), target.labels.clone()))
+    }
+
     fn uses_forward_auth(&self, targets: &LaneTargets<'_>) -> bool {
         targets.values().any(|target| {
             self.llm_clients
@@ -624,6 +737,7 @@ impl DeploymentConfig {
         Ok(ResolvedDecisionTarget {
             model: &target.id,
             client,
+            labels: &target.labels,
         })
     }
 
@@ -1306,8 +1420,9 @@ bogus = true
 #[cfg(test)]
 mod deployment_tests {
     use super::*;
+    use crate::mark_privacy_restricted;
     use serde_json::json;
-    use switchyard_protocol::{Category, Request};
+    use switchyard_protocol::{Category, Message, Request, Role};
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -1409,6 +1524,65 @@ requirement_sets = {{ private = ["private"] }}
         )
     }
 
+    fn decision_privacy_config() -> String {
+        let config = VALID_CONFIG
+            .replace(
+                "id = \"strong/model\"",
+                "id = \"strong/model\"\nlabels = [\"private\"]",
+            )
+            .replace(
+                "id = \"weak/model\"",
+                "id = \"weak/model\"\nlabels = [\"private\"]",
+            );
+        format!(
+            r#"{config}
+
+[decision_clients.privacy]
+format = "system_one"
+endpoint = "https://example.test/v1/systemone"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.standard]
+id = "decision/standard"
+decision_client = "privacy"
+labels = ["private"]
+
+[routes.typed]
+id = "switchyard/typed"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "standard"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.typed.decision]
+cutoff = 0.4
+candidates = {{ a = "strong", b = "weak" }}
+evidence = {{}}
+
+[routes.typed.privacy]
+accept_external_signal = true
+"#
+        )
+    }
+
+    fn external_privacy_config() -> String {
+        let config = VALID_CONFIG
+            .replace("id = \"strong/model\"", "id = \"strong/model\"\nlabels = [\"private\"]")
+            .replace(
+                "type = \"passthrough\"\ntarget = \"weak\"",
+                "type = \"random\"\ntargets = [\"weak\", \"strong\"]\nweights = [3.0, 1.0]\nseed = 7",
+            );
+        format!(
+            r#"{config}
+
+[routes.passthrough.privacy]
+accept_external_signal = true
+"#
+        )
+    }
+
     fn external_eligibility_config() -> String {
         let config = VALID_CONFIG
             .replace(
@@ -1429,6 +1603,29 @@ requirement_sets = {{ private = ["private"] }}
 [routes.passthrough.eligibility]
 accept_external_signal = true
 requirement_sets = {{ private_eu = ["private", "eu"] }}
+"#
+        )
+    }
+
+    fn semantic_privacy_config() -> String {
+        let config = external_privacy_config();
+        format!(
+            r#"{config}
+
+[decision_clients.privacy]
+format = "system_one"
+endpoint = "https://example.test/v1/systemone"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.privacy_judge]
+id = "privacy/model"
+decision_client = "privacy"
+labels = ["private"]
+
+[routes.passthrough.privacy.classifier]
+target = "privacy_judge"
+clear_threshold = 0.9
 "#
         )
     }
@@ -1506,6 +1703,68 @@ requirement_sets = {{ private_eu = ["private", "eu"] }}
                 "expected {expected:?}, got {message}"
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_privacy_selects_the_restricted_lane() -> RunnerResult<()> {
+        let configured = external_privacy_config();
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("privacy route should exist");
+
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message::text(
+            Role::User,
+            "Contact user@example.test. Authorization: Bearer abcdefghijklmnop",
+        ));
+        let outcome = route.decide(request.clone()).await?;
+        assert!(
+            route
+                .models()
+                .models_for(&Category::Any)
+                .contains(outcome.selected_model_id()?)
+        );
+        assert_eq!(
+            &runner
+                .describe_decision(&ModelId::from("switchyard/passthrough"), &outcome)
+                .expect("selected target metadata")
+                .selected
+                .model,
+            outcome.selected_model_id()?
+        );
+        mark_privacy_restricted(&mut request);
+        assert_eq!(
+            route.decide(request).await?.selected_model_id()?,
+            "strong/model"
+        );
+
+        let empty = configured.replace(
+            "accept_external_signal = true",
+            "accept_external_signal = false",
+        );
+        assert!(error_message(&empty).contains("must configure at least one request input"));
+        let obsolete = format!(
+            "{configured}\n[routes.passthrough.privacy.deterministic]\ndetectors = [\"email\"]\n"
+        );
+        assert!(error_message(&obsolete).contains("unknown field `deterministic`"));
+        let unmapped = format!(
+            "{configured}\n[routes.passthrough.privacy.restricted_targets]\nweak = \"strong\"\n"
+        );
+        assert!(error_message(&unmapped).contains("unknown field `restricted_targets`"));
+        let no_private_target = configured.replace("labels = [\"private\"]", "labels = []");
+        assert!(error_message(&no_private_target).contains("without an eligible target"));
+        let missing_tier =
+            format!("{configured}\n[routes.plan_execute.privacy]\naccept_external_signal = true\n");
+        assert!(
+            error_message(&missing_tier)
+                .contains("required target weak does not satisfy target requirements")
+        );
+        let conflicting_alias = format!(
+            "{configured}\n[targets.alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n"
+        );
+        assert!(error_message(&conflicting_alias).contains("disagree on labels"));
         Ok(())
     }
 
@@ -1767,6 +2026,75 @@ requirement_sets = {{ private_eu = ["private", "eu"] }}
                 "expected {expected:?}, got {message}"
             );
         }
+    }
+
+    #[test]
+    fn privacy_classifier_combines_with_eligibility_without_a_private_singleton() -> RunnerResult<()>
+    {
+        let combined = semantic_privacy_config()
+            .replace("labels = [\"private\"]", "labels = [\"private\", \"eu\"]")
+            .replace("accept_external_signal = true", "")
+            + "\n[routes.passthrough.eligibility]\naccept_external_signal = true\nrequirement_sets = { eu = [\"eu\"], private_eu = [\"eu\", \"private\"] }\n";
+        Runner::from_toml(&combined)?;
+        for (invalid, expected) in [
+            (
+                combined.replace(
+                    "[routes.passthrough.privacy]",
+                    "[routes.passthrough.privacy]\naccept_external_signal = true",
+                ),
+                "must configure external signals in eligibility",
+            ),
+            (
+                combined.replace(
+                    "requirement_sets = { eu = [\"eu\"], private_eu = [\"eu\", \"private\"] }",
+                    "requirement_sets = { eu = [\"eu\"] }",
+                ),
+                "requirement set containing private",
+            ),
+        ] {
+            let message = error_message(&invalid);
+            assert!(
+                message.contains(expected),
+                "expected {expected:?}, got {message}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_privacy_classifier_configs_are_bounded_and_approved() -> RunnerResult<()> {
+        let decision = semantic_privacy_config();
+        let decision_override = decision.replace(
+            "clear_threshold = 0.9",
+            "clear_threshold = 0.9\ninstructions = { policy = \"custom\" }",
+        );
+        Runner::from_toml(&decision)?;
+        Runner::from_toml(&decision_override)?;
+        Runner::from_toml(&format!(
+            "{}\n[routes.typed.privacy.classifier]\ntarget = \"standard\"\nclear_threshold = 0.9\n",
+            decision_privacy_config()
+        ))?;
+
+        for (invalid, expected) in [
+            (
+                decision.replace("target = \"privacy_judge\"", "target = \"missing\""),
+                "requires unknown decision target missing",
+            ),
+            (
+                decision.replace("clear_threshold = 0.9", "clear_threshold = 1.1"),
+                "clear_threshold must be between 0 and 1",
+            ),
+            (
+                decision.replace(
+                    "decision_client = \"privacy\"\nlabels = [\"private\"]",
+                    "decision_client = \"privacy\"",
+                ),
+                "must have the private label",
+            ),
+        ] {
+            assert!(error_message(&invalid).contains(expected));
+        }
+        Ok(())
     }
 
     #[test]

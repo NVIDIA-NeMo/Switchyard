@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 use switchyard_protocol::{LlmClientError, Request, WireFormat};
 
+use crate::privacy::has_external_restriction;
+
 const REQUIREMENTS_KEY: &str = "switchyard.internal.target_requirements";
 const MAX_LABELS: usize = 32;
 const MAX_LABEL_BYTES: usize = 128;
@@ -68,7 +70,7 @@ impl EligibilityPolicy {
 
     /// Validates trusted requirements and rejects unconfigured sets or stored provider state.
     pub(crate) fn admit(&self, request: &Request) -> Result<Requirements, LlmClientError> {
-        let has_signal = has_external_requirements(request);
+        let has_signal = has_external_requirements(request) || has_external_restriction(request);
         if self.require_external_signal && !has_signal {
             return Err(invalid(
                 "route requires explicit external target requirements",
@@ -79,14 +81,23 @@ impl EligibilityPolicy {
                 "route does not accept external target requirements",
             ));
         }
-        let requirements = external_requirements(request)?;
+        let requirements = self.finish(external_requirements(request)?)?;
+        validate_request_context(request)?;
+        Ok(requirements)
+    }
+
+    /// Checks the requirements contributed by an optional assessment.
+    pub(crate) fn finish(
+        &self,
+        requirements: Requirements,
+    ) -> Result<Requirements, LlmClientError> {
+        validate_labels(&requirements)?;
         if !requirements.is_subset(&self.vocabulary) {
             return Err(invalid("target requirements contain an unknown label"));
         }
         if !self.requirement_sets.contains(&requirements) {
             return Err(invalid("target requirement set is not configured"));
         }
-        validate_request_context(request)?;
         Ok(requirements)
     }
 }
@@ -119,9 +130,14 @@ pub(crate) fn has_external_requirements(request: &Request) -> bool {
         .is_some_and(|metadata| metadata.contains_key(REQUIREMENTS_KEY))
 }
 
-/// Reads the current request's trusted target requirements.
+/// Reads current trusted requirements, adapting the legacy privacy marker to `private`.
 pub(crate) fn external_requirements(request: &Request) -> Result<Requirements, LlmClientError> {
-    Ok(metadata_labels(request)?.unwrap_or_default())
+    let mut requirements = metadata_labels(request)?.unwrap_or_default();
+    if has_external_restriction(request) {
+        requirements.insert("private".into());
+    }
+    validate_labels(&requirements)?;
+    Ok(requirements)
 }
 
 /// Checks label syntax and the bounded size of one target or requirement set.

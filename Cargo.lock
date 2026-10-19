@@ -3677,6 +3677,8 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "strum",
+ "strum_macros",
  "switchyard-protocol",
  "thiserror 2.0.18",
  "tokio",
