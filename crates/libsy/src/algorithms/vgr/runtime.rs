@@ -246,6 +246,20 @@ impl Classifier for VgrClassifier {
 }
 
 impl VgrClassifier {
+    /// Whether the local tier may answer `request` when the cloud tier fails it.
+    ///
+    /// That answer is unverified, so it is offered only while local attempts are allowed.
+    pub(super) fn local_may_stand_in(&self, request: &Request) -> bool {
+        matches!(self.config.mode, ServingMode::Active { .. })
+            && !self
+                .config
+                .kill_switch
+                .as_ref()
+                .is_some_and(|switch| switch.is_engaged())
+            && !self.breaker.is_open()
+            && (self.config.local_supports_images || !request_has_image(request))
+    }
+
     fn escalate(
         &self,
         driver: &Driver,
@@ -301,9 +315,8 @@ impl VgrClassifier {
         proposed: &AggLlmResponse,
         state: &mut State,
     ) -> bool {
-        let mut call = rungs::build_request(
-            Question::TurnTrajectory,
-            &rungs::turn_view(context.request, proposed),
+        let mut call = rungs::build_turn_request(
+            rungs::turn_view(context.request, proposed),
             readout::MAX_OUTPUT_TOKENS,
             context.request.metadata.clone(),
         );
@@ -360,7 +373,7 @@ impl VgrClassifier {
         let run = (branch == Branch::Agentic).then(|| decide::agentic_run(caps, confirmed));
         let (Some(judged), false) = (
             caps.transcript.as_deref(),
-            matches!(branch, Branch::Coding | Branch::Unknown) || run == Some(AgenticRun::Vetoed),
+            branch == Branch::Unknown || run == Some(AgenticRun::Vetoed),
         ) else {
             return signals;
         };
@@ -371,19 +384,33 @@ impl VgrClassifier {
             self.ask(context, target, question, judged, max_output_tokens)
         };
 
-        signals.readout = self.readout(context, judged).await;
+        // Coding here ran no tools, so its record holds no evidence: judge the code itself.
+        let asked = match branch {
+            Branch::Coding => Question::Answer,
+            _ => Question::Evidence,
+        };
+        signals.readout = self.readout(context, judged, asked).await;
+        if branch == Branch::Coding {
+            if let Some(cloud) = self.config.targets.cloud_judge.as_ref()
+                && decide::locally_verified(branch, &signals)
+                && !settled(&signals)
+            {
+                let tokens = rungs::DELIBERATION_MAX_OUTPUT_TOKENS;
+                signals.cloud_judge = Some(ask(cloud, asked, tokens).await);
+            }
+            return signals;
+        }
         if settled(&signals) {
             return signals;
         }
         if !(cloud_confirms && decide::locally_verified(branch, &signals)) {
-            signals.deliberation = Some(
-                ask(
-                    local,
-                    Question::Deliberation,
-                    rungs::LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
-                )
-                .await,
-            );
+            let metadata = || context.request.metadata.clone();
+            let call = rungs::build_deliberation_request(judged, metadata());
+            if let Some(Ok(deliberation)) = self.call(context, call, local).await {
+                let call = rungs::build_verdict_request(judged, &deliberation, metadata());
+                let verdict = self.call(context, call, local).await.and_then(Result::ok);
+                signals.deliberation = verdict.and_then(|agg| readout::p_yes(&agg));
+            }
             if settled(&signals) {
                 return signals;
             }
@@ -417,9 +444,14 @@ impl VgrClassifier {
         signals
     }
 
-    async fn readout(&self, context: &RequestContext<'_>, judged: &str) -> Option<f64> {
+    async fn readout(
+        &self,
+        context: &RequestContext<'_>,
+        judged: &str,
+        question: Question,
+    ) -> Option<f64> {
         let mut call = rungs::build_request(
-            Question::Evidence,
+            question,
             judged,
             readout::MAX_OUTPUT_TOKENS,
             context.request.metadata.clone(),

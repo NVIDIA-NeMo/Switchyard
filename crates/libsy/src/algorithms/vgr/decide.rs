@@ -12,6 +12,9 @@ use super::{Branch, Capabilities};
 pub(super) const POLICY_VERSION: &str = "1.0";
 
 const READOUT: f64 = 0.9;
+const DELIBERATION: f64 = 0.5;
+/// Readout at which clean coding commits without the capable tier's affirmation.
+const CODING_CONFIDENT: f64 = 0.6;
 /// Most tool results a run may contain and still recover without the capable tier.
 const SHORT_RUN_MAX_TOOL_RESULTS: i32 = 100;
 
@@ -33,8 +36,8 @@ pub(super) enum Tri {
 pub(super) struct Signals {
     /// Local logprob score that the attempt is correct.
     pub(super) readout: Option<f64>,
-    /// Local deliberating verdict.
-    pub(super) deliberation: Option<Tri>,
+    /// Local logprob score that the attempt is correct, read after a deliberation.
+    pub(super) deliberation: Option<f64>,
     /// Capable-tier evidence verdict.
     pub(super) cloud_judge: Option<Tri>,
     /// Capable-tier answer verdict after `cloud_judge` affirms.
@@ -79,8 +82,8 @@ fn dial(branch: Branch) -> Option<f64> {
     match branch {
         Branch::Answer | Branch::DefaultVerified => Some(0.7),
         Branch::Chat => Some(0.3),
-        Branch::Agentic => Some(0.2),
-        Branch::Coding | Branch::Unknown => None,
+        Branch::Agentic | Branch::Coding => Some(0.2),
+        Branch::Unknown => None,
     }
 }
 
@@ -95,12 +98,13 @@ fn affirms(verdict: Option<Tri>) -> bool {
 /// The local rungs affirm: the readout at the branch dial, or deliberation.
 pub(super) fn locally_verified(branch: Branch, signals: &Signals) -> bool {
     let bar = dial(branch).map_or(READOUT, |dial| dial.min(READOUT));
-    clears(signals.readout, bar) || affirms(signals.deliberation)
+    clears(signals.readout, bar) || clears(signals.deliberation, DELIBERATION)
 }
 
 /// Commits the local attempt or escalates.
 ///
-/// Coding has no sandboxed checker here, so it never commits.
+/// Coding has no sandboxed checker here, so below a confident readout it commits
+/// only on the capable tier's affirmation.
 pub(super) fn decide(
     caps: &Capabilities,
     signals: &Signals,
@@ -109,7 +113,11 @@ pub(super) fn decide(
     let branch = caps.branch;
     let clean = caps.tools.is_none_or(|tools| tools.errors == 0);
     let commit = match branch {
-        Branch::Coding | Branch::Unknown => false,
+        Branch::Unknown => false,
+        Branch::Coding => {
+            (clean && clears(signals.readout, CODING_CONFIDENT))
+                || (locally_verified(branch, signals) && affirms(signals.cloud_judge))
+        }
         Branch::Answer => {
             affirms(signals.answer_verifier)
                 || affirms(signals.evidence_verifier)
@@ -117,7 +125,7 @@ pub(super) fn decide(
         }
         Branch::Chat => {
             clean
-                && (affirms(signals.deliberation)
+                && (clears(signals.deliberation, DELIBERATION)
                     || clears(signals.readout, 0.3)
                     || (affirms(signals.cloud_judge) && affirms(signals.evidence_confirm)))
         }
