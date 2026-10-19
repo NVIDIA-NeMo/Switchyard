@@ -31,6 +31,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [host integration guide](docs/getting_started.md#drive-the-algorithm).
   ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
 
+### Changed
+
+- **Stage-router knobs that had no effect are now rejected** — a standalone
+  `stage_router` route no longer loads with `capable_first_threshold`, a
+  `classifier.classify_trigger` other than `every_request`, or
+  `classifier.message_hash_fallback`. Only a composite route's classifier can
+  select the tier that reads `capable_first_threshold`, and the stage fallback
+  judge runs on every ambiguous turn and retains no verdict, so these keys did
+  nothing. Composite routes are unchanged. The server also warns at startup when
+  a route's two tiers name the same target, and when an `llm_classifier` route
+  that selects escalation mode through its `escalation` table carries capability
+  keys that mode ignores.
+
 ## [0.3.0]
 
 Switchyard 0.3.0 builds on the native server and Rust library introduced in

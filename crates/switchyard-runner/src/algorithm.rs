@@ -598,7 +598,9 @@ pub struct StageClassifierConfig {
     /// for an uncertain verdict and twice for unsupported.
     #[serde(default)]
     pub threshold_step: Option<f64>,
-    /// How often the judge runs. `new_session` has no effect here.
+    /// How often the judge runs. Composite honors it. A standalone stage route
+    /// rejects any value other than `every_request`, because its fallback judge
+    /// runs on every ambiguous turn and retains no verdict.
     #[serde(default)]
     pub classify_trigger: ClassifyTrigger,
     /// Reuses the session's target by hashing the first user message when no
@@ -1262,15 +1264,21 @@ impl LlmClassifierRouteConfig {
                         "llm_classifier route {route_name} mode escalation cannot use classify_trigger"
                     )));
                 }
-                if mode.is_some()
-                    && (base_threshold.is_some()
-                        || threshold_step.is_some()
-                        || *message_hash_fallback
-                        || recent_turn_window.is_some())
-                {
+                let has_capability_settings = base_threshold.is_some()
+                    || threshold_step.is_some()
+                    || *message_hash_fallback
+                    || recent_turn_window.is_some();
+                if mode.is_some() && has_capability_settings {
                     return Err(AlgorithmConfigError::new(format!(
                         "llm_classifier route {route_name} mode escalation cannot use capability routing settings"
                     )));
+                }
+                if has_capability_settings {
+                    // Existing files that select escalation through the `escalation` table alone
+                    // keep loading, but their capability keys do nothing in this mode.
+                    tracing::warn!(
+                        "llm_classifier route {route_name} runs in escalation mode because it has an escalation table; base_threshold, threshold_step, recent_turn_window and message_hash_fallback are ignored in this mode. Set mode = \"escalation\" and remove them."
+                    );
                 }
                 Ok(LlmClassifierModeConfig::Escalation(
                     EscalationClassifierRouteConfig {
@@ -1604,11 +1612,29 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
+            warn_identical_tiers(route_name, &tiers.capable_target, &tiers.efficient_target);
             let threshold = confidence_threshold.ok_or_else(|| {
                 AlgorithmConfigError::new(format!(
                     "stage_router route {route_name}: confidence_threshold is required"
                 ))
             })?;
+            // Only a composite classifier selects the tier that reads this threshold, so on a
+            // standalone route the value would be silently ignored; reject it instead.
+            if tiers.capable_first_threshold != 0.0 {
+                return Err(AlgorithmConfigError::new(format!(
+                    "stage_router route {route_name}: capable_first_threshold applies only to composite routes"
+                )));
+            }
+            // The fallback judge is a cascade step that runs on every ambiguous turn and
+            // retains no verdict, so the affinity knobs would be silently ignored.
+            if let Some(classifier) = classifier
+                && (classifier.classify_trigger != ClassifyTrigger::EveryRequest
+                    || classifier.message_hash_fallback)
+            {
+                return Err(AlgorithmConfigError::new(format!(
+                    "stage_router route {route_name}: classifier.classify_trigger and classifier.message_hash_fallback have no effect on the stage fallback judge, which runs on every ambiguous turn; remove them, or use a composite route to judge once per user turn"
+                )));
+            }
             let mut config = StageRouterConfig::new(*picker, threshold);
             config.capable_first_threshold = tiers.capable_first_threshold;
             config.recent_window = *recent_turn_window;
@@ -1636,7 +1662,11 @@ fn build_algorithm(
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
-        AlgorithmSpec::Auto { .. } => {
+        AlgorithmSpec::Auto {
+            capable_target,
+            efficient_target,
+        } => {
+            warn_identical_tiers(route_name, capable_target, efficient_target);
             let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
             let algorithm = StageRouter::new(config).map_err(|error| {
                 AlgorithmConfigError::with_source(
@@ -1651,6 +1681,7 @@ fn build_algorithm(
             stage,
             subagents,
         } => {
+            warn_identical_tiers(route_name, &stage.capable_target, &stage.efficient_target);
             let mut stage_config = StageRouterConfig::new(
                 PickerMode::EfficientFirst,
                 stage.confidence_threshold.unwrap_or(0.5),
@@ -1857,6 +1888,19 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     LlmCapabilityConfig::default().max_output_tokens
+}
+
+/// Both tiers on one target leave the route nothing to choose between; every decision
+/// lands on the same model. The file still loads, since a single-model deployment can
+/// be a deliberate overhead measurement.
+fn warn_identical_tiers(route_name: &str, capable_target: &str, efficient_target: &str) {
+    if capable_target == efficient_target {
+        tracing::warn!(
+            route = route_name,
+            target = capable_target,
+            "capable_target and efficient_target name the same target, so every request goes to one model; use passthrough for a single model, or point the tiers at two targets"
+        );
+    }
 }
 
 fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig) {
