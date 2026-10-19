@@ -35,7 +35,7 @@ a fresh benchmark.
 Plan/Execute uses Sol to plan and Luna to execute. Advisor uses Luna to execute and Sol to
 review. Stage chooses between the two models from recent tool activity.
 
-![DeepSWE task completion versus cost for Plan/Execute (60.8%, $180.51), Advisor (57.5%, $208), and the best reported baselines: Sol (62.8%, $720.95) and Luna (52.2%, about $49). Stage solved 67.3%; its cost was not reported.](assets/deepswe-cost-accuracy.svg)
+![DeepSWE task completion versus cost for Plan/Execute (60.8%, $180.51), Advisor (57.5%, $208), Stage (61.36%, $466.28), and the best reported baselines: Sol (62.8%, $720.95) and Luna (52.2%, about $49).](assets/deepswe-cost-accuracy.svg)
 
 [Evaluation settings](../benchmark/DEEPSWE_V11_QUALIFICATION.md).
 
@@ -44,8 +44,7 @@ Configs: [Plan/Execute](../benchmark/routing-profiles/deepswe-v11-plan-execute-l
 [Stage](../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
 
 The chart keeps each model's highest reported completion score, breaking ties by lower cost.
-Luna is one Advisor-study run; Sol and both routes are three-run means. The config headers
-record all results and sample standard deviations. Stage has no paired single-model baseline.
+Luna is one Advisor-study run; Sol and all three routes are three-run means.
 
 All runs used closed-book evaluation, a three-hour agent budget, and strict scoring:
 failures and missing results count as unsolved.
