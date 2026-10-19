@@ -24,8 +24,8 @@ Start where your goal is:
    on the efficient model, then the
    [inverted-pair check](../routing_algorithms/model_selection.md#check-for-an-inverted-pair).
    Produces: a pass or fail per check, and solved tasks plus cost for each
-   fixed arm. Costs: one short agent run per check, and one agent run per arm
-   on at least 20 tasks.
+   fixed arm. Costs: single requests for most checks, one short agent run for
+   the tool-calling check, and one agent run per arm on at least 20 tasks.
 
 3. **Start from a measured profile.** Pick the closest row in
    [Measured pairs](../routing_algorithms/model_selection.md#measured-pairs)
@@ -37,11 +37,12 @@ Start where your goal is:
 4. **Run the routed arm against the fixed arms.** Use the same tasks, agent,
    and provider for all three arms. The [benchmark guide](../../benchmark/README.md)
    shows the harness the checked-in results used. Produces: solved tasks and
-   cost per run for each arm. Costs: `k` runs per arm. The checked-in profiles
-   use three runs and report the mean with the sample standard deviation, as in
-   the
+   cost per run for each arm. Costs: `k` runs per arm. The plan/execute and
+   advisor profiles use three runs and report the mean with the sample standard
+   deviation, as in the
    [plan/execute profile header](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml).
-   A single run cannot separate a small change from noise.
+   The stage profile records a single run. A single run cannot separate a small
+   change from noise.
 
 5. **Read the decision mix.** For stage routes, read
    [decision sources](../routing_algorithms/stage_router_routing.md#decision-sources)
@@ -49,8 +50,10 @@ Start where your goal is:
    [observability](../routing_algorithms/escalation_router_routing.md#observability)
    section. For advisor routes, `/v1/stats` reports verdicts and consult
    failures under `advisor_gate`. Start the server with `--routing-log-file`
-   to keep one record per request. Produces: the `routing_decisions` capture
-   and the routing log. Costs: none beyond the runs in step 4.
+   to keep one record per model call: the served call, and each judge call
+   under the judge's model ID. Filter by `model` before adding up usage.
+   Produces: the `routing_decisions` capture and the routing log. Costs: none
+   beyond the runs in step 4.
 
 6. **Move one dial.** Change one setting, then repeat step 4.
 
@@ -66,18 +69,25 @@ Start where your goal is:
     Costs: `k` runs per setting you try.
 
 7. **Record the result.** Write down what you ran, in the form the profile
-   headers use: the Switchyard commit, each model with its provider, wire
-   format and reasoning effort, the agent and its version, the benchmark and
-   task count, `k`, the result band next to the fixed arms, and the cost per
-   run. The
-   [stage profile header](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
-   is a complete example. Produces: the header. Costs: none.
+   headers use:
+
+    - the Switchyard commit;
+    - each model with its provider, wire format, and reasoning effort;
+    - the agent and its version;
+    - the benchmark, the task count, and `k`;
+    - the result band next to the fixed arms;
+    - the cost per run.
+
+    The
+    [plan/execute profile header](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml)
+    records all of these. Produces: the header. Costs: none.
 
 8. **Recalibrate on change.** A new model version, provider, wire format,
    reasoning effort, agent version, or workload moves the operating point, and
    the thresholds do not carry over. See
    [Pin the provider and endpoint](../routing_algorithms/model_selection.md#pin-the-provider-and-endpoint).
-   Return to step 4 with the recorded header as your baseline.
+   Return to step 4 with the recorded header as your baseline. Produces: a new
+   header next to the old one. Costs: the runs of step 4.
 
 ## Related
 

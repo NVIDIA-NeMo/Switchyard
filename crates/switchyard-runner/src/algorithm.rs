@@ -598,7 +598,9 @@ pub struct StageClassifierConfig {
     /// for an uncertain verdict and twice for unsupported.
     #[serde(default)]
     pub threshold_step: Option<f64>,
-    /// How often the judge runs. `new_session` has no effect here.
+    /// How often the judge runs. Composite honors it. On a standalone stage route
+    /// it has no effect: the fallback judge runs on every ambiguous turn and
+    /// retains no verdict.
     #[serde(default)]
     pub classify_trigger: ClassifyTrigger,
     /// Reuses the session's target by hashing the first user message when no

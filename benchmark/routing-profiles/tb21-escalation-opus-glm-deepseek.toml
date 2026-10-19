@@ -12,9 +12,7 @@
 # the weak tier ran with reasoning effort `high`, and the judge ran with thinking
 # disabled — mirrored below with OpenRouter's `reasoning` controls.
 #
-# The `escalation` block is part of the v0.2.0 server config schema only; it is not
-# accepted by the current `switchyard-server`. Run from the tag:
-#   git checkout v0.2.0-rc.1
+# Run:
 #   switchyard-server --config benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml --port 4000
 
 schema_version = 1
@@ -53,5 +51,4 @@ type = "llm_classifier"
 classifier_target = "judge"
 strong_target = "strong"
 weak_target = "weak"
-base_threshold = 0.5
 escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }
