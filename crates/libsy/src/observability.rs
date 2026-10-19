@@ -256,11 +256,17 @@ pub(crate) fn record_llm_call(
         .record(duration.as_secs_f64() * 1000.0, &call_attributes);
 }
 
-/// Records buffered token usage on the algorithm's call span.
+/// Records buffered response identity and token usage on the algorithm's call span.
 pub(crate) fn record_llm_response(response: &Response, span: &Span) {
     // A streamed response resolves before its usage is known.
-    if let Some(usage) = response.llm_response.as_agg().map(|agg| &agg.usage) {
-        record_call_usage(usage, span);
+    if let Some(response) = response.llm_response.as_agg() {
+        if let Some(id) = &response.id {
+            span.record("gen_ai.response.id", id.as_str());
+        }
+        if let Some(model) = &response.model {
+            span.record("gen_ai.response.model", model.as_str());
+        }
+        record_call_usage(&response.usage, span);
     }
 }
 

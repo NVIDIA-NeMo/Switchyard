@@ -5,9 +5,11 @@
 
 use std::sync::Arc;
 
-use libsy::{Call, LibsyError, PrivacyPreflight};
+use libsy::{Call, ClassifierResponseFormat, LibsyError, PrivacyPreflight};
 use serde_json::Value;
-use switchyard_protocol::{DecisionRequest, ModelId, Request, RoutedDecisionClient};
+use switchyard_protocol::{
+    DecisionRequest, ModelId, Request, RoutedDecisionClient, RoutedLlmClient,
+};
 
 use super::{PrivacyDecision, PrivacyLane};
 
@@ -19,6 +21,7 @@ pub(crate) struct SemanticPrivacyClassifier {
 
 enum ClassifierClient {
     Decision(Arc<dyn RoutedDecisionClient>),
+    Llm(Arc<dyn RoutedLlmClient>),
 }
 
 impl SemanticPrivacyClassifier {
@@ -33,6 +36,20 @@ impl SemanticPrivacyClassifier {
             client: ClassifierClient::Decision(client),
             clear_threshold,
         }
+    }
+
+    pub(crate) fn llm(
+        target: ModelId,
+        client: Arc<dyn RoutedLlmClient>,
+        prompt: Option<&str>,
+        response_format_type: ClassifierResponseFormat,
+        clear_threshold: f64,
+    ) -> libsy::Result<Self> {
+        Ok(Self {
+            preflight: PrivacyPreflight::llm(target, prompt, response_format_type)?,
+            client: ClassifierClient::Llm(client),
+            clear_threshold,
+        })
     }
 
     pub(crate) async fn assess(
@@ -68,6 +85,18 @@ impl SemanticPrivacyClassifier {
 
     async fn call(&self, call: Call) -> libsy::Result<()> {
         match (&self.client, call) {
+            (ClassifierClient::Llm(client), Call::Model(mut call)) => {
+                // The preflight has one candidate; move its payload rather than cloning it.
+                let request = std::mem::take(&mut call.request);
+                let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
+                call.respond(async move {
+                    client
+                        .call(request)
+                        .await
+                        .map_err(|error| LibsyError::client_call(target, error))
+                })
+                .await
+            }
             (ClassifierClient::Decision(client), Call::Decision(mut call)) => {
                 let request = DecisionRequest {
                     model: call.request.model.take(),
@@ -95,9 +124,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use async_trait::async_trait;
+    use serde_json::json;
     use switchyard_protocol::{
-        DecisionAnswer, DecisionKind, DecisionResponse, DecisionValue, LlmClientError, Probability,
-        Usage,
+        DecisionAnswer, DecisionKind, DecisionResponse, DecisionValue, LlmClientError, LlmResponse,
+        Probability, Response, Usage, text_response,
     };
 
     use super::*;
@@ -166,26 +196,45 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl RoutedLlmClient for ReplyClient {
+        async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+            self.failure()?;
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(
+                    None,
+                    json!({"reason_code": self.reason, "clear_score": self.score}).to_string(),
+                )),
+                metadata: None,
+                upstream_headers: Default::default(),
+            })
+        }
+    }
+
     fn classifiers(
         reason: &'static str,
         score: f64,
         is_failed: bool,
-    ) -> [SemanticPrivacyClassifier; 1] {
+    ) -> libsy::Result<[SemanticPrivacyClassifier; 2]> {
         let client = Arc::new(ReplyClient {
             reason,
             score,
             is_failed,
         });
-        [SemanticPrivacyClassifier::decision(
-            "privacy/model".into(),
-            client.clone(),
-            None,
-            0.9,
-        )]
+        Ok([
+            SemanticPrivacyClassifier::decision("privacy/model".into(), client.clone(), None, 0.9),
+            SemanticPrivacyClassifier::llm(
+                "privacy/model".into(),
+                client,
+                None,
+                ClassifierResponseFormat::JsonSchema,
+                0.9,
+            )?,
+        ])
     }
 
     #[tokio::test]
-    async fn assessments_preserve_thresholds() {
+    async fn assessments_preserve_thresholds() -> libsy::Result<()> {
         for (reason, score, lane, expected_reason) in [
             (
                 "no_sensitive_content",
@@ -202,9 +251,9 @@ mod tests {
             ("confidential_data", 0.1, "restricted", "confidential_data"),
             ("uncertain", 0.5, "restricted", "uncertain"),
         ] {
-            for classifier in classifiers(reason, score, false) {
+            for classifier in classifiers(reason, score, false)? {
                 let decision = classifier
-                    .assess(&Request::default(), "test/route", "test_algorithm")
+                    .assess(&Request::default(), "test", "stage")
                     .await;
                 assert_eq!(decision.lane(), lane);
                 assert_eq!(decision.reason_code(), expected_reason);
@@ -212,18 +261,20 @@ mod tests {
                 assert_eq!(decision.clear_threshold(), Some(0.9));
             }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn failed_clients_restrict_only_the_current_request() {
-        for classifier in classifiers("no_sensitive_content", 0.95, true) {
+    async fn failed_clients_restrict_only_the_current_request() -> libsy::Result<()> {
+        for classifier in classifiers("no_sensitive_content", 0.95, true)? {
             let decision = classifier
-                .assess(&Request::default(), "test/route", "test_algorithm")
+                .assess(&Request::default(), "test", "stage")
                 .await;
             assert_eq!(decision.lane(), "restricted");
             assert_eq!(decision.reason_code(), "classifier_failed");
             assert_eq!(decision.clear_score(), None);
             assert_eq!(decision.clear_threshold(), Some(0.9));
         }
+        Ok(())
     }
 }

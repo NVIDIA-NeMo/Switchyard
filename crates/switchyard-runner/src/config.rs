@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use libsy::ClassifierResponseFormat;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -138,9 +139,21 @@ struct PrivacyConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PrivacyClassifierConfig {
+    #[serde(default, rename = "type")]
+    kind: PrivacyClassifierKind,
     target: String,
     clear_threshold: f64,
     instructions: Option<Value>,
+    prompt: Option<String>,
+    response_format_type: Option<ClassifierResponseFormat>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PrivacyClassifierKind {
+    #[default]
+    Decision,
+    Llm,
 }
 
 struct TargetPromptPolicy {
@@ -369,7 +382,7 @@ impl DeploymentConfig {
             {
                 model_properties_probes.insert(config.id.clone(), probe);
             }
-            let privacy = self.build_privacy(route_name, config, &decision_clients)?;
+            let privacy = self.build_privacy(route_name, config, &clients, &decision_clients)?;
             let eligibility = self.build_eligibility(
                 route_name,
                 config,
@@ -628,6 +641,7 @@ impl DeploymentConfig {
         &self,
         route_name: &str,
         route_config: &RouteConfig,
+        llm_clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
         decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<Option<PrivacyPolicy>> {
         let Some(config) = &route_config.privacy else {
@@ -641,6 +655,7 @@ impl DeploymentConfig {
         let (classifier, classifier_labels) = self.build_privacy_classifier(
             route_name,
             config.classifier.as_ref(),
+            llm_clients,
             decision_clients,
         )?;
         Ok(Some(PrivacyPolicy::new(classifier, classifier_labels)))
@@ -650,6 +665,7 @@ impl DeploymentConfig {
         &self,
         route_name: &str,
         classifier: Option<&PrivacyClassifierConfig>,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
         decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<(Option<SemanticPrivacyClassifier>, Requirements)> {
         let Some(classifier) = classifier else {
@@ -661,21 +677,107 @@ impl DeploymentConfig {
                 classifier.clear_threshold
             )));
         }
-        let target =
-            self.resolve_decision_target(route_name, &classifier.target, decision_clients)?;
-        if !target.labels.contains("private") {
-            return Err(RunnerError::configuration(format!(
-                "route {route_name} privacy classifier target {} must have the private label",
-                classifier.target
-            )));
-        }
-        let classifier = SemanticPrivacyClassifier::decision(
-            target.model.clone(),
-            Arc::clone(target.client),
-            classifier.instructions.as_ref(),
-            classifier.clear_threshold,
-        );
-        Ok((Some(classifier), target.labels.clone()))
+        let (classifier, labels) = match &classifier.kind {
+            PrivacyClassifierKind::Decision => {
+                if classifier.prompt.is_some() || classifier.response_format_type.is_some() {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} decision privacy classifier cannot configure prompt or response_format_type"
+                    )));
+                }
+                let target =
+                    self.resolve_decision_target(route_name, &classifier.target, decision_clients)?;
+                if !target.labels.contains("private") {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier target {} must have the private label",
+                        classifier.target
+                    )));
+                }
+                (
+                    SemanticPrivacyClassifier::decision(
+                        target.model.clone(),
+                        Arc::clone(target.client),
+                        classifier.instructions.as_ref(),
+                        classifier.clear_threshold,
+                    ),
+                    target.labels.clone(),
+                )
+            }
+            PrivacyClassifierKind::Llm => {
+                if classifier.instructions.is_some() {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} LLM privacy classifier cannot configure instructions"
+                    )));
+                }
+                if let Some(prompt) = classifier.prompt.as_deref()
+                    && prompt.trim().is_empty()
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier prompt must not be empty"
+                    )));
+                }
+                let target = self.targets.get(&classifier.target).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier references unknown target {}",
+                        classifier.target
+                    ))
+                })?;
+                if !target.labels.contains("private") {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier target {} must have the private label",
+                        classifier.target
+                    )));
+                }
+                if target.system_prompt.is_some()
+                    || !target.extra_body.is_empty()
+                    || !target.omit_body_fields.is_empty()
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier target {} cannot configure request modifiers",
+                        classifier.target
+                    )));
+                }
+                let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "target {} references unknown llm client {}",
+                        classifier.target, target.llm_client
+                    ))
+                })?;
+                if client_config.forward_auth {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier cannot use forward_auth"
+                    )));
+                }
+                if client_config.timeout_ms.is_none() {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} privacy classifier requires an llm client timeout_ms"
+                    )));
+                }
+                let client = Arc::clone(clients.get(&target.llm_client).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "target {} has no constructed llm client",
+                        classifier.target
+                    ))
+                })?);
+                let client: Arc<dyn RoutedLlmClient> = client;
+                (
+                    SemanticPrivacyClassifier::llm(
+                        target.id.clone(),
+                        client,
+                        classifier.prompt.as_deref(),
+                        classifier.response_format_type.unwrap_or_default(),
+                        classifier.clear_threshold,
+                    )
+                    .map_err(|error| {
+                        RunnerError::configuration_source(
+                            format!("route {route_name} privacy classifier could not be built"),
+                            error,
+                        )
+                    })?,
+                    target.labels.clone(),
+                )
+            }
+        };
+        Ok((Some(classifier), labels))
     }
 
     fn uses_forward_auth(&self, targets: &LaneTargets<'_>) -> bool {
@@ -1630,6 +1732,29 @@ clear_threshold = 0.9
         )
     }
 
+    fn llm_semantic_privacy_config() -> String {
+        let config = external_privacy_config();
+        format!(
+            r#"{config}
+
+[llm_clients.privacy_classifier]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+timeout_ms = 30000
+
+[targets.privacy_classifier]
+id = "privacy/model"
+llm_client = "privacy_classifier"
+labels = ["private"]
+
+[routes.passthrough.privacy.classifier]
+type = "llm"
+target = "privacy_classifier"
+clear_threshold = 0.9
+"#
+        )
+    }
+
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
@@ -2064,12 +2189,19 @@ clear_threshold = 0.9
     #[test]
     fn semantic_privacy_classifier_configs_are_bounded_and_approved() -> RunnerResult<()> {
         let decision = semantic_privacy_config();
+        let llm = llm_semantic_privacy_config();
         let decision_override = decision.replace(
             "clear_threshold = 0.9",
             "clear_threshold = 0.9\ninstructions = { policy = \"custom\" }",
         );
+        let llm_override = llm.replace(
+            "clear_threshold = 0.9",
+            "clear_threshold = 0.9\nprompt = \"Custom privacy policy.\"\nresponse_format_type = \"json_object\"",
+        );
         Runner::from_toml(&decision)?;
+        Runner::from_toml(&llm)?;
         Runner::from_toml(&decision_override)?;
+        Runner::from_toml(&llm_override)?;
         Runner::from_toml(&format!(
             "{}\n[routes.typed.privacy.classifier]\ntarget = \"standard\"\nclear_threshold = 0.9\n",
             decision_privacy_config()
@@ -2085,11 +2217,62 @@ clear_threshold = 0.9
                 "clear_threshold must be between 0 and 1",
             ),
             (
+                decision_override.replace(
+                    "instructions = { policy = \"custom\" }",
+                    "prompt = \"not valid for decision\"",
+                ),
+                "decision privacy classifier cannot configure prompt",
+            ),
+            (
+                decision_override.replace(
+                    "instructions = { policy = \"custom\" }",
+                    "response_format_type = \"json_schema\"",
+                ),
+                "decision privacy classifier cannot configure prompt or response_format_type",
+            ),
+            (
                 decision.replace(
                     "decision_client = \"privacy\"\nlabels = [\"private\"]",
                     "decision_client = \"privacy\"",
                 ),
                 "must have the private label",
+            ),
+            (
+                llm.replace("target = \"privacy_classifier\"", "target = \"missing\""),
+                "privacy classifier references unknown target missing",
+            ),
+            (
+                llm_override.replace(
+                    "prompt = \"Custom privacy policy.\"",
+                    "instructions = { policy = \"not valid for llm\" }",
+                ),
+                "LLM privacy classifier cannot configure instructions",
+            ),
+            (
+                llm_override.replace("prompt = \"Custom privacy policy.\"", "prompt = \" \""),
+                "privacy classifier prompt must not be empty",
+            ),
+            (
+                llm.replace("target = \"privacy_classifier\"", "target = \"weak\""),
+                "must have the private label",
+            ),
+            (
+                llm.replace(
+                    "llm_client = \"privacy_classifier\"",
+                    "llm_client = \"privacy_classifier\"\nomit_body_fields = [\"store\"]",
+                ),
+                "cannot configure request modifiers",
+            ),
+            (
+                llm.replace("timeout_ms = 30000\n", ""),
+                "requires an llm client timeout_ms",
+            ),
+            (
+                llm.replace(
+                    "timeout_ms = 30000",
+                    "timeout_ms = 30000\nforward_auth = true",
+                ),
+                "cannot use forward_auth",
             ),
         ] {
             assert!(error_message(&invalid).contains(expected));

@@ -9,15 +9,18 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use strum_macros::{EnumString, IntoStaticStr};
 use switchyard_protocol::{
     Category, ChoiceOption, DecisionKind, DecisionQuestion, DecisionRequest, DecisionResponse,
-    DecisionValue, FormatId, InstructionBlock, LlmRequest, Message, ModelId, OutputParams,
-    PreservationMetadata, ProviderExtensions, ReasoningParams, Request, Tool, ToolChoice,
+    DecisionValue, FormatId, InstructionBlock, LlmRequest, LlmResponse, Message, ModelId,
+    OutputParams, PreservationMetadata, ProviderExtensions, ReasoningParams, Request, Role, Tool,
+    ToolChoice,
 };
 
-use crate::{Call, Driver, Result, RuntimeModels, Step};
+use crate::algorithms::util::classifier_contract::{ClassifierContract, ClassifierContractConfig};
+use crate::algorithms::util::llm_judge::{JudgeRuntimeConfig, SerdeDecoder, StructuredJudge};
+use crate::{Call, ClassifierResponseFormat, Driver, Result, RuntimeModels, Step};
 
 const MAX_CONTEXT_BYTES: usize = 64 * 1024;
 const QUESTION_ID: &str = "privacy";
@@ -67,6 +70,7 @@ pub struct PrivacyPreflight {
 
 enum Backend {
     Decision(DecisionQuestion),
+    Llm(StructuredJudge<(), SerdeDecoder<LlmVerdict>>),
 }
 
 impl PrivacyPreflight {
@@ -87,6 +91,57 @@ impl PrivacyPreflight {
             },
         };
         Self::new(target, Backend::Decision(question))
+    }
+
+    /// Builds a JSON judge using the shared classifier contract and typed decoder.
+    /// Returns an error if the prompt or response contract is invalid.
+    pub fn llm(
+        target: ModelId,
+        prompt: Option<&str>,
+        format: ClassifierResponseFormat,
+    ) -> Result<Self> {
+        if prompt.is_some_and(|prompt| prompt.trim().is_empty()) {
+            return Err(crate::LibsyError::AlgorithmError {
+                message: "privacy classifier prompt must not be empty".into(),
+            });
+        }
+        let prompt = prompt.map(str::to_owned).unwrap_or_else(|| {
+            format!(
+                "{}\n\n{}",
+                DEFAULT_PROMPT.trim(),
+                include_str!("prompts/privacy-classifier/llm.md").trim()
+            )
+        });
+        let schema = verdict_schema();
+        // Both modes describe the schema, including endpoints that do not enforce it.
+        let prompt = match format {
+            ClassifierResponseFormat::JsonSchema => format!(
+                "{prompt}\n\nReturn exactly one JSON object matching this JSON Schema:\n{schema:#}"
+            ),
+            ClassifierResponseFormat::JsonObject => prompt,
+        };
+        let contract = ClassifierContract::from_config(
+            &ClassifierContractConfig::default()
+                .with_prompt(prompt)
+                .with_response_format_type(format),
+            DEFAULT_PROMPT,
+            &json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "switchyard_privacy_verdict",
+                    "strict": true,
+                    "schema": schema,
+                }
+            })
+            .to_string(),
+        )?;
+        let judge = StructuredJudge::new(
+            (),
+            contract,
+            SerdeDecoder::new(),
+            JudgeRuntimeConfig::new(512)?,
+        );
+        Ok(Self::new(target, Backend::Llm(judge)))
     }
 
     fn new(target: ModelId, backend: Backend) -> Self {
@@ -117,6 +172,7 @@ impl PrivacyPreflight {
         // Each assessment publishes one call; poll it with the verdict to preserve cancellation.
         let handled = async {
             let call = match steps.recv().await {
+                Some(Ok(Step::CallModel(call))) => Call::Model(call),
                 Some(Ok(Step::CallDecision(call))) => Call::Decision(call),
                 _ => return Err("classifier_failed"),
             };
@@ -144,6 +200,26 @@ impl PrivacyPreflight {
                     .await
                     .map_err(|_| "classifier_failed")?;
                 decision_verdict(&response).ok_or("invalid_verdict")?
+            }
+            Backend::Llm(judge) => {
+                let mut request = judge.build_request_with_messages(vec![Message::text(
+                    Role::User,
+                    context.into_string().map_err(|()| "input_unavailable")?,
+                )]);
+                request
+                    .llm_request
+                    .extensions
+                    .fields
+                    .insert("store".into(), Value::Bool(false));
+                let response = driver
+                    .call_model_with_error_recovery(request, vec![self.target.clone()], true)
+                    .await
+                    .map_err(|_| "classifier_failed")?;
+                let LlmResponse::Agg(response) = response.llm_response else {
+                    return Err("invalid_verdict");
+                };
+                let verdict = judge.decode(&response).map_err(|_| "invalid_verdict")?;
+                (verdict.reason_code, verdict.clear_score)
             }
         };
         if !clear_score.is_finite() || !(0.0..=1.0).contains(&clear_score) {
@@ -199,6 +275,24 @@ impl PrivacyVerdict {
             Self::Uncertain => "The privacy boundary cannot be determined confidently.",
         }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LlmVerdict {
+    clear_score: f64,
+    reason_code: PrivacyVerdict,
+}
+
+fn verdict_schema() -> Value {
+    json!({
+        "type": "object", "additionalProperties": false,
+        "properties": {
+            "clear_score": {"type": "number", "minimum": 0, "maximum": 1},
+            "reason_code": {"type": "string", "enum": PrivacyVerdict::ALL.map(PrivacyVerdict::as_str)}
+        },
+        "required": ["clear_score", "reason_code"]
+    })
 }
 
 fn decision_verdict(response: &DecisionResponse) -> Option<(PrivacyVerdict, f64)> {
@@ -325,6 +419,10 @@ impl BoundedJson {
     fn into_value(self) -> std::result::Result<Value, ()> {
         serde_json::from_slice(&self.0).map_err(|_| ())
     }
+
+    fn into_string(self) -> std::result::Result<String, ()> {
+        String::from_utf8(self.0).map_err(|_| ())
+    }
 }
 
 impl Write for BoundedJson {
@@ -345,20 +443,31 @@ impl Write for BoundedJson {
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use serde_json::json;
     use switchyard_protocol::{
-        DecisionAnswer, LlmClientError, Metadata, Probability, Role, ToolDefinition, Usage,
+        DecisionAnswer, LlmClientError, Metadata, Probability, Response, ToolDefinition, Usage,
+        text_response,
     };
     use tokio::sync::Notify;
 
     use super::*;
     use crate::LibsyError;
 
-    fn preflights() -> [PrivacyPreflight; 1] {
-        [PrivacyPreflight::decision(
-            "private/classifier".into(),
-            None,
-        )]
+    fn preflights() -> [PrivacyPreflight; 3] {
+        [
+            PrivacyPreflight::decision("private/classifier".into(), None),
+            PrivacyPreflight::llm(
+                "private/classifier".into(),
+                None,
+                ClassifierResponseFormat::JsonSchema,
+            )
+            .expect("schema judge"),
+            PrivacyPreflight::llm(
+                "private/classifier".into(),
+                None,
+                ClassifierResponseFormat::JsonObject,
+            )
+            .expect("object judge"),
+        ]
     }
 
     async fn reply(call: Call, reason: &str, score: f64) -> Result<()> {
@@ -371,7 +480,23 @@ mod tests {
             )
         };
         match call {
-            Call::Model(_) => panic!("expected decision call"),
+            Call::Model(call) => {
+                assert!(call.recover_errors);
+                if reason == "failed" {
+                    return call.respond(std::future::ready(Err(failed()))).await;
+                }
+                let content = if reason == "malformed" {
+                    "not JSON".into()
+                } else {
+                    json!({"reason_code": reason, "clear_score": score}).to_string()
+                };
+                call.respond(std::future::ready(Ok(Response {
+                    llm_response: LlmResponse::Agg(text_response(None, content)),
+                    metadata: None,
+                    upstream_headers: Default::default(),
+                })))
+                .await
+            }
             Call::Decision(call) => {
                 if reason == "failed" {
                     return call.respond(std::future::ready(Err(failed()))).await;
@@ -487,6 +612,26 @@ mod tests {
             assert_eq!(assessment.clear_score(), None);
             assert!(!assessment.has_sensitive_content());
         }
+        let preflight = PrivacyPreflight::llm(
+            "private/classifier".into(),
+            None,
+            ClassifierResponseFormat::JsonSchema,
+        )
+        .expect("judge");
+        let assessment = preflight
+            .assess(&Request::default(), |call| async move {
+                let Call::Model(call) = call else {
+                    panic!("expected LLM call");
+                };
+                call.respond(std::future::ready(Ok(Response {
+                    llm_response: LlmResponse::Stream(Box::pin(futures::stream::empty())),
+                    metadata: None,
+                    upstream_headers: Default::default(),
+                })))
+                .await
+            })
+            .await;
+        assert_eq!(assessment.reason_code(), "invalid_verdict");
     }
 
     // Scan content-bearing fields without forwarding the original transport identity or auth.
@@ -529,19 +674,41 @@ mod tests {
             let assessment = preflight
                 .assess(&request, |call| async move {
                     let context = match &call {
-                        Call::Model(_) => panic!("expected decision call"),
                         Call::Decision(call) => {
                             assert_eq!(call.model.as_str(), "private/classifier");
                             assert_eq!(call.request.questions.len(), 1);
                             call.request.context.clone()
                         }
+                        Call::Model(call) => {
+                            assert!(call.request.raw_request.is_none());
+                            assert!(call.request.metadata.is_none());
+                            assert_eq!(call.request.llm_request.output.max_output_tokens, Some(512));
+                            assert_eq!(call.request.llm_request.extensions.fields["store"], false);
+                            assert_eq!(call.request.model_id(), Some("private/classifier".into()));
+                            let prompt = Message {
+                                role: Role::System,
+                                content: call.request.llm_request.instructions[0].content.clone(),
+                            }.text_content("").expect("prompt");
+                            let expected = format!(
+                                "{}\n\n{}\n\nReturn exactly one JSON object matching this JSON Schema:\n{:#}",
+                                DEFAULT_PROMPT.trim(),
+                                include_str!("prompts/privacy-classifier/llm.md").trim(),
+                                verdict_schema(),
+                            );
+                            assert_eq!(prompt, expected);
+                            let format = call.request.llm_request.output.response_format.as_ref().expect("format");
+                            if format["type"] == "json_schema" {
+                                assert_eq!(format["json_schema"]["name"], "switchyard_privacy_verdict");
+                                assert_eq!(format["json_schema"]["strict"], true);
+                            } else {
+                                assert_eq!(format, &json!({"type": "json_object"}));
+                            }
+                            serde_json::from_str(&call.request.llm_request.messages[0].text_content("").expect("context")).expect("JSON")
+                        }
                     };
                     assert_eq!(context["tools"][0]["name"], "private_tool");
                     assert_eq!(context["extensions"]["provider_content"], "private");
-                    assert_eq!(
-                        context["preserved_requests"]["custom"]["private"],
-                        "preserved"
-                    );
+                    assert_eq!(context["preserved_requests"]["custom"]["private"], "preserved");
                     let serialized = context.to_string();
                     assert!(serialized.contains("system content"));
                     assert!(serialized.contains("user content"));
