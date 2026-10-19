@@ -85,6 +85,21 @@ input_per_mtok = 0.05
 cached_input_per_mtok = 0.005
 output_per_mtok = 0.4
 
+[prices."gpt-6-luna"]
+input_per_mtok = 0.10
+cached_input_per_mtok = 0.01
+output_per_mtok = 0.50
+
+[prices."gpt-6-sol"]
+input_per_mtok = 2.00
+cached_input_per_mtok = 0.20
+output_per_mtok = 10.00
+
+[prices."gpt-6.1-sol"]
+input_per_mtok = 2.00
+cached_input_per_mtok = 0.10
+output_per_mtok = 10.00
+
 # With a ChatGPT login, Codex sends "Approve for me" reviews to
 # codex-auto-review even without Switchyard, so this price copies the
 # baseline_model rates. Reviews then add the same amount to the actual cost and
