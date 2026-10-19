@@ -35,7 +35,7 @@ LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidanc
 
 ### Try routing locally
 
-[Try routing locally](docs/getting_started.md#server-path) with the standalone proxy for demos and evaluation.
+[Try routing locally](docs/getting_started.md#server-path) with the standalone proxy for demos and evaluation, then [verify routing is active](docs/getting_started.md#verify-routing-is-active).
 
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).

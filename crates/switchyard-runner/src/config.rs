@@ -1208,6 +1208,20 @@ task_typing = false
     }
 
     #[test]
+    fn vgr_compaction_is_opt_in_from_toml() -> RunnerResult<()> {
+        for setting in ["", "compact_handoff = false", "compact_handoff = true"] {
+            let source = format!("{}\nagentic_handoff = true\n{setting}\n", vgr_config());
+            let parsed: DeploymentConfig = toml::from_str(&source).expect("valid VGR config");
+            let AlgorithmSpec::Vgr { config } = &parsed.routes["vgr"].algorithm else {
+                panic!("expected VGR route");
+            };
+            assert_eq!(config.compact_handoff, setting.ends_with("= true"));
+            assert!(runner_from_toml(&source)?.route("switchyard/vgr").is_some());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn vgr_route_builds_and_rejects_unsafe_configuration() -> RunnerResult<()> {
         let runner = runner_from_toml(&vgr_config())?;
         assert!(runner.route("switchyard/vgr").is_some());
@@ -1232,6 +1246,11 @@ task_typing = false
         let missing_target =
             vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
         assert!(error_message(&missing_target).contains("unknown target missing"));
+
+        let zero_cooldown = format!("{}breaker_cooldown_seconds = 0\n", vgr_config());
+        assert!(
+            error_message(&zero_cooldown).contains("breaker_cooldown_seconds must be a positive")
+        );
         Ok(())
     }
 

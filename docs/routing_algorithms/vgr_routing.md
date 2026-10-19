@@ -72,13 +72,65 @@ new local work has been served since the previous handoff. The handoff preserves
 the conversation's existing messages and content. `local_turn_budget_seconds`
 escalates a user turn once the local tier has spent that much wall-clock time on it.
 
-On the integration branch, experimental `compact_handoff = true` also condenses
-the local history into a cached digest when handing off. It requires
-`agentic_handoff = true` and is off by default. Later requests reuse the digest
-only when their original history prefix matches; a new user turn clears it.
+Optional experimental compaction condenses local history into a cached digest
+when handing off. Enable it on the VGR route:
+
+```toml
+[routes.assistant]
+agentic_handoff = true
+compact_handoff = true
+```
+
+`compact_handoff` defaults to `false` and requires `agentic_handoff = true`.
+Omitting it or setting it to `false` preserves the full history. Later requests
+reuse a digest only when their original history prefix matches; a new user turn
+clears it. An `x-initiator: agent` message keeps the digest, while
+`x-initiator: user` clears it.
+
 The digest is lossy: user updates and tool output are clipped, and non-text
-content is replaced with a marker. This behavior remains separate from the
-reviewed VGR changes on `main` and has no matched cache or task-success evaluation.
+content is replaced with a marker. Cache savings and task-success effects have
+not been measured in a matched evaluation.
+
+The notice covers the current request and asks the cloud tier to preserve earlier
+work, inspect its effects, and repeat or undo steps only when needed.
+
+Escalations release when a new user turn is decided locally. Set
+`latch_escalation = true` to retain the cloud tier across later user turns instead.
+All configured VGR durations must be positive.
+
+## Hermes session headers
+
+Use a Hermes build that supports both provider options below. The session header
+must stay the same throughout a conversation; each conversation needs its own ID.
+
+```yaml
+model:
+  default: assistant
+  provider: custom
+  base_url: http://localhost:4000/v1
+providers:
+  switchyard:
+    api: http://localhost:4000/v1
+    session_affinity_header: x-switchyard-session-id
+    initiator_header: true
+```
+
+`x-initiator: user` releases the turn hold for a person's new request or steer.
+`x-initiator: agent` keeps the hold through tool calls, recovery nudges, and
+automatic continuations. Retries retain the original call's tag. Without a
+recognized tag, Switchyard uses the message shape to identify a user turn.
+`x-session-id` is also accepted as a session-header alias.
+
+## Verification and cloud outages
+
+Coding without tool history can commit locally on a clean readout of at least
+0.6, or a readout of at least 0.2 plus cloud-judge affirmation. Other final-answer
+branches can use a separate scored verdict after local deliberation.
+
+In `active` mode, an unavailable cloud tier can fall back to an unverified local
+answer. That call receives the original request without the cloud handoff note.
+Fallback is disabled by the kill switch, an open local circuit breaker, or an
+image request the local tier cannot serve.
 
 ## Serving modes
 

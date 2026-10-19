@@ -146,8 +146,8 @@ async fn a_truncated_local_attempt_is_judged_before_it_escalates() -> Result<()>
     };
     let selected = drive(&route, task, calls.clone(), cut_off, 0.0).await?;
     assert_eq!(selected, "cloud");
-    // Attempt, readout and deliberation; read as absent, only the attempt runs.
-    assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+    // Attempt, readout, deliberation and its verdict; read as absent, only the attempt runs.
+    assert_eq!(calls.0.load(Ordering::Relaxed), 4);
     Ok(())
 }
 
@@ -398,6 +398,7 @@ async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Resu
         assert_eq!(evidence["source"], "vgr");
         assert_eq!(evidence["reason_code"], reason);
         assert_eq!(evidence["verdict"], served);
+        assert_eq!(evidence["policy_version"], "1.0");
         if reason == "decided" {
             assert_eq!(evidence["branch"], "DefaultVerified");
         }
@@ -505,73 +506,96 @@ async fn latched_sessions_do_not_repeat_the_handoff_on_later_user_turns() -> Res
 }
 
 #[tokio::test]
-async fn compact_handoff_replays_the_digest_before_retained_cloud_routing() -> Result<()> {
-    let route = route(|config| {
-        config.agentic_handoff = true;
-        config.compact_handoff = true;
-    })?;
-    assert_eq!(
-        drive(
-            &route,
-            session(vec![Message::text(Role::User, "fix the build")]),
-            Arc::new(Calls::default()),
-            complete_call,
-            0.0,
-        )
-        .await?,
-        "local"
-    );
-    let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
-    let local_calls = Arc::new(AtomicUsize::new(0));
-    for follow_up in [false, true] {
-        let mut messages = vec![
-            Message::text(Role::User, "fix the build"),
-            call("c1"),
-            result("c1", "ok"),
-        ];
-        if follow_up {
-            messages.extend([call("cloud-1"), result("cloud-1", "cloud output")]);
+async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing() -> Result<()> {
+    for compact_handoff in [None, Some(false), Some(true)] {
+        let route = route(|config| {
+            config.agentic_handoff = true;
+            if let Some(enabled) = compact_handoff {
+                config.compact_handoff = enabled;
+            }
+        })?;
+        assert_eq!(
+            drive(
+                &route,
+                session(vec![Message::text(Role::User, "fix the build")]),
+                Arc::new(Calls::default()),
+                complete_call,
+                0.0,
+            )
+            .await?,
+            "local"
+        );
+        let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let local_calls = Arc::new(AtomicUsize::new(0));
+        for follow_up in [false, true] {
+            let mut messages = vec![
+                Message::text(Role::User, "fix the build"),
+                call("c1"),
+                result("c1", "ok"),
+            ];
+            if follow_up {
+                messages.extend([call("cloud-1"), result("cloud-1", "cloud output")]);
+            }
+            let sent = Arc::clone(&sent);
+            let local_calls = Arc::clone(&local_calls);
+            let (selected, _) = test_drive_with_models(
+                Arc::clone(&route),
+                session(messages),
+                category_models(Category::Any, &["local", "cloud"]),
+                move |target: ModelId, request: Request| {
+                    let sent = Arc::clone(&sent);
+                    let local_calls = Arc::clone(&local_calls);
+                    async move {
+                        Ok(match target.as_str() {
+                            "local" => {
+                                local_calls.fetch_add(1, Ordering::Relaxed);
+                                reply("the build passes")
+                            }
+                            "judge" => scored(0.0),
+                            "cloud" => {
+                                sent.lock().push(request.llm_request.messages);
+                                reply("cloud answer")
+                            }
+                            _ => reply("no"),
+                        })
+                    }
+                },
+            )
+            .await?;
+            assert_eq!(selected, "cloud");
         }
-        let sent = Arc::clone(&sent);
-        let local_calls = Arc::clone(&local_calls);
-        let (selected, _) = test_drive_with_models(
-            Arc::clone(&route),
-            session(messages),
-            category_models(Category::Any, &["local", "cloud"]),
-            move |target: ModelId, request: Request| {
-                let sent = Arc::clone(&sent);
-                let local_calls = Arc::clone(&local_calls);
-                async move {
-                    Ok(match target.as_str() {
-                        "local" => {
-                            local_calls.fetch_add(1, Ordering::Relaxed);
-                            reply("the build passes")
-                        }
-                        "judge" => scored(0.0),
-                        "cloud" => {
-                            sent.lock().push(request.llm_request.messages);
-                            reply("cloud answer")
-                        }
-                        _ => reply("no"),
-                    })
-                }
-            },
-        )
-        .await?;
-        assert_eq!(selected, "cloud");
+        assert_eq!(local_calls.load(Ordering::Relaxed), 1);
+        let sent = sent.lock();
+        assert_eq!(sent.len(), 2);
+        if compact_handoff == Some(true) {
+            assert_eq!(sent[0].len(), 1);
+            assert_eq!(sent[1].len(), 3);
+            assert_eq!(sent[0][0], sent[1][0]);
+            let digest = sent[0][0].text_content("").unwrap_or_default();
+            assert!(digest.contains("<condensed_history>"));
+            assert!(digest.contains("the build passes"));
+            assert!(digest.contains("Routing notice"));
+            assert_eq!(sent[1][1], call("cloud-1"));
+            assert_eq!(sent[1][2], result("cloud-1", "cloud output"));
+        } else {
+            let original = vec![
+                Message::text(Role::User, "fix the build"),
+                call("c1"),
+                result("c1", "ok"),
+            ];
+            assert_eq!(&sent[0][..3], original.as_slice());
+            assert_eq!(sent[0].len(), 4);
+            assert!(
+                sent[0][3]
+                    .text_content("")
+                    .unwrap_or_default()
+                    .contains("Routing notice")
+            );
+            let mut follow_up = original;
+            follow_up.extend([call("cloud-1"), result("cloud-1", "cloud output")]);
+            assert_eq!(sent[1], follow_up);
+        }
     }
-    assert_eq!(local_calls.load(Ordering::Relaxed), 1);
-    let sent = sent.lock();
-    assert_eq!(sent.len(), 2);
-    assert_eq!(sent[0].len(), 1);
-    assert_eq!(sent[1].len(), 3);
-    assert_eq!(sent[0][0], sent[1][0]);
-    let digest = sent[0][0].text_content("").unwrap_or_default();
-    assert!(digest.contains("<condensed_history>"));
-    assert!(digest.contains("the build passes"));
-    assert!(digest.contains("Routing notice"));
-    assert_eq!(sent[1][1], call("cloud-1"));
-    assert_eq!(sent[1][2], result("cloud-1", "cloud output"));
     Ok(())
 }
 
@@ -695,4 +719,292 @@ fn handoff_preserves_existing_messages_and_non_text_content() {
     let after_first = task.llm_request.messages.clone();
     classifier.hand_off(&mut task, &mut state, Some("duplicate notice"));
     assert_eq!(task.llm_request.messages, after_first);
+}
+
+#[tokio::test]
+async fn a_blank_prompt_escalates_without_a_local_attempt() -> Result<()> {
+    let continuing = route(|_| {})?;
+    let route = route(|_| {})?;
+    let calls = Arc::new(Calls::default());
+    let blank_follow_up = vec![
+        Message::text(Role::User, "what is 2 + 2?"),
+        Message::text(Role::Assistant, "4"),
+        Message::text(Role::User, " "),
+    ];
+    for messages in [
+        vec![Message::text(Role::User, "  \n ")],
+        vec![Message::text(Role::User, "\u{200B}\u{FEFF}")],
+        blank_follow_up,
+    ] {
+        assert_eq!(
+            drive(&route, session(messages), calls.clone(), complete_call, 0.0).await?,
+            "cloud"
+        );
+    }
+    assert_eq!(calls.0.load(Ordering::Relaxed), 0);
+
+    // Tool results sent as a user message continue the task; they are not a blank prompt.
+    let mut results = result("a", "file.txt");
+    results.role = Role::User;
+    let continuation = session(vec![
+        Message::text(Role::User, "list files"),
+        call("a"),
+        results,
+    ]);
+    drive(&continuing, continuation, calls.clone(), complete_call, 0.0).await?;
+    assert_eq!(calls.0.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_agent_marked_nudge_keeps_a_single_escalation_on_cloud() -> Result<()> {
+    let route = route(|_| {})?;
+    let calls = Arc::new(Calls::default());
+    let truncated = || tool_call(json!(r#"{"command":"l"#), StopReason::MaxTokens);
+    let task = session(vec![Message::text(Role::User, "fix the build")]);
+    drive(&route, task, calls.clone(), truncated, 0.0).await?;
+    let nudge = vec![
+        Message::text(Role::User, "fix the build"),
+        Message::text(Role::Assistant, "fixed"),
+        Message::text(Role::User, "Verify the change before you stop."),
+    ];
+    let nudge = initiated_by(session(nudge), "agent");
+    assert_eq!(
+        drive(&route, nudge, calls.clone(), complete_call, 0.0).await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+fn initiated_by(mut request: Request, initiator: &str) -> Request {
+    let metadata = request.metadata.get_or_insert_with(Metadata::default);
+    metadata
+        .http_headers
+        .get_or_insert_with(http::HeaderMap::new)
+        .insert("x-initiator", initiator.parse().unwrap());
+    request
+}
+
+#[tokio::test]
+async fn a_held_follow_up_records_the_latch_as_its_reason() -> Result<()> {
+    use crate::core::algorithm::Call;
+    use crate::core::testing::serve_decision;
+
+    let algorithm = route(|config| config.mode = ServingMode::Shadow)?;
+    let models = Arc::new(category_models(Category::Any, &["local", "cloud"]).into());
+    let serve = |call| async move {
+        match call {
+            Call::Model(call) => call.respond(std::future::ready(Ok(reply("done")))).await,
+            Call::Decision(call) => serve_decision(*call).await,
+        }
+    };
+    let escalated = crate::drive(
+        Arc::clone(&algorithm),
+        session(vec![Message::text(Role::User, "fix the build")]),
+        Arc::clone(&models),
+        serve,
+    )
+    .await?;
+    assert_eq!(escalated.selected_model_ids, vec![ModelId::new("cloud")]);
+
+    let held = crate::drive(
+        algorithm,
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ]),
+        models,
+        serve,
+    )
+    .await?;
+    assert_eq!(held.selected_model_ids, vec![ModelId::new("cloud")]);
+    let evidence = held
+        .metadata
+        .and_then(|metadata| metadata.evidence)
+        .unwrap_or_default();
+    assert_eq!(evidence["source"], "vgr");
+    assert_eq!(evidence["reason_code"], "turn_verification_latched");
+    assert_eq!(evidence["verdict"], "cloud");
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_escalation_latch_holds_the_session_past_new_questions() -> Result<()> {
+    let route = route(|config| config.latch_escalation = true)?;
+    let calls = Arc::new(Calls::default());
+    let truncated = || tool_call(json!(r#"{"command":"l"#), StopReason::MaxTokens);
+    let task = session(vec![Message::text(Role::User, "fix the build")]);
+    assert_eq!(
+        drive(&route, task, calls.clone(), truncated, 0.0).await?,
+        "cloud"
+    );
+    let follow_up = session(vec![
+        Message::text(Role::User, "fix the build"),
+        Message::text(Role::Assistant, "fixed"),
+        Message::text(Role::User, "now add a test"),
+    ]);
+    assert_eq!(
+        drive(&route, follow_up, calls.clone(), complete_call, 0.0).await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_initiator_header_decides_when_the_turn_latch_releases() -> Result<()> {
+    let route = route(|_| {})?;
+    let calls = Arc::new(Calls::default());
+    let task = || session(vec![Message::text(Role::User, "fix the build")]);
+    drive(&route, task(), calls.clone(), complete_call, 0.9).await?;
+    drive(&route, task(), calls.clone(), complete_call, 0.9).await?;
+    assert_eq!(calls.0.load(Ordering::Relaxed), 2);
+
+    // A client nudge after a final reply looks like a new question; marked agent, it keeps the latch.
+    let nudge = vec![
+        Message::text(Role::User, "fix the build"),
+        Message::text(Role::Assistant, "fixed"),
+        Message::text(Role::User, "Verify the change before you stop."),
+    ];
+    assert_eq!(
+        drive(
+            &route,
+            initiated_by(session(nudge), "agent"),
+            calls.clone(),
+            complete_call,
+            0.0
+        )
+        .await?,
+        "cloud"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 2);
+
+    // A person's correction after tool results looks like a continuation; marked user, it is verified afresh.
+    let steer = vec![
+        Message::text(Role::User, "fix the build"),
+        call("c1"),
+        result("c1", "ok"),
+        Message::text(Role::User, "use the staging config instead"),
+    ];
+    assert_eq!(
+        drive(
+            &route,
+            initiated_by(session(steer), "user"),
+            calls.clone(),
+            complete_call,
+            0.0
+        )
+        .await?,
+        "local"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
+    let route = route(|config| config.agentic_handoff = true)?;
+    let sent = Arc::new(std::sync::Mutex::new(String::new()));
+    let recorded = Arc::clone(&sent);
+    test_drive_with_models(
+        route,
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+            Message::text(Role::Assistant, "the build passes"),
+            Message::text(Role::User, "What is 41 plus 42?"),
+        ]),
+        category_models(Category::Any, &["local", "cloud"]),
+        move |target: ModelId, request: Request| {
+            let recorded = Arc::clone(&recorded);
+            async move {
+                Ok(match target.as_str() {
+                    "local" => reply("83"),
+                    "cloud" => {
+                        let text = serde_json::to_string(&request.llm_request.messages)
+                            .unwrap_or_default();
+                        recorded.lock().map(|mut sent| *sent = text).ok();
+                        reply("83")
+                    }
+                    _ => scored(0.0),
+                })
+            }
+        },
+    )
+    .await?;
+    let sent = sent.lock().map(|sent| sent.clone()).unwrap_or_default();
+    assert!(sent.contains("41 plus 42"), "escalated to the cloud");
+    assert!(!sent.contains("Routing notice"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cloud_decision_falls_back_to_local_without_the_handoff_note() -> Result<()> {
+    use crate::core::algorithm::Call;
+    use crate::core::testing::serve_decision;
+
+    let task = || {
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ])
+    };
+    let noted = |request: &Request| {
+        serde_json::to_string(&request.llm_request.messages)
+            .is_ok_and(|text| text.contains("Routing notice"))
+    };
+    for killed in [false, true] {
+        let switch = super::super::KillSwitch::new();
+        let algorithm = route(|config| {
+            config.agentic_handoff = true;
+            config.kill_switch = Some(switch.clone());
+        })?;
+        drive(
+            &algorithm,
+            session(vec![Message::text(Role::User, "fix the build")]),
+            Arc::new(Calls::default()),
+            complete_call,
+            0.0,
+        )
+        .await?;
+        if killed {
+            switch.engage();
+        }
+        let outcome = crate::drive(
+            algorithm,
+            task(),
+            Arc::new(category_models(Category::Any, &["local", "cloud"]).into()),
+            |call| async move {
+                match call {
+                    Call::Model(call) => {
+                        let response = match call.models[0].as_str() {
+                            "local" => reply("the build passes"),
+                            "judge" => scored(0.0),
+                            _ => reply("no"),
+                        };
+                        call.respond(std::future::ready(Ok(response))).await
+                    }
+                    Call::Decision(call) => serve_decision(*call).await,
+                }
+            },
+        )
+        .await?;
+        assert!(noted(&outcome.request));
+        if killed {
+            assert_eq!(outcome.selected_model_ids, vec![ModelId::new("cloud")]);
+            assert!(outcome.fallback_request.is_none());
+        } else {
+            assert_eq!(
+                outcome.selected_model_ids,
+                vec![ModelId::new("cloud"), ModelId::new("local")]
+            );
+            let fallback = outcome.fallback_request.expect("a local fallback request");
+            assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
+        }
+    }
+    Ok(())
 }

@@ -329,14 +329,13 @@ mod decide {
     }
 
     #[test]
-    fn deliberation_commits_only_on_an_affirmative_verdict() {
+    fn deliberation_commits_only_on_an_affirmative_score() {
         for branch in [Branch::Chat, Branch::Agentic, Branch::DefaultVerified] {
             let mut caps = agentic(0, 1, 1);
             caps.branch = branch;
             for (verdict, expected) in [
-                (Some(Tri::Yes), Route::Local),
-                (Some(Tri::No), Route::Cloud),
-                (Some(Tri::Unknown), Route::Cloud),
+                (Some(0.5), Route::Local),
+                (Some(0.49), Route::Cloud),
                 (None, Route::Cloud),
             ] {
                 let signals = Signals {
@@ -350,5 +349,21 @@ mod decide {
                 );
             }
         }
+    }
+
+    #[test]
+    fn coding_commits_on_a_confident_readout_or_a_capable_tier_affirmation() {
+        let mut coding = agentic(0, 0, 0);
+        coding.branch = Branch::Coding;
+        let mut signals = readout(0.2);
+        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
+        signals.cloud_judge = Some(Tri::Unknown);
+        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
+        signals.cloud_judge = Some(Tri::Yes);
+        assert_eq!(decide(&coding, &signals, None), Route::Local);
+        signals.readout = Some(0.19);
+        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
+        assert_eq!(decide(&coding, &readout(0.6), None), Route::Local);
+        assert_eq!(decide(&coding, &readout(0.59), None), Route::Cloud);
     }
 }

@@ -69,6 +69,8 @@ pub struct VgrConfig {
     /// Wall-clock budget for the local tier within one user turn, including the
     /// client's tool execution.
     pub local_turn_budget: Option<Duration>,
+    /// Holds an escalated session on the capable tier past later user turns.
+    pub latch_escalation: bool,
 }
 
 impl VgrConfig {
@@ -91,6 +93,7 @@ impl VgrConfig {
             agentic_handoff: false,
             compact_handoff: false,
             local_turn_budget: None,
+            latch_escalation: false,
         }
     }
 
@@ -139,6 +142,7 @@ mod tests {
     #[test]
     fn compaction_requires_handoff_for_direct_callers() {
         let mut config = VgrConfig::new("local".into(), "cloud".into());
+        assert!(!config.compact_handoff);
         config.compact_handoff = true;
         assert!(super::super::Vgr::new(config.clone()).is_err());
         config.agentic_handoff = true;

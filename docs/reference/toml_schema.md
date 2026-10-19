@@ -376,18 +376,43 @@ optional `handoff_notes` and `classifier` tables and for tuning.
 
 ### `auto`
 
-Uses Switchyard's recommended default routing strategy instead of one you pick
-yourself: a `stage_router` preset with `picker = "efficient_first"` and
-`confidence_threshold = 0.5`, no classifier. See
-[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for a
-deeper dive on the current default, or the
-[strategy table](../routing_algorithms/overview.md#choose-a-strategy) to pick
-one manually.
+`auto` is a preset. It builds a `stage_router` route with fixed settings and no
+classifier. Use it when you want the recommended starting point without tuning.
+See [Auto](../routing_algorithms/overview.md#auto) for what the preset does and
+when it does not route.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `capable_target` | Yes | — | Capable tier. |
 | `efficient_target` | Yes | — | Efficient tier. |
+
+`auto` accepts no other keys. Adding one is a configuration error. For example,
+adding `confidence_threshold = 0.5` to an `auto` route fails `--dry-run` with:
+
+```text
+unknown field `confidence_threshold`, expected `capable_target` or `efficient_target`
+```
+
+An `auto` route behaves the same as this `stage_router` route. It has no
+classifier, no handoff notes, and no per-tier system prompts:
+
+```toml
+[routes.smart]
+id = "switchyard"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 0.5
+recent_turn_window = 3
+capable_hold_turns = 2
+```
+
+To tune the preset, replace the `auto` route with this block and edit the keys.
+The [stage_router](#stage_router) table lists every key. See
+[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for
+tuning guidance and the [model selection guide](../routing_algorithms/model_selection.md)
+for choosing the two targets.
 
 ### `composite`
 

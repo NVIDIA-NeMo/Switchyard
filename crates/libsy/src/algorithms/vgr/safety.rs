@@ -97,6 +97,11 @@ impl CircuitBreaker {
         *self.state.lock() = BreakerState::default();
     }
 
+    /// Whether repeated failures have opened the breaker; it stays open until a trial succeeds.
+    pub(super) fn is_open(&self) -> bool {
+        self.state.lock().opened_at.is_some()
+    }
+
     pub(super) fn failure(&self) {
         let mut state = self.state.lock();
         state.failures = state.failures.saturating_add(1);
@@ -141,7 +146,8 @@ pub(super) fn fallback_eligible(error: &LibsyError) -> bool {
         LibsyError::ClientCall { source, .. } if match source {
             LlmClientError::ContextWindowExceeded { .. }
                 | LlmClientError::Transport { .. }
-                | LlmClientError::Timeout { .. } => true,
+                | LlmClientError::Timeout { .. }
+                | LlmClientError::TemporarilyUnavailable => true,
             LlmClientError::UpstreamHttp { status, .. } =>
                 matches!(
                     *status,
@@ -159,7 +165,9 @@ pub(super) fn endpoint_failure(error: &LibsyError) -> bool {
     matches!(
         error,
         LibsyError::ClientCall { source, .. } if match source {
-            LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
+            LlmClientError::Transport { .. }
+            | LlmClientError::Timeout { .. }
+            | LlmClientError::TemporarilyUnavailable => true,
             LlmClientError::UpstreamHttp { status, .. } => matches!(
                 *status,
                 StatusCode::BAD_GATEWAY

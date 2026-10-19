@@ -14,7 +14,7 @@ use switchyard_protocol::{ContentBlock, Message, Request, Response, Role, ToolCa
 
 use super::text::clip_mid;
 use crate::Result;
-use crate::algorithms::util::affinity::has_new_user_turn;
+use crate::algorithms::util::affinity::{has_new_user_turn, initiated_by_user};
 use crate::algorithms::util::prompts::drop_exact_replay;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier};
@@ -91,7 +91,9 @@ impl Classifier for Compactor {
         request: &mut Request,
         _driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        if has_new_user_turn(&request.llm_request.messages) {
+        if initiated_by_user(request)
+            .unwrap_or_else(|| has_new_user_turn(&request.llm_request.messages))
+        {
             state.extra.remove(RECORD_KEY);
         } else if let Some((head, cut, summary)) = recorded(state, request) {
             rewrite(request, head, cut, &summary);
@@ -383,6 +385,32 @@ mod tests {
         reapply(&mut state, &mut next_turn).await;
         assert_eq!(next_turn.llm_request.messages, before);
         assert!(!state.extra.contains_key(RECORD_KEY));
+    }
+
+    #[tokio::test]
+    async fn initiator_tags_keep_agent_nudges_on_the_compacted_prefix() {
+        for initiator in ["agent", "user"] {
+            let mut state = State::default();
+            assert!(compact(&mut session(4), &mut state, "NOTE"));
+            let mut next = session(4);
+            next.llm_request
+                .messages
+                .push(Message::text(Role::User, "verify"));
+            let mut headers = http::HeaderMap::new();
+            headers.insert("x-initiator", initiator.parse().expect("header"));
+            next.metadata = Some(switchyard_protocol::Metadata {
+                http_headers: Some(headers),
+                ..Default::default()
+            });
+            let original = next.llm_request.messages.clone();
+            reapply(&mut state, &mut next).await;
+            assert_eq!(state.extra.contains_key(RECORD_KEY), initiator == "agent");
+            if initiator == "agent" {
+                assert_eq!(next.llm_request.messages.len(), 2);
+            } else {
+                assert_eq!(next.llm_request.messages, original);
+            }
+        }
     }
 
     #[test]

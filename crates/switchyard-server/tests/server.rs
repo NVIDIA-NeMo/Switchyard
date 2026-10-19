@@ -456,6 +456,13 @@ async fn upstream_chat(
     } else {
         "ok".to_string()
     };
+    let logprobs = (body["logprobs"] == true).then(|| {
+        let yes = if content == "yes" { 0.9_f64 } else { 0.1_f64 };
+        json!({"content": [{"token": content, "logprob": 0.0, "top_logprobs": [
+            {"token": "yes", "logprob": yes.ln()},
+            {"token": "no", "logprob": (1.0 - yes).ln()}
+        ]}]})
+    });
     Json(json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -463,6 +470,7 @@ async fn upstream_chat(
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": content},
+            "logprobs": logprobs,
             "finish_reason": "stop"
         }],
         "usage": {
@@ -1847,6 +1855,125 @@ task_typing = false
                     .filter(|call| call["path"] == "/props")
                     .count(),
                 usize::from(probes)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_escalates_while_the_local_endpoint_is_down() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+
+[llm_clients.down]
+format = "openai_chat"
+base_url = "http://{closed}/v1"
+
+[targets.local]
+id = "model/vgr-local"
+llm_client = "down"
+
+[targets.cloud]
+id = "model/vgr-cloud"
+llm_client = "primary"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#,
+        upstream.base_url
+    ))?);
+    // The second request meets the failed endpoint's cooldown rather than its socket.
+    for _ in 0..2 {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": "answer the question"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_static("model/vgr-cloud"))
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_keeps_agent_nudges_in_their_session_and_releases_user_turns() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for session_header in ["x-switchyard-session-id", "x-session-id"] {
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+local = {{ id = "model/vgr-local", llm_client = "primary" }}
+cloud = {{ id = "model/vgr-cloud", llm_client = "primary" }}
+judge = {{ id = "model/vgr-judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+judge_target = "judge"
+mode = "evaluate"
+task_typing = false
+"#,
+            upstream.base_url
+        ))?);
+        let initial = json!([{"role": "user", "content": " "}]);
+        let nudge = json!([
+            {"role": "user", "content": " "},
+            {"role": "assistant", "content": "4"},
+            {"role": "user", "content": "Verify the answer before stopping."}
+        ]);
+        for (session, initiator, messages, served) in [
+            ("a", Some("user"), &initial, "model/vgr-cloud"),
+            ("a", Some("agent"), &nudge, "model/vgr-cloud"),
+            ("b", Some("agent"), &nudge, "model/vgr-local"),
+            ("a", Some("user"), &nudge, "model/vgr-local"),
+            ("a", Some("agent"), &nudge, "model/vgr-local"),
+            ("c", None, &initial, "model/vgr-cloud"),
+            ("c", None, &nudge, "model/vgr-local"),
+        ] {
+            let mut headers = vec![(session_header, session)];
+            if let Some(initiator) = initiator {
+                headers.push(("x-initiator", initiator));
+            }
+            let response = send_with_headers(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({"model": "switchyard/vgr", "messages": messages})),
+                &headers,
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+            assert_eq!(
+                response.headers.get("x-model-router-selected-model"),
+                Some(&HeaderValue::from_str(served)?),
+                "{session_header}: {session} {initiator:?}"
             );
         }
     }

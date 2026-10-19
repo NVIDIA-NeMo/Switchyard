@@ -68,7 +68,9 @@ pi -p --provider switchyard --model switchyard "List the files in this directory
 ## Check the routing
 
 The command `curl -s localhost:4000/v1/stats | jq '.models | map_values({calls, prompt_tokens})'`
-lists each target model with its call count. Every response carries the header
+lists each target model with its call count. For a step-by-step check with an
+escalating request, see
+[Verify routing is active](../getting_started.md#verify-routing-is-active). Every response carries the header
 `x-model-router-selected-model`. With `--routing-log-file PATH`, the server writes one
 record per call. In the record below, `session_id` is the value of pi's `x-session-id`
 header:

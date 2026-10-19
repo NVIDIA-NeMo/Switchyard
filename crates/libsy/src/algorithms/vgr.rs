@@ -38,6 +38,7 @@ mod tests;
 /// A verification-gated route between a local and a capable tier.
 pub struct Vgr {
     route: FallThrough,
+    classifier: Arc<runtime::VgrClassifier>,
 }
 
 impl Vgr {
@@ -56,15 +57,24 @@ impl Vgr {
         if config.compact_handoff {
             route = route.with_classifier(Arc::new(compaction::Compactor));
         }
+        if config.latch_escalation {
+            let latch = Arc::new(AffinityRouter::new().with_latch_only([cloud.clone()]));
+            route = route
+                .with_processor(latch.clone())
+                .with_classifier(Arc::new(runtime::Held(latch, "session_latched")));
+        }
         let classifier = Arc::new(runtime::VgrClassifier {
             breaker: safety::CircuitBreaker::new(config.breaker),
             config,
         });
         let route = route
             .with_processor(turn_affinity.clone())
-            .with_classifier(turn_affinity)
-            .with_classifier(classifier);
-        Ok(Self { route })
+            .with_classifier(Arc::new(runtime::Held(
+                turn_affinity,
+                "turn_verification_latched",
+            )))
+            .with_classifier(classifier.clone());
+        Ok(Self { route, classifier })
     }
 }
 
@@ -75,9 +85,27 @@ impl Algorithm for Vgr {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
+        // The handoff note is written for the cloud tier, so a local stand-in gets the request
+        // as it arrived.
+        let arrived = self
+            .classifier
+            .local_may_stand_in(&request)
+            .then(|| request.clone());
         let mut outcome = self.route.execute(driver, request).await?;
-        // Local answers are already buffered; cloud decisions cannot fall back to local.
+        // Local answers are already buffered and have no fallback.
         outcome.selected_model_ids.truncate(1);
+        let config = &self.classifier.config;
+        if let Some(arrived) = arrived
+            && outcome.response.is_none()
+            && outcome.selected_model_ids.first() == Some(&config.targets.cloud)
+            // The local tier may have failed while this request was routed.
+            && self.classifier.local_may_stand_in(&arrived)
+        {
+            outcome
+                .selected_model_ids
+                .push(config.targets.local.clone());
+            outcome.fallback_request = Some(arrived);
+        }
         Ok(outcome)
     }
 }
@@ -154,10 +182,10 @@ fn derive_capabilities(
             Some(render::render_agentic_view(request, &turns, attempt)),
         );
     }
-    if text::observed_hardening(attempt) || task_type == Some(TaskType::Coding) {
-        return caps(Branch::Coding, None);
-    }
     let transcript = Some(render::render_session(&turns, attempt));
+    if text::observed_hardening(attempt) || task_type == Some(TaskType::Coding) {
+        return caps(Branch::Coding, transcript);
+    }
     if text::observed_tool_activity(attempt) {
         caps(Branch::Agentic, transcript)
     } else if matches!(task_type, Some(TaskType::Chat | TaskType::Answer)) {

@@ -555,6 +555,9 @@ pub struct VgrRouteConfig {
     /// Wall-clock budget for the local tier within one user turn.
     #[serde(default)]
     pub local_turn_budget_seconds: Option<f64>,
+    /// Holds escalations across later user turns.
+    #[serde(default)]
+    pub latch_escalation: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1809,6 +1812,7 @@ fn build_vgr(
     runtime.confirmed_recovery_min_clean_tail = config.confirmed_recovery_min_clean_tail;
     runtime.agentic_handoff = config.agentic_handoff;
     runtime.compact_handoff = config.compact_handoff;
+    runtime.latch_escalation = config.latch_escalation;
     runtime.local_turn_budget = config
         .local_turn_budget_seconds
         .map(|seconds| duration(route_name, "local_turn_budget_seconds", seconds))
@@ -1829,12 +1833,13 @@ fn build_vgr(
 }
 
 fn duration(route: &str, field: &str, seconds: f64) -> AlgorithmResult<std::time::Duration> {
-    std::time::Duration::try_from_secs_f64(seconds).map_err(|error| {
-        AlgorithmConfigError::with_source(
-            format!("vgr route {route}: {field} must be a non-negative number"),
-            error,
-        )
-    })
+    let message = || format!("vgr route {route}: {field} must be a positive number");
+    let duration = std::time::Duration::try_from_secs_f64(seconds)
+        .map_err(|error| AlgorithmConfigError::with_source(message(), error))?;
+    if duration.is_zero() {
+        return Err(AlgorithmConfigError::new(message()));
+    }
+    Ok(duration)
 }
 
 const fn default_max_reviews() -> u32 {

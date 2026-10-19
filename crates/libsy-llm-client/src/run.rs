@@ -111,6 +111,7 @@ pub async fn run(
             &clients,
             &algorithm_name,
             &outcome.request,
+            outcome.fallback_request.as_ref(),
             &outcome.selected_model_ids,
             &observe,
         )
@@ -249,10 +250,15 @@ async fn call_first_available(
     clients: &ClientRouter,
     algorithm: &str,
     request: &Request,
+    fallback_request: Option<&Request>,
     models: &[ModelId],
     observe: &(dyn Fn(ModelCallObservation) + Send + Sync),
 ) -> Result<Response> {
     for (index, target) in models.iter().enumerate() {
+        let request = match fallback_request {
+            Some(fallback) if index > 0 => fallback,
+            _ => request,
+        };
         let request = clients.prepare_completion_request(request.clone(), target);
         match call_one(
             clients,
@@ -1092,6 +1098,32 @@ mod tests {
                 request,
                 response,
             ))
+        }
+    }
+
+    /// Rewrites the request for its selected model only.
+    struct RewritingAlgorithm {}
+
+    #[async_trait]
+    impl Algorithm for RewritingAlgorithm {
+        fn name(&self) -> &str {
+            "rewriting_test"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            _driver: Driver,
+            request: Request,
+        ) -> Result<RoutingOutcome> {
+            let mut rewritten = request.clone();
+            rewritten
+                .llm_request
+                .messages
+                .push(Message::text(Role::User, "for weak only"));
+            let mut outcome =
+                RoutingOutcome::route_to("weak".into(), vec!["strong".into()], rewritten);
+            outcome.fallback_request = Some(request);
+            Ok(outcome)
         }
     }
 
@@ -2350,6 +2382,33 @@ mod tests {
             })
         ));
         assert_eq!(&*client.calls.lock(), &[ModelId::from("weak")]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fallback_candidates_receive_the_fallback_request() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::ContextWindow,
+        });
+        run(
+            Arc::new(RewritingAlgorithm {}),
+            ClientRouter::single(client.clone()),
+            request(),
+            to_category_map(&["weak", "strong"]),
+            None,
+        )
+        .await?;
+        let sent: Vec<_> = client
+            .requests
+            .lock()
+            .iter()
+            .map(|request| request.llm_request.messages.clone())
+            .collect();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].len(), request().llm_request.messages.len() + 1);
+        assert_eq!(sent[1], request().llm_request.messages);
         Ok(())
     }
 
