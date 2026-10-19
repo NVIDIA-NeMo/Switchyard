@@ -5,6 +5,7 @@
 
 mod algorithm;
 mod config;
+mod eligibility;
 mod failure;
 mod provider_key_redactor;
 mod route;
@@ -17,6 +18,7 @@ pub use algorithm::{
     ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig,
     StageClassifierConfig, SubagentRouteConfig, VgrModeConfig, VgrRouteConfig,
 };
+pub use eligibility::require_target_labels;
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.
 pub use libsy::RuntimeModels;
