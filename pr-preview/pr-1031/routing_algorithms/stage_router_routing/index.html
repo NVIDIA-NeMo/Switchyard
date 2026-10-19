@@ -2172,7 +2172,7 @@ and what the example below uses.</p>
 </span></code></pre></div>
 <p><code>clean_production</code> is <code>1.2</code> when the window has production and no error, and
 <code>0</code> otherwise. The constants live in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3e59277ea47d5d956ab999f37a9e56c3ba9e05b/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>:
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9cbe2f6f6e873d2cd311939a433ae25e77f2cd3/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>:
 <code>SIGNAL_UNIT</code> 0.10, <code>SCORE_GAIN</code> 5.0, <code>HARD_SEVERITY</code> 0.7, <code>PRODUCTION_WEIGHT</code>
 1.5, <code>CLEAN_PRODUCTION_WEIGHT</code> 1.2, and <code>STALL_MIN_TURN_DEPTH</code> 8, below which
 <code>spinning</code> and <code>exploring</code> stay <code>0</code>.</p>
@@ -2229,7 +2229,7 @@ production, 0.8741. An error in the window removes the clean-production bonus
 and counts toward capable instead. With a soft error the efficient side reaches
 at most 0.49. With a hard error it reaches at most 0.24. The unit test
 <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b3e59277ea47d5d956ab999f37a9e56c3ba9e05b/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9cbe2f6f6e873d2cd311939a433ae25e77f2cd3/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
 <p>Both pickers use the same score. The picker only sets which direction the
@@ -2397,7 +2397,7 @@ required columns.</p>
 <tr>
 <td><code>handoff_notes.deescalation_note</code></td>
 <td>unset</td>
-<td>Note handed to the efficient tier on a signal-driven return.</td>
+<td>Note handed to the efficient tier whenever the signals select it, with or without a capable turn before.</td>
 </tr>
 <tr>
 <td><code>handoff_notes.only_on_wrong_signal_escalation</code></td>
