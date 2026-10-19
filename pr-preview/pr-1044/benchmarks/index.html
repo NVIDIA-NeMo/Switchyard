@@ -1596,8 +1596,8 @@ Changing the provider, models, or routing settings can change the outcome.</p>
 also measured on its own. The escalation route uses <strong>DeepSeek V4 Flash</strong> as its judge.</p>
 <p><img alt="Terminal-Bench 2.1 task completion versus cost for LLM classification, Stage, and Escalation routing, with Opus 4.8 and GLM 5.2 baselines and a separate Jev recorded-run replay." src="../assets/switchyard-cost-accuracy.svg" /></p>
 <p><a href="https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/">Published comparison and background</a>.</p>
-<p>Configs: <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">Escalation</a> ·
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev task router</a></p>
+<p>Configs: <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">Escalation</a> ·
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev task router</a></p>
 <p>The Jev point is a recorded-run replay: <strong>73/89 tasks (82.02%)</strong> at an estimated <strong>$92.12</strong>,
 including Jev calls. Jev selects one model for each task and replays its recorded outcome.
 Its evaluation setup and cost accounting differ from the other points.</p>
@@ -1608,22 +1608,21 @@ a fresh benchmark.</p>
 <p><strong>DeepSWE v1.1 · 113 tasks · Codex CLI · GPT-5.6 Luna and Sol</strong></p>
 <p>Plan/Execute uses Sol to plan and Luna to execute. Advisor uses Luna to execute and Sol to
 review. Stage chooses between the two models from recent tool activity.</p>
-<p><img alt="DeepSWE task completion versus cost for Plan/Execute (60.8%, $180.51), Advisor (57.5%, $208), and the best reported baselines: Sol (62.8%, $720.95) and Luna (52.2%, about $49). Stage solved 67.3%; its cost was not reported." src="../assets/deepswe-cost-accuracy.svg" /></p>
-<p><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/DEEPSWE_V11_QUALIFICATION.md">Evaluation settings</a>.</p>
-<p>Configs: <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">Plan/Execute</a> ·
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">Advisor</a> ·
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">Stage</a></p>
+<p><img alt="DeepSWE task completion versus cost for Plan/Execute (60.8%, $180.51), Advisor (57.5%, $208), Stage (61.36%, $466.28), and the best reported baselines: Sol (62.8%, $720.95) and Luna (52.2%, about $49)." src="../assets/deepswe-cost-accuracy.svg" /></p>
+<p><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/DEEPSWE_V11_QUALIFICATION.md">Evaluation settings</a>.</p>
+<p>Configs: <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">Plan/Execute</a> ·
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">Advisor</a> ·
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">Stage</a></p>
 <p>The chart keeps each model's highest reported completion score, breaking ties by lower cost.
-Luna is one Advisor-study run; Sol and both routes are three-run means. The config headers
-record all results and sample standard deviations. Stage has no paired single-model baseline.</p>
+Luna is one Advisor-study run; Sol and all three routes are three-run means.</p>
 <p>All runs used closed-book evaluation, a three-hour agent budget, and strict scoring:
 failures and missing results count as unsolved.</p>
 <h2 id="run-a-benchmark">Run a benchmark<a class="headerlink" href="#run-a-benchmark" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/README.md#one-time-setup">Prepare the dataset</a>,
-  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/README.md#run-with-switchyard-routing">run with a config above</a>, and
-  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/README.md#inspect-a-run">inspect the artifacts</a>.</li>
-<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e11f4fe3f60b72e9aa35134f3104c01e9489e357/benchmark/README.md#deepswe-v11">Run with Pier</a>.</li>
+<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/README.md#one-time-setup">Prepare the dataset</a>,
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/README.md#run-with-switchyard-routing">run with a config above</a>, and
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/README.md#inspect-a-run">inspect the artifacts</a>.</li>
+<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/707430ee2f56c644483239f1de877900dcff8e64/benchmark/README.md#deepswe-v11">Run with Pier</a>.</li>
 </ul>
 
 
