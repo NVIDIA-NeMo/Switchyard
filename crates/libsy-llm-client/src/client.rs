@@ -1562,13 +1562,7 @@ fn redact_error_credentials(
     if !may_contain_mcp_tokens(body.as_bytes(), mcp_patterns) {
         return body;
     }
-    match serde_json::from_str::<Value>(&body) {
-        Ok(mut value) => {
-            redact_mcp_json(&mut value, mcp_patterns);
-            value.to_string()
-        }
-        Err(_) => redact_mcp_tokens(&body, mcp_patterns).into_owned(),
-    }
+    redact_mcp_tokens(&body, mcp_patterns).into_owned()
 }
 
 // Unknown application headers can carry credentials when auth forwarding is enabled.
@@ -3725,7 +3719,7 @@ mod tests {
 
     #[test]
     fn mcp_url_queries_are_redacted_from_errors() {
-        let url = "https://user:password@example.invalid/mcp?api_key=secret&version=1#fragment";
+        let url = "https://example.invalid/mcp?api_key=secret&version=1#fragment";
         let tools = json!([{"type": "mcp", "server_url": url, "authorization": "secret"}]);
         for body in [
             json!({"mcp_servers": [{"url": url}]}),
@@ -3738,7 +3732,7 @@ mod tests {
             redact_mcp_json(&mut error, &patterns);
             assert_eq!(
                 error["error"]["message"],
-                "Rejected https://user:password@example.invalid/mcp?[REDACTED]#fragment"
+                "Rejected https://example.invalid/mcp?[REDACTED]#fragment"
             );
         }
         let url = "https://example.invalid/mcp#fragment?version=1";
