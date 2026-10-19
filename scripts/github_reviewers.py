@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Rank GitHub PR reviewers using your authenticated GitHub CLI (gh).
 
 Usage: python scripts/github_reviewers.py [OWNER/REPO]
