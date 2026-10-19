@@ -4,6 +4,15 @@
 
 # NVIDIA NeMo Switchyard
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/NVIDIA-NeMo/Switchyard" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases"><img src="https://img.shields.io/github/v/release/NVIDIA-NeMo/Switchyard" alt="Latest GitHub release"></a>
+  <a href="https://pypi.org/project/nemo-switchyard/"><img src="https://img.shields.io/pypi/v/nemo-switchyard" alt="PyPI: nemo-switchyard"></a>
+  <a href="https://crates.io/crates/switchyard-libsy"><img src="https://img.shields.io/crates/v/switchyard-libsy?label=crates.io%20%28libsy%29" alt="crates.io: switchyard-libsy"></a>
+  <a href="https://crates.io/crates/switchyard-server"><img src="https://img.shields.io/crates/v/switchyard-server?label=crates.io%20%28server%29" alt="crates.io: switchyard-server"></a>
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/graphs/contributors"><img src="https://img.shields.io/github/contributors/NVIDIA-NeMo/Switchyard" alt="GitHub contributors"></a>
+</p>
+
 Switchyard is an open-source library that helps an AI agent choose which model handles each request. It combines efficient models with more capable models so you can balance task success, cost, and latency on your workload.
 
 Use Switchyard through a gateway integration, try it with a local proxy, or embed it in your own harness. You choose the model pool. Switchyard supplies the routing decision. Your gateway or application owns the surrounding service.
