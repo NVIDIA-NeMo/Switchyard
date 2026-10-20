@@ -17,10 +17,10 @@ def test_getting_started_documents_current_paths() -> None:
         < guide.index("## Use libsy with your client")
         < guide.index("## Next steps")
     )
+    example = guide.split("```rust\n", 1)[1].split("```", 1)[0]
     for step in ("CallModel", "CallDecision", "Done"):
         assert f"Step::{step}(" in readme
-        for example in guide.split("```rust\n")[1:3]:
-            assert f"Step::{step}(" in example.split("```", 1)[0]
+        assert f"Step::{step}(" in example
     readme_example = readme.split("```rust\n", 1)[1].split("```", 1)[0]
     assert not any(line.startswith("use ") for line in readme_example.splitlines())
     for placeholder in ("call_model(", "call_decision(", "handle_outcome("):
