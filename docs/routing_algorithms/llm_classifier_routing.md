@@ -273,6 +273,10 @@ Use `policy.type = "requirement_feedback"` to assess a frozen task ledger before
 each acting-model request. The judge returns requirement statuses, verification
 freshness, explanations, and exact tool-evidence citations. The policy appends
 the validated assessment to `policy.target` using the handoff-note helper.
+The note contains the original instruction and every frozen requirement's ID,
+criterion, source quote, and evidence needed, joined with its current status,
+verification freshness, explanation, evidence citations, five-state `one_hot`
+evidence vector, and `met` bit. The judge cannot rewrite the frozen breakdown.
 
 ```toml
 [routes.requirements.policy]

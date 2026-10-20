@@ -211,13 +211,14 @@ impl JudgePolicy for RequirementFeedbackPolicy {
             let mut one_hot = [0; 5];
             one_hot[item.status as usize] = 1;
             json!({"id": item.id, "criterion": requirement.criterion, "status": item.status,
+                "source_quote": requirement.source_quote, "evidence_needed": requirement.evidence_needed,
                 "verification": item.verification, "met": u8::from(item.status == Status::SupportedAsMet),
                 "one_hot": one_hot, "explanation": item.explanation, "evidence": item.evidence})
         }).collect();
         let note = format!(
-            "Requirement evidence review (advisory; analyzed through message {}). These are observer judgments, not verifier results. Check cited evidence before acting. One-hot order: missing, weak, incomplete, supported_as_met, contradicted.\n{}",
+            "Requirement evidence review (advisory; analyzed through message {}). These are observer judgments, not verifier results. Check cited evidence before acting. The original instruction, requirement IDs, criteria, source quotes, and evidence_needed are frozen; the remaining fields are the current assessment. Each one_hot is an evidence-status vector in this order: missing, weak, incomplete, supported_as_met, contradicted. The met bit is 1 only for supported_as_met.\n{}",
             assessment.through_message,
-            json!(rows),
+            json!({"original_instruction": self.ledger.original_instruction, "requirements": rows}),
         );
         super::prompts::append_note(request, &note);
         let message_index = request.llm_request.messages.len() - 1;
@@ -369,6 +370,20 @@ mod tests {
         assert!(note.contains("analyzed through message 2"));
         assert!(note.contains(r#""one_hot":[0,0,0,1,0]"#));
         assert!(note.contains(r#""met":1"#));
+        let payload: Value = serde_json::from_str(note.split_once('\n').unwrap().1).unwrap();
+        let ledger = policy().ledger;
+        assert_eq!(payload["original_instruction"], ledger.original_instruction);
+        let row = &payload["requirements"][0];
+        let original = &ledger.requirements[0];
+        assert_eq!(row["id"], original.id);
+        assert_eq!(row["criterion"], original.criterion);
+        assert_eq!(row["source_quote"], original.source_quote);
+        assert_eq!(row["evidence_needed"], original.evidence_needed);
+        assert_eq!(row["status"], "supported_as_met");
+        assert_eq!(row["verification"], "current");
+        assert_eq!(row["one_hot"], json!([0, 0, 0, 1, 0]));
+        assert_eq!(row["met"], 1);
+        assert_eq!(row["evidence"], verdict()["requirements"][0]["evidence"]);
     }
 
     #[test]
