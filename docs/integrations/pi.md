@@ -5,7 +5,7 @@
 `switchyard-server`, which picks the target model for each call. pi does not read
 `OPENAI_BASE_URL`, so a provider entry is how you point pi at a proxy. This
 page was tested with pi 0.84.3 against the
-[Getting Started](../getting_started.md#server-path) server on `http://localhost:4000`
+[local evaluation](../operations/local_evaluation.md) server on `http://localhost:4000`
 with route id `switchyard`.
 
 ## Configure
@@ -70,7 +70,7 @@ pi -p --provider switchyard --model switchyard "List the files in this directory
 The command `curl -s localhost:4000/v1/stats | jq '.models | map_values({calls, prompt_tokens})'`
 lists each target model with its call count. For a step-by-step check with an
 escalating request, see
-[Verify routing is active](../getting_started.md#verify-routing-is-active). Every response carries the header
+[Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active). Every response carries the header
 `x-model-router-selected-model`. With `--routing-log-file PATH`, the server writes one
 record per call. In the record below, `session_id` is the value of pi's `x-session-id`
 header:

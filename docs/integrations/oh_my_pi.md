@@ -5,7 +5,7 @@ It reads its model providers from `~/.omp/agent/models.yml`. Add Switchyard ther
 `omp` sends every model call to `switchyard-server`. `omp` has no `--base-url` flag, and
 setting `OPENAI_BASE_URL` does not change the address of its built-in `openai` provider.
 This page was tested with Oh My Pi 18.1.21 against the
-[Getting Started](../getting_started.md#server-path) server on `http://localhost:4000`
+[local evaluation](../operations/local_evaluation.md) server on `http://localhost:4000`
 with route id `switchyard`.
 
 ## Configure

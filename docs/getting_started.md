@@ -1,396 +1,178 @@
 # Getting Started with Switchyard
 
-Switchyard has two native Rust execution paths:
+Add routing to your existing gateway or agent harness with **libsy**, Switchyard's Rust library. Your application keeps its model clients, credentials, and service.
 
-- **Server path:** build and run the standalone Rust server for API clients and
-  custom deployments.
-- **Library path:** embed the routing algorithms directly in your own Rust
-  application with `switchyard-libsy`.
+This guide uses the Python bindings. Start with a local routing decision, then send the selected request through a model client. For Rust, see the [complete Rust example](reference/host_integration.md#route-in-rust).
 
-## Server Path
+## Install
 
-Use this path when you want a standalone proxy for API clients or need to
-operate the Rust server directly.
-
-### Prerequisites
-
-- Git, a native build toolchain, and Rust with Cargo
-- An API key for OpenRouter, OpenAI, Anthropic, or another OpenAI-compatible endpoint.
-  To use OpenRouter, create an account at [openrouter.ai](https://openrouter.ai/)
-  and generate a key from the [OpenRouter keys page](https://openrouter.ai/keys).
-
-On Ubuntu or WSL, install the build prerequisites and Rust with `rustup`:
+You need Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/). These examples use the released `nemo-switchyard==0.3.0` package. Supported wheels need no Rust toolchain; see [platform requirements](../INSTALLATION.md#requirements).
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential curl git
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
+uv init --bare switchyard-demo
+cd switchyard-demo
+uv add "nemo-switchyard==0.3.0"
 ```
 
-For v0.3.0, the standalone server is release-validated on Ubuntu 24.04,
-Linux x86_64. Other platforms are outside the release-validation scope.
+## Route a request
 
-If you try a source build on macOS or native Windows, follow the
-[official Rust installation instructions](https://rust-lang.org/tools/install/).
+Save this complete example as `route.py`:
 
-Install `uv` for the repository's Python-based tooling and CI checks. It is not
-required to build or run the Rust server:
+```python
+import asyncio
+from switchyard.libsy import Step, algorithms
+
+async def main():
+    router = algorithms.stage_router(
+        picker="efficient_first", confidence_threshold=0.5)
+    models = {"efficient": ["fast"], "capable": ["strong"]}
+    models["any"] = ["fast", "strong"]
+    text = {"type": "text", "text": "Hello"}
+    request = {"messages": [{"role": "user", "content": [text]}]}
+    async for step in router.run_stream(request, models):
+        if isinstance(step, Step.Done):
+            print("Selected:", step.outcome.selected_model_ids[0])
+
+asyncio.run(main())
+```
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+uv run route.py
 ```
 
-If either installer updates your shell configuration, restart the shell before
-continuing. Verify the tools:
+Expected output:
+
+```text
+Selected: fast
+```
+
+`fast` and `strong` are host-supplied model IDs. `efficient` and `capable` assign their routing roles; `any` lists the full model pool. This example makes no network calls and needs no API key.
+
+The Stage router reads conversation and tool-result signals. With `efficient_first` and no tool history, it selects the efficient model. The `0.5` value is a routing confidence threshold, not a measured probability of task success. This is the same preset the TOML runner calls **Auto**.
+
+## Call your model
+
+In an existing gateway, insert libsy before the model call:
+
+```text
+request -> libsy.run_stream -> selected model + returned request -> your model client
+```
+
+The following complete example uses the OpenAI Python client against OpenRouter. You can keep the client you already use in your application. Install the example's client dependency:
 
 ```bash
-git --version
-rustc --version
-cargo --version
-uv --version
+uv add openai
 ```
 
-### Install the server
-
-Install the Rust server from crates.io:
-
-```bash
-cargo install --locked switchyard-server
-switchyard-server --help
-```
-
-Cargo builds the release binary and installs it into `~/.cargo/bin` by default.
-
-#### Build from source
-
-Install the server from `main` to use unreleased features:
-
-```bash
-cargo install --locked \
-  --git https://github.com/NVIDIA-NeMo/Switchyard.git \
-  --branch main \
-  switchyard-server
-```
-
-### Configure
-
-The Rust server reads an explicit TOML file.
-
-Create `routes.toml` with an auto route:
-
-```toml
-schema_version = 1
-
-[llm_clients.openrouter]
-format = "openai_chat"
-base_url = "https://openrouter.ai/api/v1"
-api_key_env = "OPENROUTER_API_KEY"
-
-[targets.weak]
-id = "openai/gpt-4o-mini"
-llm_client = "openrouter"
-
-[targets.strong]
-id = "openai/gpt-4o"
-llm_client = "openrouter"
-
-[routes.smart]
-id = "switchyard"
-type = "auto"
-capable_target = "strong"
-efficient_target = "weak"
-```
-
-The two targets are placeholders. See [Model Selection](routing_algorithms/model_selection.md)
-to choose models for the capable and efficient tiers.
-
-`format` selects the upstream protocol and must be `openai_chat`,
-`openai_responses`, or `anthropic_messages`. `api_key_env` names the environment
-variable the server reads; the secret does not belong in the TOML file.
-A client can set `forward_auth = true` instead of `api_key_env` to send each
-caller's credential to that upstream. OpenAI clients forward `authorization`,
-`chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients forward
-`authorization` or `x-api-key`. Enable this only for an upstream that should
-receive the caller's login. Other application headers are preserved, so they
-may contain provider-specific credentials. The forwarding clients in a route,
-including efficient and capable targets, must use one credential family: all
-OpenAI formats or all `anthropic_messages`. The exception is one host that
-serves both formats, such as an LLM gateway that accepts each caller's gateway
-key on every endpoint: a route may mix the two families when all of its
-forwarding clients use the same scheme, host, and port. Such a route serves
-Chat Completions and Responses callers and forwards the caller's bearer token
-to every forwarding client. The server returns 400 to a caller whose API the
-route does not serve. Clients that use `api_key_env` send the server's own key,
-so these limits do not apply to them.
-
-### Run the server
-
-Export the provider credential, validate the configuration without binding a
-socket, then start the release binary:
+Set `OPENROUTER_API_KEY` in your environment. Your key needs access to `z-ai/glm-5.2` and `anthropic/claude-opus-4.8`, or replace both IDs with models you can use. These models also appear in our [Terminal-Bench 2.1 results](benchmarks.md#terminal-bench-21).
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-switchyard-server --config routes.toml --dry-run
-switchyard-server --config routes.toml \
-  --host 127.0.0.1 --port 4000
 ```
 
-Any client that speaks OpenAI Chat Completions, Anthropic Messages, or OpenAI
-Responses API can connect. The route `id` is the model name clients use.
-
-In another terminal:
-
-```bash
-curl http://localhost:4000/health
-curl http://localhost:4000/v1/models
-curl http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"switchyard","messages":[{"role":"user","content":"hello"}]}'
-```
-
-### Verify routing is active
-
-The first request usually lands on the efficient model. That does not mean
-routing is off. Auto decides from tool results, and a request without tool
-history has none, so the efficient tier serves it by design. Use these checks
-to see routing work. Your model IDs and token counts will differ from the
-examples.
-
-1. **Confirm the configuration loads.** The dry run prints the route IDs the
-   server will serve:
-
-    ```bash
-    switchyard-server --config routes.toml --dry-run
-    ```
-
-    ```text
-    server OK: switchyard
-    ```
-
-2. **Read the served model from the response header.** Every response carries
-   `x-model-router-selected-model`. A chat-only request is served by the
-   efficient model:
-
-    ```bash
-    curl -si http://localhost:4000/v1/chat/completions \
-      -H "Content-Type: application/json" \
-      -d '{"model":"switchyard","messages":[{"role":"user","content":"hello"}]}' \
-      | grep -i x-model-router-selected-model
-    ```
-
-    ```text
-    x-model-router-selected-model: openai/gpt-4o-mini
-    ```
-
-3. **Send a request that escalates.** A tool result that reports a critical
-   error forces the capable tier. Save this request as `escalate.json`:
-
-    ```json
-    {
-      "model": "switchyard",
-      "messages": [
-        {"role": "user", "content": "Run the test suite."},
-        {"role": "assistant", "content": null, "tool_calls": [
-          {"id": "call_1", "type": "function",
-           "function": {"name": "bash", "arguments": "{\"command\":\"pytest -q\"}"}}
-        ]},
-        {"role": "tool", "tool_call_id": "call_1",
-         "content": "MemoryError: cannot allocate memory\nKilled"},
-        {"role": "user", "content": "Fix it."}
-      ]
-    }
-    ```
-
-    ```bash
-    curl -si http://localhost:4000/v1/chat/completions \
-      -H "Content-Type: application/json" -d @escalate.json \
-      | grep -i x-model-router-selected-model
-    ```
-
-    ```text
-    x-model-router-selected-model: openai/gpt-4o
-    ```
-
-    The same hard failure appearing twice in recent tool results, or a
-    context-compaction marker, also forces the capable tier. See
-    [decision sources](routing_algorithms/stage_router_routing.md#decision-sources).
-
-4. **Count decisions by source.** `GET /v1/stats` reports calls per model and
-   routing decisions by source:
-
-    ```bash
-    curl -s http://localhost:4000/v1/stats | jq -c '.models | map_values(.calls)'
-    curl -s http://localhost:4000/v1/stats | jq -c '.algorithm_stats.stage_router.routing_decisions'
-    ```
-
-    ```json
-    {"openai/gpt-4o":1,"openai/gpt-4o-mini":1}
-    {"fall_open":{"total":1,"targets":{"openai/gpt-4o-mini":1}},"override":{"total":1,"targets":{"openai/gpt-4o":1}}}
-    ```
-
-    `fall_open` counts turns with no usable signals that landed on the picker's
-    default tier. `override` counts turns a hard error forced to the capable
-    tier. Counts reset when the server restarts or on `POST /v1/stats/reset`.
-
-5. **Keep a record of every request.** Start the server with
-   `--routing-log-file routing.jsonl` to append one JSON line per served request:
-
-    ```json
-    {"ts":"2026-10-15T06:16:22.643Z","route_id":"switchyard","algorithm":"stage_router","origin":null,"task":null,"trial_id":null,"session_id":null,"model":"openai/gpt-4o","tier":"","prompt_tokens":42,"cached_tokens":0,"cache_creation_tokens":0,"completion_tokens":5,"reasoning_tokens":0,"total_tokens":47}
-    ```
-
-    The record names the served model and its token counts. It does not record
-    why that model was chosen; use `GET /v1/stats` for the decision counts.
-
-### Routing algorithms
-
-#### Choose a route type
-
-Start with **Auto**, as shown above. Choose Task or Execution when you want
-more control over how requests are routed.
-
-| Choice | Use it when | Route `type` |
-|---|---|---|
-| **[Auto](routing_algorithms/overview.md#auto)** | You want Switchyard's recommended preset. | `auto` |
-| **[Task](routing_algorithms/llm_classifier_routing.md)** | You want an LLM to judge which model can handle the task. | `llm_classifier` |
-| **[Execution](routing_algorithms/stage_router_routing.md)** | You want tool results and agent progress to guide each request. | `stage_router` |
-
-A single TOML file can declare multiple routes. The table key, such as
-`routes.smart`, is a local configuration name; each route's `id` is exposed as a
-model on `GET /v1/models`.
-
-See [Routing Overview](routing_algorithms/overview.md) to compare strategies,
-and the [`switchyard-server` guide](../crates/switchyard-server/README.md) for
-the complete TOML schema, route options, TLS, and metrics.
-
-### Troubleshooting
-
-**No API key / auth error**
-
-```bash
-test -n "$OPENROUTER_API_KEY" && echo "key is set" || echo "key is missing"
-switchyard-server --config routes.toml --dry-run
-```
-
-Confirm that `api_key_env` in `routes.toml` names the environment variable you
-exported. The dry run validates the schema, environment lookup, target
-references, and route construction without starting the server.
-
-**Connection refused**
-
-Check health: `curl http://localhost:4000/health`
-
-**Telemetry header**
-
-Switchyard documents an `X-Switchyard-Version` header for release attribution
-on outbound LLM calls. No request or response content is included. The 0.2.0
-native server does not currently send this header upstream (see
-[Known Issues](known_issues.md)), so no opt-out is required at the moment.
-
----
-
-## Library Path
-
-Use this path when you want routing inside your own Rust application rather than
-behind a proxy. `switchyard-libsy` never calls a model itself: an algorithm
-picks a target and hands the model call back to you.
-
-For plan/execute, supply conversation history, including tool calls and results,
-before routing. Responses API continuation IDs alone are not enough. See the
-[Responses API history requirement](routing_algorithms/plan_execute_routing.md#responses-api-history-requirement).
-
-### Add the dependencies
-
-```toml
-[dependencies]
-async-trait = "0.1"
-futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
-tokio = { version = "1", features = ["macros", "rt"] }
-```
-
-### Choose an algorithm
-
-| Type | Purpose |
-|---|---|
-| `LlmTaskClassifier` | Ask a judge model to choose an efficient or capable target. |
-| `StageRouter` | Route from signals already in the conversation, such as tool results and errors, with an optional judge fallback. |
-| `LlmTaskClassifier` with escalation | Every turn runs on the efficient target first, and a judge reads that answer to decide whether to send the same request to the capable target. |
-| `Random` | Select among any number of targets, uniform or weighted. |
-
-These are the same strategies the server exposes as route types, so a deployment
-can move between the server and library paths without changing routing
-behaviour.
-
-### Drive the algorithm
-
-An algorithm yields a stream of steps. Each `Step::CallModel` is a routing-time classifier or
-judge call your host performs over its own transport. The run ends with `Step::Done` carrying a
-`RoutingOutcome`: the selected model, ordered fallbacks, rewritten request, and an optional
-response when routing already produced the answer. Otherwise the host makes the terminal answer
-call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
-already owns its HTTP stack, retries, and credentials.
-
-Pass each call's work to `respond` before awaiting it. In Rust:
-
-```rust
-use switchyard_libsy::{CallModel, LibsyError, Result};
-use switchyard_protocol::RoutedLlmClient;
-
-async fn serve(call: CallModel, client: &dyn RoutedLlmClient) -> Result<()> {
-    let request = call.request.clone();
-    let model = call.models[0].clone();
-    call.respond(async move {
-        client.call(request).await.map_err(|error| LibsyError::client_call(model, error))
-    }).await
-}
-```
-
-In Python, the client coroutine returns `LlmResponse.Agg` or `LlmResponse.Stream`:
+Save as `gateway.py`:
 
 ```python
-await call.respond(client.call(call.request, call.models[0]))
+import asyncio
+import os
+
+from openai import AsyncOpenAI
+from switchyard.libsy import Step, algorithms
+
+async def main():
+    router = algorithms.stage_router(
+        picker="efficient_first", confidence_threshold=0.5)
+    models = {
+        "efficient": ["z-ai/glm-5.2"],
+        "capable": ["anthropic/claude-opus-4.8"],
+    }
+    models["any"] = models["efficient"] + models["capable"]
+    text = {"type": "text", "text": "Say hello in one sentence."}
+    request = {"messages": [{"role": "user", "content": [text]}]}
+    async with AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+    ) as client:
+        async for step in router.run_stream(request, models):
+            if isinstance(step, Step.Done):
+                outcome = step.outcome
+                print("Selected:", outcome.selected_model_ids[0])
+                response = await client.chat.completions.create(
+                    model=outcome.selected_model_ids[0],
+                    messages=outcome.request["messages"],
+                )
+                print("Answer:", response.choices[0].message.content)
+
+asyncio.run(main())
 ```
 
-`respond` now accepts a future or awaitable instead of a completed response. Move
-the provider await into this method. Python `call.fail(error)` is also awaitable.
-Decision calls use the same pattern with their existing decision response type.
+This command sends a billable provider request:
 
-When an algorithm stops waiting for a call, `respond` cancels that work and
-returns normally. Python waits for task cleanup before returning. For concurrent
-algorithms, schedule each Python handler with `asyncio.create_task` and cancel and
-await remaining handlers when the run ends; see the complete
-[Python example](../examples/libsy.py). Awaiting handlers one at a time inside the
-step loop serializes their execution. Rust hosts can use `libsy::drive` to manage
-concurrent handlers and their lifetime.
+```bash
+uv run gateway.py
+```
 
-After a response stream is delivered, its consumer controls its lifetime.
-Cancellation cannot guarantee that an upstream provider stops generating or billing.
+The first line is `Selected: z-ai/glm-5.2`. The second starts with `Answer:` and contains the model's reply. A successful response verifies provider access as well as routing.
 
-Successful runs also include `OutcomeMetadata`: a unique `outcome_id`, the algorithm
-name, and optional JSON evidence. In Python, read `outcome.metadata.outcome_id`,
-`outcome.metadata.algorithm`, and `outcome.metadata.evidence` after checking that
-`outcome.metadata` is present. Evidence is a normal Python value, usually a dictionary;
-algorithms without evidence return `None`.
+For this text-only example, the host sends the **selected model and returned messages**. User text blocks also work with Chat Completions. Switchyard's full request format is provider-neutral: instructions, tools, media, and other controls need a host adapter. Use the [LiteLLM integration](../examples/litellm/README.md), [NeMo Relay plugin](integrations/nemo_relay.md), or Rust [translation crate](../crates/switchyard-translation/README.md) for fuller integrations.
 
-With a host-installed OpenTelemetry subscriber, the existing `libsy.run` span records
-the same identity, selected models, and supported evidence fields. See
-the [OpenTelemetry reference](reference/opentelemetry.md) for field names, metrics,
-and export setup. libsy does not install an exporter or send telemetry itself.
+The Stage configuration above produces only `Step.Done`. Algorithms that ask a judge to choose a model also yield calls for the host to serve. See [Drive the algorithm](#drive-the-algorithm) before changing to one of those algorithms.
 
-For the request, response, and streaming types the steps carry, see
-[`switchyard-protocol`](../crates/protocol/README.md).
+## See routing change
 
----
+Routing can change between agent turns. Save as `tool_error.py` and run `uv run tool_error.py`. This check stays local and needs no credentials:
+
+```python
+import asyncio
+from switchyard.libsy import Step, algorithms
+
+async def main():
+    router = algorithms.stage_router(picker="efficient_first", confidence_threshold=0.5)
+    models = {"efficient": ["fast"], "capable": ["strong"], "any": ["fast", "strong"]}
+    messages = [{"role": "user", "content": [{"type": "text", "text": "Run the tests."}]}]
+    async for step in router.run_stream({"messages": messages}, models):
+        if isinstance(step, Step.Done):
+            print("Fresh task:", step.outcome.selected_model_ids[0])
+
+    messages += [
+        {"role": "assistant", "content": [{"type": "tool_call", "id": "c1",
+            "name": "bash", "arguments": {"command": "pytest -q"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_call_id": "c1",
+            "is_error": True, "content": [{"type": "text",
+                "text": "MemoryError: cannot allocate memory\nKilled"}]}]},
+    ]
+    async for step in router.run_stream({"messages": messages}, models):
+        if isinstance(step, Step.Done):
+            print("Critical tool error:", step.outcome.selected_model_ids[0])
+
+asyncio.run(main())
+```
+
+Expected output:
+
+```text
+Fresh task: fast
+Critical tool error: strong
+```
+
+The critical tool error forces the capable model. Ordinary requests without usable tool signals stay on the efficient model in this preset. This checks model selection; it does not measure answer quality or cost savings. Evaluate your agent and model pool against a single-model baseline before relying on savings.
+
+## Drive the algorithm
+
+`run_stream` is the integration boundary. It yields routing steps, ending with `Step.Done` and a `RoutingOutcome`:
+
+| Value | Host action |
+| --- | --- |
+| `selected_model_ids` | Use the first model; later entries are ordered fallbacks. |
+| `request` | Use this request after routing-time rewrites. |
+| `response` | Reuse this answer when the algorithm already produced one. Otherwise make the answer call. |
+
+The examples above use Stage without a judge, so `response` is absent. For classifier calls, streaming, concurrent work, cancellation, and metadata, see the [host integration guide](reference/host_integration.md). That guide follows the development API on `main`; the examples on this page use the released package.
 
 ## Next steps
 
-- [Core Concepts](core_concepts.md): LLM clients, targets, and routes
-- [`switchyard-server`](../crates/switchyard-server/README.md): server configuration,
-  routing algorithms, TLS, and metrics
-- [Rust API reference](reference/rust_api.md): generated libsy, protocol, and translation
-  documentation, crate setup, and API boundaries
-- [`switchyard-translation`](../crates/switchyard-translation/README.md):
-  request, response, and stream translation
+- **Embed in Rust:** [complete example](reference/host_integration.md#route-in-rust) and the [Rust API reference](reference/rust_api.md).
+- **Use a gateway integration:** [LiteLLM](../examples/litellm/README.md) or [NeMo Relay](integrations/nemo_relay.md). Check each guide's supported algorithms and versions.
+- **Choose another algorithm:** [routing overview](routing_algorithms/overview.md).
+- **Try the standalone proxy:** [local evaluation guide](operations/local_evaluation.md), with model configuration, requests, and routing checks. The server is for demos, evaluation, and personal use, not a supported production path.
+- **Use an agent directly:** [Claude Code example](../examples/claude/README.md), [pi](integrations/pi.md), or [Oh My Pi](integrations/oh_my_pi.md).

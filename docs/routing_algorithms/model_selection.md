@@ -37,7 +37,7 @@ What each role needs:
 
 Run these checks before you measure routing. Add a `passthrough` route for the
 efficient model to the file from
-[Getting Started](../getting_started.md#server-path), start the server with
+[Local Evaluation](../operations/local_evaluation.md), start the server with
 `--routing-log-file routing.jsonl`, and send the checks to that route:
 
 ```toml
@@ -295,7 +295,7 @@ Record it with every result. Three rules apply:
 ## Related
 
 - [Routing Overview](overview.md): choose a strategy and read what Auto resolves to.
-- [Verify routing is active](../getting_started.md#verify-routing-is-active): see the served model and the decision counts.
+- [Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active): see the served model and the decision counts.
 - [Stage Router](stage_router_routing.md#tuning-confidence_threshold): tune the threshold once the pair is right.
 - [Escalation-Router Routing](escalation_router_routing.md#judge-model-compatibility): judge requirements for escalation routes.
 - [Benchmarks](../../benchmark/README.md): how the measured runs were made.

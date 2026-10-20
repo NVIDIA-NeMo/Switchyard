@@ -1,5 +1,5 @@
 site_name: Switchyard
-site_description: Typed, composable LLM routing and format translation for Python
+site_description: Embed Switchyard's Rust LLM routing library in your gateway or agent harness
 repo_url: https://github.com/NVIDIA-NeMo/Switchyard
 repo_name: NVIDIA-NeMo/Switchyard
 edit_uri: edit/main/docs/
@@ -19,6 +19,7 @@ nav:
   - Home: index.md
   - Get Started:
       - Getting Started: getting_started.md
+      - Evaluate Locally: operations/local_evaluation.md
       - Known Issues: known_issues.md
   - Benchmarks: benchmarks.md
   - Concepts:
@@ -49,6 +50,7 @@ nav:
       - Context-Window Handling: operations/context_window.md
       - Soak Testing: operations/soak_test.md
   - Reference:
+      - Host Integration: reference/host_integration.md
       - Server CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
       - OpenTelemetry: reference/opentelemetry.md

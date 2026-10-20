@@ -1,16 +1,15 @@
 name: Getting Started
 
-# Executable coverage for docs/getting_started.md.
-#
-# Fails when the documented Rust server flow drifts from the product, including
-# CLI changes, TOML schema changes, and operational endpoint regressions. It lives in
-# tests/getting_started/ so it reproduces locally with
+# Structural drift checks for the README, library quickstart, and local evaluation guide.
+# These checks do not execute model calls or validate provider access. Reproduce with
 # `uv run pytest tests/getting_started`.
 
 on:
   pull_request:
     paths:
+      - "README.md"
       - "docs/getting_started.md"
+      - "docs/operations/local_evaluation.md"
       - "crates/**"
       - "tests/getting_started/**"
       - "Cargo.toml"
@@ -22,7 +21,9 @@ on:
   push:
     branches: [main]
     paths:
+      - "README.md"
       - "docs/getting_started.md"
+      - "docs/operations/local_evaluation.md"
       - "crates/**"
       - "tests/getting_started/**"
       - "Cargo.toml"

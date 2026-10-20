@@ -15,7 +15,9 @@
 
 Switchyard is an open-source library that helps an AI agent choose which model handles each request. It combines efficient models with more capable models so you can balance task success, cost, and latency on your workload.
 
-Use Switchyard through a gateway integration, try it with a local proxy, or embed it in your own harness. You choose the model pool. Switchyard supplies the routing decision. Your gateway or application owns the surrounding service.
+Embed its Rust core, **libsy**, in your gateway or agent harness, directly or through Python bindings. Your application keeps its model clients, credentials, and service. Switchyard supplies the routing decision.
+
+The standalone server is for local evaluation and personal use. It is not a supported production deployment path.
 
 <p align="center">
   <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
@@ -26,6 +28,44 @@ Use Switchyard through a gateway integration, try it with a local proxy, or embe
   <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases">Releases</a> &emsp;·&emsp;
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
+
+## Start with the library
+
+With Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), create a project and install the released bindings:
+
+```bash
+uv init --bare switchyard-demo
+cd switchyard-demo
+uv add "nemo-switchyard==0.3.0"
+```
+
+Save as `route.py`, then run `uv run route.py`. No API key is needed:
+
+```python
+import asyncio
+from switchyard.libsy import Step, algorithms
+
+async def main():
+    router = algorithms.stage_router(
+        picker="efficient_first", confidence_threshold=0.5)
+    models = {"efficient": ["fast"], "capable": ["strong"]}
+    models["any"] = ["fast", "strong"]
+    text = {"type": "text", "text": "Hello"}
+    request = {"messages": [{"role": "user", "content": [text]}]}
+    async for step in router.run_stream(request, models):
+        if isinstance(step, Step.Done):
+            print("Selected:", step.outcome.selected_model_ids[0])
+
+asyncio.run(main())
+```
+
+```text
+Selected: fast
+```
+
+`fast` and `strong` are model IDs supplied by the host. This Stage preset starts on the efficient model and can switch when tool results report a failure. It makes no judge calls in this configuration.
+
+**[Continue the library quickstart](docs/getting_started.md)** to send the returned request through your model client and see routing change after a tool error. For Rust, use the [complete Rust example](docs/reference/host_integration.md#route-in-rust).
 
 ## How it works
 
@@ -54,14 +94,14 @@ LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidanc
 
 ### Try routing locally
 
-[Try routing locally](docs/getting_started.md#server-path) with the standalone proxy for demos and evaluation, then [verify routing is active](docs/getting_started.md#verify-routing-is-active).
+[Evaluate routing locally](docs/operations/local_evaluation.md) with the standalone proxy and your own model pool, then [verify routing is active](docs/operations/local_evaluation.md#verify-routing-is-active).
 
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).
 
 ### Embed the library in your harness
 
-[Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application. For Python, see the [embedding example](examples/libsy.py).
+[Follow the library quickstart](docs/getting_started.md) for a complete Python example. For Rust, see the [libsy crate](crates/libsy/README.md) and [host integration guide](docs/reference/host_integration.md).
 
 ## What’s new
 

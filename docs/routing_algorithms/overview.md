@@ -173,7 +173,7 @@ to one tier:
   of an agent session, carry no tool history. The signals abstain and the
   efficient tier serves the turn. This is by design. `GET /v1/stats` counts these
   turns under `algorithm_stats.stage_router.routing_decisions.fall_open`. See
-  [Verify routing is active](../getting_started.md#verify-routing-is-active).
+  [Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active).
 - **Both tiers name the same target.** The server accepts a route whose
   `capable_target` and `efficient_target` are the same target. Every request then
   goes to that one model, and `GET /v1/stats` lists a single entry under `.models`.
@@ -287,7 +287,7 @@ the configured endpoint.
 ## Run a deployment
 
 After installing the Rust server, as described in
-[Getting Started](../getting_started.md#install-the-server), export the provider
+[Local Evaluation](../operations/local_evaluation.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash

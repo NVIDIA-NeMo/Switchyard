@@ -1,20 +1,21 @@
 # Switchyard
 
-Switchyard routes and translates LLM traffic for coding agents and API clients.
-It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.
+Switchyard helps an AI agent choose which model handles each request. Embed its Rust core, **libsy**, in your gateway or agent harness, directly or through Python bindings. Your application keeps its model clients, credentials, and service.
+
+**[Start with the library quickstart](getting_started.md)**: install the package, run a short example, and send the selected request through your model client.
 
 ## Choose a Path
 
 | Goal | Path | Start here |
 |---|---|---|
-| Run Switchyard as a standalone proxy for API clients | Server Path | [Build and run the Rust server](getting_started.md#server-path) |
+| Add routing to your gateway or application | Library Path | [Python quickstart](getting_started.md) or [Rust libsy crate](../crates/libsy/README.md) |
+| Evaluate routing locally with your own models | Local Evaluation | [Run the demo server](operations/local_evaluation.md) |
 | Route Codex or Claude Code using your existing login | Server Path | [Single-provider coding agents](recipes/single_provider_coding_agents.md) |
-| Add Switchyard routing to a Rust application | Library Path | [`switchyard-libsy`](../crates/libsy/README.md) |
 | Add Switchyard routing to NeMo Relay | Native Plugin Path | [Use Switchyard with NeMo Relay](integrations/nemo_relay.md) |
 | Point the pi coding agent at the standalone proxy | Server Path | [Use Switchyard with pi](integrations/pi.md) |
 | Point Oh My Pi at the standalone proxy | Server Path | [Use Switchyard with Oh My Pi](integrations/oh_my_pi.md) |
 
-The Server Path builds and runs the standalone `switchyard-server` binary.
+The standalone server is for demos, evaluation, and personal use. It is not a supported production deployment path. Its HTTP API supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.
 
 ## Explore
 

@@ -49,7 +49,7 @@ See the [upstream error compatibility note](#upstream-error-compatibility) befor
 using older Relay versions.
 
 Routing does not require Relay. You can instead run the
-[standalone server](../getting_started.md#server-path) or embed
+[standalone server](../operations/local_evaluation.md) or embed
 [`switchyard-libsy`](../../crates/libsy/README.md) directly.
 
 ### Measure the Cost of Routing

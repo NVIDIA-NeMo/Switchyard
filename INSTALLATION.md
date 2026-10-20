@@ -32,8 +32,8 @@ switchyard-server --config routes.toml --dry-run
 switchyard-server --config routes.toml --port 4000
 ```
 
-See [Getting Started](docs/getting_started.md#server-path) for a complete TOML
-deployment and [`switchyard-server`](crates/switchyard-server/README.md) for the
+See [Local Evaluation](docs/operations/local_evaluation.md) for a complete TOML
+example and [`switchyard-server`](crates/switchyard-server/README.md) for the
 configuration reference.
 
 ## Desktop installer

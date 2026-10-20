@@ -77,7 +77,7 @@ therefore use different targets.
 
 ## Run the route
 
-After [installing the Rust server](../getting_started.md#install-the-server), export
+After [installing the Rust server](../operations/local_evaluation.md#install-the-server), export
 the provider credential, validate the configuration, and start the release
 binary:
 
