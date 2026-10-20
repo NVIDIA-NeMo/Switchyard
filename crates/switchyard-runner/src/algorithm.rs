@@ -654,6 +654,13 @@ pub struct StageTierConfig {
     pub handoff_notes: Option<HandoffNoteConfig>,
 }
 
+impl StageTierConfig {
+    /// Warns when both tiers name one target; see [`warn_identical_tiers`].
+    fn warn_identical_tiers(&self, route_name: &str) {
+        warn_identical_tiers(route_name, &self.capable_target, &self.efficient_target);
+    }
+}
+
 impl StageClassifierConfig {
     fn task_classifier_config(
         &self,
@@ -1613,29 +1620,12 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
-            warn_identical_tiers(route_name, &tiers.capable_target, &tiers.efficient_target);
+            tiers.warn_identical_tiers(route_name);
             let threshold = confidence_threshold.ok_or_else(|| {
                 AlgorithmConfigError::new(format!(
                     "stage_router route {route_name}: confidence_threshold is required"
                 ))
             })?;
-            // Only a composite classifier selects the tier that reads this threshold, so on a
-            // standalone route the value would be silently ignored; reject it instead.
-            if tiers.capable_first_threshold != 0.0 {
-                return Err(AlgorithmConfigError::new(format!(
-                    "stage_router route {route_name}: capable_first_threshold applies only to composite routes"
-                )));
-            }
-            // The fallback judge is a cascade step that runs on every ambiguous turn and
-            // retains no verdict, so the affinity knobs would be silently ignored.
-            if let Some(classifier) = classifier
-                && (classifier.classify_trigger != ClassifyTrigger::EveryRequest
-                    || classifier.message_hash_fallback)
-            {
-                return Err(AlgorithmConfigError::new(format!(
-                    "stage_router route {route_name}: classifier.classify_trigger and classifier.message_hash_fallback have no effect on the stage fallback judge, which runs on every ambiguous turn; remove them, or use a composite route to judge once per user turn"
-                )));
-            }
             let mut config = StageRouterConfig::new(*picker, threshold);
             config.capable_first_threshold = tiers.capable_first_threshold;
             config.recent_window = *recent_turn_window;
@@ -1682,7 +1672,7 @@ fn build_algorithm(
             stage,
             subagents,
         } => {
-            warn_identical_tiers(route_name, &stage.capable_target, &stage.efficient_target);
+            stage.warn_identical_tiers(route_name);
             let mut stage_config = StageRouterConfig::new(
                 PickerMode::EfficientFirst,
                 stage.confidence_threshold.unwrap_or(0.5),
