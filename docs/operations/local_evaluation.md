@@ -1,6 +1,6 @@
 # Evaluate Routing Locally
 
-Use the standalone server to try routing configurations with your own model pool. It is for demos, evaluation, and personal use on single-user machines. **It is not a supported production deployment path.** To add routing to your gateway or application, use the [library quickstart](../getting_started.md).
+Use the standalone server to try routing configurations with your own model pool. It is for demos, evaluation, and personal use on single-user machines. **It is not a supported production deployment path.** To add routing to your gateway or application, use the [libsy quickstart](../getting_started.md).
 
 ## Install the server
 
@@ -27,28 +27,28 @@ format = "openai_chat"
 base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 
-[targets.weak]
+[targets.efficient]
 id = "z-ai/glm-5.2"
 llm_client = "openrouter"
 
-[targets.strong]
+[targets.capable]
 id = "anthropic/claude-opus-4.8"
 llm_client = "openrouter"
 
 [routes.smart]
 id = "switchyard"
 type = "auto"
-capable_target = "strong"
-efficient_target = "weak"
+capable_target = "capable"
+efficient_target = "efficient"
 ```
 
-This uses the same Auto preset as the first library example: Stage routing with `efficient_first`, a confidence threshold of `0.5`, and no classifier call. The model pool also appears in our [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21). This small Auto example is not the benchmark configuration; use the linked benchmark profiles to reproduce their settings.
+This uses the same Auto preset as the first libsy example: Stage routing with `efficient_first`, a confidence threshold of `0.5`, and no classifier call. The model pool also appears in our [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21). This small Auto example is not the benchmark configuration; use the linked benchmark profiles to reproduce their settings.
 
 To use your own pool:
 
 | Change | Where |
 | --- | --- |
-| Efficient and capable models | Replace `targets.weak.id` and `targets.strong.id`. |
+| Efficient and capable models | Replace `targets.efficient.id` and `targets.capable.id`. |
 | Provider endpoint | Change `llm_clients.openrouter.base_url` and `api_key_env`. Use a matching `format`: `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | Different providers for each model | Add another `llm_clients` entry and set each target's `llm_client`. |
 | Public model name used by callers | Change `routes.smart.id` and the request's `model` together. |

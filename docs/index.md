@@ -8,7 +8,7 @@ Switchyard helps an AI agent choose which model handles each request. Embed its 
 
 | Goal | Path | Start here |
 |---|---|---|
-| Add routing to your Rust gateway or application | Library Path | [Rust quickstart](getting_started.md) |
+| Add routing to your Rust gateway or application | libsy | [Rust quickstart](getting_started.md) |
 | Use libsy from Python | Python Bindings | [Python embedding](reference/host_integration.md#python-bindings) |
 | Evaluate routing locally with your own models | Local Evaluation | [Run the demo server](operations/local_evaluation.md) |
 | Route Codex or Claude Code using your existing login | Server Path | [Single-provider coding agents](recipes/single_provider_coding_agents.md) |
@@ -23,7 +23,7 @@ The standalone server is for demos, evaluation, and personal use. It is not a su
 - [Benchmarks](benchmarks.md): compare Terminal-Bench 2.1 and DeepSWE results and open their routing configs
 - [Core Concepts](core_concepts.md): learn the LLM client, target, and route layers
 - [Routing Algorithms](routing_algorithms/overview.md): choose how requests select a model
-- [Architecture](architecture.md): understand the proxy and library components
+- [Architecture](architecture.md): understand libsy and the proxy components
 - [Server CLI Reference](cli_reference.md): inspect `switchyard-server` commands and options
 - [Rust API](reference/rust_api.md): browse libsy, protocol, and translation crate documentation
 - [Context-Window Handling](operations/context_window.md): configure eviction and retry behavior

@@ -29,58 +29,35 @@ The standalone server is for local evaluation and personal use. It is not a supp
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-## Start with the library
+## Start with libsy
 
-With [Rust 1.96.1+ and a native build toolchain](INSTALLATION.md#requirements), create a project and add the released crates:
-
-```bash
-cargo new switchyard-demo
-cd switchyard-demo
-cargo add switchyard-libsy@=0.3.0 switchyard-protocol@=0.3.0 futures@0.3
-cargo add tokio@1 --features macros,rt
-```
-
-Replace `src/main.rs` with this example, then run `cargo run`. No API key is needed:
+`Algorithm::run_stream` yields work for your application to handle. This representative loop shows all three steps in the development API:
 
 ```rust
-use std::{collections::HashMap, sync::Arc};
 use futures::StreamExt;
-use switchyard_libsy::{
-    Algorithm, PickerMode, RuntimeModels, StageRouter, StageRouterConfig, Step,
-};
-use switchyard_protocol::{Category, Request, text_request};
+use switchyard_libsy::{Algorithm, State, Step};
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let router = Arc::new(StageRouter::new(StageRouterConfig::new(
-        PickerMode::EfficientFirst, 0.5,
-    ))?);
-    let models = Arc::new(RuntimeModels::new(HashMap::from([
-        (Category::Efficient, vec!["fast".into()]),
-        (Category::Capable, vec!["strong".into()]),
-        (Category::Any, vec!["fast".into(), "strong".into()]),
-    ])));
-    let request = Request {
-        llm_request: text_request(None, "Hello"),
-        ..Default::default()
-    };
-    let mut steps = router.run_stream(request, models);
-    while let Some(step) = steps.next().await {
-        if let Step::Done(outcome) = step? {
-            println!("Selected: {}", outcome.selected_model_id()?);
+let mut steps = algorithm.run_stream(request, models, State::default());
+while let Some(step) = steps.next().await {
+    match step? {
+        Step::CallModel(call) => {
+            let request = call.request.clone();
+            call.respond(call_model(request)).await?;
+        }
+        Step::CallDecision(call) => {
+            let request = call.request.clone();
+            call.respond(call_decision(request)).await?;
+        }
+        Step::Done(outcome) => {
+            handle_outcome(*outcome).await?;
         }
     }
-    Ok(())
 }
 ```
 
-```text
-Selected: fast
-```
+Your application supplies `call_model`, `call_decision`, and `handle_outcome`. The call functions return typed responses in `libsy::Result`. At `Done`, reuse `outcome.response` if present; otherwise send `outcome.request` to the selected model.
 
-`fast` and `strong` are model IDs supplied by the host. This Stage preset starts on the efficient model and can switch when tool results report a failure. It makes no judge calls in this configuration.
-
-**[Continue the Rust quickstart](docs/getting_started.md)** to send the returned request through your model client and see routing change after a tool error. [Python bindings](docs/reference/host_integration.md#python-bindings) are also available.
+This loop serves calls one at a time. Use `libsy::drive` for concurrent algorithms. **[Follow the Rust quickstart](docs/getting_started.md)** for installation, complete client handlers, and expected output. [Python bindings](docs/reference/host_integration.md#python-bindings) are also available.
 
 ## How it works
 
@@ -114,7 +91,7 @@ LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidanc
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).
 
-### Embed the library in your harness
+### Embed libsy in your harness
 
 [Follow the Rust quickstart](docs/getting_started.md) for routing and model calls. See the [host integration guide](docs/reference/host_integration.md) for advanced execution and Python bindings.
 
@@ -164,7 +141,7 @@ For latency and routing overhead testing, see [Soak Testing](docs/operations/soa
 - [Benchmark setup and profiles](benchmark/README.md): run your own baseline and routing comparisons.
 - [Core concepts](docs/core_concepts.md): clients, targets, routes, and model IDs.
 - [TOML schema](docs/reference/toml_schema.md): configuration fields and defaults.
-- [Architecture](docs/architecture.md): library and runtime components.
+- [Architecture](docs/architecture.md): libsy and runtime components.
 - [Installation](INSTALLATION.md): package and platform requirements.
 
 ## Components

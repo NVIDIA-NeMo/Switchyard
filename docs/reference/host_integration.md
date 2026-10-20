@@ -1,6 +1,6 @@
 # Host Integration
 
-Use this guide when embedding libsy algorithms that ask the host to serve model or decision calls. For a first routing result and model-client handoff, start with the [library quickstart](../getting_started.md).
+Use this guide when embedding libsy algorithms that ask the host to serve model or decision calls. For a first routing result and model-client handoff, start with the [libsy quickstart](../getting_started.md).
 
 ## Development API
 
@@ -43,9 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         PickerMode::EfficientFirst, 0.5,
     ))?);
     let models = Arc::new(RuntimeModels::new(HashMap::from([
-        (Category::Efficient, vec!["fast".into()]),
-        (Category::Capable, vec!["strong".into()]),
-        (Category::Any, vec!["fast".into(), "strong".into()]),
+        (Category::Efficient, vec!["Efficient".into()]),
+        (Category::Capable, vec!["Capable".into()]),
+        (Category::Any, vec!["Efficient".into(), "Capable".into()]),
     ])));
     let request = Request {
         llm_request: LlmRequest {
@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Run `cargo run`. It prints `Selected: fast` without making a network call. This example follows `main`, including its `State` argument. For a complete routing and client example using released crates, follow the [Rust quickstart](../getting_started.md#call-your-model). Use [switchyard-translation](../../crates/switchyard-translation/README.md) to convert provider requests and libsy's protocol types, or [switchyard-llm-client](../../crates/libsy-llm-client/README.md) to drive an algorithm over HTTP.
+Run `cargo run`. It prints `Selected: Efficient` without making a network call. This example follows `main`, including its `State` argument. For a complete routing and client example, follow the [Rust quickstart](../getting_started.md#use-libsy-with-your-client). Use [switchyard-translation](../../crates/switchyard-translation/README.md) to convert provider requests and libsy's protocol types, or [switchyard-llm-client](../../crates/libsy-llm-client/README.md) to drive an algorithm over HTTP.
 
 ## Serve routing-time calls
 
@@ -129,8 +129,8 @@ from switchyard.libsy import Step, algorithms
 async def main():
     router = algorithms.stage_router(
         picker="efficient_first", confidence_threshold=0.5)
-    models = {"efficient": ["fast"], "capable": ["strong"]}
-    models["any"] = ["fast", "strong"]
+    models = {"efficient": ["Efficient"], "capable": ["Capable"]}
+    models["any"] = ["Efficient", "Capable"]
     text = {"type": "text", "text": "Hello"}
     request = {"messages": [{"role": "user", "content": [text]}]}
     async for step in router.run_stream(request, models):
@@ -140,4 +140,4 @@ async def main():
 asyncio.run(main())
 ```
 
-`uv run route.py` prints `Selected: fast` without making a network call. This routing-only example works with the released package. For the development API's host callbacks and cancellation, build the matching bindings from source as described at the top of this page, then see [the complete host example](../../examples/libsy.py).
+`uv run route.py` prints `Selected: Efficient` without making a network call. This routing-only example works with the released package. For the development API's host callbacks and cancellation, build the matching bindings from source as described at the top of this page, then see [the complete host example](../../examples/libsy.py).

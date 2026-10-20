@@ -1,6 +1,6 @@
 name: Getting Started
 
-# Structural drift checks for the README, library quickstart, and local evaluation guide.
+# Structural drift checks for the README, libsy quickstart, and local evaluation guide.
 # These checks do not execute model calls or validate provider access. Reproduce with
 # `uv run pytest tests/getting_started`.
 

@@ -14,17 +14,20 @@ def test_getting_started_documents_current_paths() -> None:
 
     assert (
         guide.index("## Route a request")
-        < guide.index("## Call your model")
+        < guide.index("## Use libsy with your client")
         < guide.index("## Next steps")
     )
-    assert guide.split("```rust\n", 1)[1].split("```", 1)[0] == (
-        readme.split("```rust\n", 1)[1].split("```", 1)[0]
-    )
-    assert "cargo add switchyard-libsy@=0.3.0 switchyard-protocol@=0.3.0" in guide
+    for step in ("CallModel", "CallDecision", "Done"):
+        assert f"Step::{step}(" in readme
+        for example in guide.split("```rust\n")[1:3]:
+            assert f"Step::{step}(" in example.split("```", 1)[0]
+    assert "cargo add switchyard-libsy switchyard-protocol --git" in guide
+    assert "--rev 5415db205c1f4db7e079731e7bf33a6609c67c8e" in guide
+    assert "call.respond(async {" in guide
     assert "client.call(outcome.request).await?" in guide
     assert "```python" not in guide + readme
-    assert "Selected: fast" in guide
-    assert "Selected: strong" in guide
+    assert "Selected: Efficient" in guide
+    assert "Selected: Capable" in guide
     assert "operations/local_evaluation.md" in guide
     assert "switchyard launch" not in guide
     assert "nemo-switchyard[cli]" not in guide
@@ -52,4 +55,4 @@ def test_getting_started_documents_current_paths() -> None:
         assert legacy_command not in guide + server
 
 
-# TODO: Execute the published-package examples in isolated CI environments.
+# TODO: Execute the documented Rust examples in isolated CI environments.

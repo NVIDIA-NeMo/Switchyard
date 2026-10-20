@@ -1,5 +1,5 @@
 site_name: Switchyard
-site_description: Embed Switchyard's Rust LLM routing library in your gateway or agent harness
+site_description: Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness
 repo_url: https://github.com/NVIDIA-NeMo/Switchyard
 repo_name: NVIDIA-NeMo/Switchyard
 edit_uri: edit/main/docs/
