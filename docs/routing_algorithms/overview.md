@@ -51,13 +51,13 @@ quality, follow the [tuning loop](../tuning/index.md).
 | Route `type` | Decides from | Extra model calls | Switches | Session ID | When it cannot decide | Measured | Start from |
 |---|---|---|---|---|---|---|---|
 | `auto` | Tool results in the request | None | Every request | Optional. Keeps the capable hold. | Efficient tier | The preset of the measured `stage_router` settings, with a shorter window. See [Auto](#auto). | The [Getting Started](../getting_started.md#server-path) route file |
-| `stage_router` | Tool results in the request | Optional judge on ambiguous turns | Every request | Optional. Keeps the capable hold. | Picker default | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21). A [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) is checked in; its results are pending validation. | That profile |
+| `stage_router` | Tool results in the request | Optional judge on ambiguous turns | Every request | Optional. Keeps the capable hold. | Picker default | [Terminal-Bench 2.1 and DeepSWE results](../benchmarks.md) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) | That profile |
 | `llm_classifier`, capability | A judge's view of the task | One judge call per request, user turn, or session | Per trigger | Optional. Needed to retain a verdict. | Strong target | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a [smoke-test config](../../benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml) is checked in. | That config |
 | `llm_classifier`, escalation | A judge's view of the finished weak turn | One judge call per unlatched turn | Latches once. Reversible with de-escalation. | Required to latch. Without it, `confirmations = 1` escalates single turns only. | An unreadable verdict keeps the current tier. A failed judge call stops the request in the server. | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) with the [checked-in profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml), and a [public report](https://www.langchain.com/blog/switchyard-agent-routing-benchmark) | That profile |
 | `llm_classifier`, custom | Your judge's verdict | One judge call per trigger | Per trigger | Optional. Needed to retain a verdict. | `default_target` | [tau2 profiles](../../benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml) | That profile |
 | `composite` | A judge at each user turn, tool results in between | One judge call per user turn or session | Every request, with a per-user-turn default | Required, or `message_hash_fallback` | Last tier, else efficient | Not benchmarked | [Composite Routing](composite_routing.md#configuration) |
-| `plan_execute` | The first edit or write tool call | None | Once per session | Recommended. Latches the handoff. | Stays on the planner | [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) checked in; results pending validation | That profile |
-| `advisor` | The executor's terminal turn | One advisor review per gated turn, up to `max_reviews` | Never. One executor serves. | Scopes the review budget | An unreadable verdict or a failed advisor call lets the buffered executor turn through (`fail_open`, default `true`). `fail_open = false` stops the request. | [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) checked in; results pending validation | That profile |
+| `plan_execute` | The first edit or write tool call | None | Once per session | Recommended. Latches the handoff. | Stays on the planner | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) | That profile |
+| `advisor` | The executor's terminal turn | One advisor review per gated turn, up to `max_reviews` | Never. One executor serves. | Scopes the review budget | An unreadable verdict or a failed advisor call lets the buffered executor turn through (`fail_open`, default `true`). `fail_open = false` stops the request. | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) | That profile |
 | `vgr` | Evidence about a local candidate | Verifier and judge calls | Per final answer | See [the page](vgr_routing.md) | Cloud tier | Not benchmarked. Planned for 0.4.0. | [`examples/vgr-local-servers.toml`](../../examples/vgr-local-servers.toml) |
 | `prefill_router` | Hidden states of the prompt | Encoder inference, no provider call | Every request | Not required | Checkpoint output | Experimental. No checkpoint is supplied. | [Schema example](../reference/toml_schema.md#prefill_router) |
 | `random` | Weights | None | Every request | Not required | Not applicable | Utility | [Random Routing](random_routing.md) |
@@ -71,10 +71,10 @@ verified. Task judges before the turn is served, which adds the judge's latency
 to every judged request.
 
 "Measured" links the [Benchmarks](../benchmarks.md) page, the checked-in
-profile, or the public report a result comes from. DeepSWE results are pending
-validation and are not quoted. The `capable_first` picker and `prefill_router`
-are experimental. See [Model Selection](model_selection.md#measured-pairs) for
-the measured model pairs.
+profile, or the public report a result comes from. The `capable_first` picker
+and `prefill_router` are experimental. See
+[Model Selection](model_selection.md#measured-pairs) for the measured model
+pairs.
 
 ### When routing will not help
 
