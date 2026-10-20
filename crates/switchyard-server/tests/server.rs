@@ -312,11 +312,17 @@ async fn upstream_chat(
             );
             return Sse::new(stream).into_response();
         }
+        let mut usage = json!({"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17,
+            "prompt_tokens_details": {"cached_tokens": 7, "cache_creation_tokens": 2},
+            "completion_tokens_details": {"reasoning_tokens": 3}});
+        if prompt == "reported-cost" {
+            usage["cost"] = json!(0.00004071);
+        }
         let events = [
             json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"role": "assistant"}}]}).to_string(),
             json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "hello"}}]}).to_string(),
             json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "-partial"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6, "prompt_tokens_details": {"cached_tokens": 2, "cache_creation_tokens": 1}}}).to_string(),
-            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "-final"}}], "usage": {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17, "prompt_tokens_details": {"cached_tokens": 7, "cache_creation_tokens": 2}, "completion_tokens_details": {"reasoning_tokens": 3}}}).to_string(),
+            json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {"content": "-final"}}], "usage": usage}).to_string(),
             json!({"id": "chatcmpl-stream", "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}).to_string(),
             "[DONE]".to_string(),
         ];
@@ -325,7 +331,15 @@ async fn upstream_chat(
                 .into_iter()
                 .map(|data| Ok::<Event, Infallible>(Event::default().data(data))),
         );
-        return Sse::new(stream).into_response();
+        let mut response = Sse::new(stream).into_response();
+        if prompt == "reported-cost" {
+            // LiteLLM streams report the charge in usage, with a zeroed breakdown header.
+            response.headers_mut().insert(
+                "x-litellm-response-cost-original",
+                HeaderValue::from_static("0.0"),
+            );
+        }
+        return response;
     }
 
     if model == "model/advisor" {
@@ -456,7 +470,7 @@ async fn upstream_chat(
     } else {
         "ok".to_string()
     };
-    Json(json!({
+    let mut response = Json(json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
         "model": model,
@@ -472,7 +486,15 @@ async fn upstream_chat(
             "prompt_tokens_details": {"cached_tokens": 7}
         }
     }))
-    .into_response()
+    .into_response();
+    if prompt == "reported-cost" {
+        // Buffered LiteLLM answers report their charge only in this header.
+        response.headers_mut().insert(
+            "x-litellm-response-cost",
+            HeaderValue::from_static("6.141e-05"),
+        );
+    }
+    response
 }
 
 async fn upstream_messages_requires_forwarded_oauth(
@@ -5890,7 +5912,7 @@ seed = 17
 }
 
 #[tokio::test]
-async fn session_cost_uses_served_model_rates_for_every_endpoint() -> TestResult {
+async fn session_cost_prefers_reported_charges_and_prices_served_models() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let directory = tempfile::tempdir()?;
     let prices = directory.path().join("prices.json");
@@ -5905,19 +5927,31 @@ async fn session_cost_uses_served_model_rates_for_every_endpoint() -> TestResult
     .with_routing_log(directory.path().join("routing.jsonl"))?
     .with_pricing_file(&prices)?;
     let app = build_switchyard_router(state);
-    for (endpoint, stream, model, expected) in [
-        ("/v1/chat/completions", false, "route-a", 0.0000137),
-        ("/v1/messages", false, "route-a", 0.0000137),
-        ("/v1/responses", false, "route-a", 0.0000137),
-        ("/v1/chat/completions", true, "route-a", 0.0000327),
-        ("/v1/messages", true, "route-a", 0.0000327),
-        ("/v1/responses", true, "route-b", 0.0001374),
+    for (endpoint, stream, model, prompt, expected) in [
+        ("/v1/chat/completions", false, "route-a", "hello", 0.0000137),
+        (
+            "/v1/messages",
+            false,
+            "route-a",
+            "reported-cost",
+            0.00006141,
+        ),
+        ("/v1/responses", false, "route-b", "hello", 0.0000714),
+        (
+            "/v1/chat/completions",
+            true,
+            "route-a",
+            "reported-cost",
+            0.00004071,
+        ),
+        ("/v1/messages", true, "route-a", "hello", 0.0000327),
+        ("/v1/responses", true, "route-b", "hello", 0.0001374),
     ] {
         let session = format!("cost-{model}-{endpoint}-{stream}");
         let mut body =
-            json!({"model":model,"stream":stream,"messages":[{"role":"user","content":"hello"}]});
+            json!({"model":model,"stream":stream,"messages":[{"role":"user","content":prompt}]});
         if endpoint == "/v1/responses" {
-            body = json!({"model":model,"stream":stream,"input":"hello"});
+            body = json!({"model":model,"stream":stream,"input":prompt});
         }
         if endpoint == "/v1/messages" {
             body["max_tokens"] = json!(100);
@@ -5940,7 +5974,20 @@ async fn session_cost_uses_served_model_rates_for_every_endpoint() -> TestResult
         .await?
         .json()?;
         assert_eq!(stats["total_calls"], 1);
-        assert_eq!(stats["cost"]["estimated_calls"], 1);
+        let source = if prompt == "reported-cost" {
+            "provider_reported_calls"
+        } else {
+            "estimated_calls"
+        };
+        assert_eq!(stats["cost"][source], 1);
+        assert_eq!(
+            stats["models"][if model == "route-a" {
+                "model/a"
+            } else {
+                "model/b"
+            }]["cost"][source],
+            1
+        );
         let actual = stats["cost"]["total_usd"]
             .as_f64()
             .ok_or("missing session cost")?;
