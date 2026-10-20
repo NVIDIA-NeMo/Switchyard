@@ -1846,11 +1846,8 @@ response <code>model</code> field, and pi's Anthropic client stores that id on t
 message. When routing picks another target on the next turn, pi treats the change as a
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
-<p>Set <code>cost</code> on the model entry for pi's native estimate. One rate table under a
-router alias is an approximation when targets have different prices. For a
-separate total that uses each served model and includes routing calls, see
-<a href="../costs/">Record Switchyard session costs</a>.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/91f2e04225468231fb007d88627dbc22900fe8f3/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b147d1d5871128f2daa3a54f8fa60513889e798f/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
 <p>An LLM gateway, such as a LiteLLM proxy, can serve Claude on three endpoints:
@@ -1930,8 +1927,6 @@ reports its own charge, the server records that charge instead of the estimate. 
 each request's cost with:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, model, cost}&#39;</span><span class="w"> </span>PATH
 </span></code></pre></div>
-<p><a href="../costs/">Record Switchyard session costs</a> describes the pricing file and how the
-server totals a session.</p>
 <h3 id="thinking">Thinking<a class="headerlink" href="#thinking" title="Permanent link">&para;</a></h3>
 <p>With <code>reasoning: true</code> on the model entry, pi sends a thinking level on every request,
 even when you do not pass <code>--thinking</code>. Switchyard passes that level to an OpenAI-format

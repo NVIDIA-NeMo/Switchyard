@@ -1819,10 +1819,8 @@ replay or compaction.</p>
 <p>Port 4000 is also the default port for <code>omp</code>'s <code>litellm</code> provider and for
 <code>omp auth-gateway</code>. If <code>LITELLM_API_KEY</code> is set, <code>omp</code> probes <code>http://localhost:4000/v1</code>
 as a LiteLLM proxy. In that case, run Switchyard on another port or set
-<code>LITELLM_BASE_URL</code>. Set <code>cost</code> on the model entry for <code>omp</code>'s native estimate.
-One rate table under a router alias is an approximation when targets have different prices. For a
-separate total that includes routing calls, see
-<a href="../costs/">Record Switchyard session costs</a>.</p>
+<code>LITELLM_BASE_URL</code>. Set <code>cost</code> on the model entry if you want <code>omp</code> to show a non-zero
+cost.</p>
 <h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
 <p>The pi guide's <a href="../pi/#claude-through-an-llm-gateway">Claude through an LLM gateway</a>
 section applies to <code>omp</code>: give Claude targets an LLM client with
