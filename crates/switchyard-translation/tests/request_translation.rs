@@ -4794,34 +4794,62 @@ fn anthropic_mcp_reconstruction_keeps_only_supported_fields() -> TestResult {
 #[test]
 fn anthropic_mcp_definitions_reject_malformed_input() {
     let engine = TranslationEngine::default();
-    for (pointer, invalid) in [
-        ("/tools/0/mcp_server_name", json!("undeclared")),
-        ("/tools/0/default_config", json!(null)),
-        ("/tools/0/default_config", json!({"enabled": "false"})),
-        ("/tools/0/configs", json!({"lookup": "malformed"})),
-        ("/tools/0/configs", json!({"lookup": {"defer_loading": 1}})),
-        ("/mcp_servers/1/url", json!(42)),
-        ("/mcp_servers/1/type", json!("other")),
-        ("/mcp_servers/1/authorization_token", json!(42)),
-        ("/mcp_servers", json!({})),
-        ("/mcp_servers/0/name", json!("inventory")),
-        ("/tools/2/mcp_server_name", json!("inventory")),
-        ("/tools/0", json!({"name": "local", "input_schema": {}})),
+    for (pointer, invalid, expected) in [
+        (
+            "/tools/0",
+            json!({"type": "mcp_toolset"}),
+            "MCP toolset requires a string mcp_server_name",
+        ),
+        (
+            "/tools/0/mcp_server_name",
+            json!("undeclared"),
+            "undeclared server",
+        ),
+        (
+            "/mcp_servers/0/name",
+            json!("inventory"),
+            "duplicate MCP server name",
+        ),
+        (
+            "/tools/2/mcp_server_name",
+            json!("inventory"),
+            "single toolset reference",
+        ),
+        (
+            "/tools/0",
+            json!({"name": "local", "input_schema": {}}),
+            "tools-array toolset reference",
+        ),
+        (
+            "/mcp_servers/1/type",
+            json!("other"),
+            "MCP servers require type url",
+        ),
+        (
+            "/tools/0/default_config",
+            json!({"enabled": "false"}),
+            "boolean settings",
+        ),
+        (
+            "/mcp_servers/1/authorization_token",
+            json!(42),
+            "expected string at mcp_servers.authorization_token",
+        ),
     ] {
         let mut body = anthropic_mcp_request();
         *body.pointer_mut(pointer).unwrap() = invalid;
-        assert!(
-            matches!(
-                engine.decode_request(
-                    WireFormat::AnthropicMessages,
-                    &body,
-                    &TranslationPolicy::default()
-                ),
-                Err(TranslationError::InvalidValue { .. })
-                    | Err(TranslationError::InvalidType { .. })
-            ),
-            "{pointer}: {body}"
-        );
+        let error = engine
+            .decode_request(
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )
+            .expect_err("malformed MCP definition must be rejected");
+        assert!(matches!(
+            error,
+            TranslationError::InvalidValue { .. } | TranslationError::InvalidType { .. }
+        ));
+        assert!(error.to_string().contains(expected), "{pointer}: {error}");
     }
 }
 

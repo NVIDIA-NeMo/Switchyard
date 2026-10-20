@@ -378,7 +378,8 @@ pub struct McpToolConfig {
 }
 
 impl McpToolConfig {
-    fn is_empty(&self) -> bool {
+    /// Returns whether no settings are specified.
+    pub fn is_empty(&self) -> bool {
         self.enabled.is_none() && self.defer_loading.is_none()
     }
 }
