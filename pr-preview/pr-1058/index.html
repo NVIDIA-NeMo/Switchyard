@@ -1640,8 +1640,8 @@
 
 
 <h1 id="switchyard">Switchyard<a class="headerlink" href="#switchyard" title="Permanent link">&para;</a></h1>
-<p>Switchyard helps an AI agent choose which model handles each request. Embed its Rust core, <strong>libsy</strong>, in your gateway or agent harness, directly or through Python bindings. Your application keeps its model clients, credentials, and service.</p>
-<p><strong><a href="getting_started/">Start with the library quickstart</a></strong>: install the package, run a short example, and send the selected request through your model client.</p>
+<p>Switchyard helps an AI agent choose which model handles each request. Embed its Rust core, <strong>libsy</strong>, in your gateway or agent harness. Your application keeps its model clients, credentials, and service.</p>
+<p><strong><a href="getting_started/">Start with the Rust quickstart</a></strong>: add the crates, run a routing example, and send the selected request through your model client.</p>
 <h2 id="choose-a-path">Choose a Path<a class="headerlink" href="#choose-a-path" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1653,9 +1653,14 @@
 </thead>
 <tbody>
 <tr>
-<td>Add routing to your gateway or application</td>
+<td>Add routing to your Rust gateway or application</td>
 <td>Library Path</td>
-<td><a href="getting_started/">Python quickstart</a> or <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cbcc3ef34758f2ad89b2b40b82322696fa204944/crates/libsy/README.md">Rust libsy crate</a></td>
+<td><a href="getting_started/">Rust quickstart</a></td>
+</tr>
+<tr>
+<td>Use libsy from Python</td>
+<td>Python Bindings</td>
+<td><a href="reference/host_integration/#python-bindings">Python embedding</a></td>
 </tr>
 <tr>
 <td>Evaluate routing locally with your own models</td>
@@ -1697,12 +1702,12 @@
 </ul>
 <h2 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cbcc3ef34758f2ad89b2b40b82322696fa204944/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration, endpoints, and metrics</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration, endpoints, and metrics</li>
 <li><a href="reference/rust_api/#switchyard-libsy"><code>switchyard-libsy</code></a>: embeddable routing algorithms</li>
 <li><a href="reference/rust_api/#switchyard-protocol"><code>switchyard-protocol</code></a>: provider-neutral API types</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cbcc3ef34758f2ad89b2b40b82322696fa204944/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>: protocol translation</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cbcc3ef34758f2ad89b2b40b82322696fa204944/crates/switchyard-nemo-relay-plugin/README.md"><code>switchyard-nemo-relay-plugin</code></a>: native plugin build and configuration</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cbcc3ef34758f2ad89b2b40b82322696fa204944/examples/dynamo-preproc/README.md">Dynamo / agentgateway</a>: Switchyard PreProc integration example</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>: protocol translation</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/crates/switchyard-nemo-relay-plugin/README.md"><code>switchyard-nemo-relay-plugin</code></a>: native plugin build and configuration</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/examples/dynamo-preproc/README.md">Dynamo / agentgateway</a>: Switchyard PreProc integration example</li>
 </ul>
 
 
