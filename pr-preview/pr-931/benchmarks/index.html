@@ -477,17 +477,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#deepswe" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DeepSWE
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#run-a-benchmark" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1544,17 +1533,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#deepswe" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        DeepSWE
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#run-a-benchmark" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1587,7 +1565,7 @@
 
 <h1 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h1>
 <p>Task completion, cost, and runnable configs. All configs use <code>OPENROUTER_API_KEY</code>.</p>
-<p><a href="#terminal-bench-21">Terminal-Bench 2.1</a> · <a href="#deepswe">DeepSWE</a> · <a href="#run-a-benchmark">Run a benchmark</a></p>
+<p><a href="#terminal-bench-21">Terminal-Bench 2.1</a> · <a href="#run-a-benchmark">Run a benchmark</a></p>
 <h2 id="terminal-bench-21">Terminal-Bench 2.1<a class="headerlink" href="#terminal-bench-21" title="Permanent link">&para;</a></h2>
 <p><strong>Claude Opus 4.8 + GLM 5.2</strong></p>
 <p><img alt="Terminal-Bench 2.1 task completion versus cost." src="../assets/switchyard-cost-accuracy.svg" /></p>
@@ -1617,13 +1595,13 @@
 <td>Escalation</td>
 <td style="text-align: right;">79.80%</td>
 <td style="text-align: right;">$122.63</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Jev (replay)</td>
 <td style="text-align: right;">82.02%</td>
 <td style="text-align: right;">≈$92.12</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/routing-profiles/tb21-jev-opus-glm.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/routing-profiles/tb21-jev-opus-glm.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Opus 4.8 only</td>
@@ -1639,56 +1617,30 @@
 </tr>
 </tbody>
 </table>
-<h2 id="deepswe">DeepSWE<a class="headerlink" href="#deepswe" title="Permanent link">&para;</a></h2>
-<p><strong>v1.1 · 113 tasks · Codex CLI · GPT-5.6 Luna + Sol</strong></p>
-<p><img alt="DeepSWE task completion versus cost." src="../assets/deepswe-cost-accuracy.svg" /></p>
-<table>
-<thead>
-<tr>
-<th>Strategy</th>
-<th style="text-align: right;">Tasks solved</th>
-<th style="text-align: right;">Cost per run</th>
-<th>Config</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Plan/Execute</td>
-<td style="text-align: right;">60.8%</td>
-<td style="text-align: right;">$180.51</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">TOML</a></td>
-</tr>
-<tr>
-<td>Advisor</td>
-<td style="text-align: right;">57.5%</td>
-<td style="text-align: right;">$208.00</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">TOML</a></td>
-</tr>
-<tr>
-<td>Stage</td>
-<td style="text-align: right;">61.36%</td>
-<td style="text-align: right;">$466.28</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">TOML</a></td>
-</tr>
-<tr>
-<td>Sol only</td>
-<td style="text-align: right;">62.8%</td>
-<td style="text-align: right;">$720.95</td>
-<td>—</td>
-</tr>
-<tr>
-<td>Luna only</td>
-<td style="text-align: right;">52.2%</td>
-<td style="text-align: right;">≈$49</td>
-<td>—</td>
-</tr>
-</tbody>
-</table>
-<p>Luna: one run; others: three-run means. <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/DEEPSWE_V11_QUALIFICATION.md">Evaluation settings</a>.</p>
+<!-- DeepSWE results are hidden while run validity is being reviewed.
+
+## DeepSWE
+
+**v1.1 · 113 tasks · Codex CLI · GPT-5.6 Luna + Sol**
+
+![DeepSWE task completion versus cost.](assets/deepswe-cost-accuracy.svg)
+
+| Strategy | Tasks solved | Cost per run | Config |
+| --- | ---: | ---: | --- |
+| Plan/Execute | 60.8% | $180.51 | [TOML](https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) |
+| Advisor | 57.5% | $208.00 | [TOML](https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) |
+| Stage | 61.36% | $466.28 | [TOML](https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) |
+| Sol only | 62.8% | $720.95 | — |
+| Luna only | 52.2% | ≈$49 | — |
+
+Luna: one run; others: three-run means. [Evaluation settings](https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/DEEPSWE_V11_QUALIFICATION.md).
+
+-->
+
 <h2 id="run-a-benchmark">Run a benchmark<a class="headerlink" href="#run-a-benchmark" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/README.md#one-time-setup">Setup</a> · <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/README.md#run-with-switchyard-routing">Run</a></li>
-<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3fce8aedf28743962f447c4de5bdfb93f4a43c5b/benchmark/README.md#deepswe-v11">Run with Pier</a></li>
+<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/README.md#one-time-setup">Setup</a> · <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/README.md#run-with-switchyard-routing">Run</a></li>
+<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9650b5ed5b979c45deefb50f796117772a53e7eb/benchmark/README.md#deepswe-v11">Run with Pier</a></li>
 </ul>
 
 
