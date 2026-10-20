@@ -8,8 +8,10 @@ package switchyard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The private runtime uses the same JSON codec ABI as the native backend.
@@ -62,5 +64,44 @@ func TestWasmTranslatorIsReplacedAfterFailure(t *testing.T) {
 	}
 	if _, err := wasmTranslate("sy_decode_request", input); err != nil {
 		t.Fatalf("translator was not replaced: %v", err)
+	}
+}
+
+// A caller's expired context must not close an instance that other runs share.
+func TestWasmCancelledRunKeepsSharedInstance(t *testing.T) {
+	backend, err := newWasmBackendWithPoolSize(json.RawMessage(`{"algorithm":`+composite+`,"targets":{"weak":"weak-model","strong":"strong-model","judge":"judge-model"}}`), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.close()
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := backend.route(context.Background(), input(), func(ctx context.Context, _ Work) (Reply, error) {
+			close(entered)
+			select {
+			case <-release:
+				return Reply{Response: json.RawMessage(judgeAnswer)}, nil
+			case <-ctx.Done():
+				return Reply{}, ctx.Err()
+			}
+		})
+		result <- err
+	}()
+	<-entered
+
+	large := input()
+	large.Request = json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("x", 32<<20) + `"}]}]}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	if _, err := backend.route(ctx, large, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expired run returned %v", err)
+	}
+
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatalf("run sharing the instance failed: %v", err)
 	}
 }
