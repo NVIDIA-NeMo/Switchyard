@@ -6,7 +6,6 @@
 mod algorithm;
 mod config;
 mod failure;
-pub mod pricing;
 mod provider_key_redactor;
 mod route;
 mod runner;
