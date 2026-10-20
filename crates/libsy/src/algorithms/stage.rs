@@ -187,20 +187,10 @@ impl StageRouter {
     /// Routes between the runtime `capable` and `efficient` models. The judge,
     /// when configured, is called through the runtime `judge` model.
     ///
-    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`, or if
-    /// `config` sets a knob that only a composition above this router can use:
-    /// `capable_first_threshold` is read only after an outer classifier selects
-    /// the capable tier, and the fallback judge runs on every ambiguous turn, so
-    /// its `classify_trigger` and `message_hash_fallback` would retain nothing.
+    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`, or if the
+    /// fallback judge is asked to retain verdicts: it runs on every ambiguous
+    /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
-        if config.capable_first_threshold != 0.0 {
-            return Err(LibsyError::AlgorithmError {
-                message: "capable_first_threshold applies only to composite routes, whose \
-                          classifier selects the capable tier; a standalone stage router \
-                          never reads it"
-                    .to_string(),
-            });
-        }
         if let Some(fallback) = &config.llm_fallback
             && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
                 || fallback.config.message_hash_fallback)
@@ -422,16 +412,6 @@ mod tests {
                 ..Default::default()
             },
         });
-        assert!(matches!(
-            StageRouter::new(config),
-            Err(LibsyError::AlgorithmError { .. })
-        ));
-    }
-
-    #[test]
-    fn rejects_a_capable_first_threshold_on_a_standalone_router() {
-        let mut config = config();
-        config.capable_first_threshold = 0.2;
         assert!(matches!(
             StageRouter::new(config),
             Err(LibsyError::AlgorithmError { .. })

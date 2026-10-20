@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Stage-router knobs that only a composite route can use are rejected at load.
+//! Stage fallback-judge knobs that cannot take effect are rejected at load.
 
 use switchyard_runner::Runner;
 
@@ -57,13 +57,4 @@ fn rejects_classifier_knobs_that_have_no_effect() {
             "{setting}: {error}"
         );
     }
-}
-
-#[test]
-fn rejects_capable_first_threshold_on_a_standalone_route() {
-    let error = load_error(&format!("{CONFIG}capable_first_threshold = 0.2\n"));
-    assert!(
-        error.contains("capable_first_threshold applies only to composite routes"),
-        "{error}"
-    );
 }
