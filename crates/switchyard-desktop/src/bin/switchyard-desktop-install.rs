@@ -95,24 +95,25 @@ fn perform(action: &str, dry_run: bool, file: Option<&Path>) -> Result<(), Strin
     // Windows cannot replace or delete a running executable, so the installed helper must not
     // change its own installation. The app's update runs a temporary copy instead.
     #[cfg(windows)]
-    if !dry_run
-        && std::env::current_exe()
-            .and_then(std::fs::canonicalize)
-            .is_ok_and(|exe| {
-                std::fs::canonicalize(settings.binary("switchyard-desktop-install"))
-                    .is_ok_and(|installed| installed == exe)
-            })
-    {
-        return Err(format!(
-            "The installed installer cannot {action} the installation it belongs to, because \
-             Windows keeps a running program from being replaced. Run cargo desktop {} from the \
-             Switchyard source checkout instead.",
-            if action == "update" {
-                "install"
-            } else {
-                action
-            }
-        ));
+    if !dry_run {
+        let installed = settings.binary("switchyard-desktop-install");
+        if installed.try_exists().map_err(|e| e.to_string())?
+            && std::env::current_exe()
+                .and_then(std::fs::canonicalize)
+                .map_err(|e| e.to_string())?
+                == installed.canonicalize().map_err(|e| e.to_string())?
+        {
+            return Err(format!(
+                "The installed installer cannot {action} its own installation, because Windows \
+                 locks running programs. Run cargo desktop {} from the Switchyard source \
+                 checkout instead.",
+                if action == "update" {
+                    "install"
+                } else {
+                    action
+                }
+            ));
+        }
     }
     execute(&settings, action, dry_run)
 }

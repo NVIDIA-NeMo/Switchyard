@@ -468,6 +468,66 @@ esac
 
 #[cfg(windows)]
 #[test]
+// The installed helper must refuse changes to its own installation but still allow previews.
+fn installed_windows_helper_rejects_changes_and_allows_previews() {
+    use switchyard_desktop::install::Settings;
+
+    let root = tempfile::tempdir().expect("fixture");
+    let home = root.path();
+    let settings = Settings {
+        home: home.to_path_buf(),
+        sy_home: home.join("state"),
+        codex_home: home.join("codex"),
+        service_dir: home.join("services"),
+        app_dir: Some(home.join("Programs/Switchyard")),
+        source: home.join("source"),
+        cargo: home.join("cargo.exe"),
+        port: 4123,
+        profile: "sy".into(),
+        model: "test-route".into(),
+    };
+    fs::create_dir_all(settings.bin_dir()).expect("bin directory");
+    let helper = settings.binary("switchyard-desktop-install");
+    fs::copy(env!("CARGO_BIN_EXE_switchyard-desktop-install"), &helper).expect("helper");
+    let record = home.join("install.toml");
+    fs::write(&record, toml::to_string(&settings).expect("settings")).expect("record");
+
+    for action in ["install", "update", "uninstall"] {
+        let mut command = Command::new(&helper);
+        command.arg(action);
+        if action == "install" {
+            command
+                .env("HOME", home)
+                .env("LOCALAPPDATA", home)
+                .env("SY_HOME", &settings.sy_home)
+                .env("CODEX_HOME", &settings.codex_home)
+                .env("SY_PROFILE", &settings.profile)
+                .env("SY_MODEL", &settings.model)
+                .env("SY_PORT", settings.port.to_string());
+        } else {
+            command.arg("--settings").arg(&record);
+        }
+        let output = command.output().expect("installer");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{action}");
+        assert!(error.contains("Run cargo desktop"), "{error}");
+        assert!(!settings.sy_home.exists());
+        assert!(!settings.service_dir.exists());
+        assert!(!settings.codex_home.exists());
+        assert!(helper.is_file());
+    }
+    let output = Command::new(&helper)
+        .args(["uninstall", "--dry-run", "--settings"])
+        .arg(&record)
+        .output()
+        .expect("preview");
+    assert!(output.status.success(), "{output:?}");
+    assert!(!settings.sy_home.exists());
+    assert!(helper.is_file());
+}
+
+#[cfg(windows)]
+#[test]
 fn a_locked_windows_executable_rolls_back_every_earlier_replacement() {
     use std::os::windows::fs::OpenOptionsExt;
     use switchyard_desktop::install::{Settings, executable_name, windows};
