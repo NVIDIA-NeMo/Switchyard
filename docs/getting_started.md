@@ -74,7 +74,7 @@ Selected: Efficient
 
 The Stage router reads conversation and tool-result signals. With `EfficientFirst` and no tool history, it selects the efficient model. The `0.5` value is a routing confidence threshold, not a measured probability of task success. This is the same preset the TOML runner calls **Auto**.
 
-The loop lists every `Step` variant. This local example has no clients, so it reports an error if an algorithm requests a call. The next example serves those calls through clients.
+The loop lists every `Step` variant. This local example has no clients, so it reports an error if an algorithm requests a call. The next example supplies an LLM client and shows where to connect a decision client.
 
 ## Use libsy with your client
 
@@ -84,16 +84,20 @@ In an existing gateway, insert libsy before the model call:
 request -> Algorithm::run_stream -> selected model + returned request -> your client
 ```
 
-Keep your existing client behind the `RoutedLlmClient` trait, or use Switchyard's optional HTTP client. The complete example below uses that client against OpenRouter. It converts the provider-neutral request to Chat Completions and converts the reply back.
+**You do not have to use Switchyard's HTTP client.** Keep your existing SDK, or create your own client. `run_stream` hands model calls back to your application; you decide how to send them and return their responses.
 
-Add the client crate and create the directory for this second example:
+This complete example creates an `OpenRouterClient` with `reqwest`. It sends a real Chat Completions request to [OpenRouter](https://openrouter.ai/docs/quickstart) and prints the answer. It uses `switchyard-translation` to convert between libsy's types and OpenRouter's JSON format. It does not depend on `switchyard-llm-client` or require a client trait implementation.
+
+Add the dependencies and create the directory for this second example:
 
 ```bash
-cargo add switchyard-llm-client --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+cargo add reqwest@0.13 --no-default-features --features json,rustls
+cargo add serde_json@1
 mkdir -p examples
 ```
 
-Set `OPENROUTER_API_KEY` with access to `z-ai/glm-5.2` and `anthropic/claude-opus-4.8`, or replace both model IDs with models you can use. These models also appear in our [Terminal-Bench 2.1 results](benchmarks.md#terminal-bench-21).
+Create an API key in your [OpenRouter account](https://openrouter.ai/settings/keys) and make sure the account can pay for requests. Set `OPENROUTER_API_KEY` with access to `z-ai/glm-5.2` and `anthropic/claude-opus-4.8`, or replace both model IDs with models you can use. These models also appear in our [Terminal-Bench 2.1 results](benchmarks.md#terminal-bench-21).
 
 ```bash
 export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
@@ -107,34 +111,50 @@ use futures::StreamExt;
 use switchyard_libsy::{
     Algorithm, LibsyError, PickerMode, RuntimeModels, StageRouter, StageRouterConfig, State, Step,
 };
-use switchyard_llm_client::{
-    Backend, HttpBackendConfig, ModelConfig, SystemOneClient, TranslatingLlmClient,
-};
 use switchyard_protocol::{
-    Category, LlmResponse, Request, RoutedDecisionClient, RoutedLlmClient,
-    completion_text, text_request,
+    Category, LlmResponse, Request, Response, completion_text, text_request,
 };
+use switchyard_translation::{
+    WireFormat, decode_aggregated_response, encode_request,
+};
+
+struct OpenRouterClient {
+    http: reqwest::Client,
+    api_key: String,
+}
+
+impl OpenRouterClient {
+    async fn call(&self, request: Request) -> switchyard_libsy::Result<Response> {
+        let body = encode_request(&request.llm_request, WireFormat::OpenAiChat)
+            .map_err(|error| LibsyError::external("encoding OpenRouter request", error))?;
+        let response = self.http
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send().await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|error| LibsyError::external("OpenRouter request", error))?;
+        let upstream_headers = response.headers().clone();
+        let body = response.json::<serde_json::Value>().await
+            .map_err(|error| LibsyError::external("reading OpenRouter response", error))?;
+        let answer = decode_aggregated_response(&body, WireFormat::OpenAiChat)
+            .map_err(|error| LibsyError::external("decoding OpenRouter response", error))?;
+        Ok(Response {
+            llm_response: LlmResponse::Agg(answer),
+            metadata: request.metadata,
+            upstream_headers,
+        })
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let efficient = "z-ai/glm-5.2";
     let capable = "anthropic/claude-opus-4.8";
-    let backend = Backend::OpenAiChat(HttpBackendConfig {
-        base_url: "https://openrouter.ai/api/v1".into(),
-        api_key: Some(std::env::var("OPENROUTER_API_KEY")?),
-        forward_auth: false,
-        extra_headers: Default::default(),
-        extra_body: Default::default(),
-        omit_body_fields: Default::default(),
-        reasoning_effort: None,
-        max_retries: 2,
-        failure_cooldown: Default::default(),
-        timeout: None,
-    });
-    let client = TranslatingLlmClient::new(&[
-        ModelConfig::new(efficient, backend.clone(), None),
-        ModelConfig::new(capable, backend, None),
-    ])?;
+    let client = OpenRouterClient {
+        http: reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?,
+        api_key: std::env::var("OPENROUTER_API_KEY")?,
+    };
     let router = Arc::new(StageRouter::new(StageRouterConfig::new(
         PickerMode::EfficientFirst, 0.5,
     ))?);
@@ -152,24 +172,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match step? {
             Step::CallModel(call) => {
                 let request = call.request.clone();
-                let model = call.models[0].clone();
-                call.respond(async {
-                    client.call(request).await
-                        .map_err(|error| LibsyError::client_call(model, error))
-                }).await?;
+                call.respond(client.call(request)).await?;
             }
-            Step::CallDecision(call) => {
-                let decision_client = SystemOneClient::new(
-                    std::env::var("SYSTEM_ONE_ENDPOINT")?.parse()?,
-                    std::env::var("SYSTEM_ONE_API_KEY")?,
-                    Duration::from_secs(30),
-                )?;
-                let request = call.request.clone();
-                let model = call.model.clone();
-                call.respond(async {
-                    decision_client.call(request).await
-                        .map_err(|error| LibsyError::client_call(model, error))
-                }).await?;
+            Step::CallDecision(_) => {
+                return Err("Configure a decision client before using a decision-model algorithm.".into());
             }
             Step::Done(outcome) => {
                 println!("Selected: {}", outcome.selected_model_id()?);
@@ -195,17 +201,19 @@ cargo run --example gateway
 
 The first line is `Selected: z-ai/glm-5.2`. The second starts with `Answer:` and contains the model's reply. A successful response verifies provider access as well as routing.
 
-The host sends **`outcome.request`**, including routing-time rewrites, to the client. This example uses the first selected model; your gateway can apply its own fallback policy to later entries in `selected_model_ids`. The [HTTP client crate](../crates/libsy-llm-client/README.md) also provides a `run` helper that drives routing and handles terminal calls, retries, and candidate fallback.
+The host sends **`outcome.request`**, including routing-time rewrites, to the custom client. The selected model is already set on that request. This client handles buffered responses. Your gateway can add streaming, retries, and fallback to later entries in `selected_model_ids`.
 
-The handlers cover all three steps:
+The loop lists all three steps:
 
 | Step | Host action |
 | --- | --- |
 | `CallModel` | Send the routing-time LLM request through your client and pass its future to `respond`. |
-| `CallDecision` | Send the typed decision request through a decision client and pass its future to `respond`. |
+| `CallDecision` | Requires a separate decision client. This example reports that missing setup explicitly. |
 | `Done` | Reuse the returned response, or send the returned request to the selected model. |
 
-The Stage preset above yields only `Done`. An LLM classifier can also yield `CallModel`; a decision-model classifier can yield `CallDecision`. The decision handler uses the optional System One client. For that handler, set `SYSTEM_ONE_ENDPOINT` to a full URL ending in `/v1/systemone` and `SYSTEM_ONE_API_KEY` to its key. Stage routing needs neither variable. Your application can instead supply its own `RoutedDecisionClient`.
+The Stage preset above yields only `Done`. An LLM classifier can also yield `CallModel`, which the custom client handles. A decision-model algorithm yields `CallDecision`, whose typed request is different from Chat Completions. To use one, supply your own decision client and replace that branch with the [decision-call handler](reference/host_integration.md#serve-routing-time-calls).
+
+You can replace `OpenRouterClient` with your existing client or SDK. Return `switchyard_protocol::Response` and adapt errors to `libsy::Result` when replying to a call. The [optional Switchyard HTTP client](../crates/libsy-llm-client/README.md) provides translation, streaming, and a `run` helper for terminal calls, retries, and fallback. Implement `RoutedLlmClient` if you want to use your own client with that helper; `run_stream` itself does not require it.
 
 This example serves calls one at a time. For algorithms that issue concurrent calls, use `libsy::drive` to poll handlers together and cancel pending work when routing ends. See the [host integration guide](reference/host_integration.md#concurrent-calls-and-cancellation).
 

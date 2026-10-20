@@ -74,8 +74,8 @@ An algorithm yields a stream of steps. Each `Step::CallModel` is a routing-time 
 Pass each call's work to `respond` before awaiting it. In Rust:
 
 ```rust
-use switchyard_libsy::{CallModel, LibsyError, Result};
-use switchyard_protocol::RoutedLlmClient;
+use switchyard_libsy::{CallDecision, CallModel, LibsyError, Result};
+use switchyard_protocol::{RoutedDecisionClient, RoutedLlmClient};
 
 async fn serve(call: CallModel, client: &dyn RoutedLlmClient) -> Result<()> {
     let request = call.request.clone();
@@ -84,7 +84,17 @@ async fn serve(call: CallModel, client: &dyn RoutedLlmClient) -> Result<()> {
         client.call(request).await.map_err(|error| LibsyError::client_call(model, error))
     }).await
 }
+
+async fn serve_decision(call: CallDecision, client: &dyn RoutedDecisionClient) -> Result<()> {
+    let request = call.request.clone();
+    let model = call.model.clone();
+    call.respond(async move {
+        client.call(request).await.map_err(|error| LibsyError::client_call(model, error))
+    }).await
+}
 ```
+
+These traits belong to `switchyard-protocol`. Implement them over your own transport or SDK. The quickstart's custom [OpenRouter client](../getting_started.md#use-libsy-with-your-client) calls HTTP directly; `run_stream` also works without implementing these traits. Switchyard's HTTP client is optional.
 
 In Python, the client coroutine returns `LlmResponse.Agg` or `LlmResponse.Stream`:
 

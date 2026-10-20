@@ -23,7 +23,11 @@ def test_getting_started_documents_current_paths() -> None:
             assert f"Step::{step}(" in example.split("```", 1)[0]
     assert "cargo add switchyard-libsy switchyard-protocol --git" in guide
     assert "--rev 5415db205c1f4db7e079731e7bf33a6609c67c8e" in guide
-    assert "call.respond(async {" in guide
+    assert "call.respond(client.call(request)).await?" in guide
+    assert "struct OpenRouterClient" in guide
+    assert '.post("https://openrouter.ai/api/v1/chat/completions")' in guide
+    assert "You do not have to use Switchyard's HTTP client." in guide
+    assert "cargo add switchyard-llm-client" not in guide
     assert "client.call(outcome.request).await?" in guide
     assert "```python" not in guide + readme
     assert "Selected: Efficient" in guide
