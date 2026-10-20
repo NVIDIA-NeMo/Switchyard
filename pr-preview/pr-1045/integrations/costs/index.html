@@ -21,7 +21,7 @@
     
     
       
-        <title>Display Switchyard session costs - Switchyard</title>
+        <title>Record Switchyard session costs - Switchyard</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#display-switchyard-session-costs" class="md-skip">
+        <a href="#record-switchyard-session-costs" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Display Switchyard session costs
+              Record Switchyard session costs
             
           </span>
         </div>
@@ -1440,80 +1440,6 @@
     
   
   
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      On this page
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#configure-rates" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configure rates
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#read-a-session-report" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Read a session report
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#claude-code" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Claude Code
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pi" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        pi
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#oh-my-pi" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Oh My Pi
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#codex" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Codex
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
 </nav>
                   </div>
                 </div>
@@ -1532,135 +1458,57 @@
   
 
 
-<h1 id="display-switchyard-session-costs">Display Switchyard session costs<a class="headerlink" href="#display-switchyard-session-costs" title="Permanent link">&para;</a></h1>
-<p>Switchyard can price each observed call using the model that served it. Its session
-report includes the answer and the classifier or judge calls used to route it.
-The example displays below show this report in Claude Code, pi, and Oh My Pi.</p>
-<h2 id="configure-rates">Configure rates<a class="headerlink" href="#configure-rates" title="Permanent link">&para;</a></h2>
-<p>Start the server with a routing log and an optional pricing file:</p>
+<h1 id="record-switchyard-session-costs">Record Switchyard session costs<a class="headerlink" href="#record-switchyard-session-costs" title="Permanent link">&para;</a></h1>
+<p>Switchyard records each observed call's cost in the routing log, including calls
+made by classifiers and judges. To estimate costs that the upstream does not
+report, start the server with a pricing file:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--routing-log-file<span class="w"> </span>routing.jsonl<span class="w"> </span>--pricing-file<span class="w"> </span>prices.json
 </span></code></pre></div>
-<p>The JSON file maps the served model IDs in the routing log to USD per million
-tokens. These are illustrative rates; supply your gateway's rates:</p>
+<p>The JSON file maps served model IDs to USD per million tokens. These rates are
+illustrative; supply your provider's rates:</p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;upstream/efficient&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.1</span><span class="p">,</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">&quot;cache_write_1h&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="p">},</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">  </span><span class="nt">&quot;upstream/capable&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">20</span><span class="p">,</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.2</span><span class="p">,</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="p">}</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;upstream/model&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.1</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">&quot;cache_write_1h&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>The four base rates are required. <code>cache_write_1h</code> is optional. The server rejects
-unknown fields, duplicate model IDs, empty or padded IDs, and rates outside
-0 to 10000. Explicit zero rates mean free usage. Missing model rates mean unknown
-cost. Model IDs must identify a single rate table across gateways; use distinct
-served IDs when the same model has different gateway rates. Rates load at startup.
-Restart to load changes; saved records keep the cost calculated when the call
-completed.</p>
-<p>A charge that the upstream reports in USD takes precedence over an estimate,
-even when it is zero. The server reads it from <code>usage.cost</code> in the response,
-which OpenRouter and streamed LiteLLM responses include. For a buffered
-response, LiteLLM sends the charge in the <code>x-litellm-response-cost</code> header
-instead, and the server records that value. The server cannot see headers on
-classifier and judge calls, so those calls use <code>usage.cost</code> or the estimate. Without a charge, Switchyard multiplies the separate input,
-cache-read, cache-write, and output token counts by the configured rates.
-Reasoning tokens are already part of output usage and are not added again.
-When the provider reports one-hour cache-write tokens, their rate is required.
-When it does not report cache duration, the estimate uses <code>cache_write</code> for all
-writes. Supply rates that match the requested tier; this table does not apply
-long-context or service-tier surcharges automatically.</p>
-<p>You can omit <code>--pricing-file</code> to record provider-reported charges alone.
-Translation preserves charges and reported one-hour cache-write counts across
-Chat Completions, Anthropic Messages, and Responses. Translated Chat Completions
-responses emit cache writes as <code>prompt_tokens_details.cache_write_tokens</code>, which pi and Oh My Pi read.
-The decoder also accepts the older <code>cache_creation_tokens</code> field. Same-format
-raw response replay preserves the upstream JSON.</p>
-<h2 id="read-a-session-report">Read a session report<a class="headerlink" href="#read-a-session-report" title="Permanent link">&para;</a></h2>
-<p>The caller must send a session header that Switchyard recognizes on its model
-requests, such as <code>x-switchyard-session-id: my-session</code>. Read that session with:</p>
+<p>The four base rates are required; <code>cache_write_1h</code> is optional. The server rejects
+unknown fields, duplicate, empty or padded model IDs, and rates outside 0 to 10000.
+Zero means free usage. Use distinct served IDs when gateways charge different
+rates for the same model. Rates load once at startup; saved costs do not change
+when the pricing file changes.</p>
+<p>A valid charge in <code>usage.cost</code> takes precedence, including zero. Buffered answers
+can also report a charge in <code>x-litellm-response-cost</code>. Otherwise, Switchyard prices
+input, output, cache reads and cache writes separately. Reasoning tokens already
+count toward output. Reported one-hour cache writes require <code>cache_write_1h</code>;
+writes without a reported duration use <code>cache_write</code>. Missing usage or rates leave
+cost unknown. The table does not apply service-tier or long-context surcharges.
+Omit <code>--pricing-file</code> to record reported charges alone.</p>
+<p>Send <code>x-switchyard-session-id: my-session</code> with model requests, then read:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>curl<span class="w"> </span><span class="s1">&#39;http://localhost:4000/v1/routing/session-stats?session_id=my-session&#39;</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{model, cost}&#39;</span><span class="w"> </span>routing.jsonl
 </span></code></pre></div>
-<p>The response adds <code>cost</code>, <code>answer_cost</code>, and <code>routing_cost</code>, plus <code>cost</code> for each
-model. Each total has <code>known_usd</code>, <code>total_usd</code>, <code>unknown_calls</code>, <code>estimated_calls</code>,
-and <code>provider_reported_calls</code>. <code>total_usd</code> is null if any observed call has no
-known cost. <code>known_usd</code> remains the subtotal of priced calls. Old records without
-cost fields contribute unpriced calls. The routing log stores each priced call's
-<code>cost</code> as an object, such as <code>{ "usd": 0.01, "source": "estimated" }</code>. Its <code>source</code>
-is <code>"estimated"</code> or <code>"provider_reported"</code>; an unpriced call has <code>"cost": null</code>.
-When the provider reports one-hour cache writes, the record also names that
-part of <code>cache_creation_tokens</code> in <code>cache_creation_1h_tokens</code>.</p>
-<p>Totals cover recorded calls. Failed answer, classifier, and stream calls that
-reach the server's observation code are unpriced. Internal HTTP retries,
-cancelled requests, and streams abandoned before observation completes can
-leave charges unrecorded. The report cannot establish the provider's bill.
-Session totals include all recorded branches and compaction calls carrying the
-same session ID; a CLI's active-branch total can cover a different set of calls.
-The pricing table stays in memory for the routing log writer's lifetime and does
-not grow per call. Its size follows the pricing file. The log grows with recorded
-calls; this option adds no rotation or size limit. Separate replica logs produce
-separate totals. If a log append fails, the server warns and continues serving;
-missed records are not recovered automatically. The session endpoint scans the
-log on each read. The displays fetch on agent
-completion, rather than polling in the background.</p>
-<h2 id="claude-code">Claude Code<a class="headerlink" href="#claude-code" title="Permanent link">&para;</a></h2>
-<p>Use the Python example as a status-line command. Set the repository path and the
-server address in Claude Code's settings:</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;statusLine&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;command&quot;</span><span class="p">,</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;python3 /path/to/Switchyard/examples/costs/claude_statusline.py --base-url http://localhost:4000&quot;</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="p">}</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">}</span>
-</span></code></pre></div>
-<p>The command reads <code>session_id</code> from Claude Code's status-line JSON input and
-prints the Switchyard total, including routing cost. If you already have a
-status-line command, call the example from that command to retain your display.
-You can also run it from a shell with <code>--session-id my-session</code>.</p>
-<p>Claude Code's native cost display computes prices locally. Its managed
-<a href="https://code.claude.com/docs/en/settings-reference#modelpricing"><code>modelPricing</code></a>
-setting supports model and gateway-alias rate tables in version 2.1.242 or later.
-Claude ignores that setting in ordinary user settings and <code>--settings</code>.
-A fixed rate under a routing alias cannot describe differently priced targets or
-include hidden judge calls. The Switchyard status line displays a separate total;
-it does not change Claude Code's native cost or budget enforcement.</p>
-<h2 id="pi">pi<a class="headerlink" href="#pi" title="Permanent link">&para;</a></h2>
-<p>Load the example extension with your existing Switchyard provider configuration:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pi<span class="w"> </span>-e<span class="w"> </span>/path/to/Switchyard/examples/costs/pi.ts<span class="w"> </span>--provider<span class="w"> </span>switchyard<span class="w"> </span>--model<span class="w"> </span>switchyard
-</span></code></pre></div>
-<p>The extension sends <code>x-switchyard-session-id</code> and shows a separate footer after
-each agent turn. Set <code>SWITCHYARD_BASE_URL</code> when the server is elsewhere. Keep the
-helper <code>display.ts</code> beside <code>pi.ts</code> when copying the example.</p>
-<p>pi's OpenAI adapters price the local model entry from its <code>cost</code> table. The
-response's served model ID or <code>usage.cost</code> does not replace that table. A fixed
-rate is useful for a fixed target; a router alias needs a separate display for
-per-call target pricing. Keep the OpenAI request API described in the
-<a href="../pi/#which-request-api">pi guide</a>.</p>
-<h2 id="oh-my-pi">Oh My Pi<a class="headerlink" href="#oh-my-pi" title="Permanent link">&para;</a></h2>
-<p>Load the example with an <code>anthropic-messages</code> Switchyard provider:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>omp<span class="w"> </span>-e<span class="w"> </span>/path/to/Switchyard/examples/costs/omp.ts<span class="w"> </span>--model<span class="w"> </span>switchyard/switchyard
-</span></code></pre></div>
-<p>Oh My Pi sends a session header on that API, so the footer can look up the
-session report. The current custom-provider OpenAI adapters send no session
-header; this example cannot show their session totals. Use the configuration in
-<a href="../oh_my_pi/#which-request-api">the Oh My Pi guide</a>. Keep <code>display.ts</code> beside
-<code>omp.ts</code>, and set <code>SWITCHYARD_BASE_URL</code> for another server address.</p>
-<p>Oh My Pi's custom <code>switchyard</code> provider uses configured model rates for its
-native cost. Its supported OpenRouter integration can instead use <code>usage.cost</code>.
-Returning the same field to a provider named <code>switchyard</code> does not activate that
-behavior. The footer leaves native cost and budget enforcement unchanged.</p>
-<h2 id="codex">Codex<a class="headerlink" href="#codex" title="Permanent link">&para;</a></h2>
-<p>Codex's token display does not accept a dollar rate from Switchyard. Use the
-session report or the Python command with an explicitly supplied session ID.
-Per-request pricing still helps compare routed workloads even when the caller
-has no native dollar display.</p>
+<p>A priced log record contains <code>"cost": {"usd": 0.01, "source": "estimated"}</code> or
+<code>"source": "provider_reported"</code>; an unpriced record contains <code>"cost": null</code>.
+The report includes session and per-model <code>cost</code>, plus <code>answer_cost</code> and
+<code>routing_cost</code>. Each total has <code>known_usd</code>, <code>total_usd</code>, <code>unknown_calls</code>,
+<code>estimated_calls</code>, and <code>provider_reported_calls</code>. If any recorded call has unknown
+cost, <code>total_usd</code> is null and <code>known_usd</code> remains the priced subtotal. Old records
+without a cost count as unknown.</p>
+<p>Totals cover recorded calls, including failed calls observed by the server.
+Classifier and judge calls cannot use header charges. Internal retries, cancelled
+requests and abandoned streams may leave charges unrecorded. These totals cannot
+establish the provider's bill or replace a client's native budget enforcement.</p>
+<p>When Switchyard translates a buffered response to Chat Completions, it writes
+cache-write tokens as <code>prompt_tokens_details.cache_write_tokens</code>. Earlier
+versions wrote <code>cache_creation_tokens</code> there. Streamed Chat output already used
+<code>cache_write_tokens</code>. Both names are accepted on input, and same-format replay
+returns the upstream JSON unchanged.</p>
+<p>The log writer holds one rate table in memory. The log grows per call and has no
+size limit or rotation from this option. Failed appends produce a warning and are
+not recovered; separate replica logs give separate totals. The session endpoint
+scans the log on each read.</p>
 
 
 
