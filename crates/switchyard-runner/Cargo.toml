@@ -32,5 +32,4 @@ tracing.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 futures-util.workspace = true
-tempfile = "3"
 tokio.workspace = true

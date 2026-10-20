@@ -2129,7 +2129,7 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
 }
 
 // Encodes normalized usage into Responses usage JSON.
-fn encode_responses_usage(usage: &Usage) -> Value {
+pub(super) fn encode_responses_usage(usage: &Usage) -> Value {
     let input_tokens = usage.input_tokens.unwrap_or(0)
         + usage.cached_input_tokens().unwrap_or(0)
         + usage.cache_creation_input_tokens().unwrap_or(0);

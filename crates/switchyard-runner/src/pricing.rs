@@ -11,8 +11,7 @@ use switchyard_protocol::Usage;
 
 use crate::RunnerError;
 
-/// Pricing maps served model IDs to token rates in USD per million tokens. The server prices
-/// routing records with it, and the desktop app prices its baseline comparison with it.
+/// Pricing maps served model IDs to token rates in USD per million tokens.
 #[derive(Debug, Default)]
 pub struct Pricing(HashMap<String, Rates>);
 
@@ -105,11 +104,6 @@ impl Pricing {
         Ok(pricing)
     }
 
-    /// This function reports whether the file has rates for `model`.
-    pub fn contains(&self, model: &str) -> bool {
-        self.0.contains_key(model)
-    }
-
     /// Provider charges take precedence because token rates may omit provider surcharges.
     pub fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
         if let Some(usd) = usage
@@ -188,20 +182,6 @@ impl CostTotals {
         }
         self.total_usd = (self.unknown_calls == 0).then_some(self.known_usd);
     }
-
-    /// This function adds another set of totals, such as one day's totals to a week.
-    pub fn merge(&mut self, other: &Self) {
-        let known = self.known_usd + other.known_usd;
-        if known.is_finite() {
-            self.known_usd = known;
-            self.estimated_calls += other.estimated_calls;
-            self.provider_reported_calls += other.provider_reported_calls;
-        } else {
-            self.unknown_calls += other.estimated_calls + other.provider_reported_calls;
-        }
-        self.unknown_calls += other.unknown_calls;
-        self.total_usd = (self.unknown_calls == 0).then_some(self.known_usd);
-    }
 }
 
 #[cfg(test)]
@@ -209,37 +189,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_invalid_rate_tables() -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_invalid_rate_tables() {
         let valid = r#"{"input":1,"output":5,"cache_read":0.1,"cache_write":2}"#;
         for rates in [
-            r#"{"input":-1,"output":5,"cache_read":0.1,"cache_write":2}"#.to_string(),
-            r#"{"input":1,"output":5,"cache_read":0.1}"#.to_string(),
-            r#"{"input":1,"output":5,"cache_read":0.1,"cache_write":2,"cache_wirte":2}"#
-                .to_string(),
-            r#"{"input":1e999,"output":5,"cache_read":0.1,"cache_write":2}"#.to_string(),
+            r#"{"input":-1,"output":5,"cache_read":0.1,"cache_write":2}"#,
+            r#"{"input":1,"output":5,"cache_read":0.1}"#,
+            r#"{"input":1,"output":5,"cache_read":0.1,"cache_write":2,"cache_wirte":2}"#,
+            r#"{"input":1e999,"output":5,"cache_read":0.1,"cache_write":2}"#,
         ] {
-            let file = tempfile::NamedTempFile::new()?;
-            std::fs::write(file.path(), format!("{{\"model\":{rates}}}"))?;
-            assert!(Pricing::load(file.path()).is_err(), "{rates}");
+            assert!(
+                Pricing::parse(format!("{{\"model\":{rates}}}").as_bytes()).is_err(),
+                "{rates}"
+            );
         }
-        let file = tempfile::NamedTempFile::new()?;
-        std::fs::write(
-            file.path(),
-            format!("{{\"model\":{valid},\"model\":{valid}}}"),
-        )?;
-        assert!(Pricing::load(file.path()).is_err());
-        Ok(())
+        assert!(
+            Pricing::parse(format!("{{\"model\":{valid},\"model\":{valid}}}").as_bytes()).is_err()
+        );
     }
 
     #[test]
     fn estimates_disjoint_buckets_and_prefers_reported_charges()
     -> Result<(), Box<dyn std::error::Error>> {
-        let file = tempfile::NamedTempFile::new()?;
-        std::fs::write(
-            file.path(),
-            r#"{"model":{"input":1,"output":5,"cache_read":0.1,"cache_write":2,"cache_write_1h":3},"free":{"input":0,"output":0,"cache_read":0,"cache_write":0}}"#,
+        let prices = Pricing::parse(
+            br#"{"model":{"input":1,"output":5,"cache_read":0.1,"cache_write":2,"cache_write_1h":3},"free":{"input":0,"output":0,"cache_read":0,"cache_write":0}}"#,
         )?;
-        let prices = Pricing::load(file.path())?;
         let mut usage = Usage {
             input_tokens: Some(50),
             output_tokens: Some(10),
@@ -308,15 +281,6 @@ mod tests {
         assert_eq!(totals.known_usd, 0.25);
         assert_eq!(totals.unknown_calls, 1);
         assert_eq!(totals.total_usd, None);
-        let mut week = CostTotals::default();
-        week.add(Some(RecordedCost {
-            usd: 0.5,
-            source: CostSource::ProviderReported,
-        }));
-        assert_eq!(week.total_usd, Some(0.5));
-        week.merge(&totals);
-        assert_eq!((week.known_usd, week.unknown_calls), (0.75, 1));
-        assert_eq!(week.total_usd, None);
         totals.add(Some(RecordedCost {
             usd: f64::MAX,
             source: CostSource::ProviderReported,
@@ -327,10 +291,5 @@ mod tests {
         }));
         assert!(totals.known_usd.is_finite());
         assert_eq!(totals.unknown_calls, 2);
-        // Merging totals whose sum would overflow counts the merged priced calls as unknown.
-        let mut doubled = totals.clone();
-        doubled.merge(&totals);
-        assert!(doubled.known_usd.is_finite());
-        assert_eq!(doubled.unknown_calls, 6);
     }
 }

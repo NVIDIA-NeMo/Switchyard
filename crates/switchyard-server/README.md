@@ -126,7 +126,7 @@ routing logging is disabled.
 
 Add `--pricing-file prices.json` to record each call's `cost` in USD. The server records the
 charge that the upstream reports and otherwise estimates it from the file's rates for the served
-model. The session stats then include cost totals. [Display Switchyard session
+model. The session stats then include cost totals. [Record Switchyard session
 costs](../../docs/integrations/costs.md) describes the file format.
 
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an

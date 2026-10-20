@@ -100,7 +100,7 @@ clients keep the local id `switchyard` instead.
 Set `cost` on the model entry for pi's native estimate. One rate table under a
 router alias is an approximation when targets have different prices. For a
 separate total that uses each served model and includes routing calls, see
-[Display Switchyard session costs](costs.md).
+[Record Switchyard session costs](costs.md).
 [`benchmark/run-baseline.sh`](../../benchmark/README.md) runs Terminal-Bench tasks with
 pi through Switchyard when you pass `--agent pi`.
 
@@ -177,7 +177,7 @@ each request's cost with:
 jq -c '{route_id, model, cost}' PATH
 ```
 
-[Display Switchyard session costs](costs.md) describes the pricing file and how the
+[Record Switchyard session costs](costs.md) describes the pricing file and how the
 server totals a session.
 
 ### Thinking
