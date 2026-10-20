@@ -302,12 +302,15 @@ before routing. Responses API continuation IDs alone are not enough. See the
 
 ### Add the dependencies
 
+These library examples follow `main`, including its async `respond` API.
+The `v0.3.0` release uses a synchronous `respond` API.
+
 ```toml
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
@@ -348,7 +351,9 @@ async fn serve(call: CallModel, client: &dyn RoutedLlmClient) -> Result<()> {
 }
 ```
 
-In Python, the client coroutine returns `LlmResponse.Agg` or `LlmResponse.Stream`:
+For Python, [build the bindings](../INSTALLATION.md#development) from the same
+`main` checkout. The published `v0.3.0` wheel uses the synchronous API. The client
+coroutine returns `LlmResponse.Agg` or `LlmResponse.Stream`:
 
 ```python
 await call.respond(client.call(call.request, call.models[0]))

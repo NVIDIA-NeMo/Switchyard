@@ -19,12 +19,14 @@ clients, decisions, metadata, and wire-format identifiers.
 
 ## Crate boundary
 
-Applications embedding libsy normally depend on both crates:
+Applications embedding libsy normally depend on both crates. These dependencies
+follow the API documentation on `main`, including the async `respond` API added
+after `v0.3.0`:
 
 ```toml
 [dependencies]
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
 ```
 
 Import algorithms and orchestration types from `switchyard_libsy`. Import
