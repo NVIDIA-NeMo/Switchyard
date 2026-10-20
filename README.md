@@ -31,33 +31,35 @@ The standalone server is for local evaluation and personal use. It is not a supp
 
 ## Start with libsy
 
-`Algorithm::run_stream` yields work for your application to handle. This representative loop shows all three steps in the development API:
+`Algorithm::run_stream` hands model calls and the final routing outcome back to your application. In this development-API outline, comments mark the work your code supplies:
 
 ```rust
-use futures::StreamExt;
-use switchyard_libsy::{Algorithm, State, Step};
-
-let mut steps = algorithm.run_stream(request, models, State::default());
+let mut steps = algorithm.run_stream(request, models, state);
 while let Some(step) = steps.next().await {
     match step? {
         Step::CallModel(call) => {
-            let request = call.request.clone();
-            call.respond(call_model(request)).await?;
+            // Send call.request through your LLM client.
+            // Give the call future to call.respond(...).await.
         }
         Step::CallDecision(call) => {
-            let request = call.request.clone();
-            call.respond(call_decision(request)).await?;
+            // Send call.request through your decision-model client.
+            // Give its typed response future to call.respond(...).await.
         }
         Step::Done(outcome) => {
-            handle_outcome(*outcome).await?;
+            // Reuse outcome.response if routing already produced an answer.
+            // Otherwise send outcome.request to the selected model.
         }
     }
 }
 ```
 
-Your application supplies `call_model`, `call_decision`, and `handle_outcome`. The call functions return typed responses in `libsy::Result`. At `Done`, reuse `outcome.response` if present; otherwise send `outcome.request` to the selected model.
+Your application supplies:
 
-This loop serves calls one at a time. Use `libsy::drive` for concurrent algorithms. **[Follow the Rust quickstart](docs/getting_started.md)** for installation, complete client handlers, and expected output. [Python bindings](docs/reference/host_integration.md#python-bindings) are also available.
+- **Routing inputs:** an algorithm, model pool, request, and `State`.
+- **Clients:** serve the model calls requested by the algorithm and reply through `respond`.
+- **Answer handling:** use the final selection or reuse the response returned by the algorithm.
+
+Use `libsy::drive` for concurrent call handling. **[Follow the Rust quickstart](docs/getting_started.md)** for installation, complete client handlers, and expected output. [Python bindings](docs/reference/host_integration.md#python-bindings) are also available.
 
 ## How it works
 

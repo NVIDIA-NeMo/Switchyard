@@ -21,6 +21,10 @@ def test_getting_started_documents_current_paths() -> None:
         assert f"Step::{step}(" in readme
         for example in guide.split("```rust\n")[1:3]:
             assert f"Step::{step}(" in example.split("```", 1)[0]
+    readme_example = readme.split("```rust\n", 1)[1].split("```", 1)[0]
+    assert not any(line.startswith("use ") for line in readme_example.splitlines())
+    for placeholder in ("call_model(", "call_decision(", "handle_outcome("):
+        assert placeholder not in readme_example
     assert "cargo add switchyard-libsy switchyard-protocol --git" in guide
     assert "--rev 5415db205c1f4db7e079731e7bf33a6609c67c8e" in guide
     assert "call.respond(client.call(request)).await?" in guide
@@ -30,8 +34,9 @@ def test_getting_started_documents_current_paths() -> None:
     assert "cargo add switchyard-llm-client" not in guide
     assert "client.call(outcome.request).await?" in guide
     assert "```python" not in guide + readme
-    assert "Selected: Efficient" in guide
-    assert "Selected: Capable" in guide
+    assert "Fresh request -> Selected: Efficient" in guide
+    assert "Tool failure -> Selected: Capable" in guide
+    assert "## See routing change" not in guide
     assert "operations/local_evaluation.md" in guide
     assert "switchyard launch" not in guide
     assert "nemo-switchyard[cli]" not in guide

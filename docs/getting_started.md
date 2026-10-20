@@ -11,48 +11,95 @@ You need Rust 1.96.1+ with Cargo and a native build toolchain. See [installation
 ```bash
 cargo new switchyard-demo
 cd switchyard-demo
+# Keep libsy and its protocol types on the same API revision.
 cargo add switchyard-libsy switchyard-protocol --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+# futures reads the step stream; Tokio runs the asynchronous routing tasks.
 cargo add futures@0.3
 cargo add tokio@1 --features macros,rt
 ```
 
 ## Route a request
 
-Replace `src/main.rs` with this complete example:
+Replace `src/main.rs` with this complete example. It routes two requests through the same Stage router: a fresh request and a recovery request with a failed tool call.
 
 ```rust
+// Arc lets both requests share the router and model pool.
 use std::{collections::HashMap, sync::Arc};
+// StreamExt provides next() for reading the algorithm's steps.
 use futures::StreamExt;
 use switchyard_libsy::{
     Algorithm, PickerMode, RuntimeModels, StageRouter, StageRouterConfig, State, Step,
 };
-use switchyard_protocol::{Category, Request, text_request};
+use switchyard_protocol::{
+    Category, ContentBlock, Message, Request, Role, ToolCall, ToolResult, text_request,
+};
 
+// run_stream starts asynchronous tasks, so this example needs a Tokio runtime.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // EfficientFirst is the default when tool signals do not decide the tier.
+    // 0.5 is the signal-confidence threshold. No LLM judge is configured here.
     let router = Arc::new(StageRouter::new(StageRouterConfig::new(
         PickerMode::EfficientFirst, 0.5,
     ))?);
+    // These are local demo IDs. Efficient/Capable assign roles; Any lists the pool.
     let models = Arc::new(RuntimeModels::new(HashMap::from([
         (Category::Efficient, vec!["Efficient".into()]),
         (Category::Capable, vec!["Capable".into()]),
         (Category::Any, vec!["Efficient".into(), "Capable".into()]),
     ])));
-    let request = Request {
-        llm_request: text_request(None, "Hello"),
+    // None leaves the model unset so the router can select it.
+    // This request has only a user prompt, with no previous tool activity.
+    let fresh = Request {
+        llm_request: text_request(None, "Run the tests."),
         ..Default::default()
     };
-    let mut steps = router.run_stream(request, models, State::default());
-    while let Some(step) = steps.next().await {
-        match step? {
-            Step::CallModel(_) => {
-                return Err("An LLM client is required for this algorithm.".into());
-            }
-            Step::CallDecision(_) => {
-                return Err("A decision client is required for this algorithm.".into());
-            }
-            Step::Done(outcome) => {
-                println!("Selected: {}", outcome.selected_model_id()?);
+
+    // Copy the prompt and add the history an agent would send after a tool failure.
+    // These messages describe past activity; this example does not execute bash.
+    let mut recovery = fresh.clone();
+    recovery.llm_request.messages.extend([
+        // The assistant previously asked the bash tool to run the tests.
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"cargo test"}"#.parse()?,
+            })],
+        },
+        // Match the result to that call with the same ID, c1.
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "c1".into(),
+                is_error: Some(true),
+                // This critical error makes Stage select Capable.
+                content: vec![ContentBlock::Text {
+                    text: "MemoryError: cannot allocate memory\nKilled".into(),
+                }],
+            })],
+        },
+    ]);
+
+    for (label, request) in [("Fresh request", fresh), ("Tool failure", recovery)] {
+        // These are independent examples, each with fresh routing state.
+        let mut steps = router.clone().run_stream(request, models.clone(), State::default());
+        while let Some(step) = steps.next().await {
+            // Each item is Result<Step>; ? returns a routing error to the caller.
+            match step? {
+                Step::CallModel(_) => {
+                    // A routing-time LLM call would need a client. This preset makes none.
+                    return Err("An LLM client is required for this algorithm.".into());
+                }
+                Step::CallDecision(_) => {
+                    // Typed decision questions would need a separate decision client.
+                    return Err("A decision client is required for this algorithm.".into());
+                }
+                Step::Done(outcome) => {
+                    // Routing is complete; this local example prints the selected model.
+                    println!("{label} -> Selected: {}", outcome.selected_model_id()?);
+                }
             }
         }
     }
@@ -61,18 +108,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ```bash
+# Both model selections are local; this makes no provider requests.
 cargo run
 ```
 
 Expected output, after Cargo's build messages:
 
 ```text
-Selected: Efficient
+Fresh request -> Selected: Efficient
+Tool failure -> Selected: Capable
 ```
 
 `"Efficient"` and `"Capable"` are model IDs supplied by your application. `Category::Efficient` and `Category::Capable` assign their routing roles; `Category::Any` lists the full model pool. This example makes no network calls and needs no API key.
 
-The Stage router reads conversation and tool-result signals. With `EfficientFirst` and no tool history, it selects the efficient model. The `0.5` value is a routing confidence threshold, not a measured probability of task success. This is the same preset the TOML runner calls **Auto**.
+The fresh request has no tool history, so `EfficientFirst` selects **Efficient**. The recovery request includes a critical tool error, so Stage selects **Capable**. The user prompt is the same in both cases; the tool history changes the routing decision. See the [Stage router guide](routing_algorithms/stage_router_routing.md) for its signal rules.
+
+The `0.5` value is a routing confidence threshold, not a measured probability of task success. This is the same preset the TOML runner calls **Auto**. Evaluate your agent and model pool against a single-model baseline before relying on savings.
 
 The loop lists every `Step` variant. This local example has no clients, so it reports an error if an algorithm requests a call. The next example supplies an LLM client and shows where to connect a decision client.
 
@@ -91,7 +142,9 @@ This complete example creates an `OpenRouterClient` with `reqwest`. It sends a r
 Add the dependencies and create the directory for this second example:
 
 ```bash
+# Translation converts neutral protocol types to and from provider JSON.
 cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+# reqwest handles HTTPS and JSON; serde_json represents the provider's reply.
 cargo add reqwest@0.13 --no-default-features --features json,rustls
 cargo add serde_json@1
 mkdir -p examples
@@ -119,28 +172,38 @@ use switchyard_translation::{
 };
 
 struct OpenRouterClient {
+    // Reuse one HTTP client for connection pooling across model calls.
     http: reqwest::Client,
+    // The application loads this from the environment instead of source code.
     api_key: String,
 }
 
 impl OpenRouterClient {
     async fn call(&self, request: Request) -> switchyard_libsy::Result<Response> {
+        // Encode the neutral request as OpenRouter Chat Completions JSON.
+        // libsy has already set its model to the selected target.
         let body = encode_request(&request.llm_request, WireFormat::OpenAiChat)
             .map_err(|error| LibsyError::external("encoding OpenRouter request", error))?;
+        // Your client performs the provider call and supplies the API key.
         let response = self.http
             .post("https://openrouter.ai/api/v1/chat/completions")
             .bearer_auth(&self.api_key)
             .json(&body)
             .send().await
+            // Return HTTP failures before trying to decode an answer.
             .and_then(reqwest::Response::error_for_status)
             .map_err(|error| LibsyError::external("OpenRouter request", error))?;
+        // Save headers before consuming the body, then read the full JSON reply.
         let upstream_headers = response.headers().clone();
         let body = response.json::<serde_json::Value>().await
             .map_err(|error| LibsyError::external("reading OpenRouter response", error))?;
+        // Convert the provider's reply back to libsy's neutral response type.
         let answer = decode_aggregated_response(&body, WireFormat::OpenAiChat)
             .map_err(|error| LibsyError::external("decoding OpenRouter response", error))?;
         Ok(Response {
+            // Agg holds a complete answer; a streaming client would return Stream.
             llm_response: LlmResponse::Agg(answer),
+            // Keep any correlation metadata attached to the routed request.
             metadata: request.metadata,
             upstream_headers,
         })
@@ -149,41 +212,53 @@ impl OpenRouterClient {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Replace these with OpenRouter model IDs available to your account.
     let efficient = "z-ai/glm-5.2";
     let capable = "anthropic/claude-opus-4.8";
+    // One client serves either model. The timeout bounds each provider call.
     let client = OpenRouterClient {
         http: reqwest::Client::builder().timeout(Duration::from_secs(60)).build()?,
         api_key: std::env::var("OPENROUTER_API_KEY")?,
     };
+    // Use the same Stage preset as the local example above.
     let router = Arc::new(StageRouter::new(StageRouterConfig::new(
         PickerMode::EfficientFirst, 0.5,
     ))?);
+    // Assign the real provider IDs to the two routing roles.
     let models = Arc::new(RuntimeModels::new(HashMap::from([
         (Category::Efficient, vec![efficient.into()]),
         (Category::Capable, vec![capable.into()]),
         (Category::Any, vec![efficient.into(), capable.into()]),
     ])));
+    // With no tool history, this preset selects the Efficient model.
     let request = Request {
         llm_request: text_request(None, "Say hello in one sentence."),
         ..Default::default()
     };
+    // Routing produces work for the host; only client.call makes HTTP requests.
     let mut steps = router.run_stream(request, models, State::default());
     while let Some(step) = steps.next().await {
         match step? {
             Step::CallModel(call) => {
+                // A classifier or another algorithm may request a routing-time LLM call.
+                // Give respond the future so libsy can cancel pending work.
                 let request = call.request.clone();
                 call.respond(client.call(request)).await?;
             }
             Step::CallDecision(_) => {
+                // Typed decision questions require their own client.
                 return Err("Configure a decision client before using a decision-model algorithm.".into());
             }
             Step::Done(outcome) => {
                 println!("Selected: {}", outcome.selected_model_id()?);
+                // Some algorithms already produced an answer: reuse it to avoid a second call.
+                // Otherwise use outcome.request, which includes the model and any rewrites.
                 let response = match outcome.response {
                     Some(response) => response,
                     None => client.call(outcome.request).await?,
                 };
                 if let LlmResponse::Agg(answer) = response.llm_response {
+                    // Extract the text from the buffered protocol response.
                     println!("Answer: {}", completion_text(&answer));
                 }
             }
@@ -196,6 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 This command sends a billable provider request:
 
 ```bash
+# This calls OpenRouter and may incur a charge.
 cargo run --example gateway
 ```
 
@@ -216,51 +292,6 @@ The Stage preset above yields only `Done`. An LLM classifier can also yield `Cal
 You can replace `OpenRouterClient` with your existing client or SDK. Return `switchyard_protocol::Response` and adapt errors to `libsy::Result` when replying to a call. The [optional Switchyard HTTP client](../crates/libsy-llm-client/README.md) provides translation, streaming, and a `run` helper for terminal calls, retries, and fallback. Implement `RoutedLlmClient` if you want to use your own client with that helper; `run_stream` itself does not require it.
 
 This example serves calls one at a time. For algorithms that issue concurrent calls, use `libsy::drive` to poll handlers together and cancel pending work when routing ends. See the [host integration guide](reference/host_integration.md#concurrent-calls-and-cancellation).
-
-## See routing change
-
-Routing can change between agent turns. In `src/main.rs`, add these imports:
-
-```rust
-use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
-```
-
-Replace the `let request = ...;` statement with this conversation, which includes a failed tool call. Keep the router, model pool, and step loop unchanged:
-
-```rust
-let mut request = Request {
-    llm_request: text_request(None, "Run the tests."),
-    ..Default::default()
-};
-request.llm_request.messages.extend([
-    Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolCall(ToolCall {
-            id: "c1".into(),
-            name: "bash".into(),
-            arguments: r#"{"command":"cargo test"}"#.parse()?,
-        })],
-    },
-    Message {
-        role: Role::User,
-        content: vec![ContentBlock::ToolResult(ToolResult {
-            tool_call_id: "c1".into(),
-            is_error: Some(true),
-            content: vec![ContentBlock::Text {
-                text: "MemoryError: cannot allocate memory\nKilled".into(),
-            }],
-        })],
-    },
-]);
-```
-
-Run `cargo run` again. This local check needs no credentials:
-
-```text
-Selected: Capable
-```
-
-The critical tool error forces the capable model. This checks model selection; it does not measure answer quality or savings. Evaluate your agent and model pool against a single-model baseline before relying on savings.
 
 ## Drive the algorithm
 
