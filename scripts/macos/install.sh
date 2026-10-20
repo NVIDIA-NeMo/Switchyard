@@ -55,8 +55,8 @@ step "Writing server config"
 write_once "$SY_HOME/composite.toml" < "$REPO_ROOT/scripts/config/composite.toml"
 
 step "Writing menu bar settings"
-# Rates are list prices per million tokens and are only used to estimate
-# savings. Edit them to match what you actually pay.
+# The server and menubar share rates in USD per million tokens.
+# Edit prices.json to match what you actually pay.
 TOML_SY_HOME="$(toml_escape_basic_string "$SY_HOME")"
 write_once "$SY_HOME/menubar.toml" <<EOF
 server_url = "http://127.0.0.1:$SY_PORT"
@@ -70,37 +70,26 @@ refresh_seconds = 30
 # Switchyard's own classifier calls counted against it.
 baseline_model = "gpt-5.6-sol"
 
-[prices."gpt-5.6-sol"]
-input_per_mtok = 1.25
-cached_input_per_mtok = 0.125
-output_per_mtok = 10.0
+pricing_file = "$TOML_SY_HOME/prices.json"
+EOF
 
-[prices."gpt-5.6-luna"]
-input_per_mtok = 0.25
-cached_input_per_mtok = 0.025
-output_per_mtok = 2.0
-
-[prices."gpt-5.6-terra"]
-input_per_mtok = 0.05
-cached_input_per_mtok = 0.005
-output_per_mtok = 0.4
-
-# With a ChatGPT login, Codex sends "Approve for me" reviews to
-# codex-auto-review even without Switchyard, so this price copies the
-# baseline_model rates. Reviews then add the same amount to the actual cost and
-# the baseline. The dollars saved stay the same, but the percentage drops a
-# little. Update this price if you change baseline_model.
-[prices."codex-auto-review"]
-input_per_mtok = 1.25
-cached_input_per_mtok = 0.125
-output_per_mtok = 10.0
+write_once "$SY_HOME/prices.json" <<'EOF'
+{
+  "gpt-5.6-sol": {"input": 1.25, "cache_read": 0.125, "cache_write": 1.25, "output": 10.0},
+  "gpt-5.6-luna": {"input": 0.25, "cache_read": 0.025, "cache_write": 0.25, "output": 2.0},
+  "gpt-5.6-terra": {"input": 0.05, "cache_read": 0.005, "cache_write": 0.05, "output": 0.4},
+  "gpt-6-luna": {"input": 0.1, "cache_read": 0.01, "cache_write": 0.1, "output": 0.5},
+  "gpt-6-sol": {"input": 2.0, "cache_read": 0.2, "cache_write": 2.0, "output": 10.0},
+  "gpt-6.1-sol": {"input": 2.0, "cache_read": 0.1, "cache_write": 2.0, "output": 10.0},
+  "codex-auto-review": {"input": 1.25, "cache_read": 0.125, "cache_write": 1.25, "output": 10.0}
+}
 EOF
 
 step "Validating the server config"
 if (( DRY_RUN )); then
-  say "  would run: $SY_HOME/bin/switchyard-server --config $SY_HOME/composite.toml --dry-run"
+  say "  would run: $SY_HOME/bin/switchyard-server --config $SY_HOME/composite.toml --routing-log-file $SY_HOME/routing.jsonl --pricing-file $SY_HOME/prices.json --dry-run"
 else
-  "$SY_HOME/bin/switchyard-server" --config "$SY_HOME/composite.toml" --dry-run
+  "$SY_HOME/bin/switchyard-server" --config "$SY_HOME/composite.toml" --routing-log-file "$SY_HOME/routing.jsonl" --pricing-file "$SY_HOME/prices.json" --dry-run
 fi
 
 step "Writing LaunchAgents"
@@ -123,6 +112,8 @@ write_always "$LAUNCH_AGENTS/$SERVER_LABEL.plist" <<EOF
     <string>$SY_PORT</string>
     <string>--routing-log-file</string>
     <string>$XML_SY_HOME/routing.jsonl</string>
+    <string>--pricing-file</string>
+    <string>$XML_SY_HOME/prices.json</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

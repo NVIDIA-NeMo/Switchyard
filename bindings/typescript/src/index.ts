@@ -3,9 +3,28 @@
 
 import { createRequire } from "node:module";
 
-export interface Decision {
-  target: string;
+/** Opaque routing state. Store it unchanged and pass it back on the same branch. */
+export type CompositeState = { readonly [key: string]: unknown };
+
+export interface CompositeOptions {
+  targets: { capable: string; efficient: string; classifier: string };
+  classifier: {
+    classify_trigger: "user_turn" | "new_session";
+    fail_open: boolean;
+    decision: {
+      cutoff: number;
+      candidates: Record<string, "capable" | "efficient">;
+      evidence: unknown;
+      instructions?: unknown;
+    };
+  };
+  stage: { efficient_first_threshold: number; capable_first_threshold: number };
+}
+
+export interface Selection {
   model: string;
+  /** Present only when the state changed. */
+  state?: CompositeState;
 }
 
 /** Text and tool activity used for routing, in Switchyard's message format. */
@@ -19,69 +38,148 @@ export interface RoutingMessage {
   content: readonly RoutingContent[];
 }
 
-interface Cancellation {
-  cancel(): void;
+export interface DecisionRequest {
+  model?: string | null;
+  context: unknown;
+  questions: Record<string, DecisionQuestion>;
 }
 
-interface NativeRunner {
-  decide(routeId: string, messages: string, cancellation: Cancellation): Promise<Decision>;
+export interface DecisionQuestion {
+  instructions: unknown;
+  kind:
+    | { type: "boolean"; data: { true_description?: unknown; false_description?: unknown } }
+    | { type: "choice"; data: { options: { id: string; description?: unknown }[] } }
+    | { type: "score"; data: { levels: unknown[] } };
 }
 
-const native: {
-  NativeRunner: new (source: string) => NativeRunner;
-  Cancellation: new () => Cancellation;
-} = createRequire(import.meta.url)("./switchyard.node");
+export interface DecisionResponse {
+  id?: string | null;
+  model?: string | null;
+  answers: Record<string, DecisionAnswer>;
+  usage?: {
+    input_tokens?: number | null;
+    cached_input_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    output_tokens?: number | null;
+    total_tokens?: number | null;
+    reasoning_tokens?: number | null;
+  };
+}
+
+export interface DecisionAnswer {
+  value:
+    | { type: "boolean"; data: { type: "value"; data: boolean } | { type: "probability_true"; data: number } }
+    | { type: "choice"; data: { selected: string; probabilities?: Record<string, number> | null } }
+    | { type: "score"; data: { value: number; probabilities?: number[] | null } };
+  provider_confidence?: number | null;
+}
+
+type NativeStep =
+  | { kind: "decision"; request: string }
+  | { kind: "done"; model: string; state: string | null };
+
+interface NativeRun {
+  next(response: string | null, error: string | null): Promise<NativeStep>;
+  close(): void;
+}
+
+interface NativeComposite {
+  start(messages: string, state: string | null): NativeRun;
+}
+
+const native: { NativeComposite: new (options: string) => NativeComposite } =
+  createRequire(import.meta.url)("./switchyard.node");
 
 function abortError(): Error {
   return Object.assign(new Error("Routing cancelled"), { name: "AbortError", code: "ABORT_ERR" });
 }
 
-function publicError(cause: unknown): Error {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  const match = /^(ERR_CONFIG|ERR_UNKNOWN_ROUTE|ERR_INVALID_REQUEST|ERR_ROUTING|ERR_UNSUPPORTED_OUTCOME|ABORT_ERR): (.*)$/s.exec(message);
-  if (match?.[1] === "ABORT_ERR") return abortError();
-  return Object.assign(new Error(match?.[2] ?? "Routing failed"), {
-    code: match?.[1] ?? "ERR_ROUTING",
-  });
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-/** A reusable model selector. The caller owns completion dispatch and session state. */
-export class Runner {
-  readonly #native: NativeRunner;
+function publicError(error: unknown, cause?: unknown): Error {
+  const match = /^(ERR_CONFIG|ERR_INVALID_REQUEST|ERR_ROUTING|ABORT_ERR): (.*)$/s.exec(errorMessage(error));
+  if (match?.[1] === "ABORT_ERR") return abortError();
+  const code = match?.[1] ?? "ERR_ROUTING";
+  return Object.assign(new Error(match?.[2] ?? errorMessage(error),code === "ERR_ROUTING" ? { cause } : undefined), { code });
+}
 
-  private constructor(source: string) {
-    this.#native = new native.NativeRunner(source);
+function json(value: unknown, code = "ERR_INVALID_REQUEST"): string {
+  try {
+    const result = JSON.stringify(value);
+    if (result === undefined) throw new Error("Expected a JSON value");
+    return result;
+  } catch (error) {
+    throw new Error(`${code}: ${errorMessage(error)}`);
+  }
+}
+
+/** Reusable composite router. The caller performs decision calls and stores branch state. */
+export class CompositeRouter {
+  readonly #native: NativeComposite;
+
+  private constructor(options: CompositeOptions) {
+    this.#native = new native.NativeComposite(json(options, "ERR_CONFIG"));
   }
 
-  /** Loads a model-selection deployment. Classifier credentials come from its environment settings. */
-  static fromToml(source: string): Runner {
+  static create(options: CompositeOptions): CompositeRouter {
     try {
-      return new Runner(source);
+      return new CompositeRouter(options);
     } catch (error) {
       throw publicError(error);
     }
   }
 
-  /** Selects a target from a conversation or a single user prompt. */
-  async decide(routeId: string, input: string | readonly RoutingMessage[], options: { signal?: AbortSignal } = {}): Promise<Decision> {
-    const signal = options.signal;
+  async route(messages: readonly RoutingMessage[], options: {
+    state?: CompositeState;
+    decide(request: DecisionRequest): Promise<DecisionResponse>;
+    signal?: AbortSignal;
+  }): Promise<Selection> {
+    const { signal } = options;
     if (signal?.aborted) throw abortError();
-    const cancellation = new native.Cancellation();
-    const onAbort = () => cancellation.cancel();
-    signal?.addEventListener("abort", onAbort, { once: true });
+    let run: NativeRun | undefined;
+    let decisionError: unknown;
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => {
+        run?.close();
+        reject(abortError());
+      };
+    });
     try {
-      if (signal?.aborted) throw abortError();
-      const messages: readonly RoutingMessage[] = typeof input === "string"
-        ? [{ role: "user", content: [{ type: "text", text: input }] }]
-        : input;
-      const result = await this.#native.decide(routeId, JSON.stringify(messages), cancellation);
-      if (signal?.aborted) throw abortError();
-      return result;
+      run = this.#native.start(json(messages), options.state === undefined ? null : json(options.state));
+      signal?.addEventListener("abort", onAbort, { once: true });
+      let response: string | null = null;
+      let failure: string | null = null;
+      for (;;) {
+        const step = await Promise.race([run.next(response, failure), aborted]);
+        if (signal?.aborted) throw abortError();
+        if (step.kind === "done") {
+          return step.state === null
+            ? { model: step.model }
+            : { model: step.model, state: JSON.parse(step.state) };
+        }
+        response = null;
+        failure = null;
+        let answer: DecisionResponse;
+        try {
+          answer = await Promise.race([options.decide(JSON.parse(step.request)), aborted]);
+        } catch (error) {
+          if (signal?.aborted) throw abortError();
+          decisionError = error;
+          failure = errorMessage(error);
+          continue;
+        }
+        if (signal?.aborted) throw abortError();
+        response = json(answer);
+      }
     } catch (error) {
       if (signal?.aborted) throw abortError();
-      throw publicError(error);
+      throw publicError(error, decisionError);
     } finally {
       signal?.removeEventListener("abort", onAbort);
+      run?.close();
     }
   }
 }

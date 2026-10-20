@@ -2,10 +2,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { readFileSync } from "node:fs";
-import { parse, stringify } from "smol-toml";
-import { Runner, type RoutingContent, type RoutingMessage } from "@switchyard/runner";
-import type { Message } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import {
+  CompositeRouter, type CompositeOptions, type CompositeState, type DecisionRequest,
+  type DecisionResponse, type RoutingContent, type RoutingMessage,
+} from "@switchyard/libsy";
+import type {
+  ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, Message,
+} from "@earendil-works/pi-ai";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const POLICY = {
+  classifier: {
+    classify_trigger: "user_turn",
+    fail_open: false,
+    decision: {
+      cutoff: 0.4,
+      candidates: { a: "capable", b: "efficient" },
+      evidence: {
+        description: "Candidate a is the larger reasoning-oriented coding and thinking model. It is intended for complex problems. Candidate b is the smaller fast coding model. It is intended for simple questions, simple local reads and edits, routine tests and straightforward fixes. These are qualitative deployment roles, not empirical success rates.",
+      },
+    },
+  },
+  stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
+} satisfies Omit<CompositeOptions, "targets">;
 
 function modelIdentity(reference: unknown) {
   if (typeof reference !== "string") throw new Error("Expected a model in provider/model form");
@@ -15,19 +35,57 @@ function modelIdentity(reference: unknown) {
   return { reference, provider: reference.slice(0, slash), id: reference.slice(slash + 1) };
 }
 
-function loadRunner(): Runner {
-  const algorithm = parse(readFileSync(process.env.SWITCHYARD_CONFIG ?? new URL("./switchyard.toml", import.meta.url), "utf8"));
-  const targets = Object.fromEntries([algorithm.efficient_target, algorithm.capable_target].map((value) => {
-    const { reference } = modelIdentity(value);
-    return [reference, { id: reference, llm_client: "pi" }];
+function loadRouter() {
+  const path = join(getAgentDir(), "switchyard-router.json");
+  let classifier, capable, efficient;
+  try {
+    const config = JSON.parse(readFileSync(path, "utf8"));
+    classifier = modelIdentity(config.decision_model);
+    capable = modelIdentity(config.capable_model);
+    efficient = modelIdentity(config.efficient_model);
+  } catch (cause) {
+    throw new Error(`Configure ${path} with decision_model, capable_model and efficient_model in provider/model form. See README for full example. ${(cause as Error).message}`, { cause });
+  }
+  return { classifier, router: CompositeRouter.create({
+    ...POLICY,
+    targets: { classifier: classifier.reference, capable: capable.reference, efficient: efficient.reference },
+  }) };
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value ?? null);
+}
+
+function classifierContext(request: DecisionRequest): ClassifierContext {
+  const questions: ClassifierContext["questions"] = {};
+  for (const [id, question] of Object.entries(request.questions)) {
+    if (question.kind.type !== "choice") throw new Error(`Expected a choice question: ${id}`);
+    questions[id] = {
+      type: "choice",
+      instructions: text(question.instructions),
+      criteria: Object.fromEntries(question.kind.data.options.map((option) => [option.id, text(option.description)])),
+    };
+  }
+  return { state: request.context as ClassifierContext["state"], questions };
+}
+
+function decisionResponse(request: DecisionRequest, result: ClassifierResult): DecisionResponse {
+  if (result.stopReason === "aborted") {
+    throw Object.assign(new Error(result.errorMessage ?? "Classification cancelled"), { name: "AbortError", code: "ABORT_ERR" });
+  }
+  if (result.stopReason === "error") throw new Error(result.errorMessage ?? "Classification failed");
+  const answers = Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
+    const answer = result.answers[id];
+    if (question.kind.type !== "choice" || answer?.type !== "choice"
+      || !question.kind.data.options.some((option) => option.id === answer.choice)) {
+      throw new Error(`Expected a declared choice for question: ${id}`);
+    }
+    return [id, {
+      value: { type: "choice" as const, data: { selected: answer.choice, probabilities: answer.probabilities } },
+      provider_confidence: answer.confidence,
+    }];
   }));
-  // Keep the provider in the routing identity so equal model IDs on different providers stay distinct.
-  return Runner.fromToml(stringify({
-    schema_version: 1,
-    llm_clients: { pi: { format: "openai_chat", base_url: "http://127.0.0.1:1/v1" } },
-    targets,
-    routes: { auto: { ...algorithm, id: "switchyard/auto" } },
-  }));
+  return { model: `${result.provider}/${result.model}`, answers };
 }
 
 function routingMessages(messages: readonly Message[]): RoutingMessage[] {
@@ -57,19 +115,32 @@ function routingMessages(messages: readonly Message[]): RoutingMessage[] {
 }
 
 export default function (pi: ExtensionAPI) {
-  let runner: Runner | undefined;
-  pi.registerVirtualModel({
+  let loaded: ReturnType<typeof loadRouter> | undefined;
+  let classifierModel: ClassifierModel<ClassifierApi> | undefined;
+  pi.registerVirtualModel<CompositeState>({
     provider: "switchyard",
     id: "auto",
     name: "Auto (Switchyard)",
     thinkingLevels: ["medium"],
     async route(request, ctx) {
-      runner ??= loadRunner();
-      const decision = await runner.decide("switchyard/auto", routingMessages(request.messages), { signal: request.signal });
-      const identity = modelIdentity(decision.model);
+      const { router, classifier } = loaded ??= loadRouter();
+      const judge = classifierModel ??= ctx.modelRegistry.findOfType("classifier", classifier.provider, classifier.id);
+      if (!judge) throw new Error(`Unknown classifier: ${classifier.reference}`);
+      const selection = await router.route(routingMessages(request.messages), {
+        state: request.state,
+        signal: request.signal,
+        decide: async (decision) => decisionResponse(decision, await ctx.modelRegistry.classify(
+          judge, classifierContext(decision), { signal: request.signal },
+        )),
+      }).catch((error) => {
+        // The binding wraps classifier errors as routing failures; preserve cancellation for Pi.
+        if (error.cause?.name === "AbortError") throw error.cause;
+        throw error;
+      });
+      const identity = modelIdentity(selection.model);
       const model = ctx.modelRegistry.find(identity.provider, identity.id);
       if (!model) throw new Error(`Model ${identity.reference} is not in the catalog`);
-      return { model, thinkingLevel: "medium" };
+      return { model, thinkingLevel: "medium", state: selection.state };
     },
   });
 }

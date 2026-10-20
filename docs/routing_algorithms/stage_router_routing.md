@@ -336,6 +336,8 @@ paths through its cascade:
 
 ## Related
 
+- [Model Selection](model_selection.md): choose and check the two models before
+  tuning the threshold.
 - [Architecture](../architecture.md): the end-to-end request lifecycle and
   system boundaries.
 - [TOML Schema](../reference/toml_schema.md#stage_router): the complete

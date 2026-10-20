@@ -20,6 +20,7 @@ nav:
   - Get Started:
       - Getting Started: getting_started.md
       - Known Issues: known_issues.md
+  - Benchmarks: benchmarks.md
   - Concepts:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md
@@ -31,6 +32,7 @@ nav:
       - Single-provider coding agents: recipes/single_provider_coding_agents.md
   - Routing:
       - Overview: routing_algorithms/overview.md
+      - Model Selection: routing_algorithms/model_selection.md
       - Task (LLM Classifier): routing_algorithms/llm_classifier_routing.md
       - Execution (Stage Router): routing_algorithms/stage_router_routing.md
       - Plan/Execute Routing: routing_algorithms/plan_execute_routing.md

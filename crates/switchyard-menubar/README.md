@@ -36,56 +36,69 @@ routing_log = "~/.switchyard/routing.jsonl"
 baseline_model = "gpt-5.6-sol"
 refresh_seconds = 30
 
-[prices."gpt-5.6-sol"]
-input_per_mtok = 1.25
-cached_input_per_mtok = 0.125
-output_per_mtok = 10.0
+pricing_file = "~/.switchyard/prices.json"
 ```
+
+The server's `--pricing-file` and the menubar's `pricing_file` use the same JSON file.
+Key each entry by the model ID in the routing log. Rates are in USD per million tokens:
+
+```json
+{"gpt-5.6-sol":{"input":1.25,"cache_read":0.125,"cache_write":1.25,"output":10}}
+```
+
+These example rates preserve the installer's previous assumptions. Replace them with
+what you pay. The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains
+cache-write rates and how to add other models. Rates load at startup; restart both
+applications after editing them.
 
 ## How savings are computed
 
-The server writes one JSONL record per call, with the model that answered and
-its token counts.
+Actual spending is the sum of the costs saved in the routing log, including routing
+calls. Changing prices does not change saved costs. The baseline is an estimate of
+what the answer traffic would have cost using `baseline_model`; it excludes routing
+calls. The server and menubar share the code for cost totals and token pricing, including
+cache-read and cache-write rates.
+The baseline assumes the same token and cache counts as the observed answer traffic.
 
-- **Actual** is every call priced at the model that served it, including
-  Switchyard's own classifier calls.
-- **Baseline** is the caller-facing calls only, priced as if each had used
-  `baseline_model`. Classifier calls have no baseline counterpart, because
-  without Switchyard they would not happen.
+The menubar shows estimated savings only when actual costs and the baseline estimate
+are complete. A recorded `cost: null` keeps spending unknown. A missing baseline rate
+or required one-hour cache-write rate keeps the baseline unknown. Missing or invalid answer
+usage also keeps the baseline unknown. Token counts still
+appear when savings cannot be calculated. The log can be read while the server is offline.
 
-Savings are the difference, so routing overhead counts against the figure and
-a bad day shows a negative number. Dollar figures stay hidden until every
-model seen has a price, so a partial table cannot mislead.
+Codex's `codex-auto-review` model keeps the installer's baseline rates by default.
+Update that entry when changing `baseline_model` if you want those reviews to have
+the same estimated cost with and without Switchyard. ChatGPT subscription traffic
+may have no per-token bill; token-rate estimates are comparisons at the supplied rates.
 
-Codex's "Approve for me" reviews count too. The server config that the
-installer writes sends them to `codex-auto-review` on the ChatGPT backend. With
-a ChatGPT login, Codex sends these reviews to `codex-auto-review` even without
-Switchyard, so the installer prices that model at the `baseline_model` rates.
-Each review then adds the same amount to the actual cost and to the baseline,
-so reviews do not change the dollar amount saved. They do lower the percentage
-a little, because the baseline grows. If you change `baseline_model`, update
-this price to match.
+## Migrate older settings and logs
 
-The menu bar needs a price for the model ID that the routing log records for
-reviews, which is the reviewer target's `id`. Without that price, the menu bar
-hides the Saved row for every period that includes a review. The installer does
-not overwrite an existing `composite.toml` or `menubar.toml`, so an existing
-install needs the route and the price added by hand.
+Inline `[prices]` settings and log records without a `cost` field require migration.
+Stop the server and menubar before migrating. From the repository root, run:
 
-Codex's "Approve for me" reviews need a price too. Use the reviewer target's
-`id`, which is the model ID recorded in the routing log. The default reviewer
-route uses `codex-auto-review`. With a ChatGPT login, these reviews also happen
-without Switchyard. Add that ID to the price table at the `baseline_model`
-rates, including the cached input rate. Each review then adds the same cost to
-actual and baseline. Dollars saved stay the same; the percentage drops as the
-baseline grows. Update this price when you change `baseline_model`.
+```sh
+cargo run -p switchyard-costs -- \
+  ~/.switchyard/menubar.toml ~/.switchyard/routing.jsonl ~/.switchyard/migrated-costs
+```
 
-If a reviewer uses another model ID, add a price for that ID. Any period with
-an unpriced review hides its savings and shows the missing-price hint. Existing
-`menubar.toml` files need these prices added by hand.
+The destination directory must not exist. The command writes `menubar.toml`,
+`prices.json`, and `routing.jsonl` there and leaves the originals untouched. It preserves
+existing costs, including null, and adds estimates only to records without a cost field.
+Missing usage or rates leave the reconstructed cost unknown. Malformed or unfinished
+records stop migration; failed migration outputs are removed.
 
-These are list-price estimates. On a ChatGPT login there is no per-token bill,
-so read them as "what this traffic would have cost at API rates".
+The command uses the rates in the old settings. It cannot recover historical provider
+charges or historical prices. It maps `input_per_mtok` to `input` and `cache_write`,
+`output_per_mtok` to `output`, and `cached_input_per_mtok` to `cache_read` (or the input
+rate when omitted). This preserves the old cache-write assumption. Review those rates
+for your providers; add `cache_write_1h` when needed. Reconstruction is always marked
+`estimated`, even when it uses historical prices.
+
+Review the generated files, then start the menubar with the generated settings path.
+Those settings point at the generated log and pricing file. Update the server's
+LaunchAgent to use those same paths for `--routing-log-file` and `--pricing-file` before
+restarting it. Keep the originals as backups. Reinstalling preserves existing files;
+it does not migrate them.
 
 ## Codex profiles
 
