@@ -62,7 +62,9 @@ fn category_models_from_python(
 }
 
 /// Convert Python-owned headers into the request metadata expected by libsy.
-fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::HeaderMap> {
+pub(crate) fn header_map_from_python(
+    headers: &HashMap<String, String>,
+) -> PyResult<http::HeaderMap> {
     let mut result = http::HeaderMap::new();
     for (name, value) in headers {
         let name = HeaderName::from_bytes(name.as_bytes())
@@ -751,7 +753,7 @@ impl PyOutcomeMetadata {
 
 /// The terminal routing selection, rewritten request, optional response, and metadata.
 #[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
-struct PyRoutingOutcome {
+pub(crate) struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     response: Option<Py<PyAny>>,
@@ -824,6 +826,29 @@ fn response_to_python(py: Python<'_>, response: LlmResponse) -> PyResult<Py<PyAn
     response
         .into_pyobject(py)
         .map(|response| response.unbind().into_any())
+}
+
+/// Converts a routing outcome without discarding an answer produced during routing.
+pub(crate) fn routing_outcome_to_python(
+    py: Python<'_>,
+    outcome: RoutingOutcome,
+) -> PyResult<PyRoutingOutcome> {
+    Ok(PyRoutingOutcome {
+        metadata: outcome
+            .metadata
+            .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
+            .transpose()?,
+        selected_model_ids: outcome
+            .selected_model_ids
+            .into_iter()
+            .map(ModelId::into_string)
+            .collect(),
+        request: to_python(py, &outcome.request.llm_request)?,
+        response: outcome
+            .response
+            .map(|response| response_to_python(py, response.llm_response))
+            .transpose()?,
+    })
 }
 
 /// One item yielded by a Python algorithm stream.
@@ -935,35 +960,11 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 call: Py::new(py, PyModelCall::new(py, *call)?)?,
             })
         }),
-        RustStep::Done(outcome) => {
-            let RoutingOutcome {
-                selected_model_ids,
-                request,
-                response,
-                metadata,
-                state: _,
-            } = *outcome;
-            Python::attach(|py| {
-                Ok(PyStep::Done {
-                    outcome: Py::new(
-                        py,
-                        PyRoutingOutcome {
-                            metadata: metadata
-                                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
-                                .transpose()?,
-                            selected_model_ids: selected_model_ids
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect(),
-                            request: to_python(py, &request.llm_request)?,
-                            response: response
-                                .map(|response| response_to_python(py, response.llm_response))
-                                .transpose()?,
-                        },
-                    )?,
-                })
+        RustStep::Done(outcome) => Python::attach(|py| {
+            Ok(PyStep::Done {
+                outcome: Py::new(py, routing_outcome_to_python(py, *outcome)?)?,
             })
-        }
+        }),
     }
 }
 
