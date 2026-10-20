@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Embed Switchyard's Rust LLM routing library in your gateway or agent harness">
+        <meta name="description" content="Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness">
       
       
       
@@ -1710,14 +1710,14 @@
 
 
 <h1 id="evaluate-routing-locally">Evaluate Routing Locally<a class="headerlink" href="#evaluate-routing-locally" title="Permanent link">&para;</a></h1>
-<p>Use the standalone server to try routing configurations with your own model pool. It is for demos, evaluation, and personal use on single-user machines. <strong>It is not a supported production deployment path.</strong> To add routing to your gateway or application, use the <a href="../../getting_started/">library quickstart</a>.</p>
+<p>Use the standalone server to try routing configurations with your own model pool. It is for demos, evaluation, and personal use on single-user machines. <strong>It is not a supported production deployment path.</strong> To add routing to your gateway or application, use the <a href="../../getting_started/">libsy quickstart</a>.</p>
 <h2 id="install-the-server">Install the server<a class="headerlink" href="#install-the-server" title="Permanent link">&para;</a></h2>
-<p>You need Rust 1.96.1+, a native build toolchain, <code>curl</code>, and an OpenRouter API key. Install Rust using the <a href="https://rust-lang.org/tools/install/">official instructions</a> and check <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/INSTALLATION.md#requirements">platform requirements</a>. The v0.3.0 server is release-validated on Ubuntu 24.04, Linux x86_64.</p>
+<p>You need Rust 1.96.1+, a native build toolchain, <code>curl</code>, and an OpenRouter API key. Install Rust using the <a href="https://rust-lang.org/tools/install/">official instructions</a> and check <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b625ab585e0a14c99039f9f23823dd18ec90dcac/INSTALLATION.md#requirements">platform requirements</a>. The v0.3.0 server is release-validated on Ubuntu 24.04, Linux x86_64.</p>
 <p>Install the released server:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>switchyard-server<span class="w"> </span>--version<span class="w"> </span><span class="m">0</span>.3.0
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>switchyard-server<span class="w"> </span>--help
 </span></code></pre></div>
-<p>For unreleased features, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/crates/switchyard-server/README.md">build from main</a>. Keep your configuration and binary on compatible versions.</p>
+<p>For unreleased features, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b625ab585e0a14c99039f9f23823dd18ec90dcac/crates/switchyard-server/README.md">build from main</a>. Keep your configuration and binary on compatible versions.</p>
 <h2 id="configure-your-model-pool">Configure your model pool<a class="headerlink" href="#configure-your-model-pool" title="Permanent link">&para;</a></h2>
 <p>Create <code>routes.toml</code>:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
@@ -1727,21 +1727,21 @@
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENROUTER_API_KEY&quot;</span>
 </span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">[targets.weak]</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">[targets.efficient]</span>
 </span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;z-ai/glm-5.2&quot;</span>
 </span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
 </span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="k">[targets.strong]</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="k">[targets.capable]</span>
 </span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic/claude-opus-4.8&quot;</span>
 </span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
 </span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>
 </span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
 </span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capable&quot;</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient&quot;</span>
 </span></code></pre></div>
-<p>This uses the same Auto preset as the first library example: Stage routing with <code>efficient_first</code>, a confidence threshold of <code>0.5</code>, and no classifier call. The model pool also appears in our <a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a>. This small Auto example is not the benchmark configuration; use the linked benchmark profiles to reproduce their settings.</p>
+<p>This uses the same Auto preset as the first libsy example: Stage routing with <code>efficient_first</code>, a confidence threshold of <code>0.5</code>, and no classifier call. The model pool also appears in our <a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a>. This small Auto example is not the benchmark configuration; use the linked benchmark profiles to reproduce their settings.</p>
 <p>To use your own pool:</p>
 <table>
 <thead>
@@ -1753,7 +1753,7 @@
 <tbody>
 <tr>
 <td>Efficient and capable models</td>
-<td>Replace <code>targets.weak.id</code> and <code>targets.strong.id</code>.</td>
+<td>Replace <code>targets.efficient.id</code> and <code>targets.capable.id</code>.</td>
 </tr>
 <tr>
 <td>Provider endpoint</td>
@@ -1827,10 +1827,10 @@
 <p>For per-request records, restart with <code>--routing-log-file routing.jsonl</code>. Each record includes the selected model and token usage. Decision reasons are reported by the stats endpoint. These checks confirm routing behavior, not task quality or savings.</p>
 <h2 id="compare-configurations">Compare configurations<a class="headerlink" href="#compare-configurations" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../../benchmarks/">Benchmark results</a> link to model pools, results, and runnable profiles. For Terminal-Bench 2.1, the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a> includes its judge and reasoning settings. Its comments explain the endpoint differences from the measured runs.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/benchmark/README.md">Benchmark setup</a> explains how to compare routing against single-model baselines on the same tasks.</li>
+<li><a href="../../benchmarks/">Benchmark results</a> link to model pools, results, and runnable profiles. For Terminal-Bench 2.1, the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b625ab585e0a14c99039f9f23823dd18ec90dcac/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a> includes its judge and reasoning settings. Its comments explain the endpoint differences from the measured runs.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b625ab585e0a14c99039f9f23823dd18ec90dcac/benchmark/README.md">Benchmark setup</a> explains how to compare routing against single-model baselines on the same tasks.</li>
 <li><a href="../../routing_algorithms/overview/">Routing overview</a> explains Auto, Task, Execution, and Composite. A TOML file can expose multiple routes through different route IDs.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8dad09bdb419c9613fd6d0b5072d94066b3587df/crates/switchyard-server/README.md">Server reference</a> covers configuration, TLS, logging, and metrics.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b625ab585e0a14c99039f9f23823dd18ec90dcac/crates/switchyard-server/README.md">Server reference</a> covers configuration, TLS, logging, and metrics.</li>
 </ul>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <table>
