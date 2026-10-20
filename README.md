@@ -46,8 +46,15 @@ while let Some(step) = steps.next().await {
             // Give its typed response future to call.respond(...).await.
         }
         Step::Done(outcome) => {
-            // Reuse outcome.response if routing already produced an answer.
-            // Otherwise send outcome.request to the selected model.
+            match outcome.response {
+                Some(response) => {
+                    // Return this answer; no final LLM call is needed.
+                }
+                None => {
+                    // Send outcome.request through your client for the final answer,
+                    // or pass it to your gateway to make that call later.
+                }
+            }
         }
     }
 }
@@ -57,7 +64,7 @@ Your application supplies:
 
 - **Routing inputs:** an algorithm, model pool, request, and `State`.
 - **Clients:** serve the model calls requested by the algorithm and reply through `respond`.
-- **Answer handling:** use the final selection or reuse the response returned by the algorithm.
+- **Answer handling:** reuse a returned response, make the final LLM call, or leave that call to your gateway.
 
 Use `libsy::drive` for concurrent call handling. **[Follow the Rust quickstart](docs/getting_started.md)** for installation, complete client handlers, and expected output. [Python bindings](docs/reference/host_integration.md#python-bindings) are also available.
 

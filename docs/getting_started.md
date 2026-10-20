@@ -31,7 +31,8 @@ use switchyard_libsy::{
     Algorithm, PickerMode, RuntimeModels, StageRouter, StageRouterConfig, State, Step,
 };
 use switchyard_protocol::{
-    Category, ContentBlock, Message, Request, Role, ToolCall, ToolResult, text_request,
+    Category, ContentBlock, LlmResponse, Message, Request, Role, ToolCall, ToolResult,
+    completion_text, text_request,
 };
 
 // run_stream starts asynchronous tasks, so this example needs a Tokio runtime.
@@ -97,8 +98,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Err("A decision client is required for this algorithm.".into());
                 }
                 Step::Done(outcome) => {
-                    // Routing is complete; this local example prints the selected model.
+                    // Done means routing is complete, not necessarily the final LLM call.
                     println!("{label} -> Selected: {}", outcome.selected_model_id()?);
+                    match outcome.response {
+                        Some(response) => {
+                            // Reuse an answer produced during routing, with no extra call.
+                            if let LlmResponse::Agg(answer) = response.llm_response {
+                                println!("{label} -> Answer: {}", completion_text(&answer));
+                            }
+                        }
+                        None => {
+                            // This example stops at selection and makes no provider call.
+                            // For an answer, send outcome.request through your client,
+                            // or pass it to your gateway to make that call later.
+                        }
+                    }
                 }
             }
         }
@@ -125,7 +139,9 @@ The fresh request has no tool history, so `EfficientFirst` selects **Efficient**
 
 The `0.5` value is a routing confidence threshold, not a measured probability of task success. This is the same preset the TOML runner calls **Auto**. Evaluate your agent and model pool against a single-model baseline before relying on savings.
 
-The loop lists every `Step` variant. This local example has no clients, so it reports an error if an algorithm requests a call. The next example supplies an LLM client and shows where to connect a decision client.
+The loop lists every `Step` variant. Inside `Done`, `Some(response)` means an answer is already available. With `None`, your application can make the final call using `outcome.request` or pass that request to its gateway. This local example stops at selection.
+
+This example has no clients, so it reports an error if an algorithm requests a routing-time call. The next example supplies an LLM client and shows where to connect a decision client.
 
 ## Use libsy with your client
 
@@ -251,11 +267,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Step::Done(outcome) => {
                 println!("Selected: {}", outcome.selected_model_id()?);
-                // Some algorithms already produced an answer: reuse it to avoid a second call.
-                // Otherwise use outcome.request, which includes the model and any rewrites.
                 let response = match outcome.response {
-                    Some(response) => response,
-                    None => client.call(outcome.request).await?,
+                    Some(response) => {
+                        // The algorithm already produced the answer; do not call again.
+                        response
+                    }
+                    None => {
+                        // Make the final LLM call with the selected model and any rewrites.
+                        // For routing-only use, pass outcome.request to your gateway instead.
+                        client.call(outcome.request).await?
+                    }
                 };
                 if let LlmResponse::Agg(answer) = response.llm_response {
                     // Extract the text from the buffered protocol response.
@@ -285,7 +306,7 @@ The loop lists all three steps:
 | --- | --- |
 | `CallModel` | Send the routing-time LLM request through your client and pass its future to `respond`. |
 | `CallDecision` | Requires a separate decision client. This example reports that missing setup explicitly. |
-| `Done` | Reuse the returned response, or send the returned request to the selected model. |
+| `Done` | Reuse a returned response. Otherwise make the final LLM call, or pass the returned request to your gateway. |
 
 The Stage preset above yields only `Done`. An LLM classifier can also yield `CallModel`, which the custom client handles. A decision-model algorithm yields `CallDecision`, whose typed request is different from Chat Completions. To use one, supply your own decision client and replace that branch with the [decision-call handler](reference/host_integration.md#serve-routing-time-calls).
 
