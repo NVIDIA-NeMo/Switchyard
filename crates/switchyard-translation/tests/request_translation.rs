@@ -4803,7 +4803,7 @@ fn anthropic_mcp_definitions_reject_malformed_input() {
         (
             "/tools/0/mcp_server_name",
             json!("undeclared"),
-            "undeclared server",
+            "MCP server is undeclared or already referenced",
         ),
         (
             "/mcp_servers/0/name",
@@ -4813,7 +4813,7 @@ fn anthropic_mcp_definitions_reject_malformed_input() {
         (
             "/tools/2/mcp_server_name",
             json!("inventory"),
-            "single toolset reference",
+            "MCP server is undeclared or already referenced",
         ),
         (
             "/tools/0",

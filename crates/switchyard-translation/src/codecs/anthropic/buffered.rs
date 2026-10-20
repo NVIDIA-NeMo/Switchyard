@@ -3,7 +3,7 @@
 
 //! Buffered codec for Anthropic Messages request and response JSON.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
 
@@ -795,7 +795,7 @@ fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
 // Supports mcp-client-2025-11-20 with tools-array mcp_toolset entries.
 // The deprecated mcp-client-2025-04-04 format with server-level tool_configuration is unsupported.
 fn decode_anthropic_tools(body: &Map<String, Value>) -> Result<Vec<Tool>> {
-    let mcp_servers = body
+    let mcp_server_definitions = body
         .get("mcp_servers")
         .map(|mcp_servers| {
             mcp_servers
@@ -808,15 +808,16 @@ fn decode_anthropic_tools(body: &Map<String, Value>) -> Result<Vec<Tool>> {
         .transpose()?
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let mut mcp_server_names = HashSet::new();
-    for server in mcp_servers {
-        let name = server.get("name").and_then(Value::as_str).ok_or_else(|| {
-            TranslationError::InvalidValue {
+    let mut mcp_servers = HashMap::new();
+    for mcp_server in mcp_server_definitions {
+        let name = mcp_server
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| TranslationError::InvalidValue {
                 path: "mcp_servers.name".into(),
                 message: "MCP server requires a string".into(),
-            }
-        })?;
-        if !mcp_server_names.insert(name) {
+            })?;
+        if mcp_servers.insert(name, mcp_server).is_some() {
             return Err(TranslationError::InvalidValue {
                 path: "mcp_servers.name".into(),
                 message: "duplicate MCP server name".into(),
@@ -839,23 +840,13 @@ fn decode_anthropic_tools(body: &Map<String, Value>) -> Result<Vec<Tool>> {
                     path: "tools.mcp_server_name".into(),
                     message: "MCP toolset requires a string mcp_server_name".into(),
                 })?;
-            if let Some(index) = mcp_servers.iter().position(|server| {
-                server.get("name").and_then(Value::as_str) == Some(mcp_server_name)
-            }) {
-                if !mcp_server_names.remove(mcp_server_name) {
-                    return Err(TranslationError::InvalidValue {
-                        path: "tools.mcp_server_name".into(),
-                        message: "each MCP server requires a single toolset reference".into(),
-                    });
-                }
-                let mcp = decode_mcp(&mcp_servers[index], tool)?;
-                tools.push(Tool::Mcp(mcp));
-            } else {
-                return Err(TranslationError::InvalidValue {
+            let mcp_server = mcp_servers.remove(mcp_server_name).ok_or_else(|| {
+                TranslationError::InvalidValue {
                     path: "tools.mcp_server_name".into(),
-                    message: "MCP toolset refers to an undeclared server".into(),
-                });
-            }
+                    message: "MCP server is undeclared or already referenced".into(),
+                }
+            })?;
+            tools.push(Tool::Mcp(decode_mcp(mcp_server, tool)?));
         } else if let Some(tool) = tool.as_object() {
             let Some(name) = tool
                 .get("name")
@@ -879,7 +870,7 @@ fn decode_anthropic_tools(body: &Map<String, Value>) -> Result<Vec<Tool>> {
         }
     }
 
-    if !mcp_server_names.is_empty() {
+    if !mcp_servers.is_empty() {
         return Err(TranslationError::InvalidValue {
             path: "mcp_servers".into(),
             message: "each MCP server requires a tools-array toolset reference".into(),
