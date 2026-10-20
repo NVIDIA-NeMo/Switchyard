@@ -1292,7 +1292,7 @@ pub(crate) fn encode_openai_usage(usage: &Usage) -> Value {
     if usage.cached_input_tokens().is_some() || usage.cache_creation_input_tokens().is_some() {
         value["prompt_tokens_details"] = json!({
             "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
-            "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
+            "cache_creation_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
         });
     }
     if let Some(reasoning_tokens) = usage.reasoning_tokens {
