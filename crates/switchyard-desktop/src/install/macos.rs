@@ -6,19 +6,17 @@
 use super::*;
 
 const DESKTOP: &str = "com.nvidia.switchyard.desktop";
-// Migration removes this LaunchAgent so the old app cannot restart alongside the desktop app.
-const LEGACY_DESKTOP: &str = "com.nvidia.switchyard.menubar";
 
 pub fn preflight() -> Result<(), String> {
     run(Command::new("launchctl").arg("help"))
 }
 
-pub fn stop(s: &Settings) -> Result<(), String> {
+pub fn stop(_s: &Settings) -> Result<(), String> {
     let domain = domain()?;
-    for label in [SERVER, DESKTOP, LEGACY_DESKTOP] {
+    for label in [SERVER, DESKTOP] {
         stop_launchd_job(&format!("{domain}/{label}"))?;
     }
-    remove(&s.service_dir.join(format!("{LEGACY_DESKTOP}.plist")))
+    Ok(())
 }
 
 pub fn install(s: &Settings, _keys_saved: bool) -> Result<(), String> {
@@ -62,7 +60,7 @@ pub fn install(s: &Settings, _keys_saved: bool) -> Result<(), String> {
 
 /// Removes the LaunchAgents and the app bundle.
 pub fn uninstall(s: &Settings) -> Result<(), String> {
-    for label in [SERVER, DESKTOP, LEGACY_DESKTOP] {
+    for label in [SERVER, DESKTOP] {
         remove(&s.service_dir.join(format!("{label}.plist")))?;
     }
     if present(&s.app())? {

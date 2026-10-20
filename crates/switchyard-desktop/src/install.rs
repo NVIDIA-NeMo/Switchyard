@@ -537,20 +537,6 @@ fn removal_notes(s: &Settings) -> Vec<String> {
             ));
         }
     }
-    for path in [
-        s.codex_home.join("config.sy.toml"),
-        s.codex_home.join("config.toml.direct"),
-        s.home.join(".zshrc"),
-        s.home.join(".bashrc"),
-    ] {
-        if path.exists() {
-            notes.push(format!(
-                "Review legacy Switchyard cleanup: {}. Active defaults are copied before \
-                 restoring config.toml.direct; marked shell/profile blocks are removed.",
-                path.display()
-            ));
-        }
-    }
     notes.push("Custom destinations outside these known locations are not inventoried.".into());
     notes.push(
         "Restore routing from Connect tools before uninstalling. \
@@ -809,29 +795,18 @@ fn replace_installation(s: &Settings, desktop_settings: Option<&str>) -> Result<
         let bytes = fs::read(s.release(binary)).map_err(err)?;
         write(&s.binary(binary), &bytes, true)?;
     }
-    migrate_settings(s, desktop_settings)?;
-    remove(&s.sy_home.join("bin/switchyard-menubar"))?;
+    write_once(&s.sy_home.join("composite.toml"), BUNDLED_CONFIG)?;
+    if let Some(text) = desktop_settings {
+        write(&s.desktop_settings(), text.as_bytes(), false)?;
+    } else {
+        write_once(&s.desktop_settings(), &desktop_config(s))?;
+    }
     for record in [s.sy_home.join("install.toml"), s.install_record()] {
         write(&record, metadata.as_bytes(), false)?;
     }
     #[cfg(target_os = "macos")]
     platform::replace_app(s, bundle)?;
     Ok(())
-}
-
-/// Creates the server config and app settings when they are missing and moves the old menu bar
-/// settings to desktop.toml. `desktop_settings` replaces the app settings when the port changed.
-fn migrate_settings(s: &Settings, desktop_settings: Option<&str>) -> Result<(), String> {
-    write_once(&s.sy_home.join("composite.toml"), BUNDLED_CONFIG)?;
-    let legacy = s.sy_home.join("menubar.toml");
-    if present(&legacy)? && !present(&s.desktop_settings())? {
-        fs::rename(&legacy, s.desktop_settings()).map_err(err)?;
-    }
-    write_once(&s.desktop_settings(), &desktop_config(s))?;
-    match desktop_settings {
-        Some(text) => write(&s.desktop_settings(), text.as_bytes(), false),
-        None => Ok(()),
-    }
 }
 
 fn save_profile(s: &Settings, text: &str) -> Result<(), String> {
@@ -919,11 +894,7 @@ fn check_public_route(config: &Path, model: &str) -> Result<(), String> {
 }
 
 fn reconcile_desktop_port(s: &Settings) -> Result<Option<String>, String> {
-    let path = if s.desktop_settings().exists() {
-        s.desktop_settings()
-    } else {
-        s.sy_home.join("menubar.toml")
-    };
+    let path = s.desktop_settings();
     let Some(text) = read_optional(&path).map_err(|e| format!("Read {}: {e}", path.display()))?
     else {
         return Ok(None);
@@ -1071,33 +1042,6 @@ fn xml(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
-fn strip_block(path: &Path, start: &str, end: &str) -> Result<(), String> {
-    let Some(text) = read_optional(path).map_err(err)? else {
-        return Ok(());
-    };
-    let mut output = String::new();
-    let mut skipping = false;
-    for line in text.split_inclusive('\n') {
-        skipping |= line.contains(start);
-        if !skipping {
-            output.push_str(line);
-        }
-        if line.contains(end) {
-            skipping = false;
-        }
-    }
-    if skipping {
-        return Err(format!(
-            "{} has an unfinished Switchyard block. No edits were made to this file.",
-            path.display()
-        ));
-    }
-    if text != output {
-        write(path, output.as_bytes(), false)?;
-    }
-    Ok(())
-}
-
 fn uninstall(s: &Settings) -> Result<(), String> {
     let _lock = lock_installation(s)?;
     println!("{}", installation_plan(s, "uninstall"));
@@ -1108,7 +1052,6 @@ fn uninstall(s: &Settings) -> Result<(), String> {
     platform::stop(s)?;
     platform::uninstall(s)?;
     remove(&profile)?;
-    remove_legacy_setup(s)?;
     println!(
         "Removed services, app, and profile. Kept settings, accounts, {}and history at {}.",
         if cfg!(windows) { "" } else { "binaries, " },
@@ -1117,34 +1060,6 @@ fn uninstall(s: &Settings) -> Result<(), String> {
     let recorded = s.install_record();
     if recorded.exists() && Settings::load(&recorded)?.sy_home == s.sy_home {
         remove(&recorded)?;
-    }
-    Ok(())
-}
-
-/// Removes legacy Switchyard edits to Codex and shell startup files. The active config.toml is
-/// backed up before config.toml.direct replaces it.
-fn remove_legacy_setup(s: &Settings) -> Result<(), String> {
-    remove(&s.codex_home.join("config.sy.toml"))?;
-    let config = s.codex_home.join("config.toml");
-    strip_block(
-        &config,
-        "# >>> switchyard sy profile >>>",
-        "# <<< switchyard sy profile <<<",
-    )?;
-    let direct = s.codex_home.join("config.toml.direct");
-    if present(&direct)? {
-        if present(&config)? {
-            backup(&config, "switchyard-current")?;
-        }
-        write(&config, &fs::read(&direct).map_err(err)?, false)?;
-        remove(&direct)?;
-    }
-    for name in [".zshrc", ".bashrc"] {
-        strip_block(
-            &s.home.join(name),
-            "# >>> switchyard codex alias >>>",
-            "# <<< switchyard codex alias <<<",
-        )?;
     }
     Ok(())
 }
