@@ -66,11 +66,11 @@ so reviews do not change the dollar amount saved. They do lower the percentage
 a little, because the baseline grows. If you change `baseline_model`, update
 this price to match.
 
-The menu bar needs a price for the model ID that the routing log records for
-reviews, which is the reviewer target's `id`. Without that price, the menu bar
-hides the Saved row for every period that includes a review. The installer does
-not overwrite an existing `composite.toml` or `menubar.toml`, so an existing
-install needs the route and the price added by hand.
+The menu bar needs a price for every model ID that the routing log records.
+The macOS installer includes prices for the default models, including
+`gpt-6-luna`, `gpt-6-sol`, and `gpt-6.1-sol`. Existing `menubar.toml` files are
+preserved during reinstall, so add any missing model prices to that file by
+hand.
 
 Codex's "Approve for me" reviews need a price too. Use the reviewer target's
 `id`, which is the model ID recorded in the routing log. The default reviewer
@@ -81,8 +81,7 @@ actual and baseline. Dollars saved stay the same; the percentage drops as the
 baseline grows. Update this price when you change `baseline_model`.
 
 If a reviewer uses another model ID, add a price for that ID. Any period with
-an unpriced review hides its savings and shows the missing-price hint. Existing
-`menubar.toml` files need these prices added by hand.
+an unpriced model hides its savings and shows the missing-price hint.
 
 These are list-price estimates. On a ChatGPT login there is no per-token bill,
 so read them as "what this traffic would have cost at API rates".

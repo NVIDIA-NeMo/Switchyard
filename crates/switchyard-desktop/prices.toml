@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The baseline model prices caller-facing calls as if routing had not changed models.
+# Savings subtract actual calls, including classifier calls, from that estimate.
+# The default route sends each call to gpt-6-sol or gpt-6-luna, so the baseline is gpt-6-sol.
+baseline_model = "gpt-6-sol"
+
+# OpenAI standard API prices per million tokens, for prompts up to 272K input tokens.
+[prices."gpt-6-sol"]
+input_per_mtok = 2.0
+cached_input_per_mtok = 0.2
+output_per_mtok = 10.0
+
+[prices."gpt-6-luna"]
+input_per_mtok = 0.1
+cached_input_per_mtok = 0.01
+output_per_mtok = 0.5
+
+[prices."gpt-6.1-sol"]
+input_per_mtok = 2.0
+cached_input_per_mtok = 0.1
+output_per_mtok = 10.0
+
+[prices."gpt-5.6-sol"]
+input_per_mtok = 1.25
+cached_input_per_mtok = 0.125
+output_per_mtok = 10.0
+
+[prices."gpt-5.6-luna"]
+input_per_mtok = 0.25
+cached_input_per_mtok = 0.025
+output_per_mtok = 2.0
+
+[prices."gpt-5.6-terra"]
+input_per_mtok = 0.05
+cached_input_per_mtok = 0.005
+output_per_mtok = 0.4
+
+# With a ChatGPT login, Codex sends "Approve for me" reviews to
+# codex-auto-review even without Switchyard, so this price copies the
+# baseline_model rates. Reviews then add the same amount to the actual cost and
+# the baseline. The dollars saved stay the same, but the percentage drops a
+# little. Update this price if you change baseline_model.
+[prices."codex-auto-review"]
+input_per_mtok = 2.0
+cached_input_per_mtok = 0.2
+output_per_mtok = 10.0

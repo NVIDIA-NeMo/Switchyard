@@ -4,9 +4,28 @@
 
 # NVIDIA NeMo Switchyard
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/NVIDIA-NeMo/Switchyard" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases"><img src="https://img.shields.io/github/v/release/NVIDIA-NeMo/Switchyard" alt="Latest GitHub release"></a>
+  <a href="https://pypi.org/project/nemo-switchyard/"><img src="https://img.shields.io/pypi/v/nemo-switchyard" alt="PyPI: nemo-switchyard"></a>
+  <a href="https://crates.io/crates/switchyard-libsy"><img src="https://img.shields.io/crates/v/switchyard-libsy?label=crates.io%20%28libsy%29" alt="crates.io: switchyard-libsy"></a>
+  <a href="https://crates.io/crates/switchyard-server"><img src="https://img.shields.io/crates/v/switchyard-server?label=crates.io%20%28server%29" alt="crates.io: switchyard-server"></a>
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/graphs/contributors"><img src="https://img.shields.io/github/contributors/NVIDIA-NeMo/Switchyard" alt="GitHub contributors"></a>
+</p>
+
 Switchyard is an open-source library that helps an AI agent choose which model handles each request. It combines efficient models with more capable models so you can balance task success, cost, and latency on your workload.
 
 Use Switchyard through a gateway integration, try it with a local proxy, or embed it in your own harness. You choose the model pool. Switchyard supplies the routing decision. Your gateway or application owns the surrounding service.
+
+<p align="center">
+  <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
+  <a href="https://nvidia-nemo.github.io/Switchyard/">Documentation</a> &emsp;·&emsp;
+  <a href="docs/benchmarks.md">Benchmarks</a> &emsp;·&emsp;
+  <a href="#whats-new">What’s new</a> &emsp;·&emsp;
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/issues/1026">Roadmap</a> &emsp;·&emsp;
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases">Releases</a> &emsp;·&emsp;
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 ## How it works
 
@@ -44,6 +63,25 @@ Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 
 [Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application. For Python, see the [embedding example](examples/libsy.py).
 
+## What’s new
+
+Features and integrations recently merged into `main`.
+
+- **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
+  Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)
+
+- **2026-10-15 · Use decision models in composite routing**\
+  Use Mercury Decide to judge tasks and Stage routing to adjust model selection as tools run. [Example configuration →](dev-server/config.toml)
+
+- **2026-10-13 · Use Jev to choose between models**\
+  Configure Jev as a task judge with candidate descriptions and a probability cutoff. [Configuration guide →](docs/routing_algorithms/composite_routing.md#decision-model-classifier)
+
+- **2026-10-12 · Bring Switchyard to TypeScript and Pi**\
+  Select models in Node.js or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
+
+- **2026-10-08 · Run Codex with Switchyard on macOS**\
+  Install a background router and Codex profile, then track usage and estimated savings from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
+
 ## Routing algorithms
 
 Start with Auto. Choose Task, Execution, or Composite when you need more control. These names describe routing choices. The configuration keys are unchanged.
@@ -63,9 +101,7 @@ The [routing overview](docs/routing_algorithms/overview.md) retains the full cat
 
 ## Evaluation and reference
 
-![Task completion versus cost for Switchyard classification, stage, escalation, and Jev task routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.svg)
-
-Results depend on the benchmark, model pool, serving stack, and routing configuration.
+[Compare benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
 
 ### Further reading

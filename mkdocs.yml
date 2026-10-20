@@ -20,6 +20,7 @@ nav:
   - Get Started:
       - Getting Started: getting_started.md
       - Known Issues: known_issues.md
+  - Benchmarks: benchmarks.md
   - Concepts:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md
