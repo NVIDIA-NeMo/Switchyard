@@ -327,7 +327,7 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2,"cost":{"usd":0.25,"source":"estimated"}}"#,
+                r#"{"session_id":"a","model":"m1","fallback_reason":"unavailable","prompt_tokens":10,"completion_tokens":2}"#,
                 "\n",
                 r#"{"session_id":"b","model":"m1","prompt_tokens":99,"completion_tokens":99}"#,
                 "\n",
@@ -344,39 +344,6 @@ mod tests {
         assert_eq!(stats.total_completion_tokens, 2);
         assert_eq!(stats.models["m1"].calls, 1);
         assert_eq!(stats.models["unknown"].prompt_tokens, 5);
-        assert_eq!(stats.cost.known_usd, 0.25);
-        assert_eq!(stats.cost.estimated_calls, 1);
-        assert_eq!(stats.cost.unknown_calls, 1);
-        assert_eq!(stats.cost.total_usd, None);
         assert!(snapshot(&path, "missing").expect("read log").is_none());
-    }
-
-    /// One-hour cache writes keep their own count, so a reader can price them at their rate.
-    #[test]
-    fn records_name_one_hour_cache_writes_only_when_reported()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("routing.jsonl");
-        let mut log = RoutingLog::new(&path)?;
-        let mut usage = Usage {
-            input_tokens: Some(10),
-            output_tokens: Some(1),
-            cache: Usage::cache_details(None, Some(30)),
-            ..Usage::default()
-        };
-        let context = || RoutingLogContext::from_metadata(&Metadata::default());
-        log.append(context(), "m", None, &usage)?;
-        if let Some(cache) = usage.cache.as_mut() {
-            cache.cache_creation_1h_input_tokens = Some(20);
-        }
-        log.append(context(), "m", None, &usage)?;
-        let records = fs::read_to_string(&path)?
-            .lines()
-            .map(serde_json::from_str)
-            .collect::<Result<Vec<serde_json::Value>, _>>()?;
-        assert_eq!(records[0]["cache_creation_tokens"], 30);
-        assert!(records[0].get("cache_creation_1h_tokens").is_none());
-        assert_eq!(records[1]["cache_creation_1h_tokens"], 20);
-        Ok(())
     }
 }

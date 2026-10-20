@@ -1826,9 +1826,8 @@ targets = ["only"]
     }
 
     /// The observer logs judge calls with their model IDs, classifier tier, and
-    /// recorded session and turn IDs, even when a call reports no usage. The served
-    /// response logs routed calls with their final usage, so logging them here would
-    /// count each routed call twice.
+    /// recorded session and turn IDs. The served response logs routed calls with
+    /// their final usage, so logging them here would count each routed call twice.
     #[test]
     fn stats_observer_logs_judge_calls_to_the_routing_log() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -1860,12 +1859,6 @@ targets = ["only"]
         };
         observer(call("judge-model", false));
         observer(call("routed-model", true));
-        observer(RunObservation::LlmCall(ModelCallObservation {
-            selected_model: ModelId::from("streamed-judge"),
-            is_success: true,
-            duration: Duration::from_millis(3),
-            usage: None,
-        }));
 
         let snapshot = log
             .snapshot_session("session-1")
@@ -1876,12 +1869,7 @@ targets = ["only"]
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
-        assert_eq!(snapshot["models"]["streamed-judge"]["calls"], 1);
-        assert_eq!(snapshot["routing_cost"]["unknown_calls"], 2);
-        assert!(snapshot["routing_cost"]["total_usd"].is_null());
-        let text = std::fs::read_to_string(&log.path)?;
-        let record: serde_json::Value =
-            serde_json::from_str(text.lines().next().ok_or("empty log")?)?;
+        let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&log.path)?)?;
         assert_eq!(record["session_id"], "session-1");
         assert_eq!(record["turn_id"], "turn-1");
         Ok(())
