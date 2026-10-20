@@ -3,7 +3,14 @@
 
 //! This module installs the systemd user service for the server.
 
-use super::*;
+use std::{
+    path::Path,
+    process::{Command, Stdio},
+    thread,
+    time::Duration,
+};
+
+use super::{Settings, present, remove, run, write};
 
 const UNIT: &str = "switchyard.service";
 

@@ -3,10 +3,15 @@
 
 //! This module installs per-user Windows tasks and shortcuts and replaces stopped app executables.
 
-use super::*;
-use std::os::windows::{
-    ffi::{OsStrExt, OsStringExt},
-    process::CommandExt,
+use std::{
+    fs,
+    io::Write,
+    os::windows::{
+        ffi::{OsStrExt, OsStringExt},
+        process::CommandExt,
+    },
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
 };
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_NOT_FOUND, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0},
@@ -25,6 +30,8 @@ use windows_sys::Win32::{
         },
     },
 };
+
+use super::{Settings, credentials, executable_name, remove, run, write, xml};
 
 /// The managed executables, in the order they are replaced and stopped.
 const BINARIES: [&str; 3] = [

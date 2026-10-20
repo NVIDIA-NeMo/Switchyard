@@ -3,7 +3,15 @@
 
 //! This module installs the app bundle and the LaunchAgents for the server and the desktop app.
 
-use super::*;
+use std::{
+    fs,
+    path::Path,
+    process::{Command, Stdio},
+    thread,
+    time::Duration,
+};
+
+use super::{SERVER, Settings, err, present, remove, run, write, xml};
 
 const DESKTOP: &str = "com.nvidia.switchyard.desktop";
 
