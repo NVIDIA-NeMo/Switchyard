@@ -1964,8 +1964,8 @@ route and confirm an HTTP 200 with a <code>choices</code> array. The same model 
 behave differently on different endpoints. See
 <a href="#pin-the-provider-and-endpoint">Pin the provider and endpoint</a>.</p>
 <h2 id="measured-pairs">Measured pairs<a class="headerlink" href="#measured-pairs" title="Permanent link">&para;</a></h2>
-<p>See <a href="../../benchmarks/">Benchmarks</a> for consolidated Terminal-Bench 2.1 and DeepSWE results,
-config links, and evaluation settings.</p>
+<p>See <a href="../../benchmarks/">Benchmarks</a> for consolidated Terminal-Bench 2.1 results
+and config links.</p>
 <p>These pairs have results from checked-in profiles or a public report. Each row
 describes one pair on one workload. The thresholds and results do not transfer
 to another pair or another workload. The profile headers give the serving stack,
@@ -1986,7 +1986,7 @@ serving stack.</p>
 <tr>
 <td>Qwen3.6-35B-A3B, also the judge</td>
 <td>Claude Opus 4.7</td>
-<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c39d38def7db3dca066b7fb5ebf172146a973ef5/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c39d38def7db3dca066b7fb5ebf172146a973ef5/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
+<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9537e07259cd7798d040348959c49e01148ed59f/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9537e07259cd7798d040348959c49e01148ed59f/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
 <td>tau2-bench telecom, 114 tasks</td>
 <td>0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%.</td>
 <td>Within noise of the strong tier, per the profile headers</td>
@@ -2004,7 +2004,7 @@ serving stack.</p>
 <p>What the rows show about model choice:</p>
 <ul>
 <li>The gap between the two single models sets the room for routing. Compare the
-  fixed-model baselines with the routing results, as in the <a href="../../benchmarks/#deepswe">DeepSWE studies</a>.</li>
+  fixed-model baselines with the routing results, as in the <a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a>.</li>
 <li>When the efficient model is close to the capable model, escalation keeps most
   of the accuracy at a fraction of the cost. On the LangChain suite the two
   single models were 8 points apart. Routing kept 80 of the 86 points at about
@@ -2014,7 +2014,7 @@ serving stack.</p>
 </ul>
 <p>Other checked-in configurations:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c39d38def7db3dca066b7fb5ebf172146a973ef5/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9537e07259cd7798d040348959c49e01148ed59f/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.</li>
 </ul>
@@ -2133,7 +2133,7 @@ endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys
 <li><a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>: see the served model and the decision counts.</li>
 <li><a href="../stage_router_routing/#tuning-confidence_threshold">Stage Router</a>: tune the threshold once the pair is right.</li>
 <li><a href="../escalation_router_routing/#judge-model-compatibility">Escalation-Router Routing</a>: judge requirements for escalation routes.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c39d38def7db3dca066b7fb5ebf172146a973ef5/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9537e07259cd7798d040348959c49e01148ed59f/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
 </ul>
 
 
