@@ -312,6 +312,20 @@ Invalid assessments and judge errors add no feedback; the configured target stil
 receives the request. Invalid citations produce a warning. Each request gets a
 new assessment; the policy keeps no mutable per-session ledger and never replays
 an older verdict. Keep the original client transcript as the source of history.
+
+For content debugging, set `RUST_LOG=info,switchyard::shadow=debug`. Timestamped
+events include the frozen requirement ledger, each normalized judge request
+(prompt, transcript, output schema and limits), the judge response and token usage
+before validation, and the exact injected note with its destination message/block
+indices. Events carry session and correlation IDs when supplied by the caller.
+`feedback_rejected` records assessments rejected by ledger or citation checks;
+existing warnings report transport and schema failures. Judge requests are logged
+before target-specific preparation, so the separate `judge_model` field identifies
+the selected judge. This debug target also logs calls through other classifiers
+that use the shared judge. These logs contain task and model content; enable them
+only when that content should be retained. Credentials and HTTP headers are not
+included. Content events are disabled at the default `info` level.
+
 The policy uses the existing `JudgeClassifier`, `StructuredJudge`,
 `JsonSchemaDecoder`, transcript renderer, and `append_note`. It is a custom
 classifier policy and cannot serve as a composite tier judge.

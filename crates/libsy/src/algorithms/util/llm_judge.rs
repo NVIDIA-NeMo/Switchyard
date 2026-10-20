@@ -281,9 +281,28 @@ where
         let judge_model = judge_models.first()?.as_str();
 
         tracing::info!(target = judge_model, "consulting llm judge");
+        let judge_request = self.judge.build_request(state, request);
+        let session_id = request
+            .metadata
+            .as_ref()
+            .and_then(|m| m.session_id.as_deref());
+        let correlation_id = request
+            .metadata
+            .as_ref()
+            .and_then(|m| m.correlation_id.as_deref());
+        tracing::debug!(
+            target: "switchyard::shadow",
+            event = "judge_request",
+            judge_model,
+            session_id,
+            correlation_id,
+            payload = %serde_json::json!(judge_request.llm_request),
+            "shadow judge request (normalized; before target preparation)"
+        );
+        let started = std::time::Instant::now();
         let response = driver
             .call_model_with_error_recovery(
-                self.judge.build_request(state, request),
+                judge_request,
                 judge_models.to_vec(),
                 self.recover_errors,
             )
@@ -300,6 +319,21 @@ where
                 self.report_fail_open(driver, safe_client_error(error), client_error_reason(error));
             })
             .ok()?;
+        tracing::debug!(
+            target: "switchyard::shadow",
+            event = "judge_response",
+            judge_model,
+            session_id,
+            correlation_id,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            payload = %serde_json::json!({
+                "id": aggregate.id,
+                "model": aggregate.model,
+                "outputs": aggregate.outputs,
+                "usage": aggregate.usage,
+            }),
+            "shadow judge response before schema validation"
+        );
         self.judge
             .parse(&aggregate)
             .inspect_err(|error| {

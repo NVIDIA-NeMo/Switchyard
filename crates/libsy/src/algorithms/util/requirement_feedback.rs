@@ -138,6 +138,16 @@ impl RequirementFeedbackPolicy {
 
 impl ClassifierInput for RequirementFeedbackPolicy {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
+        tracing::debug!(
+            target: "switchyard::shadow",
+            event = "requirement_ledger",
+            main_model = %self.target,
+            session_id = request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
+            correlation_id = request.metadata.as_ref().and_then(|m| m.correlation_id.as_deref()),
+            through_message = ?request.llm_request.messages.len().checked_sub(1),
+            payload = %json!(self.ledger),
+            "frozen task requirement breakdown"
+        );
         let messages: Vec<Value> = request.llm_request.messages.iter().enumerate().map(|(index, message)| {
             let blocks: Vec<Value> = message.content.iter().enumerate().filter_map(|(index, block)| {
                 let (kind, call_id, is_error) = match block {
@@ -181,6 +191,15 @@ impl JudgePolicy for RequirementFeedbackPolicy {
 
     fn apply_handoff_note(&self, verdict: &Value, request: &mut Request) {
         let Some(assessment) = self.assessment(verdict, request) else {
+            tracing::debug!(
+                target: "switchyard::shadow",
+                event = "feedback_rejected",
+                main_model = %self.target,
+                session_id = request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
+                correlation_id = request.metadata.as_ref().and_then(|m| m.correlation_id.as_deref()),
+                payload = %verdict,
+                "requirement assessment failed ledger or evidence validation; no injection"
+            );
             tracing::warn!(
                 reason = "invalid_requirement_feedback",
                 "requirement feedback omitted: ledger or evidence does not match the request"
@@ -195,13 +214,23 @@ impl JudgePolicy for RequirementFeedbackPolicy {
                 "verification": item.verification, "met": u8::from(item.status == Status::SupportedAsMet),
                 "one_hot": one_hot, "explanation": item.explanation, "evidence": item.evidence})
         }).collect();
-        super::prompts::append_note(
-            request,
-            &format!(
-                "Requirement evidence review (advisory; analyzed through message {}). These are observer judgments, not verifier results. Check cited evidence before acting. One-hot order: missing, weak, incomplete, supported_as_met, contradicted.\n{}",
-                assessment.through_message,
-                json!(rows),
-            ),
+        let note = format!(
+            "Requirement evidence review (advisory; analyzed through message {}). These are observer judgments, not verifier results. Check cited evidence before acting. One-hot order: missing, weak, incomplete, supported_as_met, contradicted.\n{}",
+            assessment.through_message,
+            json!(rows),
+        );
+        super::prompts::append_note(request, &note);
+        let message_index = request.llm_request.messages.len() - 1;
+        let block_index = request.llm_request.messages[message_index].content.len() - 1;
+        tracing::debug!(
+            target: "switchyard::shadow",
+            event = "feedback_injected",
+            main_model = %self.target,
+            session_id = request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
+            correlation_id = request.metadata.as_ref().and_then(|m| m.correlation_id.as_deref()),
+            through_message = assessment.through_message,
+            payload = %json!({"message": message_index, "block": block_index, "role": "user", "note": note}),
+            "requirement feedback appended before main-model call"
         );
     }
 }
