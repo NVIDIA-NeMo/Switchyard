@@ -1314,8 +1314,9 @@ bogus = true
 #[cfg(test)]
 mod deployment_tests {
     use super::*;
+    use crate::mark_privacy_restricted;
     use serde_json::json;
-    use switchyard_protocol::{Category, Request};
+    use switchyard_protocol::{Category, Message, Request, Role};
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -1373,7 +1374,7 @@ capable_target = "strong"
 efficient_target = "weak"
 "#;
 
-    fn decision_eligibility_config() -> String {
+    fn decision_privacy_config() -> String {
         let config = VALID_CONFIG
             .replace(
                 "id = \"strong/model\"",
@@ -1386,7 +1387,7 @@ efficient_target = "weak"
         format!(
             r#"{config}
 
-[decision_clients.internal]
+[decision_clients.privacy]
 format = "system_one"
 endpoint = "https://example.test/v1/systemone"
 api_key_env = "PATH"
@@ -1394,7 +1395,7 @@ timeout_ms = 5000
 
 [decision_targets.standard]
 id = "decision/standard"
-decision_client = "internal"
+decision_client = "privacy"
 labels = ["private"]
 
 [routes.typed]
@@ -1416,16 +1417,9 @@ accepted_requirement_sets = {{ private = ["private"] }}
         )
     }
 
-    fn external_eligibility_config() -> String {
+    fn external_privacy_config() -> String {
         let config = VALID_CONFIG
-            .replace(
-                "id = \"strong/model\"",
-                "id = \"strong/model\"\nlabels = [\"private\", \"eu\"]",
-            )
-            .replace(
-                "id = \"weak/model\"",
-                "id = \"weak/model\"\nlabels = [\"private\"]",
-            )
+            .replace("id = \"strong/model\"", "id = \"strong/model\"\nlabels = [\"private\"]")
             .replace(
                 "type = \"passthrough\"\ntarget = \"weak\"",
                 "type = \"random\"\ntargets = [\"weak\", \"strong\"]\nweights = [3.0, 1.0]\nseed = 7",
@@ -1434,8 +1428,31 @@ accepted_requirement_sets = {{ private = ["private"] }}
             r#"{config}
 
 [routes.passthrough.eligibility]
-accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
+accepted_requirement_sets = {{ private = ["private"] }}
 "#
+        )
+    }
+
+    fn external_eligibility_config() -> String {
+        external_privacy_config()
+            .replace(
+                "accepted_requirement_sets = { private = [\"private\"] }",
+                "accepted_requirement_sets = { private_eu = [\"private\", \"eu\"] }",
+            )
+            .replace(
+                "id = \"strong/model\"\nlabels = [\"private\"]",
+                "id = \"strong/model\"\nlabels = [\"private\", \"eu\"]",
+            )
+            .replace(
+                "id = \"weak/model\"",
+                "id = \"weak/model\"\nlabels = [\"private\"]",
+            )
+    }
+
+    fn task_retained_privacy_config() -> String {
+        external_privacy_config().replace(
+            "[routes.passthrough.eligibility]",
+            "[routes.passthrough.eligibility]\nrequirement_scope = \"task\"",
         )
     }
 
@@ -1479,12 +1496,12 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
     }
 
     #[test]
-    fn eligibility_requires_approved_roles_and_decision_targets() -> RunnerResult<()> {
-        let configured = decision_eligibility_config();
+    fn privacy_requires_approved_roles_and_decision_targets() -> RunnerResult<()> {
+        let configured = decision_privacy_config();
         let runner = Runner::from_toml(&configured)?;
         let route = runner
             .route("switchyard/typed")
-            .expect("typed eligibility route should exist");
+            .expect("typed privacy route should exist");
         assert_eq!(
             route.models().models_for(&Category::Judge),
             [ModelId::from("decision/standard")]
@@ -1493,8 +1510,8 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
         for (config, expected) in [
             (
                 configured.replace(
-                    "decision_client = \"internal\"\nlabels = [\"private\"]",
-                    "decision_client = \"internal\"",
+                    "decision_client = \"privacy\"\nlabels = [\"private\"]",
+                    "decision_client = \"privacy\"",
                 ),
                 "required target standard does not satisfy target requirements",
             ),
@@ -1512,6 +1529,56 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
                 "expected {expected:?}, got {message}"
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn external_privacy_selects_the_restricted_lane() -> RunnerResult<()> {
+        let configured = external_privacy_config();
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("privacy route should exist");
+
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message::text(
+            Role::User,
+            "Contact user@example.test. Authorization: Bearer abcdefghijklmnop",
+        ));
+        let outcome = route.decide(request.clone()).await?;
+        assert!(
+            route
+                .models()
+                .models_for(&Category::Any)
+                .contains(outcome.selected_model_id()?)
+        );
+        assert_eq!(
+            &runner
+                .describe_decision(&ModelId::from("switchyard/passthrough"), &outcome)
+                .expect("selected target metadata")
+                .selected
+                .model,
+            outcome.selected_model_id()?
+        );
+        mark_privacy_restricted(&mut request);
+        assert_eq!(
+            route.decide(request).await?.selected_model_id()?,
+            "strong/model"
+        );
+
+        let no_private_target = configured.replace("labels = [\"private\"]", "labels = []");
+        assert!(error_message(&no_private_target).contains("without an eligible target"));
+        let missing_tier = format!(
+            "{configured}\n[routes.plan_execute.eligibility]\naccepted_requirement_sets = {{ private = [\"private\"] }}\n"
+        );
+        assert!(
+            error_message(&missing_tier)
+                .contains("required target weak does not satisfy target requirements")
+        );
+        let conflicting_alias = format!(
+            "{configured}\n[targets.alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n"
+        );
+        assert!(error_message(&conflicting_alias).contains("disagree on labels"));
         Ok(())
     }
 
@@ -1729,7 +1796,7 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
                 "unknown field `private`",
             ),
             (
-                decision_eligibility_config().replace(
+                decision_privacy_config().replace(
                     "[decision_targets.standard]",
                     "[decision_targets.standard]\nprivate = false",
                 ),
@@ -1785,8 +1852,8 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
             ),
             (
                 format!(
-                    "{}\n[decision_targets.alias]\nid = \"decision/standard\"\ndecision_client = \"internal\"\nlabels = [\"private\", \"eu\"]\n",
-                    decision_eligibility_config()
+                    "{}\n[decision_targets.alias]\nid = \"decision/standard\"\ndecision_client = \"privacy\"\nlabels = [\"private\", \"eu\"]\n",
+                    decision_privacy_config()
                 ),
                 "disagrees on labels",
             ),
@@ -1808,37 +1875,51 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
 
     #[tokio::test]
     async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
-        let configured = external_eligibility_config().replace(
-            "[routes.passthrough.eligibility]",
-            "[routes.passthrough.eligibility]\nrequirement_scope = \"task\"",
-        );
-        let runner = Runner::from_toml(&configured)?;
+        let runner = Runner::from_toml(&task_retained_privacy_config())?;
         let route = runner
             .route("switchyard/passthrough")
-            .expect("eligibility route should exist");
-        let request = |task_id: Option<&str>, restricted: bool| {
+            .expect("privacy route should exist");
+        let request = |task_id: Option<&str>, text: &str, restricted: bool| {
             let mut request = Request::default();
+            request
+                .llm_request
+                .messages
+                .push(Message::text(Role::User, text));
             request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
             if restricted {
-                crate::require_target_labels(&mut request, ["private", "eu"])
-                    .expect("trusted labels");
+                mark_privacy_restricted(&mut request);
             }
             request
         };
-        for (task_id, restricted, expected) in [
-            ("task-a", false, 2),
-            ("task-a", true, 1),
-            ("task-a", false, 1),
-            ("task-b", false, 2),
+
+        for (task_id, text, restricted, expected) in [
+            (Some("task-a"), "ordinary turn", false, "standard"),
+            (
+                Some("task-a"),
+                "Authorization: Bearer abcdefghijklmnop",
+                true,
+                "restricted",
+            ),
+            (Some("task-a"), "later clear turn", false, "restricted"),
+            (Some("task-b"), "independent clear task", false, "standard"),
         ] {
-            let outcome = route.decide(request(Some(task_id), restricted)).await?;
-            assert_eq!(outcome.selected_model_ids.len(), expected);
-            if expected == 1 {
+            let outcome = route.decide(request(task_id, text, restricted)).await?;
+            assert_eq!(
+                outcome.selected_model_ids.len(),
+                if expected == "restricted" { 1 } else { 2 },
+                "{text}"
+            );
+            if expected == "restricted" {
                 assert_eq!(outcome.selected_model_id()?, "strong/model");
             }
         }
         for task_id in [None, Some(" ")] {
-            assert!(route.decide(request(task_id, false)).await.is_err());
+            assert!(
+                route
+                    .decide(request(task_id, "invalid identity", false))
+                    .await
+                    .is_err()
+            );
         }
         Ok(())
     }

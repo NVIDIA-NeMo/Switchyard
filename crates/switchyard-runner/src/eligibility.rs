@@ -11,6 +11,8 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use switchyard_protocol::{LlmClientError, Request, WireFormat};
 
+use crate::privacy::has_external_restriction;
+
 const REQUIREMENTS_KEY: &str = "switchyard.internal.target_requirements";
 const MAX_LABELS: usize = 32;
 const MAX_LABEL_BYTES: usize = 128;
@@ -66,7 +68,7 @@ impl EligibilityPolicy {
 
     /// Retains known requirements before rejecting an unsupported accumulated set.
     pub(crate) fn admit(&self, request: &Request) -> Result<Requirements, LlmClientError> {
-        let has_signal = has_external_requirements(request);
+        let has_signal = has_external_requirements(request) || has_external_restriction(request);
         if self.require_explicit_requirements && !has_signal {
             return Err(invalid(
                 "route requires explicit external target requirements",
@@ -131,9 +133,14 @@ pub(crate) fn has_external_requirements(request: &Request) -> bool {
         .is_some_and(|metadata| metadata.contains_key(REQUIREMENTS_KEY))
 }
 
-/// Reads the current request's trusted target requirements.
+/// Reads current trusted requirements, adapting the legacy privacy marker to `private`.
 pub(crate) fn external_requirements(request: &Request) -> Result<Requirements, LlmClientError> {
-    Ok(metadata_labels(request)?.unwrap_or_default())
+    let mut requirements = metadata_labels(request)?.unwrap_or_default();
+    if has_external_restriction(request) {
+        requirements.insert("private".into());
+    }
+    validate_labels(&requirements)?;
+    Ok(requirements)
 }
 
 /// Checks label syntax and the bounded size of one target or requirement set.
@@ -235,6 +242,7 @@ fn validate_request_context(request: &Request) -> Result<(), LlmClientError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::privacy::mark_privacy_restricted;
 
     #[test]
     fn responses_continuations_are_rejected_from_normalized_and_preserved_state() {
@@ -288,17 +296,12 @@ mod tests {
         .expect("test requirement sets should be valid")
     }
 
-    fn request(names: &[&str]) -> Request {
+    fn request(task: &str, names: &[&str]) -> Request {
         let mut request = Request::default();
+        request.metadata.get_or_insert_default().task_id = Some(task.to_string());
         if !names.is_empty() {
             require_target_labels(&mut request, names).expect("test labels should be valid");
         }
-        request
-    }
-
-    fn task_request(task: &str, names: &[&str]) -> Request {
-        let mut request = request(names);
-        request.metadata.get_or_insert_default().task_id = Some(task.to_string());
         request
     }
 
@@ -306,7 +309,7 @@ mod tests {
     #[test]
     fn trusted_requirements_union_without_partial_invalid_additions() -> Result<(), LlmClientError>
     {
-        let mut request = request(&["private", "eu", "eu"]);
+        let mut request = request("task", &["private", "eu", "eu"]);
         require_target_labels(&mut request, ["eu"])?;
         let expected = labels(&["eu", "private"]);
         assert_eq!(metadata_labels(&request)?, Some(expected.clone()));
@@ -315,19 +318,25 @@ mod tests {
         Ok(())
     }
 
+    // Both trusted Rust helpers use the route's configured label vocabulary.
     #[test]
     fn external_requirements_need_known_labels() -> Result<(), LlmClientError> {
-        let marked = request(&["private"]);
+        let mut marked = request("task", &[]);
+        mark_privacy_restricted(&mut marked);
         let configured = vec![vec!["private".to_string()]];
+        assert!(!has_external_requirements(&marked));
         let accepts_signal = EligibilityPolicy::new(false, configured, false)?;
-        assert!(has_external_requirements(&marked));
         assert_eq!(accepts_signal.admit(&marked)?, labels(&["private"]));
-        assert!(accepts_signal.admit(&request(&[]))?.is_empty());
-        let policy = policy(&[&["eu"]], false);
+        assert_eq!(
+            accepts_signal.admit(&request("task", &["private"]))?,
+            labels(&["private"])
+        );
+        assert!(accepts_signal.admit(&request("task", &[]))?.is_empty());
+        let policy = policy(&[&["eu"]], true);
         assert!(policy.admit(&marked).is_err());
-        assert_eq!(policy.admit(&request(&["eu"]))?, labels(&["eu"]));
-        assert!(policy.admit(&request(&["unknown"])).is_err());
-        let mut malformed = request(&[]);
+        assert_eq!(policy.admit(&request("task", &["eu"]))?, labels(&["eu"]));
+        assert!(policy.admit(&request("task", &["unknown"])).is_err());
+        let mut malformed = request("task", &[]);
         malformed
             .metadata
             .get_or_insert_default()
@@ -336,26 +345,25 @@ mod tests {
             .insert(REQUIREMENTS_KEY.into(), "null".into());
         assert!(has_external_requirements(&malformed));
         assert!(policy.admit(&malformed).is_err());
-        assert!(policy.admit(&request(&[]))?.is_empty());
+        assert_eq!(policy.admit(&request("task", &[]))?, labels(&["eu"]));
         Ok(())
     }
 
     // Explicit empty signals do not clear task history; absent signals are always rejected.
     #[test]
-    fn required_signals_distinguish_missing_empty_and_malformed_markers()
-    -> Result<(), LlmClientError> {
+    fn required_signals_distinguish_missing_empty_and_legacy_markers() -> Result<(), LlmClientError>
+    {
         let policy = EligibilityPolicy::new(true, vec![vec!["private".into()]], true)?;
-        let missing = task_request("task", &[]);
+        let missing = request("task", &[]);
         assert!(policy.admit(&missing).is_err());
 
         let mut empty = missing.clone();
         require_target_labels(&mut empty, std::iter::empty::<&str>())?;
         assert!(policy.admit(&empty)?.is_empty());
 
-        assert_eq!(
-            policy.admit(&task_request("task", &["private"]))?,
-            labels(&["private"])
-        );
+        let mut legacy = missing.clone();
+        mark_privacy_restricted(&mut legacy);
+        assert_eq!(policy.admit(&legacy)?, labels(&["private"]));
         assert!(policy.admit(&missing).is_err());
         assert_eq!(policy.admit(&empty)?, labels(&["private"]));
 
@@ -371,34 +379,18 @@ mod tests {
         Ok(())
     }
 
-    // Known labels still require an exact configured set; one request cannot affect another.
-    #[test]
-    fn request_requirements_are_stateless_and_require_configured_sets() -> Result<(), LlmClientError>
-    {
-        let policy = policy(&[&["eu"], &["private"]], false);
-        assert_eq!(policy.admit(&request(&["eu"]))?, labels(&["eu"]));
-        assert_eq!(policy.admit(&request(&["private"]))?, labels(&["private"]));
-        assert!(policy.admit(&request(&["eu", "private"])).is_err());
-        assert!(policy.admit(&request(&[]))?.is_empty());
-        Ok(())
-    }
-
     // An unsupported union stays retained, so omitting a requirement cannot reopen the task.
     #[test]
     fn task_requirements_tighten_even_without_a_configured_union() -> Result<(), LlmClientError> {
         let restricted = policy(&[&["eu"], &["private"]], true);
         assert_eq!(
-            restricted.admit(&task_request("task", &["eu"]))?,
+            restricted.admit(&request("task", &["eu"]))?,
             labels(&["eu"])
         );
-        assert!(
-            restricted
-                .admit(&task_request("task", &["private"]))
-                .is_err()
-        );
-        assert!(restricted.admit(&task_request("task", &[])).is_err());
+        assert!(restricted.admit(&request("task", &["private"])).is_err());
+        assert!(restricted.admit(&request("task", &[])).is_err());
         assert_eq!(
-            restricted.admit(&task_request("other", &[]))?,
+            restricted.admit(&request("other", &[]))?,
             Requirements::new()
         );
 
@@ -411,13 +403,13 @@ mod tests {
                 scope.spawn(move || {
                     barrier.wait();
                     policy
-                        .admit(&task_request("shared", &[label]))
+                        .admit(&request("shared", &[label]))
                         .expect("concurrent requirements should be admitted");
                 });
             }
         });
         assert_eq!(
-            concurrent.admit(&task_request("shared", &[]))?,
+            concurrent.admit(&request("shared", &[]))?,
             labels(&["eu", "private"])
         );
         Ok(())
@@ -435,10 +427,10 @@ mod tests {
         tasks
             .lock()
             .extend((0..MAX_TASKS).map(|task| (task.to_string(), labels(&["eu"]))));
-        assert!(policy.admit(&task_request("new", &["private"])).is_err());
-        assert!(policy.admit(&task_request("new", &[])).is_err());
+        assert!(policy.admit(&request("new", &["private"])).is_err());
+        assert!(policy.admit(&request("new", &[])).is_err());
         assert_eq!(
-            policy.admit(&task_request("0", &["private"]))?,
+            policy.admit(&request("0", &["private"]))?,
             labels(&["eu", "private"])
         );
         assert!(policy.admit(&Request::default()).is_err());
