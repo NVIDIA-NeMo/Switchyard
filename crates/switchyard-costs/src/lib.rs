@@ -11,11 +11,9 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::Usage;
 
-use crate::{ServerError, ServerResult};
-
 /// Pricing maps served model IDs to token rates in USD per million tokens.
-#[derive(Debug, Default)]
-pub(crate) struct Pricing(HashMap<String, Rates>);
+#[derive(Clone, Debug, Default)]
+pub struct Pricing(HashMap<String, Rates>);
 
 impl<'de> Deserialize<'de> for Pricing {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -45,7 +43,7 @@ impl<'de> Deserialize<'de> for Pricing {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Rates {
     input: f64,
@@ -55,34 +53,36 @@ struct Rates {
     cache_write_1h: Option<f64>,
 }
 
+/// This value identifies how a saved monetary amount was obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CostSource {
+pub enum CostSource {
+    /// The provider supplied this charge.
     ProviderReported,
+    /// Configured token rates supplied this estimate.
     Estimated,
 }
 
+/// This record stores a charge or estimate for one call.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
-pub(crate) struct RecordedCost {
-    pub(crate) usd: f64,
-    pub(crate) source: CostSource,
+pub struct RecordedCost {
+    /// The amount is in USD.
+    pub usd: f64,
+    /// The source distinguishes charges from estimates.
+    pub source: CostSource,
 }
 
 impl Pricing {
-    pub(crate) fn load(path: &Path) -> ServerResult<Self> {
-        let bytes = std::fs::read(path).map_err(|error| {
-            ServerError::new(format!(
-                "failed to read pricing file {}: {error}",
-                path.display()
-            ))
-        })?;
-        Self::parse(&bytes).map_err(|error| {
-            ServerError::new(format!("invalid pricing file {}: {error}", path.display()))
-        })
+    /// This method loads and validates a JSON pricing file.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("read pricing file {}: {error}", path.display()))?;
+        Self::parse(&bytes)
+            .map_err(|error| format!("invalid pricing file {}: {error}", path.display()))
     }
 
     /// This function reads a pricing file's JSON and checks every model ID and rate.
-    fn parse(json: &[u8]) -> Result<Self, String> {
+    pub fn parse(json: &[u8]) -> Result<Self, String> {
         let pricing: Self = serde_json::from_slice(json).map_err(|error| error.to_string())?;
         for (model, rate) in &pricing.0 {
             if model.trim().is_empty()
@@ -107,7 +107,7 @@ impl Pricing {
     }
 
     /// Provider charges take precedence because token rates may omit provider surcharges.
-    pub(crate) fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
+    pub fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
         if let Some(usd) = usage
             .provider_cost
             .filter(|value| value.is_finite() && *value >= 0.0)
@@ -117,6 +117,11 @@ impl Pricing {
                 source: CostSource::ProviderReported,
             });
         }
+        self.estimate(model, usage)
+    }
+
+    /// This method uses token rates alone so baseline estimates exclude provider charges.
+    pub fn estimate(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
         let rate = self.0.get(model)?;
         let input = usage.input_tokens?;
         let output = usage.output_tokens?;
@@ -135,12 +140,17 @@ impl Pricing {
 
 /// The known subtotal remains visible when any call has unknown cost.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub(crate) struct CostTotals {
-    pub(crate) known_usd: f64,
-    pub(crate) unknown_calls: u64,
-    pub(crate) estimated_calls: u64,
-    pub(crate) provider_reported_calls: u64,
-    pub(crate) total_usd: Option<f64>,
+pub struct CostTotals {
+    /// This subtotal includes every known cost.
+    pub known_usd: f64,
+    /// This count includes calls whose cost is unknown.
+    pub unknown_calls: u64,
+    /// This count includes calls priced from configured rates.
+    pub estimated_calls: u64,
+    /// This count includes calls with a provider charge.
+    pub provider_reported_calls: u64,
+    /// The total is absent when any call has unknown cost.
+    pub total_usd: Option<f64>,
 }
 
 impl Default for CostTotals {
@@ -156,7 +166,8 @@ impl Default for CostTotals {
 }
 
 impl CostTotals {
-    pub(crate) fn add(&mut self, cost: Option<RecordedCost>) {
+    /// This method adds one call and keeps the total unknown if any cost is unknown.
+    pub fn add(&mut self, cost: Option<RecordedCost>) {
         match cost.filter(|cost| {
             cost.usd.is_finite() && cost.usd >= 0.0 && (self.known_usd + cost.usd).is_finite()
         }) {
@@ -169,6 +180,19 @@ impl CostTotals {
             }
             None => self.unknown_calls += 1,
         }
+        self.total_usd = (self.unknown_calls == 0).then_some(self.known_usd);
+    }
+
+    /// This method combines disjoint groups of calls without repricing them.
+    pub fn merge(&mut self, other: &Self) {
+        if (self.known_usd + other.known_usd).is_finite() {
+            self.known_usd += other.known_usd;
+        } else {
+            self.unknown_calls += 1;
+        }
+        self.unknown_calls += other.unknown_calls;
+        self.estimated_calls += other.estimated_calls;
+        self.provider_reported_calls += other.provider_reported_calls;
         self.total_usd = (self.unknown_calls == 0).then_some(self.known_usd);
     }
 }

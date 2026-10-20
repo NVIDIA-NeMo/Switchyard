@@ -14,9 +14,9 @@ use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
 
-use crate::pricing::{CostTotals, Pricing, RecordedCost};
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
+use switchyard_costs::{CostTotals, Pricing, RecordedCost};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const ORIGIN_HEADER: &str = "x-switchyard-origin";

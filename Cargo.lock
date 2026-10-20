@@ -3641,6 +3641,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-costs"
+version = "0.3.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "switchyard-protocol",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "switchyard-desktop"
 version = "0.3.0"
 dependencies = [
@@ -3723,6 +3734,8 @@ dependencies = [
  "objc2-foundation",
  "serde",
  "serde_json",
+ "switchyard-costs",
+ "switchyard-protocol",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
@@ -3859,6 +3872,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "switchyard-costs",
  "switchyard-libsy",
  "switchyard-llm-client",
  "switchyard-protocol",

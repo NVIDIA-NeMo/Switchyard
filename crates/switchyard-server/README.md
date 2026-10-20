@@ -137,7 +137,8 @@ keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rate
 at startup, and saved costs do not change when prices change.
 
 The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
-rates for your own models.
+rates for your own models. The menubar reads the same file through its `pricing_file`
+setting; its actual spending comes from recorded costs.
 
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
