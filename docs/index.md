@@ -1,14 +1,15 @@
 # Switchyard
 
-Switchyard helps an AI agent choose which model handles each request. Embed its Rust core, **libsy**, in your gateway or agent harness, directly or through Python bindings. Your application keeps its model clients, credentials, and service.
+Switchyard helps an AI agent choose which model handles each request. Embed its Rust core, **libsy**, in your gateway or agent harness. Your application keeps its model clients, credentials, and service.
 
-**[Start with the library quickstart](getting_started.md)**: install the package, run a short example, and send the selected request through your model client.
+**[Start with the Rust quickstart](getting_started.md)**: add the crates, run a routing example, and send the selected request through your model client.
 
 ## Choose a Path
 
 | Goal | Path | Start here |
 |---|---|---|
-| Add routing to your gateway or application | Library Path | [Python quickstart](getting_started.md) or [Rust libsy crate](../crates/libsy/README.md) |
+| Add routing to your Rust gateway or application | Library Path | [Rust quickstart](getting_started.md) |
+| Use libsy from Python | Python Bindings | [Python embedding](reference/host_integration.md#python-bindings) |
 | Evaluate routing locally with your own models | Local Evaluation | [Run the demo server](operations/local_evaluation.md) |
 | Route Codex or Claude Code using your existing login | Server Path | [Single-provider coding agents](recipes/single_provider_coding_agents.md) |
 | Add Switchyard routing to NeMo Relay | Native Plugin Path | [Use Switchyard with NeMo Relay](integrations/nemo_relay.md) |

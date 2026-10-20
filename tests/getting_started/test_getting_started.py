@@ -17,13 +17,14 @@ def test_getting_started_documents_current_paths() -> None:
         < guide.index("## Call your model")
         < guide.index("## Next steps")
     )
-    assert guide.split("```python\n", 1)[1].split("```", 1)[0] == (
-        readme.split("```python\n", 1)[1].split("```", 1)[0]
+    assert guide.split("```rust\n", 1)[1].split("```", 1)[0] == (
+        readme.split("```rust\n", 1)[1].split("```", 1)[0]
     )
-    assert 'uv add "nemo-switchyard==0.3.0"' in guide
-    assert 'messages=outcome.request["messages"]' in guide
+    assert "cargo add switchyard-libsy@=0.3.0 switchyard-protocol@=0.3.0" in guide
+    assert "client.call(outcome.request).await?" in guide
+    assert "```python" not in guide + readme
     assert "Selected: fast" in guide
-    assert "Critical tool error: strong" in guide
+    assert "Selected: strong" in guide
     assert "operations/local_evaluation.md" in guide
     assert "switchyard launch" not in guide
     assert "nemo-switchyard[cli]" not in guide

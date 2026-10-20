@@ -15,7 +15,7 @@
 
 Switchyard is an open-source library that helps an AI agent choose which model handles each request. It combines efficient models with more capable models so you can balance task success, cost, and latency on your workload.
 
-Embed its Rust core, **libsy**, in your gateway or agent harness, directly or through Python bindings. Your application keeps its model clients, credentials, and service. Switchyard supplies the routing decision.
+Embed its Rust core, **libsy**, in your gateway or agent harness. Your application keeps its model clients, credentials, and service. Switchyard supplies the routing decision.
 
 The standalone server is for local evaluation and personal use. It is not a supported production deployment path.
 
@@ -31,32 +31,47 @@ The standalone server is for local evaluation and personal use. It is not a supp
 
 ## Start with the library
 
-With Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), create a project and install the released bindings:
+With [Rust 1.96.1+ and a native build toolchain](INSTALLATION.md#requirements), create a project and add the released crates:
 
 ```bash
-uv init --bare switchyard-demo
+cargo new switchyard-demo
 cd switchyard-demo
-uv add "nemo-switchyard==0.3.0"
+cargo add switchyard-libsy@=0.3.0 switchyard-protocol@=0.3.0 futures@0.3
+cargo add tokio@1 --features macros,rt
 ```
 
-Save as `route.py`, then run `uv run route.py`. No API key is needed:
+Replace `src/main.rs` with this example, then run `cargo run`. No API key is needed:
 
-```python
-import asyncio
-from switchyard.libsy import Step, algorithms
+```rust
+use std::{collections::HashMap, sync::Arc};
+use futures::StreamExt;
+use switchyard_libsy::{
+    Algorithm, PickerMode, RuntimeModels, StageRouter, StageRouterConfig, Step,
+};
+use switchyard_protocol::{Category, Request, text_request};
 
-async def main():
-    router = algorithms.stage_router(
-        picker="efficient_first", confidence_threshold=0.5)
-    models = {"efficient": ["fast"], "capable": ["strong"]}
-    models["any"] = ["fast", "strong"]
-    text = {"type": "text", "text": "Hello"}
-    request = {"messages": [{"role": "user", "content": [text]}]}
-    async for step in router.run_stream(request, models):
-        if isinstance(step, Step.Done):
-            print("Selected:", step.outcome.selected_model_ids[0])
-
-asyncio.run(main())
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let router = Arc::new(StageRouter::new(StageRouterConfig::new(
+        PickerMode::EfficientFirst, 0.5,
+    ))?);
+    let models = Arc::new(RuntimeModels::new(HashMap::from([
+        (Category::Efficient, vec!["fast".into()]),
+        (Category::Capable, vec!["strong".into()]),
+        (Category::Any, vec!["fast".into(), "strong".into()]),
+    ])));
+    let request = Request {
+        llm_request: text_request(None, "Hello"),
+        ..Default::default()
+    };
+    let mut steps = router.run_stream(request, models);
+    while let Some(step) = steps.next().await {
+        if let Step::Done(outcome) = step? {
+            println!("Selected: {}", outcome.selected_model_id()?);
+        }
+    }
+    Ok(())
+}
 ```
 
 ```text
@@ -65,7 +80,7 @@ Selected: fast
 
 `fast` and `strong` are model IDs supplied by the host. This Stage preset starts on the efficient model and can switch when tool results report a failure. It makes no judge calls in this configuration.
 
-**[Continue the library quickstart](docs/getting_started.md)** to send the returned request through your model client and see routing change after a tool error. For Rust, use the [complete Rust example](docs/reference/host_integration.md#route-in-rust).
+**[Continue the Rust quickstart](docs/getting_started.md)** to send the returned request through your model client and see routing change after a tool error. [Python bindings](docs/reference/host_integration.md#python-bindings) are also available.
 
 ## How it works
 
@@ -101,7 +116,7 @@ Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 
 ### Embed the library in your harness
 
-[Follow the library quickstart](docs/getting_started.md) for a complete Python example. For Rust, see the [libsy crate](crates/libsy/README.md) and [host integration guide](docs/reference/host_integration.md).
+[Follow the Rust quickstart](docs/getting_started.md) for routing and model calls. See the [host integration guide](docs/reference/host_integration.md) for advanced execution and Python bindings.
 
 ## What’s new
 
@@ -133,7 +148,7 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 | **[Execution](docs/routing_algorithms/stage_router_routing.md)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. | `type = "stage_router"` |
 | **[Composite](docs/routing_algorithms/composite_routing.md)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. | `type = "composite"` |
 
-Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. For direct Python embedding, use `stage_router(picker="efficient_first", confidence_threshold=0.5)` for the same preset.
+Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. In Rust, use `StageRouterConfig::new(PickerMode::EfficientFirst, 0.5)` for the same preset.
 
 The [routing overview](docs/routing_algorithms/overview.md) retains the full catalogue, including [Plan/Execute](docs/routing_algorithms/plan_execute_routing.md), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md) strategies. Integration support varies: check the gateway guide before choosing an algorithm.
 

@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Run `cargo run`. It prints `Selected: fast` without making a network call. The host can then pass `outcome.request` to its client, as shown in the [Python handoff example](../getting_started.md#call-your-model). Use [switchyard-translation](../../crates/switchyard-translation/README.md) to convert provider requests and libsy's protocol types, or [switchyard-llm-client](../../crates/libsy-llm-client/README.md) to drive an algorithm over HTTP.
+Run `cargo run`. It prints `Selected: fast` without making a network call. This example follows `main`, including its `State` argument. For a complete routing and client example using released crates, follow the [Rust quickstart](../getting_started.md#call-your-model). Use [switchyard-translation](../../crates/switchyard-translation/README.md) to convert provider requests and libsy's protocol types, or [switchyard-llm-client](../../crates/libsy-llm-client/README.md) to drive an algorithm over HTTP.
 
 ## Serve routing-time calls
 
@@ -109,3 +109,35 @@ With a host-installed OpenTelemetry subscriber, the existing `libsy.run` span re
 For the request, response, and streaming types the steps carry, see [`switchyard-protocol`](../../crates/protocol/README.md).
 
 For plan/execute, supply conversation history, including tool calls and results, before routing. Responses API continuation IDs alone are not enough. See the [Responses API history requirement](../routing_algorithms/plan_execute_routing.md#responses-api-history-requirement).
+
+## Python bindings
+
+Python bindings run the same Rust algorithms. With Python 3.10+ and [uv](https://docs.astral.sh/uv/getting-started/installation/), create a project and install the released package:
+
+```bash
+uv init --bare switchyard-python-demo
+cd switchyard-python-demo
+uv add "nemo-switchyard==0.3.0"
+```
+
+Save as `route.py`:
+
+```python
+import asyncio
+from switchyard.libsy import Step, algorithms
+
+async def main():
+    router = algorithms.stage_router(
+        picker="efficient_first", confidence_threshold=0.5)
+    models = {"efficient": ["fast"], "capable": ["strong"]}
+    models["any"] = ["fast", "strong"]
+    text = {"type": "text", "text": "Hello"}
+    request = {"messages": [{"role": "user", "content": [text]}]}
+    async for step in router.run_stream(request, models):
+        if isinstance(step, Step.Done):
+            print("Selected:", step.outcome.selected_model_ids[0])
+
+asyncio.run(main())
+```
+
+`uv run route.py` prints `Selected: fast` without making a network call. This routing-only example works with the released package. For the development API's host callbacks and cancellation, build the matching bindings from source as described at the top of this page, then see [the complete host example](../../examples/libsy.py).
