@@ -3,6 +3,8 @@
 
 //! This module prices observed calls and keeps missing usage or rates unknown.
 
+mod anthropic;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -119,23 +121,10 @@ impl Pricing {
         let input = usage.input_tokens?;
         let output = usage.output_tokens?;
         let read = usage.cached_input_tokens().unwrap_or(0);
-        let write = usage.cache_creation_input_tokens().unwrap_or(0);
-        let long_write = usage
-            .cache
-            .as_ref()
-            .and_then(|cache| cache.cache_creation_1h_input_tokens)
-            .unwrap_or(0);
-        let short_write = write.checked_sub(long_write)?;
-        let long_rate = if long_write > 0 {
-            rate.cache_write_1h?
-        } else {
-            0.0
-        };
         let usd = (input as f64 * rate.input
             + output as f64 * rate.output
             + read as f64 * rate.cache_read
-            + short_write as f64 * rate.cache_write
-            + long_write as f64 * long_rate)
+            + anthropic::cache_write_cost(usage, rate.cache_write, rate.cache_write_1h)?)
             / 1_000_000.0;
         Some(RecordedCost {
             usd,
