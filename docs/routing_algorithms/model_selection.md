@@ -129,8 +129,8 @@ behave differently on different endpoints. See
 
 ## Measured pairs
 
-See [Benchmarks](../benchmarks.md) for consolidated Terminal-Bench 2.1 and DeepSWE results,
-config links, and evaluation settings.
+See [Benchmarks](../benchmarks.md) for consolidated Terminal-Bench 2.1 results
+and config links.
 
 These pairs have results from checked-in profiles or a public report. Each row
 describes one pair on one workload. The thresholds and results do not transfer
@@ -146,7 +146,7 @@ serving stack.
 What the rows show about model choice:
 
 - The gap between the two single models sets the room for routing. Compare the
-  fixed-model baselines with the routing results, as in the [DeepSWE studies](../benchmarks.md#deepswe).
+  fixed-model baselines with the routing results, as in the [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21).
 - When the efficient model is close to the capable model, escalation keeps most
   of the accuracy at a fraction of the cost. On the LangChain suite the two
   single models were 8 points apart. Routing kept 80 of the 86 points at about
