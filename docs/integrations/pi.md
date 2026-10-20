@@ -68,7 +68,9 @@ pi -p --provider switchyard --model switchyard "List the files in this directory
 ## Check the routing
 
 The command `curl -s localhost:4000/v1/stats | jq '.models | map_values({calls, prompt_tokens})'`
-lists each target model with its call count. Every response carries the header
+lists each target model with its call count. For a step-by-step check with an
+escalating request, see
+[Verify routing is active](../getting_started.md#verify-routing-is-active). Every response carries the header
 `x-model-router-selected-model`. With `--routing-log-file PATH`, the server writes one
 record per call. In the record below, `session_id` is the value of pi's `x-session-id`
 header:
@@ -153,15 +155,18 @@ second shows `cached_tokens` close to `prompt_tokens`. If the second record show
 
 #### Estimate the cost
 
-The routing log records token counts, not prices. To estimate what a request cost,
-multiply each count in its record by the matching price and add the results:
+The server matches each token count in the routing log to a rate in the pricing file:
 
-| Tokens in the record | Price |
+| Tokens in the record | Pricing-file key |
 |---|---|
-| `prompt_tokens - cached_tokens - cache_creation_tokens` | Input |
-| `cached_tokens` | Cache read |
-| `cache_creation_tokens` | Cache write |
-| `completion_tokens` | Output |
+| `prompt_tokens - cached_tokens - cache_creation_tokens` | `input` |
+| `cached_tokens` | `cache_read` |
+| `cache_creation_tokens - cache_creation_1h_tokens` | `cache_write` |
+| `cache_creation_1h_tokens`, when reported | `cache_write_1h` |
+| `completion_tokens` | `output` |
+
+Treat a missing `cache_creation_1h_tokens` count as zero. That count is part of
+`cache_creation_tokens`, so it must not be charged twice.
 
 Write the prices to `prices.json` in USD per million tokens, and key each entry by the
 record's `model` value. This example uses Anthropic's list prices for Claude Sonnet 5 on
@@ -173,25 +178,30 @@ record's `model` value. This example uses Anthropic's list prices for Claude Son
 }
 ```
 
-The example's `cache_write` price is for a 5-minute cache. A 1-hour cache costs 2 times
-the input price instead of 1.25 times. The routing log does not say which cache the
-gateway used. A gateway may also charge its own prices, so the result is an estimate, not
-the gateway's bill. This command prints one estimated cost per record, or a warning for a
-model that has no entry in `prices.json`:
+For your own models, copy the entry for each model and replace the key with its exact
+`model` value from the routing log. Use the served model ID rather than the routing alias,
+and replace the example's numbers with your provider's rates. List recorded model IDs with:
 
 ```bash
-jq -r --slurpfile prices prices.json '
-  . as $r
-  | ($prices[0][$r.model // ""]) as $p
-  | if $p == null then
-      "warning: no price for model \($r.model); add it to prices.json"
-    else
-      ((($r.prompt_tokens // 0) - ($r.cached_tokens // 0) - ($r.cache_creation_tokens // 0)) * $p.input
-       + ($r.cached_tokens // 0) * $p.cache_read
-       + ($r.cache_creation_tokens // 0) * $p.cache_write
-       + ($r.completion_tokens // 0) * $p.output) / 1000000
-      | "\($r.route_id) \($r.model) estimated $\(. * 1000000 | round / 1000000)"
-    end' PATH
+jq -r '.model' PATH | sort -u
+```
+
+Every entry requires `input`, `output`, `cache_read`, and `cache_write`. Set a rate to zero
+only when that usage is free. Each rate must be a finite number from 0 to 10000 USD per
+million tokens.
+
+The example's `cache_write` price is for a 5-minute cache. A 1-hour cache costs 2 times
+the input price instead of 1.25 times; set `cache_write_1h` to `4.00` for that example.
+Include that rate to estimate reported one-hour cache writes; without it, the estimate
+remains unknown.
+
+Start the server with `--pricing-file prices.json` as well as `--routing-log-file PATH`.
+The server records the gateway's reported charge when available, even without rates.
+Otherwise it uses the pricing file to estimate the cost. If usage is missing or the model
+has no rates, the estimate is unknown. Read each request's cost with:
+
+```bash
+jq -c '{route_id, model, cost}' PATH
 ```
 
 ### Thinking

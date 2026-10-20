@@ -683,7 +683,7 @@ impl TranslatingLlmClient {
                 })?;
                 // Map a provider's failed generation to 502, even under HTTP 200.
                 // Redact request credentials before returning the provider error.
-                let agg =
+                let mut agg =
                     observed_translation::decode_response(&body, wire_format).map_err(|error| {
                         match error {
                             TranslationError::UpstreamFailure { error } => {
@@ -700,6 +700,14 @@ impl TranslatingLlmClient {
                             error => LlmClientError::ResponseTranslation(error.to_string()),
                         }
                     })?;
+                // The gateway may report a buffered charge only in its response header.
+                if agg.usage.provider_cost.is_none() {
+                    agg.usage.provider_cost = upstream_headers
+                        .get("x-litellm-response-cost")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.trim().parse::<f64>().ok())
+                        .filter(|usd| usd.is_finite() && *usd >= 0.0);
+                }
                 (LlmResponse::Agg(agg), upstream_headers)
             }
         };

@@ -33,7 +33,7 @@ use switchyard_libsy::{
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
     ModelId, Request, Response, ResponseAccumulator, RoutedDecisionClient, RoutedLlmClient,
-    RoutingFallbackReason, WireFormat,
+    RoutingFallbackReason, Usage, WireFormat,
 };
 use switchyard_translation::prepare_request_for_target;
 
@@ -376,10 +376,13 @@ async fn call_one(
     // the provider's, so it belongs in the routing overhead.
     let client = clients.route(model_id);
     let started = Instant::now();
+    let mut routing_usage = None;
     let result = async {
         let mut response = client?.call(request).await?;
         if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
-            response.llm_response = LlmResponse::Stream(buffer_routing_stream(chunks).await?);
+            let (chunks, usage) = buffer_routing_stream(chunks).await?;
+            routing_usage = usage;
+            response.llm_response = LlmResponse::Stream(chunks);
         }
         Ok(response)
     }
@@ -405,19 +408,22 @@ async fn call_one(
             .as_ref()
             .ok()
             .and_then(|response| response.llm_response.as_agg())
-            .map(|response| response.usage.clone()),
+            .map(|response| response.usage.clone())
+            .or(routing_usage),
     });
     result
 }
 
-// Preserve signed provider events while checking the complete routing response.
+// Routing logs need the final usage, but replay must keep signed provider events intact.
 async fn buffer_routing_stream(
     mut chunks: LlmResponseStream,
-) -> std::result::Result<LlmResponseStream, LlmClientError> {
+) -> std::result::Result<(LlmResponseStream, Option<Usage>), LlmClientError> {
     let mut events = Vec::new();
+    let mut usage = None;
     while let Some(event) = chunks.try_next().await? {
         for chunk in event.normalized() {
             match chunk {
+                LlmResponseChunk::Usage(latest) => usage = Some(latest.clone()),
                 LlmResponseChunk::DecodeError { message } => {
                     return Err(LlmClientError::ResponseTranslation(message.clone()));
                 }
@@ -432,7 +438,7 @@ async fn buffer_routing_stream(
         }
         events.push(event);
     }
-    Ok(stream::iter(events.into_iter().map(Ok)).boxed())
+    Ok((stream::iter(events.into_iter().map(Ok)).boxed(), usage))
 }
 
 /// Whether a failed candidate is worth routing around.

@@ -12,15 +12,10 @@ use crate::summary::{Row, build};
 
 /// Reads new log entries, probes the server, and builds the menu body.
 pub fn refresh(config: &Config, log: &mut rollup::Reader) -> Vec<Row> {
-    let usage = log
-        .read(&config.routing_log, Local::now().date_naive())
-        .unwrap_or_else(|error| {
-            eprintln!(
-                "switchyard-menubar: read {}: {error}",
-                config.routing_log.display()
-            );
-            rollup::Usage::default()
-        });
+    let usage = match log.read(&config.routing_log, Local::now().date_naive()) {
+        Ok(usage) => usage,
+        Err(error) => return vec![Row::Label(format!("Cannot read routing log: {error}"))],
+    };
     build(probe(&config.server_url), &usage, config)
 }
 
@@ -36,7 +31,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                r#"{{"ts":"{ts}","model":"luna","tier":"","prompt_tokens":1000,"cached_tokens":0,"completion_tokens":100,"reasoning_tokens":0}}"#
+                r#"{{"ts":"{ts}","model":"luna","tier":"","prompt_tokens":1000,"cached_tokens":0,"completion_tokens":100,"reasoning_tokens":0,"cost":null}}"#
             ) + "\n",
         )
         .expect("write log");
