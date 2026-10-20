@@ -1773,7 +1773,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <p>The same classifier also supports <a href="../escalation_router_routing/">escalation</a>
 and <a href="#custom-multi-target-routing">custom routing</a> across two or more targets.</p>
 <p>For a task-level decision-model example with structured instructions, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e48f25d5e33aca8fd4e53051b1418969c93a865b/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/611d360dec6bb9d59b1463f601b3fb8070b20459/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
@@ -1862,7 +1862,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e48f25d5e33aca8fd4e53051b1418969c93a865b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/611d360dec6bb9d59b1463f601b3fb8070b20459/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -2026,8 +2026,8 @@ and adds no note. <code>every_request</code> may select the same note on later r
 Relative database paths resolve beside the deployment TOML file when using
 <code>Runner::load</code>; string-based configuration resolves them from the working
 directory. Reload the deployment to pick up file edits.</p>
-<p>See the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e48f25d5e33aca8fd4e53051b1418969c93a865b/examples/classifier-handoff-notes.toml">route example</a>
-and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e48f25d5e33aca8fd4e53051b1418969c93a865b/examples/handoff-notes.toml">note database</a>. Set their client URL and
+<p>See the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/611d360dec6bb9d59b1463f601b3fb8070b20459/examples/classifier-handoff-notes.toml">route example</a>
+and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/611d360dec6bb9d59b1463f601b3fb8070b20459/examples/handoff-notes.toml">note database</a>. Set their client URL and
 model IDs for your provider. This policy is supported by custom <code>llm_classifier</code>
 routes, including sub-agent routes.</p>
 <h3 id="requirement-evidence-feedback">Requirement evidence feedback<a class="headerlink" href="#requirement-evidence-feedback" title="Permanent link">&para;</a></h3>
@@ -2044,8 +2044,8 @@ evidence vector, and <code>met</code> bit. The judge cannot rewrite the frozen b
 </span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;target&quot;</span>
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">db_path</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;requirement-ledger.toml&quot;</span>
 </span></code></pre></div>
-<p>Start with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e48f25d5e33aca8fd4e53051b1418969c93a865b/examples/classifier-requirement-feedback.toml">complete route and response schema</a>
-and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e48f25d5e33aca8fd4e53051b1418969c93a865b/examples/requirement-ledger.toml">example ledger</a>. Prepare the ledger
+<p>Start with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/611d360dec6bb9d59b1463f601b3fb8070b20459/examples/classifier-requirement-feedback.toml">complete route and response schema</a>
+and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/611d360dec6bb9d59b1463f601b3fb8070b20459/examples/requirement-ledger.toml">example ledger</a>. Prepare the ledger
 from the original task before observing solution work. Each requirement contains
 an ID, criterion, verbatim source quote, and evidence scope. The file is loaded
 once; relative paths resolve as for handoff notes. Reload after changing tasks or
