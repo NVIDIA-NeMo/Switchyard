@@ -27,20 +27,21 @@ pub fn stop(s: &Settings) -> Result<(), String> {
 
 pub fn install(s: &Settings, keys_saved: bool) -> Result<(), String> {
     let unit = format!(
-        "[Unit]\n\
-         Description=Switchyard local server\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         ExecStart={} serve --settings {}\n\
-         Restart=on-failure\n\
-         RestartSec=10\n\
-         Environment=RUST_LOG=info\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n",
-        systemd_arg(&s.binary("switchyard-desktop-install")),
-        systemd_arg(&s.sy_home.join("install.toml")),
+        r#"[Unit]
+Description=Switchyard local server
+
+[Service]
+Type=simple
+ExecStart={installer} serve --settings {settings}
+Restart=on-failure
+RestartSec=10
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
+"#,
+        installer = systemd_arg(&s.binary("switchyard-desktop-install")),
+        settings = systemd_arg(&s.sy_home.join("install.toml")),
     );
     write(&s.service_dir.join(UNIT), unit.as_bytes(), false)?;
     run(&mut systemctl(&["daemon-reload"]))?;
