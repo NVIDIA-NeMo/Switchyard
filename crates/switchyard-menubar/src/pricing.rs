@@ -4,37 +4,10 @@
 //! Counterfactual cost: what routed traffic cost against what it would have
 //! cost had every call gone to one capable model.
 
-use std::collections::BTreeMap;
+use switchyard_costs::{CostTotals, Pricing};
+use switchyard_protocol::{InputCacheUsage, Usage};
 
-use serde::Deserialize;
-
-use crate::rollup::{ModelTokens, Totals};
-
-const PER_MILLION: f64 = 1_000_000.0;
-
-/// Per-million-token rates for one model.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-pub struct ModelPrice {
-    pub input_per_mtok: f64,
-    /// Rate for cache reads. Falls back to the full input rate.
-    #[serde(default)]
-    pub cached_input_per_mtok: Option<f64>,
-    /// Rate for generated tokens, reasoning included.
-    pub output_per_mtok: f64,
-}
-
-impl ModelPrice {
-    fn cost(&self, tokens: &ModelTokens) -> f64 {
-        let cached_rate = self.cached_input_per_mtok.unwrap_or(self.input_per_mtok);
-        (tokens.input as f64 * self.input_per_mtok
-            + tokens.cached_input as f64 * cached_rate
-            + tokens.output as f64 * self.output_per_mtok)
-            / PER_MILLION
-    }
-}
-
-/// Rates keyed by the model id the server records in the routing log.
-pub type PriceTable = BTreeMap<String, ModelPrice>;
+use crate::rollup::Totals;
 
 /// What the traffic cost, and what it would have cost without routing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,44 +32,52 @@ impl Savings {
 
 /// Prices a period against the baseline model.
 ///
-/// Returns `None` when any model seen has no entry in the table, since a
-/// partial bill would understate cost and overstate savings.
-pub fn estimate(totals: &Totals, prices: &PriceTable, baseline_model: &str) -> Option<Savings> {
-    let baseline_price = prices.get(baseline_model)?;
-
-    let mut actual = 0.0;
-    let mut baseline = 0.0;
-    for (model, tokens) in &totals.routed {
-        actual += prices.get(model)?.cost(tokens);
-        baseline += baseline_price.cost(tokens);
+/// Returns `None` when recorded spending or the baseline estimate is incomplete.
+pub fn estimate(totals: &Totals, prices: &Pricing, baseline_model: &str) -> Option<Savings> {
+    if totals.baseline_unknown {
+        return None;
     }
-    // Classifier calls are Switchyard's own cost. They have no baseline
-    // counterpart, so they only ever reduce the savings figure.
-    for (model, tokens) in &totals.classifier {
-        actual += prices.get(model)?.cost(tokens);
+    let mut baseline = CostTotals::default();
+    for tokens in totals.routed.values() {
+        let usage = Usage {
+            input_tokens: Some(tokens.input),
+            output_tokens: Some(tokens.output),
+            cache: Some(Box::new(InputCacheUsage {
+                cached_input_tokens: Some(tokens.cached_input),
+                cache_creation_input_tokens: Some(tokens.cache_write),
+                cache_creation_1h_input_tokens: Some(tokens.cache_write_1h),
+            })),
+            ..Usage::default()
+        };
+        baseline.add(prices.estimate(baseline_model, &usage));
     }
-
-    Some(Savings { actual, baseline })
+    Some(Savings {
+        actual: totals.cost.total_usd?,
+        baseline: baseline.total_usd?,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rollup::ModelTokens;
 
-    fn price(input: f64, output: f64) -> ModelPrice {
-        ModelPrice {
-            input_per_mtok: input,
-            cached_input_per_mtok: None,
-            output_per_mtok: output,
-        }
+    fn table() -> Pricing {
+        Pricing::parse(
+            br#"{
+          "sol":{"input":1.25,"cache_read":1.25,"cache_write":1.25,"output":10},
+          "luna":{"input":0.25,"cache_read":0.25,"cache_write":0.25,"output":2},
+          "terra":{"input":0.05,"cache_read":0.05,"cache_write":0.05,"output":0.4}
+        }"#,
+        )
+        .expect("rates")
     }
 
-    fn table() -> PriceTable {
-        PriceTable::from([
-            ("sol".to_string(), price(1.25, 10.0)),
-            ("luna".to_string(), price(0.25, 2.0)),
-            ("terra".to_string(), price(0.05, 0.4)),
-        ])
+    fn record_cost(totals: &mut Totals, usd: f64) {
+        totals.cost.add(Some(switchyard_costs::RecordedCost {
+            usd,
+            source: switchyard_costs::CostSource::Estimated,
+        }));
     }
 
     fn tokens(input: u64, output: u64) -> ModelTokens {
@@ -105,6 +86,7 @@ mod tests {
             input,
             cached_input: 0,
             output,
+            ..ModelTokens::default()
         }
     }
 
@@ -115,6 +97,7 @@ mod tests {
             .routed
             .insert("luna".to_string(), tokens(1_000_000, 100_000));
 
+        record_cost(&mut totals, 0.45);
         let savings = estimate(&totals, &table(), "sol").expect("priced");
 
         assert!((savings.actual - 0.45).abs() < 1e-9);
@@ -128,11 +111,13 @@ mod tests {
         totals
             .routed
             .insert("luna".to_string(), tokens(1_000_000, 100_000));
+        record_cost(&mut totals, 0.45);
         let before = estimate(&totals, &table(), "sol").expect("priced");
 
         totals
             .classifier
             .insert("terra".to_string(), tokens(1_000_000, 10_000));
+        record_cost(&mut totals, 0.054);
         let after = estimate(&totals, &table(), "sol").expect("priced");
 
         assert_eq!(after.baseline, before.baseline);
@@ -141,14 +126,9 @@ mod tests {
 
     #[test]
     fn cache_reads_use_the_cached_rate() {
-        let prices = PriceTable::from([(
-            "sol".to_string(),
-            ModelPrice {
-                input_per_mtok: 1.0,
-                cached_input_per_mtok: Some(0.1),
-                output_per_mtok: 0.0,
-            },
-        )]);
+        let prices =
+            Pricing::parse(br#"{"sol":{"input":1,"cache_read":0.1,"cache_write":1,"output":0}}"#)
+                .expect("rates");
         let mut totals = Totals::default();
         totals.routed.insert(
             "sol".to_string(),
@@ -157,23 +137,26 @@ mod tests {
                 input: 1_000_000,
                 cached_input: 1_000_000,
                 output: 0,
+                ..ModelTokens::default()
             },
         );
 
+        record_cost(&mut totals, 1.1);
         let savings = estimate(&totals, &prices, "sol").expect("priced");
 
         assert!((savings.actual - 1.1).abs() < 1e-9);
     }
 
     #[test]
-    fn an_unpriced_model_suppresses_the_estimate() {
+    fn an_unknown_cost_suppresses_savings() {
         let mut totals = Totals::default();
         totals
             .routed
             .insert("unknown".to_string(), tokens(1_000, 100));
 
+        totals.cost.add(None);
         assert!(estimate(&totals, &table(), "sol").is_none());
-        assert!(estimate(&Totals::default(), &table(), "absent").is_none());
+        assert!(estimate(&totals, &table(), "absent").is_none());
     }
 
     #[test]

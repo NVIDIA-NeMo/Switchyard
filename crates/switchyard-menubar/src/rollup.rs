@@ -10,6 +10,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Local, NaiveDate};
 use serde::Deserialize;
+use switchyard_costs::{CostTotals, RecordedCost};
 
 /// Tier value the server writes for classifier and judge calls.
 const CLASSIFIER_TIER: &str = "classifier";
@@ -18,19 +19,22 @@ const CLASSIFIER_TIER: &str = "classifier";
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ModelTokens {
     pub requests: u64,
-    /// Input tokens billed at the full rate. Cache writes bill at that rate
-    /// too, so they are counted here rather than tracked separately.
+    /// Input tokens exclude cache reads and writes.
     pub input: u64,
     /// Input tokens served from the provider cache.
     pub cached_input: u64,
     /// Generated tokens, including reasoning.
     pub output: u64,
+    /// Cache-write tokens are separate from uncached input.
+    pub cache_write: u64,
+    /// One-hour writes are a subset of all cache writes.
+    pub cache_write_1h: u64,
 }
 
 impl ModelTokens {
     /// Every token the provider counted, cached reads included.
     pub fn total(&self) -> u64 {
-        self.input + self.cached_input + self.output
+        self.input + self.cached_input + self.cache_write + self.output
     }
 
     fn add(&mut self, other: &Self) {
@@ -38,6 +42,8 @@ impl ModelTokens {
         self.input += other.input;
         self.cached_input += other.cached_input;
         self.output += other.output;
+        self.cache_write += other.cache_write;
+        self.cache_write_1h += other.cache_write_1h;
     }
 }
 
@@ -45,8 +51,12 @@ impl ModelTokens {
 ///
 /// The split matters for savings: without Switchyard the `routed` calls would
 /// still have happened, but the `classifier` calls would not exist at all.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Totals {
+    /// Actual spending comes only from the saved cost of each call.
+    pub cost: CostTotals,
+    /// Missing or invalid answer usage keeps savings unknown after totals are merged.
+    pub baseline_unknown: bool,
     /// Calls that served the caller, keyed by the model that answered.
     pub routed: BTreeMap<String, ModelTokens>,
     /// Switchyard's own classifier and judge calls, keyed by model.
@@ -55,6 +65,10 @@ pub struct Totals {
 
 impl Totals {
     fn add(&mut self, record: &Record) {
+        self.cost.add(record.cost);
+        if record.tier != CLASSIFIER_TIER {
+            self.baseline_unknown |= !record.has_baseline_usage();
+        }
         let bucket = if record.tier == CLASSIFIER_TIER {
             &mut self.classifier
         } else {
@@ -67,6 +81,8 @@ impl Totals {
     }
 
     fn merge(&mut self, other: &Self) {
+        self.cost.merge(&other.cost);
+        self.baseline_unknown |= other.baseline_unknown;
         for (model, tokens) in &other.routed {
             self.routed.entry(model.clone()).or_default().add(tokens);
         }
@@ -113,22 +129,48 @@ struct Record {
     #[serde(default)]
     tier: String,
     #[serde(default)]
-    prompt_tokens: u64,
+    prompt_tokens: Option<u64>,
     #[serde(default)]
-    cached_tokens: u64,
+    cached_tokens: Option<u64>,
     #[serde(default)]
-    completion_tokens: u64,
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_1h_tokens: Option<u64>,
+    // A missing field requires migration; explicit null is a valid unknown cost.
+    #[serde(deserialize_with = "Option::deserialize")]
+    cost: Option<RecordedCost>,
 }
 
 impl Record {
+    // Each record must be valid before aggregation can conceal inconsistent cache counts.
+    fn has_baseline_usage(&self) -> bool {
+        let Some(input) = self.prompt_tokens else {
+            return false;
+        };
+        self.completion_tokens.is_some()
+            && input
+                .checked_sub(self.cached_tokens.unwrap_or(0))
+                .and_then(|input| input.checked_sub(self.cache_creation_tokens.unwrap_or(0)))
+                .is_some()
+            && self.cache_creation_1h_tokens.unwrap_or(0) <= self.cache_creation_tokens.unwrap_or(0)
+    }
+
     fn tokens(&self) -> ModelTokens {
         ModelTokens {
             requests: 1,
             // `prompt_tokens` is the whole input, cache reads included.
-            input: self.prompt_tokens.saturating_sub(self.cached_tokens),
-            cached_input: self.cached_tokens,
+            input: self
+                .prompt_tokens
+                .unwrap_or(0)
+                .saturating_sub(self.cached_tokens.unwrap_or(0))
+                .saturating_sub(self.cache_creation_tokens.unwrap_or(0)),
+            cached_input: self.cached_tokens.unwrap_or(0),
             // Completion tokens already include reasoning tokens.
-            output: self.completion_tokens,
+            output: self.completion_tokens.unwrap_or(0),
+            cache_write: self.cache_creation_tokens.unwrap_or(0),
+            cache_write_1h: self.cache_creation_1h_tokens.unwrap_or(0),
         }
     }
 }
@@ -176,10 +218,22 @@ impl Reader {
             if line.last() != Some(&b'\n') {
                 break;
             }
-            self.offset += bytes as u64;
-            let Ok(record) = serde_json::from_slice::<Record>(&line) else {
-                continue;
+            let record = match serde_json::from_slice::<Record>(&line) {
+                Ok(record) => record,
+                Err(error) if error.is_data() => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "invalid routing record: {error}; migrate older logs before reading them"
+                        ),
+                    ));
+                }
+                Err(_) => {
+                    self.offset += bytes as u64;
+                    continue;
+                }
             };
+            self.offset += bytes as u64;
             let Ok(ts) = DateTime::parse_from_rfc3339(&record.ts) else {
                 continue;
             };
@@ -232,7 +286,7 @@ mod tests {
     fn line(local_ts: &str, model: &str, tier: &str, prompt: u64, completion: u64) -> String {
         let offset = Local::now().offset().to_string();
         format!(
-            r#"{{"ts":"{local_ts}{offset}","model":"{model}","tier":"{tier}","prompt_tokens":{prompt},"cached_tokens":0,"completion_tokens":{completion},"reasoning_tokens":0}}"#
+            r#"{{"ts":"{local_ts}{offset}","model":"{model}","tier":"{tier}","prompt_tokens":{prompt},"cached_tokens":0,"completion_tokens":{completion},"reasoning_tokens":0,"cost":null}}"#
         )
     }
 
@@ -266,7 +320,7 @@ mod tests {
     #[test]
     fn separates_cache_reads_from_full_price_input() {
         let record: Record = serde_json::from_str(
-            r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":1000,"cached_tokens":600,"completion_tokens":50,"reasoning_tokens":25}"#,
+            r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":1000,"cached_tokens":600,"completion_tokens":50,"reasoning_tokens":25,"cost":null}"#,
         )
         .expect("parse record");
         let tokens = record.tokens();
@@ -279,27 +333,39 @@ mod tests {
     #[test]
     fn counts_completion_tokens_once_and_prices_them() {
         let record: Record = serde_json::from_str(
-            r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":12,"cached_tokens":0,"completion_tokens":5,"reasoning_tokens":3}"#,
+            r#"{"ts":"2026-09-28T10:00:00.000Z","model":"m","prompt_tokens":12,"cached_tokens":0,"cache_creation_tokens":10,"completion_tokens":5,"reasoning_tokens":3,"cost":{"usd":0.000022,"source":"provider_reported"}}"#,
         )
         .expect("parse record");
 
         let tokens = record.tokens();
 
-        assert_eq!(tokens.input, 12);
+        assert_eq!(tokens.input, 2);
         assert_eq!(tokens.output, 5);
         assert_eq!(tokens.total(), 17);
         let mut totals = Totals::default();
         totals.add(&record);
-        let prices = crate::pricing::PriceTable::from([(
-            "m".to_string(),
-            crate::pricing::ModelPrice {
-                input_per_mtok: 1.0,
-                cached_input_per_mtok: None,
-                output_per_mtok: 2.0,
-            },
-        )]);
+        let prices = switchyard_costs::Pricing::parse(
+            br#"{"m":{"input":1,"cache_read":1,"cache_write":1,"cache_write_1h":3,"output":2}}"#,
+        )
+        .expect("rates");
         let savings = crate::pricing::estimate(&totals, &prices, "m").expect("priced");
         assert!((savings.actual - 0.000022).abs() < 1e-12);
+        // A known zero charge still needs valid usage for the hypothetical baseline.
+        for fields in [
+            r#""prompt_tokens":null,"completion_tokens":5"#,
+            r#""completion_tokens":5"#,
+            r#""prompt_tokens":2,"cached_tokens":3,"completion_tokens":5"#,
+            r#""prompt_tokens":20,"cache_creation_tokens":2,"cache_creation_1h_tokens":3,"completion_tokens":5"#,
+        ] {
+            let record: Record = serde_json::from_str(&format!(
+                r#"{{"ts":"2026-09-28T10:00:00Z","model":"m",{fields},"cost":{{"usd":0,"source":"provider_reported"}}}}"#
+            )).expect("record with incomplete baseline usage");
+            let mut incomplete = Totals::default();
+            incomplete.add(&record);
+            incomplete.merge(&totals);
+            assert_eq!(incomplete.cost.total_usd, Some(0.000022));
+            assert!(crate::pricing::estimate(&incomplete, &prices, "m").is_none());
+        }
     }
 
     #[test]

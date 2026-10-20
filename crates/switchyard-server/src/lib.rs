@@ -8,7 +8,6 @@ pub mod config;
 mod metrics;
 mod observability;
 mod observed_translation;
-mod pricing;
 mod redaction;
 mod response;
 mod routing_log;
@@ -240,7 +239,7 @@ impl ServerState {
 
     /// This method loads rates in USD per million tokens for saved routing records.
     pub fn with_pricing_file(self, path: impl AsRef<std::path::Path>) -> ServerResult<Self> {
-        let prices = pricing::Pricing::load(path.as_ref())?;
+        let prices = switchyard_costs::Pricing::load(path.as_ref()).map_err(ServerError::new)?;
         let log = self
             .routing_log
             .as_ref()

@@ -51,7 +51,9 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<Row> {
 
     if estimate(&usage.week, &config.prices, &config.baseline_model).is_none() {
         rows.push(Row::Separator);
-        rows.push(label("Add prices to menubar.toml to see savings"));
+        rows.push(label(
+            "Savings need complete recorded costs and baseline rates in prices.json",
+        ));
     }
     rows
 }
@@ -64,7 +66,7 @@ fn period(name: &str, totals: &Totals, config: &Config) -> Vec<Row> {
         tokens(totals.tokens())
     ))];
     if let Some(savings) = estimate(totals, &config.prices, &config.baseline_model) {
-        rows.push(label(format!("    Saved {}", saved(&savings))));
+        rows.push(label(format!("    Estimated savings {}", saved(&savings))));
     }
     rows
 }
@@ -123,8 +125,8 @@ fn money(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pricing::{ModelPrice, PriceTable};
     use crate::rollup::ModelTokens;
+    use switchyard_costs::{CostSource, Pricing, RecordedCost};
 
     fn counted(input: u64, output: u64, requests: u64) -> ModelTokens {
         ModelTokens {
@@ -132,10 +134,11 @@ mod tests {
             input,
             cached_input: 0,
             output,
+            ..ModelTokens::default()
         }
     }
 
-    fn config(prices: PriceTable) -> Config {
+    fn config(prices: Pricing) -> Config {
         Config {
             baseline_model: "sol".to_string(),
             prices,
@@ -143,25 +146,8 @@ mod tests {
         }
     }
 
-    fn priced() -> PriceTable {
-        PriceTable::from([
-            (
-                "sol".to_string(),
-                ModelPrice {
-                    input_per_mtok: 1.25,
-                    cached_input_per_mtok: None,
-                    output_per_mtok: 10.0,
-                },
-            ),
-            (
-                "luna".to_string(),
-                ModelPrice {
-                    input_per_mtok: 0.25,
-                    cached_input_per_mtok: None,
-                    output_per_mtok: 2.0,
-                },
-            ),
-        ])
+    fn priced() -> Pricing {
+        Pricing::parse(br#"{"sol":{"input":1.25,"cache_read":1.25,"cache_write":1.25,"output":10},"luna":{"input":0.25,"cache_read":0.25,"cache_write":0.25,"output":2}}"#).expect("rates")
     }
 
     fn labels(rows: &[Row]) -> Vec<String> {
@@ -187,6 +173,14 @@ mod tests {
         week.routed
             .insert("luna".to_string(), counted(4_000_000, 400_000, 12));
 
+        today.cost.add(Some(RecordedCost {
+            usd: 0.45,
+            source: CostSource::Estimated,
+        }));
+        week.cost.add(Some(RecordedCost {
+            usd: 1.80,
+            source: CostSource::Estimated,
+        }));
         let rows = build(
             ServerStatus::Running,
             &usage_of(today, week),
@@ -196,9 +190,9 @@ mod tests {
 
         assert_eq!(labels[0], "Server: running · http://127.0.0.1:4123");
         assert_eq!(labels[1], "Today — 3 requests · 1.1M tokens");
-        assert_eq!(labels[2], "    Saved $1.80 (80% of $2.25)");
+        assert_eq!(labels[2], "    Estimated savings $1.80 (80% of $2.25)");
         assert_eq!(labels[3], "This week — 12 requests · 4.4M tokens");
-        assert_eq!(labels[4], "    Saved $7.20 (80% of $9.00)");
+        assert_eq!(labels[4], "    Estimated savings $7.20 (80% of $9.00)");
     }
 
     #[test]
@@ -209,19 +203,20 @@ mod tests {
 
         week.classifier
             .insert("sol".to_string(), counted(100, 0, 1));
-        for prices in [
-            PriceTable::new(),
-            PriceTable::from([("sol".to_string(), priced()["sol"])]),
-            PriceTable::from([("luna".to_string(), priced()["luna"])]),
-        ] {
+        week.cost.add(None);
+        for prices in [Pricing::default(), priced()] {
             let rows = build(
                 ServerStatus::Running,
                 &usage_of(week.clone(), week.clone()),
                 &config(prices),
             );
             let labels = labels(&rows);
-            assert!(labels.iter().all(|label| !label.contains("Saved")));
-            assert!(labels.iter().any(|label| label.contains("menubar.toml")));
+            assert!(
+                labels
+                    .iter()
+                    .all(|label| !label.contains("Estimated savings"))
+            );
+            assert!(labels.iter().any(|label| label.contains("costs")));
         }
     }
 
@@ -263,13 +258,17 @@ mod tests {
             .classifier
             .insert("sol".to_string(), counted(1_000_000, 0, 1));
 
+        today.cost.add(Some(RecordedCost {
+            usd: 1.25125,
+            source: CostSource::Estimated,
+        }));
         let rows = build(
             ServerStatus::Running,
             &usage_of(today.clone(), today),
             &config(priced()),
         );
 
-        assert!(labels(&rows)[2].starts_with("    Saved -$1.25"));
+        assert!(labels(&rows)[2].starts_with("    Estimated savings -$1.25"));
     }
 
     #[test]
