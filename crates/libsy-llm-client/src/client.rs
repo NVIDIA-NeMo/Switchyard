@@ -1029,19 +1029,24 @@ const CODEX_NAMESPACE_SEPARATOR: &str = "__";
 
 // Codex extends Responses with namespace containers and namespaced function
 // calls. OpenAI-compatible providers expect a flat Responses tool namespace.
+// When `store` is false, this also removes reasoning items that the provider cannot read.
 fn sanitize_openai_responses_provider_body(body: &mut Value) {
     let Value::Object(object) = body else {
         return;
     };
-    sanitize_openai_responses_input_for_provider(object.get_mut("input"));
+    let store_off = object.get("store") == Some(&Value::Bool(false));
+    sanitize_openai_responses_input_for_provider(object.get_mut("input"), store_off);
     sanitize_openai_responses_tools_for_provider(object.get_mut("tools"));
     sanitize_openai_responses_tool_choice_for_provider(object.get_mut("tool_choice"));
 }
 
-fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>) {
+fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>, store_off: bool) {
     let Some(Value::Array(items)) = input else {
         return;
     };
+    if store_off {
+        items.retain(|item| !is_unencrypted_reasoning_item(item));
+    }
     for item in items {
         let Some(object) = item.as_object_mut() else {
             continue;
@@ -1050,6 +1055,22 @@ fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>) {
             qualify_responses_function_name(object);
         }
     }
+}
+
+// A reasoning item is unencrypted when `encrypted_content` is absent, null, or empty.
+//
+// A router can serve earlier steps of a turn from a target that returns reasoning items
+// without `encrypted_content`, such as Claude behind an OpenAI-compatible gateway. When the
+// request sets `store: false`, OpenAI treats such an item's ID as a reference to stored
+// state, finds nothing, and returns 400, so the Responses leg must drop these items.
+fn is_unencrypted_reasoning_item(item: &Value) -> bool {
+    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return false;
+    }
+    !matches!(
+        item.get("encrypted_content").and_then(Value::as_str),
+        Some(encrypted) if !encrypted.is_empty()
+    )
 }
 
 fn sanitize_openai_responses_tools_for_provider(tools: Option<&mut Value>) {
@@ -3411,6 +3432,83 @@ mod tests {
         assert_eq!(body["output"][0]["type"], "function_call");
         assert_eq!(body["output"][0]["name"], "search");
         assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
+        Ok(())
+    }
+
+    // A stage route can answer early steps of a Codex turn from Claude and a later step from
+    // GPT. Codex sends `store: false` and replays Claude's reasoning items, which carry an ID
+    // but no `encrypted_content`. OpenAI then looks the ID up as stored state and returns 400,
+    // so the Responses leg must drop those items while keeping encrypted ones. With `store`
+    // left on, the provider can resolve stored IDs, so the request goes out unchanged.
+    #[tokio::test]
+    async fn openai_responses_backend_drops_unencrypted_reasoning_when_store_is_off()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "model": "gpt",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let claude_reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_b99feb9a-763d-4f7f-b6b2-2c0199b47ded",
+            "summary": [{"type": "summary_text", "text": "Read the files first."}],
+            "encrypted_content": null
+        });
+        let gpt_reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_gpt",
+            "summary": [],
+            "encrypted_content": "opaque-encrypted-reasoning"
+        });
+        let input = json!([
+            {"type": "message", "role": "user", "content": "fix the build"},
+            claude_reasoning.clone(),
+            {"type": "function_call", "call_id": "call_1", "name": "exec", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+            gpt_reasoning.clone(),
+            {"type": "reasoning", "id": "rs_empty", "summary": [], "encrypted_content": ""}
+        ]);
+
+        for store in [json!(false), json!(true)] {
+            let raw = json!({"model": "client-facing", "store": store, "input": input.clone()});
+            client
+                .call_rewrite_model_raw(
+                    raw,
+                    None,
+                    Some(&ModelId::from("gpt")),
+                    WireFormat::OpenAiResponses,
+                )
+                .await?;
+        }
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let sent: Vec<Value> = received
+            .iter()
+            .map(|request| serde_json::from_slice::<Value>(&request.body))
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(
+            sent[0]["input"],
+            json!([input[0], input[2], input[3], gpt_reasoning])
+        );
+        assert_eq!(sent[1]["input"], input);
         Ok(())
     }
 
