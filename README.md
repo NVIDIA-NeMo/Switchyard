@@ -101,7 +101,7 @@ The [routing overview](docs/routing_algorithms/overview.md) retains the full cat
 
 ## Evaluation and reference
 
-[Compare benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1.
+[Compare benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1 and DeepSWE.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
 
 ### Further reading

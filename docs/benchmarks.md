@@ -2,7 +2,7 @@
 
 Task completion, cost, and runnable configs. All configs use `OPENROUTER_API_KEY`.
 
-[Terminal-Bench 2.1](#terminal-bench-21) · [Run a benchmark](#run-a-benchmark)
+[Terminal-Bench 2.1](#terminal-bench-21) · [DeepSWE](#deepswe) · [Run a benchmark](#run-a-benchmark)
 
 ## Terminal-Bench 2.1
 
@@ -19,8 +19,6 @@ Task completion, cost, and runnable configs. All configs use `OPENROUTER_API_KEY
 | Opus 4.8 only | 77.15% | $148.83 | — |
 | GLM 5.2 only | 74.16% | $71.31 | — |
 
-<!-- DeepSWE results are hidden while run validity is being reviewed.
-
 ## DeepSWE
 
 **v1.1 · 113 tasks · Codex CLI · GPT-5.6 Luna + Sol**
@@ -36,8 +34,6 @@ Task completion, cost, and runnable configs. All configs use `OPENROUTER_API_KEY
 | Luna only | 52.2% | ≈$49 | — |
 
 Luna: one run; others: three-run means. [Evaluation settings](../benchmark/DEEPSWE_V11_QUALIFICATION.md).
-
--->
 
 ## Run a benchmark
 
