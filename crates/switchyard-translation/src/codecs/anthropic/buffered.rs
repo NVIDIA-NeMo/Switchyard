@@ -19,8 +19,9 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    McpToolConfig, McpToolset, MediaSource, Message, OutputParams, ProviderExtensions,
+    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, Tool, ToolCall, ToolChoice,
+    ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -154,10 +155,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 request.messages.push(Message { role, content });
             }
         }
-        request.tools = decode_anthropic_tools(body.get("tools"))
-            .into_iter()
-            .map(Tool::from)
-            .collect();
+        request.tools = decode_anthropic_tools(body)?;
         request.tool_choice = body.get("tool_choice").map(decode_anthropic_tool_choice);
         request.extensions.fields = provider_extensions(
             body,
@@ -166,6 +164,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 "messages",
                 "system",
                 "tools",
+                "mcp_servers",
                 "tool_choice",
                 "max_tokens",
                 "temperature",
@@ -247,8 +246,12 @@ impl FormatCodec for AnthropicMessagesCodec {
             )?),
         );
 
+        let (tools, servers) = encode_anthropic_tools(tools)?;
+        if !servers.is_empty() {
+            body.insert("mcp_servers".into(), json!(servers));
+        }
         if !tools.is_empty() {
-            body.insert("tools".to_string(), encode_anthropic_tools(tools)?);
+            body.insert("tools".into(), json!(tools));
         }
         let parallel_tool_calls = request
             .extensions
@@ -786,16 +789,58 @@ fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
 }
 
 // Decodes Anthropic tool definitions into normalized tool definitions.
-fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
-    value
+fn decode_anthropic_tools(body: &Map<String, Value>) -> Result<Vec<Tool>> {
+    let mcp_servers = body
+        .get("mcp_servers")
+        .map(|mcp_servers| {
+            mcp_servers
+                .as_array()
+                .ok_or_else(|| TranslationError::InvalidType {
+                    path: "mcp_servers".into(),
+                    expected: "array",
+                })
+        })
+        .transpose()?
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut mcp_servers_used = vec![false; mcp_servers.len()];
+    let mut tools = Vec::new();
+    for tool in body
+        .get("tools")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(Value::as_object)
-        .filter_map(|tool| {
-            let name = tool.get("name").and_then(Value::as_str)?.to_string();
-            (!name.is_empty()).then(|| ToolDefinition {
-                name,
+    {
+        let kind = tool.get("type").and_then(Value::as_str);
+        if kind == Some("mcp_toolset") {
+            if let Some(index) = mcp_servers.iter().position(|server| {
+                server.get("name").is_some() && server.get("name") == tool.get("mcp_server_name")
+            }) {
+                let mcp = decode_mcp(&mcp_servers[index], tool)?;
+                if mcp_servers_used[index] {
+                    return Err(TranslationError::InvalidValue {
+                        path: "tools.mcp_server_name".into(),
+                        message: "each MCP server requires a single toolset reference".into(),
+                    });
+                }
+                tools.push(Tool::Mcp(mcp));
+                mcp_servers_used[index] = true;
+            } else {
+                return Err(crate::TranslationError::InvalidValue {
+                    path: "tools.mcp_server_name".into(),
+                    message: "MCP toolset refers to an undeclared server".into(),
+                });
+            }
+        } else if let Some(tool) = tool.as_object() {
+            let Some(name) = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            else {
+                continue;
+            };
+            tools.push(Tool::Function(ToolDefinition {
+                name: name.to_owned(),
                 description: tool
                     .get("description")
                     .and_then(Value::as_str)
@@ -805,9 +850,111 @@ fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
                     .cloned()
                     .unwrap_or_else(|| json!({})),
                 strict: tool.get("strict").and_then(Value::as_bool),
-            })
+            }));
+        }
+    }
+
+    if mcp_servers_used.iter().any(|is_used| !is_used) {
+        return Err(TranslationError::InvalidValue {
+            path: "mcp_servers".into(),
+            message: "each MCP server requires a tools-array toolset reference".into(),
+        });
+    }
+    Ok(tools)
+}
+
+fn decode_mcp(server: &Value, toolset: &Value) -> Result<McpToolset> {
+    validate_mcp_configs(server, toolset)?;
+    let required = |key: &str| {
+        server.get(key).and_then(Value::as_str).ok_or_else(|| {
+            crate::TranslationError::InvalidValue {
+                path: format!("mcp_servers.{key}"),
+                message: "MCP server requires a string".into(),
+            }
         })
-        .collect()
+    };
+    let authorization_token = server
+        .get("authorization_token")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let config = |value: &Value| McpToolConfig {
+        enabled: value.get("enabled").and_then(Value::as_bool),
+        defer_loading: value.get("defer_loading").and_then(Value::as_bool),
+    };
+    Ok(McpToolset {
+        name: required("name")?.to_owned(),
+        url: required("url")?.to_owned(),
+        authorization_token,
+        default_config: toolset
+            .get("default_config")
+            .map(config)
+            .unwrap_or_default(),
+        configs: toolset
+            .get("configs")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .map(|(name, value)| (name.clone(), config(value)))
+            .collect(),
+        // Anthropic's MCP connector executes calls without an approval exchange.
+        require_approval: Some(false),
+    })
+}
+
+fn validate_mcp_configs(server: &Value, toolset: &Value) -> Result<()> {
+    let valid_config = |config: &Value| {
+        config.is_object()
+            && ["enabled", "defer_loading"]
+                .iter()
+                .all(|key| config.get(key).is_none_or(Value::is_boolean))
+    };
+    if toolset
+        .get("default_config")
+        .is_some_and(|config| !valid_config(config))
+    {
+        return Err(TranslationError::InvalidValue {
+            path: "tools.mcp_toolset".into(),
+            message: "MCP default_config requires an object with boolean settings".into(),
+        });
+    }
+    if toolset.get("configs").is_some_and(|configs| {
+        configs
+            .as_object()
+            .is_none_or(|configs| configs.values().any(|config| !valid_config(config)))
+    }) {
+        return Err(TranslationError::InvalidValue {
+            path: "tools.mcp_toolset".into(),
+            message: "MCP configs requires objects with boolean settings".into(),
+        });
+    }
+    let required = |key: &str| {
+        server
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| TranslationError::InvalidValue {
+                path: format!("mcp_servers.{key}"),
+                message: "MCP server requires a string".into(),
+            })
+    };
+    if required("type")? != "url"
+        || !required("url")?.starts_with("https://")
+        || required("name")?.is_empty()
+    {
+        return Err(TranslationError::InvalidValue {
+            path: "mcp_servers".into(),
+            message: "MCP servers require type url, an HTTPS URL, and a nonempty name".into(),
+        });
+    }
+    if server
+        .get("authorization_token")
+        .is_some_and(|token| !token.is_string())
+    {
+        return Err(TranslationError::InvalidType {
+            path: "mcp_servers.authorization_token".into(),
+            expected: "string",
+        });
+    }
+    Ok(())
 }
 
 // Decodes Anthropic tool-choice values into normalized policy.
@@ -1208,17 +1355,13 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
     }
 }
 
-// Encodes normalized tool definitions into Anthropic tool JSON.
-fn encode_anthropic_tools(tools: &[Tool]) -> Result<Value> {
-    Ok(Value::Array(
-        tools
-            .iter()
-            .map(|tool| {
-                let tool = tool.function().ok_or_else(|| {
-                    TranslationError::LossyConversion(
-                        "MCP and provider tool encoding is not implemented".into(),
-                    )
-                })?;
+// Encodes normalized tool definitions into Anthropic tool and server JSON.
+fn encode_anthropic_tools(definitions: &[Tool]) -> Result<(Vec<Value>, Vec<Value>)> {
+    let mut tools = Vec::new();
+    let mut mcp_servers = Vec::new();
+    for tool in definitions {
+        match tool {
+            Tool::Function(tool) => {
                 let mut item = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),
@@ -1227,10 +1370,43 @@ fn encode_anthropic_tools(tools: &[Tool]) -> Result<Value> {
                 if let Some(strict) = tool.strict {
                     item["strict"] = Value::Bool(strict);
                 }
-                Ok(item)
-            })
-            .collect::<Result<_>>()?,
-    ))
+                tools.push(item);
+            }
+            Tool::Mcp(mcp) => {
+                if !mcp.url.starts_with("https://") {
+                    return Err(TranslationError::LossyConversion(
+                        "Anthropic MCP servers require an HTTPS URL".into(),
+                    ));
+                }
+                if mcp.require_approval != Some(false) {
+                    return Err(TranslationError::LossyConversion(
+                        "Anthropic MCP encoding requires require_approval = false".into(),
+                    ));
+                }
+                let mut mcp_server = json!({"type": "url", "name": mcp.name, "url": mcp.url});
+                if let Some(token) = &mcp.authorization_token {
+                    mcp_server["authorization_token"] = json!(token);
+                }
+                let mut toolset = json!({"type": "mcp_toolset", "mcp_server_name": mcp.name});
+                if mcp.default_config.enabled.is_some()
+                    || mcp.default_config.defer_loading.is_some()
+                {
+                    toolset["default_config"] = json!(mcp.default_config);
+                }
+                if !mcp.configs.is_empty() {
+                    toolset["configs"] = json!(mcp.configs);
+                }
+                tools.push(toolset);
+                mcp_servers.push(mcp_server);
+            }
+            Tool::Provider { .. } => {
+                return Err(TranslationError::LossyConversion(
+                    "provider tool encoding is not implemented".into(),
+                ));
+            }
+        }
+    }
+    Ok((tools, mcp_servers))
 }
 
 // Encodes normalized tool choice into Anthropic tool-choice JSON.
