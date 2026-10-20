@@ -377,7 +377,7 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
         json!({"reasoning_tokens": 3})
     );
     assert_eq!(
-        output["usage"]["prompt_tokens_details"]["cache_write_tokens"],
+        output["usage"]["prompt_tokens_details"]["cache_creation_tokens"],
         2
     );
     let decoded = engine

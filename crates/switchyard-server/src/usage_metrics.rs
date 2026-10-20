@@ -3,7 +3,6 @@
 
 //! Response usage and full-turn latency metrics for routed requests.
 
-use std::borrow::Cow;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -34,8 +33,7 @@ pub(crate) fn observe(
         LlmResponse::Agg(agg) => {
             record_terminal(&stats, &agg.usage, &model, started, cache_eligible);
             if let Some((log, context)) = routing_log {
-                let usage = with_gateway_charge(&agg.usage, &upstream_headers);
-                log.append(context, &model, None, &usage);
+                log.append(context, &model, None, &agg.usage);
             }
             LlmResponse::Agg(agg)
         }
@@ -107,27 +105,6 @@ pub(crate) fn observe(
         llm_response,
         metadata,
         upstream_headers,
-    }
-}
-
-/// LiteLLM sends the charge for a buffered response in this header and leaves the cost out of
-/// the response body. Its streamed responses omit the header and report `cost` in the final
-/// usage instead, which the response codecs read.
-const LITELLM_COST_HEADER: &str = "x-litellm-response-cost";
-
-/// This function adds the gateway's header charge to `usage` when the body reported none.
-fn with_gateway_charge<'a>(usage: &'a Usage, headers: &http::HeaderMap) -> Cow<'a, Usage> {
-    let charge = headers
-        .get(LITELLM_COST_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<f64>().ok())
-        .filter(|usd| usd.is_finite() && *usd >= 0.0);
-    match charge {
-        Some(usd) if usage.provider_cost.is_none() => Cow::Owned(Usage {
-            provider_cost: Some(usd),
-            ..usage.clone()
-        }),
-        _ => Cow::Borrowed(usage),
     }
 }
 
