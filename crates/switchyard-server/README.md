@@ -136,6 +136,9 @@ Session stats include cost totals. Missing usage or rates leave cost unknown; `k
 keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rates load once
 at startup, and saved costs do not change when prices change.
 
+The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
+rates for your own models.
+
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
 `"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.
