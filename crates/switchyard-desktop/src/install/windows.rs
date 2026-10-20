@@ -102,50 +102,26 @@ fn task_succeeds(s: &Settings, desktop: bool, action: &str) -> Result<bool, Stri
         .map(|status| status.success())
         .map_err(|e| e.to_string())
 }
+/// This function returns the current account's SID, which the task XML names as its user.
 fn identity() -> Result<String, String> {
-    use windows_sys::Win32::{
-        Foundation::LocalFree,
-        Security::{
-            Authorization::ConvertSidToStringSidW, GetTokenInformation, TOKEN_QUERY, TOKEN_USER,
-            TokenUser,
-        },
-        System::Threading::{GetCurrentProcess, OpenProcessToken},
-    };
-    unsafe {
-        let mut token = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(error());
-        }
-        let token = Handle(token);
-        let mut length = 0;
-        GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut length);
-        if length < std::mem::size_of::<TOKEN_USER>() as u32 {
-            return Err(error());
-        }
-        let mut buffer = vec![0usize; (length as usize).div_ceil(std::mem::size_of::<usize>())];
-        if GetTokenInformation(
-            token.0,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            length,
-            &mut length,
-        ) == 0
-        {
-            return Err(error());
-        }
-        let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
-        let mut sid = std::ptr::null_mut();
-        if ConvertSidToStringSidW(user.User.Sid, &mut sid) == 0 {
-            return Err(error());
-        }
-        let result = match (0..256).find(|&index| *sid.add(index) == 0) {
-            Some(length) => String::from_utf16(std::slice::from_raw_parts(sid, length))
-                .map_err(|e| e.to_string()),
-            None => Err("Invalid Windows account SID.".to_owned()),
-        };
-        LocalFree(sid.cast());
-        result
+    let mut whoami = Command::new("whoami.exe");
+    hide_console(&mut whoami);
+    let output = whoami
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    // The output is one CSV row, "DOMAIN\user","S-1-5-...", so the SID is the last field.
+    let text = String::from_utf8_lossy(&output.stdout);
+    let sid = text
+        .trim()
+        .rsplit(',')
+        .next()
+        .unwrap_or("")
+        .trim_matches('"');
+    if !output.status.success() || !sid.starts_with("S-1-") {
+        return Err("Could not read the Windows account SID from whoami.".into());
     }
+    Ok(sid.to_owned())
 }
 // Separate tasks let the server continue after the desktop app exits.
 fn task_xml(s: &Settings, user: &str, desktop: bool) -> String {
@@ -208,7 +184,7 @@ fn shortcut_paths(s: &Settings) -> [PathBuf; 2] {
         s.service_dir.join("Startup/Switchyard.lnk"),
     ]
 }
-pub fn install(s: &Settings) -> Result<(), String> {
+pub fn install(s: &Settings, _keys_saved: bool) -> Result<(), String> {
     write(
         &s.bin_dir().join("install.toml"),
         toml::to_string(s).map_err(|e| e.to_string())?.as_bytes(),
@@ -313,11 +289,6 @@ pub fn stop(s: &Settings) -> Result<(), String> {
     }
     stop_images(&BINARIES.map(|name| s.binary(name)))
 }
-pub fn restart(s: &Settings) -> Result<(), String> {
-    stop_task(s, false)?;
-    stop_images(&[s.binary("switchyard-server")])?;
-    run(scheduler().args(["/Run", "/TN", &task_name(s, false)]))
-}
 pub fn uninstall(s: &Settings) -> Result<(), String> {
     for desktop in [false, true] {
         if task_succeeds(s, desktop, "/Query")? {
@@ -404,27 +375,6 @@ pub fn temporary_updater(source: &Path) -> Result<tempfile::TempPath, String> {
     fs::copy(source, file.path()).map_err(|e| e.to_string())?;
     Ok(file.into_temp_path())
 }
-pub fn wait_parent(pid: u32) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, GetLastError};
-    if pid == 0 {
-        return Err("Invalid parent process ID.".into());
-    }
-    unsafe {
-        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
-        if handle.is_null() {
-            return if GetLastError() == ERROR_INVALID_PARAMETER {
-                Ok(())
-            } else {
-                Err(error())
-            };
-        }
-        let handle = Handle(handle);
-        if WaitForSingleObject(handle.0, 30000) != WAIT_OBJECT_0 {
-            return Err("The installer parent did not exit within thirty seconds.".into());
-        }
-    }
-    Ok(())
-}
 /// This function waits for its child so Task Scheduler tracks the app or server's lifetime.
 pub fn launch_managed(s: &Settings, desktop: bool) -> Result<(), String> {
     let (program, log) = if desktop {
@@ -476,31 +426,6 @@ pub fn launch_managed(s: &Settings, desktop: bool) -> Result<(), String> {
         Err(format!("Managed application exited with {status}."))
     }
 }
-pub fn open(value: &str) -> Result<(), String> {
-    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
-    let value = wide(std::ffi::OsStr::new(value));
-    let verb = wide(std::ffi::OsStr::new("open"));
-    let status = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            value.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    } as isize;
-    if status > 32 {
-        Ok(())
-    } else {
-        Err(format!(
-            "Windows could not open the file or URL (error {status})."
-        ))
-    }
-}
-pub fn saved_key(base_url: &str) -> Result<Option<String>, String> {
-    read_credential(&format!("Switchyard:model-list:{base_url}"))
-}
 
 pub(crate) fn read_credential(target: &str) -> Result<Option<String>, String> {
     let target = wide(std::ffi::OsStr::new(target));
@@ -523,10 +448,6 @@ pub(crate) fn read_credential(target: &str) -> Result<Option<String>, String> {
         .map(|s| Some(s).filter(|s| !s.trim().is_empty()))
         .map_err(|e| e.to_string())
 }
-pub fn save_key(base_url: &str, key: &str) -> Result<(), String> {
-    write_credential(&format!("Switchyard:model-list:{base_url}"), key.trim())
-}
-
 pub(crate) fn write_credential(target: &str, key: &str) -> Result<(), String> {
     let mut target = wide(std::ffi::OsStr::new(target));
     let credential = CREDENTIALW {
@@ -550,14 +471,4 @@ pub(crate) fn delete_credential(target: &str) -> Result<(), String> {
         return absent_or_error(());
     }
     Ok(())
-}
-
-pub fn record_handoff(s: &Settings) -> Result<(), String> {
-    let _lock = update_lock(s)?;
-    set_update_state(
-        s,
-        "starting",
-        "start",
-        "Starting the Windows source installer.",
-    )
 }

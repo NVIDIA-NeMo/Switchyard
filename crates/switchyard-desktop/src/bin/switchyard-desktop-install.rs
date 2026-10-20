@@ -23,8 +23,8 @@ Example: SY_PROFILE=team SY_MODEL=my-route cargo desktop install
 Preview the installation or removal plan with --dry-run. Installation requires
 a Rust toolchain and LaunchAgents (macOS) or a systemd user session (Linux).
 Windows requires MSVC build tools, WebView2, and a Task Scheduler user session.
-The Cargo command waits for completion. On Windows, running the installed installer
-starts a temporary process and returns; read SY_HOME/logs/update.log for progress and errors.
+The Cargo command waits for completion. On Windows, run these commands with cargo desktop:
+the installed installer cannot replace or remove itself while it runs.
 Use uninstall --settings FILE to select another recorded installation.
 Preview its removal with: cargo desktop uninstall --settings FILE --dry-run";
 
@@ -56,16 +56,6 @@ fn run() -> Result<(), String> {
         [action @ ("serve" | "desktop"), "--settings", file] => {
             windows::launch_managed(&Settings::load(Path::new(file))?, *action == "desktop")
         }
-        #[cfg(windows)]
-        [
-            "apply",
-            "--handoff-record",
-            file,
-            "--action",
-            action @ ("install" | "update" | "uninstall"),
-            "--wait",
-            pid,
-        ] => apply(Path::new(file), action, pid).map_err(|e| e.to_string()),
         ["--help" | "-h"] | ["install" | "uninstall", "--help" | "-h"] => {
             println!("{HELP}");
             Ok(())
@@ -102,9 +92,27 @@ fn perform(action: &str, dry_run: bool, file: Option<&Path>) -> Result<(), Strin
         None if action == "uninstall" => Settings::for_uninstall(),
         None => Settings::from_env(),
     }?;
+    // Windows cannot replace or delete a running executable, so the installed helper must not
+    // change its own installation. The app's update runs a temporary copy instead.
     #[cfg(windows)]
-    if !dry_run && handoff(&settings, action).map_err(|e| e.to_string())? {
-        return Ok(());
+    if !dry_run
+        && std::env::current_exe()
+            .and_then(std::fs::canonicalize)
+            .is_ok_and(|exe| {
+                std::fs::canonicalize(settings.binary("switchyard-desktop-install"))
+                    .is_ok_and(|installed| installed == exe)
+            })
+    {
+        return Err(format!(
+            "The installed installer cannot {action} the installation it belongs to, because \
+             Windows keeps a running program from being replaced. Run cargo desktop {} from the \
+             Switchyard source checkout instead.",
+            if action == "update" {
+                "install"
+            } else {
+                action
+            }
+        ));
     }
     execute(&settings, action, dry_run)
 }
@@ -201,7 +209,7 @@ fn main() -> ExitCode {
             .nth(1)
             .as_deref()
             .and_then(std::ffi::OsStr::to_str),
-        Some("serve" | "desktop" | "apply" | "update" | "validate")
+        Some("serve" | "desktop" | "update" | "validate")
     ) {
         unsafe { windows_sys::Win32::System::Console::AttachConsole(u32::MAX) };
     }
@@ -225,93 +233,4 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// Handoff is the record that the installed helper passes to its temporary copy.
-#[cfg(windows)]
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Handoff<T> {
-    settings: T,
-}
-
-/// When this process runs the installed helper, this function hands `action` to a temporary
-/// copy and returns true, because the installed executable cannot replace itself while Windows
-/// holds it open. Any other copy returns false without doing anything.
-#[cfg(windows)]
-fn handoff(settings: &Settings, action: &str) -> Result<bool, Box<dyn std::error::Error>> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let installed = settings.binary("switchyard-desktop-install");
-    if !installed.try_exists()?
-        || std::fs::canonicalize(std::env::current_exe()?)? != std::fs::canonicalize(installed)?
-    {
-        return Ok(false);
-    }
-    windows::record_handoff(settings)?;
-    let helper = windows::temporary_updater(&std::env::current_exe()?)?;
-    let mut record = tempfile::Builder::new()
-        .prefix("switchyard-handoff-")
-        .suffix(".toml")
-        .tempfile()?;
-    record.write_all(toml::to_string(&Handoff { settings })?.as_bytes())?;
-    let record = record.into_temp_path();
-    let log_path = settings.sy_home.join("logs/update.log");
-    std::fs::create_dir_all(settings.sy_home.join("logs"))?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)?;
-    let mut child = Command::new(&helper);
-    windows::hide_console(&mut child);
-    child
-        .arg("apply")
-        .arg("--handoff-record")
-        .arg(&record)
-        .arg("--action")
-        .arg(action)
-        .arg("--wait")
-        .arg(std::process::id().to_string())
-        .stdin(Stdio::null())
-        .stderr(log.try_clone()?)
-        .stdout(log)
-        .spawn()?;
-    helper.keep()?;
-    record.keep()?;
-    println!(
-        "Started {action}. Progress and errors: {}",
-        log_path.display()
-    );
-    Ok(true)
-}
-
-/// This function checks the handoff record at `path`, waits for the installed helper with
-/// process ID `pid` to exit, and runs `action`. It deletes the record when it finishes.
-#[cfg(windows)]
-fn apply(path: &Path, action: &str, pid: &str) -> Result<(), Box<dyn std::error::Error>> {
-    const INVALID: &str = "Invalid handoff record.";
-    let metadata = std::fs::symlink_metadata(path)?;
-    let (Some(parent), Some(name)) = (
-        path.parent(),
-        path.file_name().and_then(std::ffi::OsStr::to_str),
-    ) else {
-        return Err(INVALID.into());
-    };
-    if !metadata.file_type().is_file()
-        || !name.starts_with("switchyard-handoff-")
-        || !name.ends_with(".toml")
-        || std::fs::canonicalize(parent)? != std::fs::canonicalize(std::env::temp_dir())?
-    {
-        return Err(INVALID.into());
-    }
-    let handoff: Handoff<Settings> = toml::from_str(&std::fs::read_to_string(path)?)?;
-    handoff.settings.validate()?;
-    let pid = pid
-        .parse::<u32>()
-        .ok()
-        .filter(|&pid| pid != 0)
-        .ok_or("Invalid parent process ID.")?;
-    let _record = tempfile::TempPath::try_from_path(path)?;
-    windows::wait_parent(pid)?;
-    Ok(execute(&handoff.settings, action, false)?)
 }

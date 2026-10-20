@@ -34,7 +34,7 @@ dbus-secret-service = { version = "4.1", features = ["crypto-rust", "vendored"] 
 [target.'cfg(windows)'.dependencies]
 mslnk = "0.1.8"
 self-replace = "1.5"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials", "Win32_System_Console"] }
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
