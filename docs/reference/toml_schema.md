@@ -332,20 +332,23 @@ how one route chooses between more than two models.
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `models.any` | Yes | — | Every selectable completion target, in fallback order for eligible non-timeout failures. Every other group's targets must also appear here; one that does not is rejected at configuration load. |
-| `models.judge` | Yes | — | One or more ordered judge candidates. The Rust runner calls the first and stops on a client error after retries. Not a completion destination. |
+| `models.judge` | Yes | — | One or more ordered judge candidates. The Rust runner calls the first. Client errors stop the request after retries, except `requirement_feedback`, which continues to its fixed target without feedback. Not a completion destination. |
 | `models.capable` | No | — | Ordered capable-tier models. A `capable` verdict selects the first; eligible non-timeout failures try the rest in order. |
 | `models.efficient` | No | — | Ordered efficient-tier models. An `efficient` verdict selects the first; eligible non-timeout failures try the rest in order. |
 | `models.<your name>` | No | — | A group you name. A verdict naming it selects its first model; eligible non-timeout failures try the rest in order. |
-| `default_target` | Yes | — | Fallback group for `target_selector`. The `handoff_note` policy always uses `policy.target`. HTTP client failures stop the request after retries. Any group except `judge`, and it must contain at least one target. |
+| `default_target` | Yes | — | Fallback group for `target_selector`. `handoff_note` and `requirement_feedback` use `policy.target`. Any group except `judge`, and it must contain at least one target. |
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
-| `policy` | Yes | — | `type = "target_selector"` reads a target group from the verdict. `type = "handoff_note"` reads only a note ID and uses a fixed target from TOML. |
-| `policy.selector` | Yes | — | JSON Pointer to the target group for `target_selector`, or to a nullable note ID for `handoff_note` (such as `/note`). |
-| `policy.target` | For `handoff_note` | — | Fixed target name from `[targets]`, also listed in `models.any`. Used even when the judge returns no note or an invalid verdict. |
-| `policy.db_path` | For `handoff_note` | — | TOML file mapping IDs to note text, loaded at startup. Relative paths resolve beside a file-loaded deployment. The judge sees this mapping; a selected ID appends its text using the handoff-note helper. |
+| `policy` | Yes | — | `target_selector` selects a target group. `handoff_note` adds a stored note to a fixed target. `requirement_feedback` adds a cited task assessment to a fixed target. |
+| `policy.selector` | For `target_selector` / `handoff_note` | — | JSON Pointer to the target group or nullable note ID (such as `/note`). |
+| `policy.target` | For feedback policies | — | Fixed target name from `[targets]`, also listed in `models.any`. Used even when the verdict is invalid. |
+| `policy.db_path` | For feedback policies | — | TOML database loaded at startup. Relative paths resolve beside a file-loaded deployment. `handoff_note` expects an ID-to-text mapping; `requirement_feedback` expects an original instruction and frozen requirements. See [requirement feedback](../routing_algorithms/llm_classifier_routing.md#requirement-evidence-feedback). |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
-| `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. `requirement_feedback` requires this unset and always sends the full incoming transcript. |
+
+`requirement_feedback` requires `classify_trigger = "every_request"` so retained
+targets cannot bypass the assessment.
 
 For `target_selector`, the selected JSON label must name a configured group.
 A label naming a target rather than a group, or a group you did not configure, falls back to

@@ -28,6 +28,7 @@ use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
     SerdeDecoder, StructuredJudge,
 };
+use super::util::requirement_feedback::RequirementFeedbackPolicy;
 use super::util::target_selector::TargetSelectorPolicy;
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -498,6 +499,8 @@ pub enum CustomClassifierPolicy {
     },
     /// Adds an optional note to a target fixed in configuration.
     HandoffNote(HandoffNotePolicy),
+    /// Adds a cited assessment of a frozen task ledger to a fixed target.
+    RequirementFeedback(RequirementFeedbackPolicy),
 }
 
 impl CustomClassifierPolicy {
@@ -547,6 +550,14 @@ impl CustomClassifierConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        if matches!(self.policy, CustomClassifierPolicy::RequirementFeedback(_))
+            && (self.classify_trigger != ClassifyTrigger::EveryRequest
+                || self.recent_turn_window.is_some())
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "requirement_feedback requires every_request and the full transcript; remove recent_turn_window".into(),
+            });
+        }
         if self.max_output_tokens == 0 {
             return Err(LibsyError::AlgorithmError {
                 message: "max_output_tokens must be at least 1".to_string(),
@@ -749,6 +760,24 @@ impl LlmTaskClassifier {
     ) -> Result<Arc<dyn Classifier>> {
         config.validate()?;
         let (policy, prompt) = match &config.policy {
+            CustomClassifierPolicy::RequirementFeedback(feedback) => {
+                let contract = ClassifierContract::from_inner_schema(
+                    &feedback.extend_prompt(&config.prompt),
+                    config.response_schema.clone(),
+                )?;
+                return Ok(Arc::new(
+                    JudgeClassifier::new(
+                        StructuredJudge::new(
+                            feedback.clone(),
+                            contract,
+                            JsonSchemaDecoder::new(),
+                            JudgeRuntimeConfig::new(config.max_output_tokens)?,
+                        ),
+                        feedback.clone(),
+                    )
+                    .with_error_recovery(true),
+                ));
+            }
             CustomClassifierPolicy::TargetSelector { selector } => (
                 CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector)?),
                 config.prompt.clone(),

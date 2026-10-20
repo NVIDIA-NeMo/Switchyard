@@ -267,6 +267,60 @@ and [note database](../../examples/handoff-notes.toml). Set their client URL and
 model IDs for your provider. This policy is supported by custom `llm_classifier`
 routes, including sub-agent routes.
 
+### Requirement evidence feedback
+
+Use `policy.type = "requirement_feedback"` to assess a frozen task ledger before
+each acting-model request. The judge returns requirement statuses, verification
+freshness, explanations, and exact tool-evidence citations. The policy appends
+the validated assessment to `policy.target` using the handoff-note helper.
+
+```toml
+[routes.requirements.policy]
+type = "requirement_feedback"
+target = "target"
+db_path = "requirement-ledger.toml"
+```
+
+Start with the [complete route and response schema](../../examples/classifier-requirement-feedback.toml)
+and [example ledger](../../examples/requirement-ledger.toml). Prepare the ledger
+from the original task before observing solution work. Each requirement contains
+an ID, criterion, verbatim source quote, and evidence scope. The file is loaded
+once; relative paths resolve as for handoff notes. Reload after changing tasks or
+requirements. Feedback is omitted unless a user message contains the ledger's
+original instruction; environment messages may precede the task.
+
+This policy requires `classify_trigger = "every_request"` and an unset
+`recent_turn_window`. The judge sees the full incoming transcript as indexed text,
+including tool calls and results, with private reasoning and media omitted. The
+caller must supply the task history. Analysis runs synchronously before the next
+acting-model call, so results batched in one request receive one assessment.
+
+The five statuses are `missing`, `weak`, `incomplete`, `supported_as_met`, and
+`contradicted`. Verification is separately `missing`, `current`, `stale`, or
+`not_required`. A later edit can leave implementation visible while making its
+tests stale. The rubric asks the judge to inspect intervening edits and test
+coverage. These judgments need empirical validation.
+
+The policy checks complete, unique ledger coverage, the analyzed-through message,
+and each citation's message/block index, call ID, and quote. Supported and
+contradicted statuses require a tool-result citation. Stale verification cannot
+be marked supported. It derives the one-hot and met vectors itself. Exact quote
+checks establish that evidence exists; they do not prove that it entails a
+requirement or remains applicable after an edit.
+
+Invalid assessments and judge errors add no feedback; the configured target still
+receives the request. Invalid citations produce a warning. Each request gets a
+new assessment; the policy keeps no mutable per-session ledger and never replays
+an older verdict. Keep the original client transcript as the source of history.
+The policy uses the existing `JudgeClassifier`, `StructuredJudge`,
+`JsonSchemaDecoder`, transcript renderer, and `append_note`. It is a custom
+classifier policy and cannot serve as a composite tier judge.
+
+Measure actual verifier pass rate and total dollar cost, including observer
+calls and feedback tokens. Accuracy gains have not been established. Full-prefix
+review adds an LLM call and its latency to every request; event-triggered review
+and persistent incremental tracking are outside this policy.
+
 ### Forecast and policy assumptions
 
 The packaged prompt forecasts whole-task success for a generic efficient agent.
