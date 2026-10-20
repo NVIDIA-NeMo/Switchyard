@@ -9,11 +9,11 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::Usage;
 
-use crate::RunnerError;
+use crate::{ServerError, ServerResult};
 
 /// Pricing maps served model IDs to token rates in USD per million tokens.
 #[derive(Debug, Default)]
-pub struct Pricing(HashMap<String, Rates>);
+pub(crate) struct Pricing(HashMap<String, Rates>);
 
 impl<'de> Deserialize<'de> for Pricing {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -55,32 +55,32 @@ struct Rates {
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CostSource {
+pub(crate) enum CostSource {
     ProviderReported,
     Estimated,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
-pub struct RecordedCost {
-    pub usd: f64,
-    pub source: CostSource,
+pub(crate) struct RecordedCost {
+    pub(crate) usd: f64,
+    pub(crate) source: CostSource,
 }
 
 impl Pricing {
-    pub fn load(path: &Path) -> Result<Self, RunnerError> {
+    pub(crate) fn load(path: &Path) -> ServerResult<Self> {
         let bytes = std::fs::read(path).map_err(|error| {
-            RunnerError::configuration(format!(
+            ServerError::new(format!(
                 "failed to read pricing file {}: {error}",
                 path.display()
             ))
         })?;
         Self::parse(&bytes).map_err(|error| {
-            RunnerError::configuration(format!("invalid pricing file {}: {error}", path.display()))
+            ServerError::new(format!("invalid pricing file {}: {error}", path.display()))
         })
     }
 
     /// This function reads a pricing file's JSON and checks every model ID and rate.
-    pub fn parse(json: &[u8]) -> Result<Self, String> {
+    fn parse(json: &[u8]) -> Result<Self, String> {
         let pricing: Self = serde_json::from_slice(json).map_err(|error| error.to_string())?;
         for (model, rate) in &pricing.0 {
             if model.trim().is_empty()
@@ -105,7 +105,7 @@ impl Pricing {
     }
 
     /// Provider charges take precedence because token rates may omit provider surcharges.
-    pub fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
+    pub(crate) fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
         if let Some(usd) = usage
             .provider_cost
             .filter(|value| value.is_finite() && *value >= 0.0)
@@ -146,12 +146,12 @@ impl Pricing {
 
 /// The known subtotal remains visible when any call has unknown cost.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct CostTotals {
-    pub known_usd: f64,
-    pub unknown_calls: u64,
-    pub estimated_calls: u64,
-    pub provider_reported_calls: u64,
-    pub total_usd: Option<f64>,
+pub(crate) struct CostTotals {
+    pub(crate) known_usd: f64,
+    pub(crate) unknown_calls: u64,
+    pub(crate) estimated_calls: u64,
+    pub(crate) provider_reported_calls: u64,
+    pub(crate) total_usd: Option<f64>,
 }
 
 impl Default for CostTotals {
@@ -167,7 +167,7 @@ impl Default for CostTotals {
 }
 
 impl CostTotals {
-    pub fn add(&mut self, cost: Option<RecordedCost>) {
+    pub(crate) fn add(&mut self, cost: Option<RecordedCost>) {
         match cost.filter(|cost| {
             cost.usd.is_finite() && cost.usd >= 0.0 && (self.known_usd + cost.usd).is_finite()
         }) {

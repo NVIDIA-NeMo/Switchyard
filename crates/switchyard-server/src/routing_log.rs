@@ -14,9 +14,9 @@ use humantime::format_rfc3339_millis;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
 
+use crate::pricing::{CostTotals, Pricing, RecordedCost};
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
-use switchyard_runner::pricing::{CostTotals, Pricing, RecordedCost};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const ORIGIN_HEADER: &str = "x-switchyard-origin";
@@ -97,7 +97,10 @@ pub(crate) fn snapshot(
 ) -> std::io::Result<Option<SessionStatsSnapshot>> {
     let mut reader = BufReader::with_capacity(64 * 1024, fs::File::open(path)?);
     let mut line = Vec::new();
-    let mut snapshot = SessionStatsSnapshot::new(session_id);
+    let mut snapshot = SessionStatsSnapshot {
+        session_id: session_id.to_string(),
+        ..Default::default()
+    };
     loop {
         line.clear();
         if reader.read_until(b'\n', &mut line)? == 0 {
@@ -199,7 +202,7 @@ fn is_zero(value: &u64) -> bool {
 }
 
 /// Session totals returned by the routing stats endpoint.
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
     cost: CostTotals,
@@ -224,21 +227,6 @@ struct SessionModelStats {
 }
 
 impl SessionStatsSnapshot {
-    fn new(session_id: &str) -> Self {
-        Self {
-            session_id: session_id.to_string(),
-            cost: CostTotals::default(),
-            answer_cost: CostTotals::default(),
-            routing_cost: CostTotals::default(),
-            total_calls: 0,
-            total_prompt_tokens: 0,
-            total_cached_tokens: 0,
-            total_cache_creation_tokens: 0,
-            total_completion_tokens: 0,
-            models: BTreeMap::new(),
-        }
-    }
-
     fn add_record(&mut self, record: &RoutingRecord<'_>, session_id: &str) {
         if record.session_id.as_deref() != Some(session_id) {
             return;
