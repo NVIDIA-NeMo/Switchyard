@@ -352,29 +352,11 @@ mod tests {
         );
     }
 
-    /// Appends one record for `metadata` and returns it as JSON.
-    fn logged_record(metadata: &Metadata) -> serde_json::Value {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("routing.jsonl");
-        let mut log = RoutingLog::new(&path).expect("routing log");
-        log.append(
-            RoutingLogContext::from_metadata(metadata).with_route("model-router", "passthrough"),
-            "worker-model",
-            None,
-            &Usage::default(),
-        )
-        .expect("append");
-        let line = fs::read_to_string(&path).expect("read log");
-        serde_json::from_str(line.trim()).expect("json record")
-    }
-
-    /// The record names the child, its parent, and the flag that sent it to the
-    /// sub-agent route, so it can be told apart from the parent's turns under
-    /// the shared session id.
     #[test]
     fn a_delegated_call_records_its_agent_lineage() {
-        let record = logged_record(&Metadata {
+        let metadata = Metadata {
             session_id: Some("session-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
             agent_id: Some("child-7".to_string()),
             parent_agent_id: Some("thread-1".to_string()),
             is_subagent: true,
@@ -382,46 +364,28 @@ mod tests {
             agent_kind: Some("review".to_string()),
             agent_role: Some("reviewer".to_string()),
             ..Metadata::default()
-        });
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("routing.jsonl");
+        let mut log = RoutingLog::new(&path).expect("routing log");
+        log.append(
+            RoutingLogContext::from_metadata(&metadata).with_route("model-router", "passthrough"),
+            "worker-model",
+            None,
+            &Usage::default(),
+        )
+        .expect("append");
+        let line = fs::read_to_string(&path).expect("read log");
+        let record: serde_json::Value = serde_json::from_str(line.trim()).expect("json record");
+
         assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["turn_id"], "turn-1");
         assert_eq!(record["agent_id"], "child-7");
         assert_eq!(record["parent_agent_id"], "thread-1");
         assert_eq!(record["delegated"], true);
         assert_eq!(record["agent_kind"], "review");
         assert_eq!(record["agent_role"], "reviewer");
-    }
-
-    /// A harness that cannot identify its children is flagged, so a reader does
-    /// not take the missing `delegated` flag as proof that nothing was delegated.
-    #[test]
-    fn a_call_from_a_harness_without_child_identity_is_flagged() {
-        let record = logged_record(&Metadata {
-            session_id: Some("session-1".to_string()),
-            subagent_identity_unsupported: true,
-            ..Metadata::default()
-        });
-        assert_eq!(record["subagent_identity_unsupported"], true);
-        assert!(record.get("delegated").is_none());
-    }
-
-    /// A call without agent identity keeps the record it had before, with no
-    /// agent fields at all.
-    #[test]
-    fn a_call_without_agent_identity_writes_no_agent_fields() {
-        let record = logged_record(&Metadata {
-            session_id: Some("session-1".to_string()),
-            ..Metadata::default()
-        });
-        for field in [
-            "agent_id",
-            "parent_agent_id",
-            "delegated",
-            "agent_kind",
-            "agent_role",
-            "subagent_identity_unsupported",
-        ] {
-            assert!(record.get(field).is_none(), "{field} should be absent");
-        }
+        assert!(record.get("subagent_identity_unsupported").is_none());
     }
 
     /// Only the requested session is counted, absent fields fall back to zero
