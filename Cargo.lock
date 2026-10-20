@@ -3822,6 +3822,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
+ "parking_lot",
  "prefill-router",
  "reqwest",
  "serde",

@@ -121,6 +121,16 @@ struct EligibilityConfig {
     accepted_requirement_sets: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     target_overrides: BTreeMap<String, TargetOverrides>,
+    #[serde(default)]
+    requirement_scope: RequirementScope,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RequirementScope {
+    #[default]
+    Request,
+    Task,
 }
 
 struct TargetPromptPolicy {
@@ -419,6 +429,7 @@ impl DeploymentConfig {
         let policy = EligibilityPolicy::new(
             config.require_explicit_requirements,
             config.accepted_requirement_sets.values().cloned().collect(),
+            matches!(&config.requirement_scope, RequirementScope::Task),
         )
         .map_err(|error| {
             RunnerError::configuration_source(
@@ -1725,7 +1736,7 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
                 "unknown field `private`",
             ),
             (
-                format!("{configured}\n[routes.passthrough.privacy]\nrestriction_scope = 'task'\n"),
+                format!("{configured}\n[routes.passthrough.privacy]\nrequirement_scope = 'task'\n"),
                 "unknown field `privacy`",
             ),
             (
@@ -1735,6 +1746,10 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
             (
                 format!("{configured}\nrequire_external_signal = true\n"),
                 "unknown field `require_external_signal`",
+            ),
+            (
+                format!("{configured}\nrestriction_scope = 'task'\n"),
+                "unknown field `restriction_scope`",
             ),
         ] {
             let message = error_message(&invalid);
@@ -1789,6 +1804,43 @@ accepted_requirement_sets = {{ private_eu = ["private", "eu"] }}
                 "expected {expected:?}, got {message}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
+        let configured = external_eligibility_config().replace(
+            "[routes.passthrough.eligibility]",
+            "[routes.passthrough.eligibility]\nrequirement_scope = \"task\"",
+        );
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("eligibility route should exist");
+        let request = |task_id: Option<&str>, restricted: bool| {
+            let mut request = Request::default();
+            request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
+            if restricted {
+                crate::require_target_labels(&mut request, ["private", "eu"])
+                    .expect("trusted labels");
+            }
+            request
+        };
+        for (task_id, restricted, expected) in [
+            ("task-a", false, 2),
+            ("task-a", true, 1),
+            ("task-a", false, 1),
+            ("task-b", false, 2),
+        ] {
+            let outcome = route.decide(request(Some(task_id), restricted)).await?;
+            assert_eq!(outcome.selected_model_ids.len(), expected);
+            if expected == 1 {
+                assert_eq!(outcome.selected_model_id()?, "strong/model");
+            }
+        }
+        for task_id in [None, Some(" ")] {
+            assert!(route.decide(request(task_id, false)).await.is_err());
+        }
+        Ok(())
     }
 
     #[test]
