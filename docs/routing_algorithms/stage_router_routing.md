@@ -129,58 +129,29 @@ default.
 `0.5` is the recommended starting point, derived from many coding benchmarks,
 and what the example below uses.
 
-### How the score is built
+### Reachable scores
 
-The scorer reads four dimensions from the recent tool results:
+The scorer adds a few signals from the recent tool results. Error severity and
+stalls count toward the capable tier. Writes count toward the efficient tier.
+Each signal is bounded, so a turn's confidence can only reach a few values.
+These are the ones that matter when you choose a threshold:
 
-| Dimension | Range | Meaning |
+| Situation in the recent window | Confidence | Direction |
 |---|---|---|
-| `severity` | `0`, `0.3` (soft), `0.7` (hard) | The worst error in the window. A critical error (`1.0`) never reaches the scorer; it is a hard override. |
-| `spinning` | `0` or `1` | A deep turn with no reads, writes, plans, or new activity. |
-| `exploring` | `0` or `1` | A deep turn that reads or plans but does not write. Never set together with `spinning`. |
-| `production_intensity` | `0` to `1` | The share of recent recognized operations that were writes or edits. |
+| A soft error alone | 0.21 | Capable |
+| A hard error alone, or a stall alone | 0.46 | Capable |
+| Every operation is a write, with a soft error | 0.49 | Efficient |
+| One write among three operations and no error, the smallest clean-production score at the default window | 0.69 | Efficient |
+| A hard error plus a stall | 0.76 | Capable. The most the signals reach in this direction (0.7616). |
+| Every operation is a write and no error | 0.87 | Efficient. The most the signals reach in this direction (0.8741). |
 
-The score is a signed sum of these dimensions in signal units, squashed by
-`tanh`:
-
-```text
-units = severity / 0.7 + spinning + exploring - 1.5 * production_intensity - clean_production
-score = tanh(5.0 * 0.10 * units)
-confidence = |score|
-```
-
-`clean_production` is `1.2` when the window has production and no error, and
-`0` otherwise. The constants live in
-[`crates/libsy/src/algorithms/util/stage.rs`](../../crates/libsy/src/algorithms/util/stage.rs):
-`SIGNAL_UNIT` 0.10, `SCORE_GAIN` 5.0, `HARD_SEVERITY` 0.7, `PRODUCTION_WEIGHT`
-1.5, `CLEAN_PRODUCTION_WEIGHT` 1.2, and `STALL_MIN_TURN_DEPTH` 8, below which
-`spinning` and `exploring` stay `0`.
-
-One signal unit is one maxed dimension. The confidence a given number of units
-produces:
-
-| Units | Confidence | Example |
-|---|---|---|
-| 0.43 | 0.21 | A soft error alone. |
-| 1.0 | 0.46 | A hard error alone, or a stall alone. |
-| 1.07 | 0.49 | Every recent operation is a write, with a soft error in the window. The error counts the other way, so this is the most production can reach while an error is present. |
-| 1.7 | 0.69 | One write among three recent operations and no error: the smallest clean-production score at the default window of 3. |
-| 2.0 | 0.76 | A hard error plus a stall. The most the signals reach toward capable (0.7616). |
-| 2.7 | 0.87 | Every recent operation is a write and no error. The most the signals reach toward efficient (0.8741). |
-
-Reproduce the values with
-`python3 -c 'import math; print(*(round(math.tanh(0.5 * u), 2) for u in (0.43, 1.0, 1.07, 1.7, 2.0, 2.7)))'`.
-
-The dimensions limit how far the score can reach in each direction. Toward
-capable, the most the signals can produce is a hard error plus a stall, 0.7616.
 Production turns the stall signals off, so with any production in the window
-the capable side stays below 0.46. Toward efficient, the most is full clean
-production, 0.8741. An error in the window removes the clean-production bonus
-and counts toward capable instead. With a soft error the efficient side reaches
-at most 0.49. With a hard error it reaches at most 0.24. The unit test
-`scorer_ceilings_match_the_documented_values` in
+the capable side stays below 0.46. An error in the window removes the
+clean-production bonus, so with a hard error the efficient side reaches at most
+0.24. The unit test `scorer_ceilings_match_the_documented_values` in
 [`crates/libsy/src/algorithms/util/stage.rs`](../../crates/libsy/src/algorithms/util/stage.rs)
-pins these values.
+pins these values, so a change to the scorer fails CI until this table is
+updated.
 
 ### Reachable scores per picker
 

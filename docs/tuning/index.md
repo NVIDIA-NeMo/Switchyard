@@ -36,7 +36,9 @@ Start where your goal is:
 
 4. **Run the routed arm against the fixed arms.** Use the same tasks, agent,
    and provider for all three arms. The [benchmark guide](../../benchmark/README.md)
-   shows the harness the checked-in results used. Produces: solved tasks and
+   shows the harness the checked-in results used, and the
+   [Benchmarks](../benchmarks.md) page lists the published results with their
+   configs. Produces: solved tasks and
    cost per run for each arm. Costs: `k` runs per arm. The plan/execute and
    advisor profiles use three runs and report the mean with the sample standard
    deviation, as in the
