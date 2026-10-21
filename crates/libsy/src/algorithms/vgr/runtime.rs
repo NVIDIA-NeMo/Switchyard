@@ -38,8 +38,8 @@ pub(super) const TURN_STREAK_KEY: &str = "vgr_turn_streak";
 const TURN_STARTED_KEY: &str = "vgr_turn_started";
 /// Set once the handoff note was sent in the current user turn.
 const HANDOFF_SENT_KEY: &str = "vgr_handoff_sent";
-/// Set once the local tier served a response since the last handoff.
-pub(super) const LOCAL_SERVED_KEY: &str = "vgr_local_served";
+/// Set once the efficient tier served a response since the last handoff.
+pub(super) const EFFICIENT_SERVED_KEY: &str = "vgr_local_served";
 
 fn count(state: &State, key: &str) -> Option<u32> {
     match state.extra.get(key) {
@@ -96,7 +96,7 @@ impl Classifier for Held {
     ) -> Result<Scored> {
         let scored = self.0.score(state, request, driver).await?;
         if matches!(&scored.0, Classification::Scores(scores) if !scores.is_empty()) {
-            log(driver, self.1, None, Route::Cloud);
+            log(driver, self.1, None, Route::Capable);
         }
         Ok(scored)
     }
@@ -111,7 +111,7 @@ impl Classifier for VgrClassifier {
         driver: &Driver,
     ) -> Result<Scored> {
         let started = Instant::now();
-        let local = &self.config.targets.local;
+        let efficient = &self.config.targets.efficient;
         let messages = &request.llm_request.messages;
         let (new_turn, answered) = match initiated_by_user(request) {
             Some(by_user) => (by_user, by_user),
@@ -138,9 +138,9 @@ impl Classifier for VgrClassifier {
         } else if flag(state, TURN_LATCHED_KEY) || turn_streak(state) >= TURN_CONFIRMATIONS {
             Some("turn_verification_latched")
         } else if turn_budget_spent {
-            Some("local_turn_budget")
-        } else if !self.config.local_supports_images && request_has_image(request) {
-            Some("local_image_unsupported")
+            Some("efficient_turn_budget")
+        } else if !self.config.efficient_supports_images && request_has_image(request) {
+            Some("efficient_image_unsupported")
         } else if text::newest_prompt_is_blank(request) {
             Some("empty_prompt")
         } else {
@@ -151,16 +151,16 @@ impl Classifier for VgrClassifier {
         }
 
         let Some(budget) = self.remaining(started) else {
-            return Ok(self.escalate(driver, "local_timed_out", None, request, state, None));
+            return Ok(self.escalate(driver, "efficient_timed_out", None, request, state, None));
         };
         let Some(trial) = self.breaker.attempt() else {
             return Ok(self.escalate(driver, "breaker_open", None, request, state, None));
         };
         let attempted = tokio::time::timeout(budget, async {
             let response = driver
-                .call_model_with_error_recovery(request.clone(), vec![local.clone()], true)
+                .call_model_with_error_recovery(request.clone(), vec![efficient.clone()], true)
                 .await?;
-            buffer_response(local.as_str(), response).await
+            buffer_response(efficient.as_str(), response).await
         })
         .await;
         let buffered = match attempted {
@@ -175,11 +175,25 @@ impl Classifier for VgrClassifier {
                 if !fallback_eligible(&error) {
                     return Err(error);
                 }
-                return Ok(self.escalate(driver, "local_unavailable", None, request, state, None));
+                return Ok(self.escalate(
+                    driver,
+                    "efficient_unavailable",
+                    None,
+                    request,
+                    state,
+                    None,
+                ));
             }
             Err(_) => {
                 trial.failure();
-                return Ok(self.escalate(driver, "local_timed_out", None, request, state, None));
+                return Ok(self.escalate(
+                    driver,
+                    "efficient_timed_out",
+                    None,
+                    request,
+                    state,
+                    None,
+                ));
             }
         };
 
@@ -219,9 +233,9 @@ impl Classifier for VgrClassifier {
                     None,
                 ));
             }
-            log(driver, "turn_verification_complete", None, Route::Local);
-            set_flag(state, LOCAL_SERVED_KEY, true);
-            return Ok((decisive(local), Some(buffered.into_response())));
+            log(driver, "turn_verification_complete", None, Route::Efficient);
+            set_flag(state, EFFICIENT_SERVED_KEY, true);
+            return Ok((decisive(efficient), Some(buffered.into_response())));
         }
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
@@ -229,7 +243,7 @@ impl Classifier for VgrClassifier {
         let caps = derive_capabilities(request, &attempt, task_type);
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
-        if route == Route::Cloud || self.config.mode == ServingMode::Shadow {
+        if route == Route::Capable || self.config.mode == ServingMode::Shadow {
             return Ok(self.escalate(
                 driver,
                 "decided",
@@ -239,17 +253,17 @@ impl Classifier for VgrClassifier {
                 Some(&attempt),
             ));
         }
-        log(driver, "decided", Some(caps.branch), Route::Local);
-        set_flag(state, LOCAL_SERVED_KEY, true);
-        Ok((decisive(local), Some(buffered.into_response())))
+        log(driver, "decided", Some(caps.branch), Route::Efficient);
+        set_flag(state, EFFICIENT_SERVED_KEY, true);
+        Ok((decisive(efficient), Some(buffered.into_response())))
     }
 }
 
 impl VgrClassifier {
-    /// Whether the local tier may answer `request` when the cloud tier fails it.
+    /// Whether the efficient tier may answer `request` when the capable tier fails it.
     ///
-    /// That answer is unverified, so it is offered only while local attempts are allowed.
-    pub(super) fn local_may_stand_in(&self, request: &Request) -> bool {
+    /// That answer is unverified, so it is offered only while efficient attempts are allowed.
+    pub(super) fn efficient_may_stand_in(&self, request: &Request) -> bool {
         matches!(self.config.mode, ServingMode::Active { .. })
             && !self
                 .config
@@ -257,7 +271,7 @@ impl VgrClassifier {
                 .as_ref()
                 .is_some_and(|switch| switch.is_engaged())
             && !self.breaker.is_open()
-            && (self.config.local_supports_images || !request_has_image(request))
+            && (self.config.efficient_supports_images || !request_has_image(request))
     }
 
     fn escalate(
@@ -272,17 +286,17 @@ impl VgrClassifier {
         if reason != "mode_off" {
             self.hand_off(request, state, unverified_final);
         }
-        log(driver, reason, branch, Route::Cloud);
-        (decisive(&self.config.targets.cloud), None)
+        log(driver, reason, branch, Route::Capable);
+        (decisive(&self.config.targets.capable), None)
     }
 
-    /// Whether the current user turn has used up its local wall-clock budget.
+    /// Whether the current user turn has used up its efficient wall-clock budget.
     ///
     /// The clock starts at the first request of the user turn and includes the
     /// client's tool execution, since that is the time the client's own limit
     /// is spending.
     fn turn_budget_spent(&self, state: &mut State) -> bool {
-        let Some(budget) = self.config.local_turn_budget else {
+        let Some(budget) = self.config.efficient_turn_budget else {
             return false;
         };
         let now = unix_seconds();
@@ -297,13 +311,13 @@ impl VgrClassifier {
     fn hand_off(&self, request: &mut Request, state: &mut State, unverified_final: Option<&str>) {
         if !self.config.agentic_handoff
             || flag(state, HANDOFF_SENT_KEY)
-            || !flag(state, LOCAL_SERVED_KEY)
+            || !flag(state, EFFICIENT_SERVED_KEY)
             || !text::turn_has_tool_trajectory(request)
         {
             return;
         }
         set_flag(state, HANDOFF_SENT_KEY, true);
-        set_flag(state, LOCAL_SERVED_KEY, false);
+        set_flag(state, EFFICIENT_SERVED_KEY, false);
         let note = handoff_note(unverified_final);
         if !(self.config.compact_handoff && super::compaction::compact(request, state, &note)) {
             append_note(request, &note);
@@ -327,9 +341,9 @@ impl VgrClassifier {
         let probability = match self.call(context, call, judge).await {
             None => return false,
             Some(Ok(agg)) => readout::p_yes(&agg),
-            // Verification fails open, unless the local endpoint itself is down.
+            // Verification fails open, unless the efficient endpoint itself is down.
             Some(Err(error)) => {
-                if *judge == self.config.targets.local && endpoint_failure(&error) {
+                if *judge == self.config.targets.efficient && endpoint_failure(&error) {
                     self.breaker.failure();
                     set_flag(state, TURN_LATCHED_KEY, true);
                     return true;
@@ -379,9 +393,10 @@ impl VgrClassifier {
         ) else {
             return signals;
         };
-        let settled = |signals: &Signals| decide::decide(caps, signals, confirmed) == Route::Local;
-        let cloud_confirms = run == Some(AgenticRun::ConfirmedRecovery);
-        let local = self.config.judge();
+        let settled =
+            |signals: &Signals| decide::decide(caps, signals, confirmed) == Route::Efficient;
+        let capable_confirms = run == Some(AgenticRun::ConfirmedRecovery);
+        let efficient = self.config.judge();
         let ask = |target, question, max_output_tokens| {
             self.ask(context, target, question, judged, max_output_tokens)
         };
@@ -393,52 +408,55 @@ impl VgrClassifier {
         };
         signals.readout = self.readout(context, judged, asked).await;
         if branch == Branch::Coding {
-            if let Some(cloud) = self.config.targets.cloud_judge.as_ref()
-                && decide::locally_verified(branch, &signals)
+            if let Some(capable) = self.config.targets.capable_judge.as_ref()
+                && decide::efficient_verified(branch, &signals)
                 && !settled(&signals)
             {
                 let tokens = rungs::DELIBERATION_MAX_OUTPUT_TOKENS;
-                signals.cloud_judge = Some(ask(cloud, asked, tokens).await);
+                signals.capable_judge = Some(ask(capable, asked, tokens).await);
             }
             return signals;
         }
         if settled(&signals) {
             return signals;
         }
-        if !(cloud_confirms && decide::locally_verified(branch, &signals)) {
+        if !(capable_confirms && decide::efficient_verified(branch, &signals)) {
             let metadata = || context.request.metadata.clone();
             let call = rungs::build_deliberation_request(judged, metadata());
-            if let Some(Ok(deliberation)) = self.call(context, call, local).await {
+            if let Some(Ok(deliberation)) = self.call(context, call, efficient).await {
                 let call = rungs::build_verdict_request(judged, &deliberation, metadata());
-                let verdict = self.call(context, call, local).await.and_then(Result::ok);
+                let verdict = self
+                    .call(context, call, efficient)
+                    .await
+                    .and_then(Result::ok);
                 signals.deliberation = verdict.and_then(|agg| readout::p_yes(&agg));
             }
             if settled(&signals) {
                 return signals;
             }
         }
-        let Some(cloud) = self.config.targets.cloud_judge.as_ref() else {
+        let Some(capable) = self.config.targets.capable_judge.as_ref() else {
             return signals;
         };
-        let cloud_ask = |question| ask(cloud, question, rungs::DELIBERATION_MAX_OUTPUT_TOKENS);
-        if cloud_confirms {
-            if decide::locally_verified(branch, &signals) {
-                signals.cloud_judge = Some(cloud_ask(Question::Evidence).await);
+        let capable_ask = |question| ask(capable, question, rungs::DELIBERATION_MAX_OUTPUT_TOKENS);
+        if capable_confirms {
+            if decide::efficient_verified(branch, &signals) {
+                signals.capable_judge = Some(capable_ask(Question::Evidence).await);
             }
             return signals;
         }
         match branch {
             Branch::Answer => {
-                signals.answer_verifier = Some(cloud_ask(Question::Answer).await);
+                signals.answer_verifier = Some(capable_ask(Question::Answer).await);
                 if !settled(&signals) {
-                    signals.evidence_verifier = Some(cloud_ask(Question::Evidence).await);
+                    signals.evidence_verifier = Some(capable_ask(Question::Evidence).await);
                 }
             }
             Branch::Chat => {
-                signals.cloud_judge = Some(cloud_ask(Question::Evidence).await);
+                signals.capable_judge = Some(capable_ask(Question::Evidence).await);
                 // Asked only once the first affirms, so a refutation costs one call.
-                if signals.cloud_judge == Some(Tri::Yes) {
-                    signals.evidence_confirm = Some(cloud_ask(Question::Answer).await);
+                if signals.capable_judge == Some(Tri::Yes) {
+                    signals.evidence_confirm = Some(capable_ask(Question::Answer).await);
                 }
             }
             _ => {}
@@ -556,7 +574,7 @@ fn log(driver: &Driver, reason: &'static str, branch: Option<Branch>, served: Ro
     driver.set_evidence(serde_json::json!({
         "source": "vgr",
         "reason_code": reason,
-        "verdict": if served == Route::Local { "local" } else { "cloud" },
+        "verdict": if served == Route::Efficient { "efficient" } else { "capable" },
         "branch": branch.map(|branch| format!("{branch:?}")),
         "policy_version": decide::POLICY_VERSION,
     }));

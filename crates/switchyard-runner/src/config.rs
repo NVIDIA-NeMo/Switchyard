@@ -303,7 +303,8 @@ impl DeploymentConfig {
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
-                && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
+                && let Some(probe) =
+                    self.build_model_properties_probe(&vgr.efficient_target, &clients)
             {
                 model_properties_probes.insert(config.id.clone(), probe);
             }
@@ -632,20 +633,20 @@ impl DeploymentConfig {
 
     fn build_model_properties_probe(
         &self,
-        local_target_name: &str,
+        efficient_target_name: &str,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> Option<ModelPropertiesProbe> {
-        let local_target = self.targets.get(local_target_name)?;
-        let client_config = self.llm_clients.get(&local_target.llm_client)?;
+        let efficient_target = self.targets.get(efficient_target_name)?;
+        let client_config = self.llm_clients.get(&efficient_target.llm_client)?;
         if !matches!(
             client_config.context_discovery,
             Some(ContextDiscovery::LlamaCpp)
         ) {
             return None;
         }
-        let client = clients.get(&local_target.llm_client)?;
+        let client = clients.get(&efficient_target.llm_client)?;
         Some(ModelPropertiesProbe {
-            model: local_target.id.clone(),
+            model: efficient_target.id.clone(),
             format: client_config.format.wire_format(),
             client: Arc::clone(client),
         })
@@ -744,7 +745,7 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
 struct LlmClientConfig {
     format: ClientFormat,
     base_url: HttpBaseUrl,
-    /// Opt-in context discovery for VGR's local target. Unset disables discovery.
+    /// Opt-in context discovery for VGR's efficient target. Unset disables discovery.
     context_discovery: Option<ContextDiscovery>,
     api_key_env: Option<String>,
     #[serde(default)]
@@ -1155,8 +1156,8 @@ target = "strong"
 [routes.vgr]
 id = "switchyard/vgr"
 type = "vgr"
-local_target = "weak"
-cloud_target = "strong"
+efficient_target = "weak"
+capable_target = "strong"
 judge_target = "classifier"
 mode = "active"
 active_approval = "prospective-validation-and-canary-approved"
@@ -1193,16 +1194,20 @@ task_typing = false
                 .is_some()
         );
 
-        let identical_ids =
-            vgr_config().replace("local_target = \"weak\"", "local_target = \"strong\"");
-        assert!(error_message(&identical_ids).contains("distinct local and cloud model IDs"));
+        let identical_ids = vgr_config().replace(
+            "efficient_target = \"weak\"",
+            "efficient_target = \"strong\"",
+        );
+        assert!(error_message(&identical_ids).contains("distinct efficient and capable model IDs"));
 
         let bad_approval =
             vgr_config().replace("prospective-validation-and-canary-approved", "approved");
         assert!(error_message(&bad_approval).contains("approval attestation"));
 
-        let missing_target =
-            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
+        let missing_target = vgr_config().replace(
+            "efficient_target = \"weak\"",
+            "efficient_target = \"missing\"",
+        );
         assert!(error_message(&missing_target).contains("unknown target missing"));
 
         let zero_cooldown = format!("{}breaker_cooldown_seconds = 0\n", vgr_config());

@@ -17,7 +17,7 @@ use super::text::{Turn, char_len, clip_mid, content_text, redact};
 use crate::algorithms::util::transcript::message_text;
 
 pub(super) const DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 512;
-const LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;
+const EFFICIENT_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;
 const TYPING_MAX_OUTPUT_TOKENS: u64 = 8;
 const TYPING_TASK_BUDGET: usize = 4000;
 
@@ -101,7 +101,7 @@ pub(super) fn build_request(
                 ..OutputParams::default()
             },
             sampling: SamplingParams {
-                // Only these run locally; cloud reasoning modes can reject temperature.
+                // Only these use the efficient verifier; cloud reasoning modes can reject temperature.
                 temperature: matches!(question, Question::Typing | Question::Deliberation)
                     .then_some(0.0),
                 ..SamplingParams::default()
@@ -129,7 +129,7 @@ pub(super) fn build_deliberation_request(judged_text: &str, metadata: Option<Met
     build_request(
         Question::Deliberation,
         judged_text,
-        LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
+        EFFICIENT_DELIBERATION_MAX_OUTPUT_TOKENS,
         metadata,
     )
 }
@@ -340,7 +340,7 @@ fn verdict_text(response: &AggLlmResponse) -> Option<String> {
     assistant_text(output)
 }
 
-/// The local attempt's text, however generation stopped.
+/// The efficient attempt's text, however generation stopped.
 pub(super) fn response_text(response: &AggLlmResponse) -> Option<String> {
     assistant_text(response.first_output()?)
 }

@@ -40,7 +40,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 | [Escalation](escalation_router_routing.md) | `llm_classifier`, `mode = "escalation"` | The weak model serves until a judge reports the same failure on consecutive turns. Then the session latches to the strong model. |
 | [Custom](llm_classifier_routing.md#custom-multi-target-routing) | `llm_classifier`, `mode = "custom"` | Your own judge prompt and schema choose among any number of targets. |
 | [Advisor Gate](advisor_gate_routing.md) | `advisor` | One executor serves every turn. A stronger advisor reviews its plans and "done" claims. |
-| [Verification-Gated](vgr_routing.md) | `vgr` | A local model drafts. Verified answers stay local, and everything else goes to the cloud model. |
+| [Verification-Gated](vgr_routing.md) | `vgr` | An efficient model drafts. Verified answers stay on the efficient tier, and everything else goes to the capable model. |
 | [Prefill](prefill_routing.md) | `prefill_router` | A classifier you train on the prompt's hidden states picks the target. Experimental: Switchyard supplies no checkpoint, exporter, or encoder assets. |
 | [Random](random_routing.md) | `random` | A fixed traffic split. |
 | [Fixed](#direct-model-routes) | `passthrough` | One target, no decision. |
@@ -58,7 +58,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 | `composite` | A judge at each user turn, tool results in between | One judge call per user turn or session | Every request, with a per-user-turn default | Required, or `message_hash_fallback` | Last tier, else efficient | Not benchmarked | [Composite Routing](composite_routing.md#configuration) |
 | `plan_execute` | The first edit or write tool call | None | Once per session | Recommended. Latches the handoff. | Stays on the planner | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) | That profile |
 | `advisor` | The executor's terminal turn | One advisor review per gated turn, up to `max_reviews` | Never. One executor serves. | Scopes the review budget | An unreadable verdict or a failed advisor call lets the buffered executor turn through (`fail_open`, default `true`). `fail_open = false` stops the request. | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) | That profile |
-| `vgr` | Evidence about a local candidate | Verifier and judge calls | Per final answer | See [the page](vgr_routing.md) | Cloud tier | Not benchmarked. Planned for 0.4.0. | [`examples/vgr-local-servers.toml`](../../examples/vgr-local-servers.toml) |
+| `vgr` | Evidence about an efficient candidate | Verifier and judge calls | Per final answer | See [the page](vgr_routing.md) | Capable tier | Not benchmarked. Planned for 0.4.0. | [`examples/vgr-local-servers.toml`](../../examples/vgr-local-servers.toml) |
 | `prefill_router` | Hidden states of the prompt | Encoder inference, no provider call | Every request | Not required | Checkpoint output | Experimental. No checkpoint is supplied. | [Schema example](../reference/toml_schema.md#prefill_router) |
 | `random` | Weights | None | Every request | Not required | Not applicable | Utility | [Random Routing](random_routing.md) |
 | `passthrough` | Nothing | None | Never | Not required | Not applicable | Utility | [Schema](../reference/toml_schema.md#passthrough) |

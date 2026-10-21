@@ -524,13 +524,13 @@ pub enum AlgorithmSpec {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VgrRouteConfig {
-    pub local_target: String,
-    pub cloud_target: String,
-    /// Defaults to `local_target`.
+    pub efficient_target: String,
+    pub capable_target: String,
+    /// Defaults to `efficient_target`.
     #[serde(default)]
     pub judge_target: Option<String>,
     #[serde(default)]
-    pub cloud_judge_target: Option<String>,
+    pub capable_judge_target: Option<String>,
     #[serde(default)]
     pub mode: VgrModeConfig,
     #[serde(default)]
@@ -543,18 +543,18 @@ pub struct VgrRouteConfig {
     pub breaker_threshold: u32,
     #[serde(default = "default_vgr_breaker_cooldown")]
     pub breaker_cooldown_seconds: f64,
-    /// Clean trailing tool results that let a long run recover on the cloud judge.
+    /// Clean trailing tool results that let a long run recover on the capable judge.
     #[serde(default)]
     pub confirmed_recovery_min_clean_tail: Option<u32>,
     /// Tells the capable tier it inherits unverified tool-using work.
     #[serde(default)]
     pub agentic_handoff: bool,
-    /// Condenses local history at handoff. Requires `agentic_handoff`.
+    /// Condenses history from the efficient tier at handoff. Requires `agentic_handoff`.
     #[serde(default)]
     pub compact_handoff: bool,
-    /// Wall-clock budget for the local tier within one user turn.
+    /// Wall-clock budget for the efficient tier within one user turn.
     #[serde(default)]
-    pub local_turn_budget_seconds: Option<f64>,
+    pub efficient_turn_budget_seconds: Option<f64>,
     /// Holds escalations across later user turns.
     #[serde(default)]
     pub latch_escalation: bool,
@@ -838,7 +838,10 @@ impl AlgorithmSpec {
                 executor_target, ..
             } => vec![executor_target],
             Self::Vgr { config } => {
-                vec![config.local_target.as_str(), config.cloud_target.as_str()]
+                vec![
+                    config.efficient_target.as_str(),
+                    config.capable_target.as_str(),
+                ]
             }
             Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
         }
@@ -878,7 +881,7 @@ impl AlgorithmSpec {
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
             Self::Vgr { config } => {
                 names.extend(config.judge_target.as_deref());
-                names.extend(config.cloud_judge_target.as_deref());
+                names.extend(config.capable_judge_target.as_deref());
             }
             _ => {}
         }
@@ -974,17 +977,23 @@ impl AlgorithmSpec {
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),
             Self::Vgr { config } => {
-                let judge = config.judge_target.as_ref().unwrap_or(&config.local_target);
+                let judge = config
+                    .judge_target
+                    .as_ref()
+                    .unwrap_or(&config.efficient_target);
                 let judges = std::iter::once(judge)
-                    .chain(&config.cloud_judge_target)
+                    .chain(&config.capable_judge_target)
                     .cloned()
                     .collect();
                 category_models([
-                    (Category::Efficient, vec![config.local_target.clone()]),
-                    (Category::Capable, vec![config.cloud_target.clone()]),
+                    (Category::Efficient, vec![config.efficient_target.clone()]),
+                    (Category::Capable, vec![config.capable_target.clone()]),
                     (
                         Category::Any,
-                        vec![config.local_target.clone(), config.cloud_target.clone()],
+                        vec![
+                            config.efficient_target.clone(),
+                            config.capable_target.clone(),
+                        ],
                     ),
                     (Category::Judge, judges),
                 ])
@@ -1023,11 +1032,11 @@ impl AlgorithmSpec {
                 ..
             } => Some((executor_target, advisor_target)),
             Self::Vgr { config } => Some((
-                &config.local_target,
+                &config.efficient_target,
                 config
                     .judge_target
                     .as_deref()
-                    .unwrap_or(&config.local_target),
+                    .unwrap_or(&config.efficient_target),
             )),
             Self::Noop { .. }
             | Self::Random { .. }
@@ -1796,16 +1805,16 @@ fn build_vgr(
     config: &VgrRouteConfig,
     targets: &BTreeMap<String, ModelId>,
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-    let local = resolve_target_model_id(route_name, &config.local_target, targets)?;
-    let cloud = resolve_target_model_id(route_name, &config.cloud_target, targets)?;
+    let efficient = resolve_target_model_id(route_name, &config.efficient_target, targets)?;
+    let capable = resolve_target_model_id(route_name, &config.capable_target, targets)?;
     let optional = |name: &Option<String>| {
         name.as_deref()
             .map(|name| resolve_target_model_id(route_name, name, targets))
             .transpose()
     };
-    let mut runtime = VgrConfig::new(local, cloud);
+    let mut runtime = VgrConfig::new(efficient, capable);
     runtime.targets.judge = optional(&config.judge_target)?;
-    runtime.targets.cloud_judge = optional(&config.cloud_judge_target)?;
+    runtime.targets.capable_judge = optional(&config.capable_judge_target)?;
     runtime.mode = match config.mode {
         VgrModeConfig::Off => libsy::ServingMode::Off,
         VgrModeConfig::Evaluate => libsy::ServingMode::Evaluate,
@@ -1820,9 +1829,9 @@ fn build_vgr(
     runtime.agentic_handoff = config.agentic_handoff;
     runtime.compact_handoff = config.compact_handoff;
     runtime.latch_escalation = config.latch_escalation;
-    runtime.local_turn_budget = config
-        .local_turn_budget_seconds
-        .map(|seconds| vgr_duration(route_name, "local_turn_budget_seconds", seconds))
+    runtime.efficient_turn_budget = config
+        .efficient_turn_budget_seconds
+        .map(|seconds| vgr_duration(route_name, "efficient_turn_budget_seconds", seconds))
         .transpose()?;
     runtime.breaker = BreakerConfig {
         threshold: config.breaker_threshold,

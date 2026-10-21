@@ -20,8 +20,8 @@ const SHORT_RUN_MAX_TOOL_RESULTS: i32 = 100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Route {
-    Local,
-    Cloud,
+    Efficient,
+    Capable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,13 +34,13 @@ pub(super) enum Tri {
 /// Evidence gathered for one decision.
 #[derive(Default)]
 pub(super) struct Signals {
-    /// Local logprob score that the attempt is correct.
+    /// Efficient logprob score that the attempt is correct.
     pub(super) readout: Option<f64>,
-    /// Local logprob score that the attempt is correct, read after a deliberation.
+    /// Efficient logprob score that the attempt is correct, read after a deliberation.
     pub(super) deliberation: Option<f64>,
     /// Capable-tier evidence verdict.
-    pub(super) cloud_judge: Option<Tri>,
-    /// Capable-tier answer verdict after `cloud_judge` affirms.
+    pub(super) capable_judge: Option<Tri>,
+    /// Capable-tier answer verdict after `capable_judge` affirms.
     pub(super) evidence_confirm: Option<Tri>,
     /// Capable-tier verdicts on the answer branch.
     pub(super) answer_verifier: Option<Tri>,
@@ -53,9 +53,9 @@ pub(super) enum AgenticRun {
     /// Earlier tool errors veto the commit; no rung can change it.
     Vetoed,
     Clean,
-    /// A bounded run that failed and ended clean: local rungs only.
+    /// A bounded run that failed and ended clean: efficient rungs only.
     ShortRecovered,
-    /// A long run with a clean tail: local rungs, then the capable-tier judge.
+    /// A long run with a clean tail: efficient rungs, then the capable-tier judge.
     ConfirmedRecovery,
 }
 
@@ -95,13 +95,13 @@ fn affirms(verdict: Option<Tri>) -> bool {
     verdict == Some(Tri::Yes)
 }
 
-/// The local rungs affirm: the readout at the branch dial, or deliberation.
-pub(super) fn locally_verified(branch: Branch, signals: &Signals) -> bool {
+/// The efficient rungs affirm: the readout at the branch dial, or deliberation.
+pub(super) fn efficient_verified(branch: Branch, signals: &Signals) -> bool {
     let bar = dial(branch).map_or(READOUT, |dial| dial.min(READOUT));
     clears(signals.readout, bar) || clears(signals.deliberation, DELIBERATION)
 }
 
-/// Commits the local attempt or escalates.
+/// Commits the efficient attempt or escalates.
 ///
 /// Coding has no sandboxed checker here, so below a confident readout it commits
 /// only on the capable tier's affirmation.
@@ -116,7 +116,7 @@ pub(super) fn decide(
         Branch::Unknown => false,
         Branch::Coding => {
             (clean && clears(signals.readout, CODING_CONFIDENT))
-                || (locally_verified(branch, signals) && affirms(signals.cloud_judge))
+                || (efficient_verified(branch, signals) && affirms(signals.capable_judge))
         }
         Branch::Answer => {
             affirms(signals.answer_verifier)
@@ -127,17 +127,21 @@ pub(super) fn decide(
             clean
                 && (clears(signals.deliberation, DELIBERATION)
                     || clears(signals.readout, 0.3)
-                    || (affirms(signals.cloud_judge) && affirms(signals.evidence_confirm)))
+                    || (affirms(signals.capable_judge) && affirms(signals.evidence_confirm)))
         }
         Branch::Agentic => {
-            locally_verified(branch, signals)
+            efficient_verified(branch, signals)
                 && match agentic_run(caps, confirmed_min_clean_tail) {
                     AgenticRun::Clean | AgenticRun::ShortRecovered => true,
-                    AgenticRun::ConfirmedRecovery => affirms(signals.cloud_judge),
+                    AgenticRun::ConfirmedRecovery => affirms(signals.capable_judge),
                     AgenticRun::Vetoed => false,
                 }
         }
-        Branch::DefaultVerified => clean && locally_verified(branch, signals),
+        Branch::DefaultVerified => clean && efficient_verified(branch, signals),
     };
-    if commit { Route::Local } else { Route::Cloud }
+    if commit {
+        Route::Efficient
+    } else {
+        Route::Capable
+    }
 }
