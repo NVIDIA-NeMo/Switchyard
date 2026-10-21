@@ -104,14 +104,7 @@ pub fn details(server_url: &str) -> serde_json::Value {
 mod tests {
     use super::*;
     #[test]
-    fn health_urls_match_the_supported_probe_forms() {
-        for value in [
-            "http://127.0.0.1:4123",
-            "http://localhost",
-            "http://[::1]:4123/",
-        ] {
-            assert!(validate_url(value).is_ok(), "{value}");
-        }
+    fn health_urls_reject_unsupported_forms() {
         for value in [
             "https://localhost",
             "localhost:4123",

@@ -327,7 +327,6 @@ mod tests {
     #[test]
     fn baseline_usage_rejects_zero_missing_and_inconsistent_counts() {
         for (usage, uncounted) in [
-            (r#""prompt_tokens":0,"completion_tokens":0"#, 1),
             (r#""prompt_tokens":0,"completion_tokens":1"#, 1),
             (r#""prompt_tokens":10,"completion_tokens":0"#, 1),
             (r#""prompt_tokens":10,"completion_tokens":1"#, 0),

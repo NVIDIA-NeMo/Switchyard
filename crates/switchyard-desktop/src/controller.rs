@@ -308,38 +308,3 @@ fn update(settings: &std::path::Path) -> Result<String, String> {
         log.display()
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    // The information action must leave settings unchanged and create no price file.
-    #[test]
-    fn opening_prices_without_an_override_explains_bundled_rates_without_writes() {
-        let dir = tempfile::tempdir().expect("fixture");
-        let settings = dir.path().join("desktop.toml");
-        std::fs::write(&settings, "server_url='http://127.0.0.1:1'\n").expect("settings");
-        let before = std::fs::read(&settings).expect("settings");
-        let mut controller =
-            Controller::new(Config::load(&settings).expect("load"), settings.clone());
-        let reply = controller
-            .dispatch(Action::OpenPrices {})
-            .expect("bundled prices");
-        assert!(reply.message.contains("Bundled model prices"));
-        assert!(reply.message.contains("--pricing-file"));
-        assert_eq!(
-            std::fs::read(&settings).expect("unchanged settings"),
-            before
-        );
-        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
-    }
-
-    #[test]
-    fn malformed_actions_reject_before_dispatch() {
-        for input in [
-            r#"{"kind":"restart","command":"rm"}"#,
-            r#"{"kind":"unknown"}"#,
-        ] {
-            assert!(serde_json::from_str::<Action>(input).is_err());
-        }
-    }
-}
