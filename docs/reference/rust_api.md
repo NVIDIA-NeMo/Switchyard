@@ -26,7 +26,7 @@ Completions, OpenAI Responses, and Anthropic Messages formats.
 
 ## Crate boundary
 
-Applications embedding libsy normally depend on libsy and protocol:
+Applications embedding libsy normally depend on the libsy and protocol crates:
 
 ```toml
 [dependencies]
