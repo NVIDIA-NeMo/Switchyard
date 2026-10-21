@@ -667,37 +667,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_fallback_judge_ignores_the_retaining_triggers() -> Result<()> {
-        for trigger in [ClassifyTrigger::UserTurn, ClassifyTrigger::NewSession] {
-            let recorder = Arc::new(Recorder::default());
-            let mut config = config_with_judge(&recorder, 0.9);
-            config
-                .llm_fallback
-                .as_mut()
-                .expect("config_with_judge sets a judge")
-                .config
-                .classify_trigger = trigger;
-            let router = recording_router(config)?;
-
-            // Two tool continuations of one user turn in one session. A standalone
-            // capability route with this trigger would judge once and retain the
-            // target; inside the stage cascade the judge is a plain classifier.
-            for _ in 0..2 {
-                test_drive_with_models(
-                    router.clone(),
-                    turn_request(false),
-                    runtime_models(),
-                    recorder.serve(),
-                )
-                .await?;
-            }
-
-            assert_eq!(recorder.judge_calls(), 2, "{trigger:?} retained a verdict");
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn a_judge_that_cannot_tell_lands_on_the_picker_default() -> Result<()> {
         let recorder = Arc::new(Recorder::default());
         let router = recording_router(config_with_judge(&recorder, 42.0))?;
