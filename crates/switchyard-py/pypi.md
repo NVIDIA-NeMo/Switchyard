@@ -33,14 +33,12 @@ Refer to the [embedding example](https://github.com/NVIDIA-NeMo/Switchyard/blob/
 
 Start with Auto. Choose Task, Execution, or Composite when you need more control. These names describe routing choices. The configuration keys are unchanged.
 
-| Choice | How it chooses | TOML configuration |
-| --- | --- | --- |
-| **[Auto](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/overview/#auto)** | Uses the current default: Execution (Stage), efficient-first, with a confidence threshold of 0.5 and no classifier call. | `type = "auto"` |
-| **[Task](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/llm_classifier_routing/)** | A model judges whether the efficient model can handle the task. | `type = "llm_classifier"`, `mode = "capability"` |
-| **[Execution](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/stage_router_routing/)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. | `type = "stage_router"` |
-| **[Composite](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/composite_routing/)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. | `type = "composite"` |
-
-Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. For direct Python embedding, use `stage_router(picker="efficient_first", confidence_threshold=0.5)` for the same preset.
+| Choice | How it chooses |
+| --- | --- |
+| **[Auto](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/overview/#auto)** | Uses the current default: Execution (Stage), efficient-first, with a confidence threshold of 0.5 and no classifier call. |
+| **[Task](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/llm_classifier_routing/)** | A model judges whether the efficient model can handle the task. |
+| **[Execution](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/stage_router_routing/)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. |
+| **[Composite](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/composite_routing/)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. |
 
 The [routing overview](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/overview/) retains the full catalogue, including [Plan/Execute](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/plan_execute_routing/), [escalation](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/escalation_router_routing/), [advisor](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/advisor_gate_routing/), [sub-agent](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/subagent_routing/), and [random](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/random_routing/) strategies. Integration support varies: check the gateway guide before choosing an algorithm.
 
