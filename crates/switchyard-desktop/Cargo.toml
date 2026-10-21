@@ -4,7 +4,7 @@
 [package]
 name = "switchyard-desktop"
 version.workspace = true
-description = "Installer, terminal app, and usage summary for a local Switchyard server"
+description = "Installer, desktop app, terminal app, and usage summary for a local Switchyard server"
 authors.workspace = true
 edition.workspace = true
 homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
@@ -32,9 +32,15 @@ shlex = "2"
 strum = { version = "0.28", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL"] }
+objc2 = "0.6"
+dispatch2 = "0.3"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "NSAccessibility", "NSApplication", "NSPanel", "NSColor", "NSWindow", "NSView", "NSScreen", "NSEvent"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL", "NSProcessInfo"] }
 security-framework = "3"
+
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tauri = { version = "2", features = ["tray-icon", "custom-protocol", "macos-private-api"] }
+rfd = { version = "0.17", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -48,6 +54,9 @@ mslnk = "0.1.8"
 self-replace = "1.5"
 windows = { version = "0.62.2", features = ["Management_Deployment", "ApplicationModel"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(any(target_os = "macos", windows))'.build-dependencies]
+tauri-build = "2"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

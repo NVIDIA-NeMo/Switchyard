@@ -1,0 +1,90 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
+/* SPDX-License-Identifier: Apache-2.0 */
+/* The popup is one raised surface with bordered panels and compact controls. */
+:root { font: 13px/1.45 var(--font); -webkit-font-smoothing: antialiased; }
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent; }
+html, body { border-radius: 10px; overflow: hidden; }
+body { margin: 0; display: flex; flex-direction: column; height: auto; max-height: 100vh; color: var(--text); background: var(--panel); }
+:root[data-native-material="true"]:not([data-reduce-transparency="true"]),
+:root[data-native-material="true"]:not([data-reduce-transparency="true"]) body { background: transparent; }
+:root[data-native-material="true"]:not([data-reduce-transparency="true"]) header,
+:root[data-native-material="true"]:not([data-reduce-transparency="true"]) main,
+:root[data-native-material="true"]:not([data-reduce-transparency="true"]) footer { background: color-mix(in srgb, var(--panel) 88%, transparent); }
+:root[data-reduce-transparency="true"] body { background: var(--panel); }
+
+header { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.eyebrow { font-size: 11px; color: var(--muted); }
+h1 { margin: 1px 0 0; font-size: 14px; font-weight: 500; line-height: 1.3; color: var(--strong); }
+main { flex: 0 1 auto; min-height: 0; overflow: auto; padding: 12px 16px; background: var(--panel); }
+footer { flex-shrink: 0; display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+
+button { font: inherit; display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 0 12px; border: 1px solid var(--control-border); border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer; transition: background-color .12s, color .12s; }
+button:hover { background: var(--hover); }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.close { justify-content: center; width: 24px; min-height: 24px; padding: 0; border: 0; color: var(--muted); font-size: 18px; }
+.close:hover { color: var(--text); }
+footer .primary { margin-left: auto; background: var(--accent); border-color: transparent; color: #FFFFFF; }
+footer .primary:hover { background: color-mix(in srgb, var(--accent) 90%, transparent); }
+
+.toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.connection { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.connection::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+.connection.running::before { background: var(--success); }
+.cycle { display: flex; align-items: center; gap: 4px; }
+.cycle button { min-height: 22px; padding: 0 6px; font-size: 11px; }
+#theme-position { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.themes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; margin-bottom: 8px; padding: 3px; border-radius: 8px; background: var(--line); }
+.themes button { justify-content: center; min-height: 24px; border-color: transparent; color: var(--muted); }
+.themes button:hover { background: transparent; color: var(--text); }
+.themes button[aria-pressed="true"] { border-color: var(--control-border); background: var(--canvas); color: var(--strong); }
+#appearance-error:empty { display: none; }
+#appearance-error { margin: 0 0 8px; font-size: 12px; color: var(--danger); }
+#error, #chart .chart-error { padding: 8px; font-size: 12px; line-height: 1.5; color: var(--danger); white-space: pre-line; }
+#error { margin: 0 0 8px; border: 1px solid var(--danger-border); border-radius: 8px; background: var(--danger-bg); }
+
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 12px; }
+.metrics div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.metrics span, .metrics small { font-size: 11px; color: var(--muted); }
+.metrics strong { font-size: 22px; font-weight: 500; letter-spacing: -.4px; color: var(--strong); font-variant-numeric: tabular-nums; }
+
+.daily, .models { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.models { margin-top: 8px; }
+.section-title { display: flex; justify-content: space-between; align-items: center; }
+h2 { margin: 0; font-size: 12px; font-weight: 500; color: var(--strong); }
+.section-title > span { font: 10px var(--mono); color: var(--muted); }
+#chart { position: relative; height: 96px; margin-top: 8px; overflow: hidden; border-bottom: 1px solid var(--line); }
+#chart canvas, #chart svg { display: block; }
+.usage-cell, .empty-cell { rx: 2px; }
+/* Empty hours keep a visible grid; CSS takes precedence over the renderer's fill attributes. */
+.empty-cell { fill: var(--control-border); fill-opacity: 1; }
+.chart-overlay { position: absolute; inset: 0; pointer-events: none; }
+#chart-cursor { position: absolute; top: 4px; bottom: 19px; border-left: 1px solid var(--text); opacity: .8; }
+.switch-marker { position: absolute; bottom: 1px; width: 11px; height: 11px; min-height: 0; padding: 0; border: 0; border-radius: 2px; background: transparent; transform: translateX(-50%); pointer-events: auto; }
+.switch-marker::after { content: ""; position: absolute; left: 3px; top: 3px; width: 5px; height: 5px; background: var(--amber); transform: rotate(45deg); }
+.switch-marker:hover, .switch-marker.selected { background: var(--selection); }
+.switch-marker.selected::after, .switch-marker:hover::after, .switch-marker:focus-visible::after { background: var(--text); box-shadow: 0 0 0 1px var(--bg); }
+#renderer-note { min-height: 14px; margin: 4px 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
+#hour-buttons { display: grid; grid-template-columns: repeat(24, 1fr); gap: 1px; margin: 2px 0 6px; padding: 0 4px 0 28px; }
+#hour-buttons button { justify-content: center; min-width: 0; min-height: 18px; padding: 0; border: 0; border-radius: 3px; font: 9px var(--mono); color: var(--muted); }
+#hour-buttons button[aria-pressed="true"] { background: var(--selection); color: var(--strong); }
+#hour-readout { margin: 4px 0; font: 11px var(--mono); color: var(--text); }
+#hour-models { max-height: 34px; overflow: auto; font-size: 11px; color: var(--muted); }
+.hour-model { margin: 4px 0; padding-left: 6px; border-left: 2px solid; overflow-wrap: anywhere; }
+#switch-readout { max-height: 24px; margin: 4px 0 0; overflow: auto; font-size: 11px; line-height: 1.4; color: var(--amber); white-space: pre-line; overflow-wrap: anywhere; }
+
+#all-models { min-height: 22px; padding: 0 6px; font-size: 11px; }
+#all-models[aria-pressed="true"] { background: var(--selection); border-color: transparent; color: var(--strong); }
+#model-list { max-height: 92px; margin-top: 6px; overflow: auto; }
+.model-row { display: flex; width: 100%; min-height: 26px; align-items: center; gap: 8px; padding: 4px 6px; border: 0; border-radius: 4px; font-weight: 400; text-align: left; }
+.model-row i { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.model-row strong { flex: 1; overflow: hidden; font: 11px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.model-row span { font: 10px var(--mono); color: var(--muted); white-space: nowrap; }
+.model-row[aria-pressed="true"] { background: var(--selection); color: var(--strong); }
+.empty { margin: 12px 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+
+.coverage { margin: 8px 0 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
+.coverage summary { padding: 2px 0; cursor: pointer; }
+.coverage summary:hover { color: var(--text); }
+.coverage summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.coverage p { margin: 4px 0; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

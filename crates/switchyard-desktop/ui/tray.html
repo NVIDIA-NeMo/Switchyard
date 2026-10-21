@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en" data-theme="canary">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switchyard usage</title><link rel="stylesheet" href="tray.css">
+<link rel="stylesheet" href="appearance.css">
+<script defer src="appearance.js"></script>
+<script defer src="tray-renderers.js"></script><script defer src="tray-usage.js"></script><script defer src="tray.js"></script>
+</head>
+<body>
+<header><div><span class="eyebrow">Switchyard</span><h1>Usage preview</h1></div><button id="close" class="close" aria-label="Close usage preview">×</button></header>
+<main>
+<div class="toolbar"><span id="connection" class="connection">Loading…</span><div class="cycle"><button id="previous-theme" aria-label="Previous theme">← Previous</button><span id="theme-position" aria-live="polite">1 / 3</span><button id="next-theme" aria-label="Next theme">Next →</button></div></div>
+<div class="themes" role="group" aria-label="Appearance"><button data-theme="system" aria-pressed="true">System</button><button data-theme="canary" aria-pressed="false">Dark</button><button data-theme="light" aria-pressed="false">Light</button></div>
+<p id="appearance-error" role="status" aria-live="polite"></p>
+<p id="error" role="status" aria-live="polite" hidden></p>
+<div class="metrics"><div><span>Models used · past 24 hours</span><strong id="model-count">—</strong><small id="calls">— calls</small></div><div><span>Session model changes</span><strong id="switch-count">—</strong><small id="overhead">— routing tokens</small></div></div>
+<section class="daily"><div class="section-title"><h2>Model usage</h2><span>24 HOURS · TOKENS</span></div><div id="chart" role="group" aria-label="Model usage by hour. Move across the chart to inspect an hour."></div><p id="renderer-note"></p><div id="hour-buttons" role="group" aria-label="Hour to inspect"></div><p id="hour-readout" aria-live="polite"></p><div id="hour-models"></div><p id="switch-readout"></p></section>
+<section class="models"><div class="section-title"><h2>Select a model</h2><button id="all-models" aria-pressed="true">All models</button></div><div id="model-list"><p class="empty">Loading recorded usage…</p></div></section>
+<details class="coverage"><summary id="coverage-summary">About recorded usage</summary><p id="coverage"></p></details>
+</main>
+<footer><button data-page="install">Connect tools…</button><button data-page="settings">Settings</button><button data-page="overview" class="primary">Open app <span aria-hidden="true">↗</span></button></footer>
+</body></html>

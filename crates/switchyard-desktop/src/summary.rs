@@ -162,3 +162,54 @@ pub(crate) fn money(value: f64) -> String {
         format!("${value:.2}")
     }
 }
+
+/// The tray ranks models by recorded tokens, including classifier and judge calls.
+/// The tray labels and the model IDs behind its rows both use this order.
+#[cfg(any(target_os = "macos", windows, test))]
+pub fn ranked_models(totals: &Totals) -> Vec<(String, crate::rollup::ModelTokens)> {
+    let mut models = totals.routed.clone();
+    for (model, overhead) in &totals.classifier {
+        models.entry(model.clone()).or_default().add(overhead);
+    }
+    let mut models: Vec<_> = models.into_iter().collect();
+    models.sort_by(|left, right| {
+        right
+            .1
+            .total()
+            .cmp(&left.1.total())
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    models
+}
+
+/// The tray shows the top three ranked models and combines the rest into one row.
+#[cfg(any(target_os = "macos", windows, test))]
+pub fn tray_models(models: &[(String, crate::rollup::ModelTokens)]) -> Vec<String> {
+    if models.is_empty() {
+        return vec!["No model calls recorded".into()];
+    }
+    let mut rows: Vec<_> = models
+        .iter()
+        .take(3)
+        .map(|(model, counts)| {
+            format!(
+                "{model} — {} tokens · calls: {}",
+                tokens(counts.total()),
+                counts.requests
+            )
+        })
+        .collect();
+    if models.len() > 3 {
+        let remaining: u64 = models
+            .iter()
+            .skip(3)
+            .map(|(_, counts)| counts.total())
+            .sum();
+        rows.push(format!(
+            "{} more models — {} tokens",
+            models.len() - 3,
+            tokens(remaining)
+        ));
+    }
+    rows
+}

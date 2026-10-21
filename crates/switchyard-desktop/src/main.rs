@@ -1,17 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app manages a local Switchyard server.
+//! The desktop and terminal apps manage a local Switchyard server.
 //!
-//! It shows recorded traffic and compares list-price estimates with the
-//! configured baseline model. Its Routes view edits the server config and
-//! restarts the server.
+//! Both apps show recorded traffic and the cost that the server recorded for each
+//! call, and compare it with the configured baseline model. Their Routes views edit
+//! the server config and restart the server.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use switchyard_desktop::{config, health};
 mod accounts;
 mod controller;
+#[cfg(any(target_os = "macos", windows))]
+mod gui;
 mod harness;
 mod history;
 mod models;
@@ -116,7 +118,7 @@ fn main() -> ExitCode {
         Ok(config) => config,
         Err(error) => {
             eprintln!("switchyard-desktop: {error}");
-            if !terminal {
+            if print_only || (!terminal && !cfg!(any(target_os = "macos", windows))) {
                 return ExitCode::FAILURE;
             }
             match Config::defaults_for(&settings) {
@@ -128,8 +130,9 @@ fn main() -> ExitCode {
             }
         }
     };
-    // The default mode prints a summary. The --tui option starts the terminal app.
-    if !terminal {
+    // The default mode prints a summary on platforms without a desktop app.
+    // The --tui option starts the terminal app on those platforms.
+    if print_only || (!terminal && !cfg!(any(target_os = "macos", windows))) {
         if !print_only {
             eprintln!(
                 "Run switchyard-desktop --tui {} to open the terminal app.",
@@ -163,11 +166,19 @@ fn main() -> ExitCode {
     }
 
     let controller = controller::Controller::new(config, settings);
-    #[cfg(windows)]
-    windows::allocate_console();
-    if let Err(error) = tui::run(controller) {
-        eprintln!("switchyard-desktop: {error}");
-        return ExitCode::FAILURE;
+    if terminal {
+        #[cfg(windows)]
+        windows::allocate_console();
+        if let Err(error) = tui::run(controller) {
+            eprintln!("switchyard-desktop: {error}");
+            return ExitCode::FAILURE;
+        }
+    } else {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Err(error) = gui::run(controller) {
+            eprintln!("switchyard-desktop: {error}");
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }

@@ -1,0 +1,36 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Charts read these colors through getComputedStyle, so every value is a hex color that ECharts
+   can parse. */
+:root {
+  --bg: var(--canvas); --selected: var(--selection); --amber: var(--status);
+  --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --radius: 6px; --radius-lg: 8px; --radius-xl: 12px;
+  --accent: #CD744F; --accent-hover: #D37D56; --accent-text: #FFFFFF; --copper: #CD744F;
+  --model-1: #2662D9; --model-2: #2EB88A; --model-3: #E88C30; --model-4: #AF57DB;
+  --model-5: #E23670; --model-6: #07BDD5; --model-7: #E2A108; --model-8: #7C3BED;
+}
+:root, :root[data-theme="canary"] {
+  color-scheme: dark;
+  --canvas: #070607; --sidebar: #111013; --panel: #111013; --raised: #141414;
+  --control: #111013; --text: #E5E5E4; --strong: #FFFFFF; --soft: #B4B7B7; --muted: #848787;
+  --line: #22221F; --control-border: #2B2B2A; --hover: #1B1A1D; --selection: #282528;
+  --focus: #CD744F; --status: #F59E0B; --success: #36D399; --danger: #E25050;
+  --danger-bg: #CC33331F; --danger-border: #CC333380; --diff-add-bg: #16A34A26; --diff-remove-bg: #CC333326;
+  --chrome: #111013; --chrome-text: #E5E5E4; --chrome-muted: #848787; --chrome-line: #22221F;
+  --scrollbar: #484848;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #FFFFFF; --sidebar: #F7F7F7; --panel: #FAFAFA; --raised: #F5F5F5;
+  --control: #FFFFFF; --text: #1A1A1A; --strong: #000000; --soft: #4A4A4A; --muted: #6F6F6F;
+  --line: #E6E6E6; --control-border: #D9D9D9; --hover: #F0F0F0; --selection: #EBEBEB;
+  --focus: #CD744F; --status: #B45309; --success: #15803D; --danger: #CC3333;
+  --danger-bg: #CC333314; --danger-border: #CC333366; --diff-add-bg: #16A34A1A; --diff-remove-bg: #CC33331A;
+  --chrome: #F7F7F7; --chrome-text: #1A1A1A; --chrome-muted: #6F6F6F; --chrome-line: #E6E6E6;
+  --scrollbar: #C4C4C4;
+}
+
+:root[data-reduce-motion="true"] *, :root[data-reduce-motion="true"] *::before, :root[data-reduce-motion="true"] *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
+:root[data-reduce-transparency="true"] .app-sidebar { background:var(--chrome); }
