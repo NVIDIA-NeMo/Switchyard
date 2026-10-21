@@ -95,7 +95,6 @@ when an item cannot be translated exactly: keep it, warn about it, or return an 
 
 The default policy:
 
-- Preserves unknown fields.
 - Allows known information loss with warnings.
 - Generates stable IDs when the source has none.
 - Keeps the source payload in memory.
