@@ -126,12 +126,16 @@ routing logging is disabled.
 
 The routing log saves each call's reported charge in USD. When the upstream reports no
 charge, the server estimates it using [bundled rates](../switchyard-costs/prices.toml).
+A reported charge, including zero, takes precedence over the bundled rates.
 Bundled rates stay fixed until you install a version with updated rates.
-The table includes OpenAI and Claude text-token rates. Model IDs match exactly,
-including provider prefixes; an unlisted ID has no estimated cost.
-These are standard-rate estimates. They exclude long-context and service-tier
-adjustments, OpenAI's 12-hour cache-write pricing, tool fees, and time-based cache
-storage. Entries with provider prefixes use list-rate estimates; billed charges may differ.
+The table includes text-token rates for OpenAI, Claude, Gemini, and DeepSeek models, plus
+OpenRouter rates for other popular models. Model IDs match exactly, including provider
+prefixes; an unlisted ID has no estimated cost. Direct-provider and OpenRouter rates use
+separate IDs, such as `gemini-3.8-flash` and `google/gemini-3.8-flash`.
+Estimates exclude long-context and service-tier adjustments, OpenAI's 12-hour cache-write
+pricing, tool fees, and time-based cache storage. Each model has one rate at all times of
+day. Billed charges can differ when a gateway selects another provider or a promotion
+ends. The table lists the Gemini promotion end dates.
 Use `--pricing-file prices.toml` to replace the entire bundled table with your own rates.
 Use a `.toml` file with quoted served model IDs and rates in USD per million tokens:
 

@@ -45,14 +45,16 @@ fn print_uses_bundled_prices_and_requires_valid_explicit_overrides()
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("Saved $2.90 (97% of $3.00)"));
     assert!(!dir.path().join("custom-prices.toml").exists());
-    // A Claude baseline must use bundled rates while keeping the saved charge.
-    std::fs::write(
-        &settings,
-        format!("{base}baseline_model='claude-opus-5-5'\n"),
-    )?;
-    let output = print();
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Saved $5.90 (98% of $6.00)"));
+    // Each baseline model is priced from the bundled table; the saved $0.10 charge stays the same.
+    for (model, savings) in [
+        ("claude-opus-5-5", "Saved $5.90 (98% of $6.00)"),
+        ("gemini-4-argon", "Saved $2.90 (97% of $3.00)"),
+    ] {
+        std::fs::write(&settings, format!("{base}baseline_model='{model}'\n"))?;
+        let output = print();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains(savings));
+    }
     for (name, text) in [
         (
             "custom-prices.json",
