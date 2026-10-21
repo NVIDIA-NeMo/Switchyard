@@ -662,7 +662,7 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
                     _ => {}
                 })
                 .build(app)?;
-            // Like the menu bar app, the tray rereads usage on the settings interval.
+            // Like the earlier menu bar app, the tray rereads usage on the settings interval.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 loop {

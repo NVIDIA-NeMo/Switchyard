@@ -56,6 +56,9 @@ LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidanc
 
 [Try routing locally](docs/getting_started.md#server-path) with the standalone proxy for demos and evaluation, then [verify routing is active](docs/getting_started.md#verify-routing-is-active).
 
+The [desktop and terminal quickstart](crates/switchyard-desktop/README.md) covers
+local installation, coding-tool connections, sessions, usage, recovery, and uninstall.
+
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).
 
@@ -80,7 +83,7 @@ Features and integrations recently merged into `main`.
   Select models in Node.js or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
 
 - **2026-10-08 · Run Codex with Switchyard on macOS**\
-  Install a background router and Codex profile, then track usage and estimated savings from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
+  Install a background router and Codex profile, then track usage and estimated savings in the desktop app. [Setup guide →](crates/switchyard-desktop/README.md)
 
 ## Routing algorithms
 
