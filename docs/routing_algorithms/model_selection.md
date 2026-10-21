@@ -129,6 +129,9 @@ behave differently on different endpoints. See
 
 ## Measured pairs
 
+See [Benchmarks](../benchmarks.md) for consolidated Terminal-Bench 2.1 and DeepSWE results,
+config links, and evaluation settings.
+
 These pairs have results from checked-in profiles or a public report. Each row
 describes one pair on one workload. The thresholds and results do not transfer
 to another pair or another workload. The profile headers give the serving stack,
@@ -137,17 +140,13 @@ serving stack.
 
 | Efficient tier | Capable tier | Strategy | Workload | Result | Single-model anchors |
 |---|---|---|---|---|---|
-| GPT-5.6 Luna | GPT-5.6 Sol | [`stage_router`](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml): `efficient_first`, threshold 0.5, window 5, hold 2, handoff note | DeepSWE v1.1, 113 tasks, Codex CLI, k=1 | 76/113 solved (67.3% strict) | None in the same run |
-| GPT-5.6 Luna, executes | GPT-5.6 Sol, plans | [`plan_execute`](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml), both at effort `max` | DeepSWE v1.1, 113 tasks, Codex CLI, k=3 | 60.8% ± 5.3 at $180.51 ± 9.43 per run | Sol alone 62.8% ± 3.1 at $720.95. Luna alone 51.0% ± 3.7 at $50.02. |
-| GPT-5.6 Luna, executes | GPT-5.6 Sol, reviews | [`advisor`](../../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml), both at effort `max` | DeepSWE v1.1, 113 tasks, Codex CLI, k=3 | 57.5% ± 3.2 at $208 ± 22 per run | Sol alone 62.8% ± 3.1 at $743. Luna alone 46.9% and 52.2% at about $49. |
 | Qwen3.6-35B-A3B, also the judge | Claude Opus 4.7 | `llm_classifier` custom, [balanced](../../benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml) and [aggressive](../../benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml) | tau2-bench telecom, 114 tasks | 0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%. | Within noise of the strong tier, per the profile headers |
 | Nemotron 3.5 Lightning | Claude Opus 4.8, with Gemini 3.1 Flash-Lite as judge | `llm_classifier` escalation, `confirmations = 2` | LangChain Deep Agents suite, 145 tasks, 5 runs ([report](https://www.langchain.com/blog/switchyard-agent-routing-benchmark)) | 80.0% at $3.00 per run, with 7% of calls on Opus | Opus alone 86.0% at $11.45. Nemotron alone 77.7% at $0.72. |
 
 What the rows show about model choice:
 
-- The gap between the two single models sets the room for routing. On DeepSWE,
-  Sol alone beat Luna alone by about 11 to 16 points. The plan/execute and
-  advisor arms landed between them at about a quarter of Sol's cost.
+- The gap between the two single models sets the room for routing. Compare the
+  fixed-model baselines with the routing results, as in the [DeepSWE studies](../benchmarks.md#deepswe).
 - When the efficient model is close to the capable model, escalation keeps most
   of the accuracy at a fraction of the cost. On the LangChain suite the two
   single models were 8 points apart. Routing kept 80 of the 86 points at about
@@ -160,10 +159,6 @@ Other checked-in configurations:
 - [`tb-lite-llm-classifier-opus-kimi-gemini.toml`](../../benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml)
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.
-- [`tb21-escalation-opus-glm-deepseek.toml`](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml)
-  (Claude Opus 4.8 strong, GLM 5.2 weak, DeepSeek V4 Flash judge) is the
-  escalation configuration used for the v0.2.0 Terminal-Bench 2.1 runs. Its
-  header links the post about those runs.
 
 ## Counter-examples
 

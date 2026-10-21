@@ -124,6 +124,22 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+The routing log saves each call's reported charge in USD. Add `--pricing-file prices.json`
+to estimate costs that the upstream does not report. The JSON maps served model IDs to rates
+in USD per million tokens:
+
+```json
+{"upstream/model":{"input":1,"output":5,"cache_read":0.1,"cache_write":2}}
+```
+
+Session stats include cost totals. Missing usage or rates leave cost unknown; `known_usd`
+keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rates load once
+at startup, and saved costs do not change when prices change.
+
+The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
+rates for your own models. The menubar reads the same file through its `pricing_file`
+setting; its actual spending comes from recorded costs.
+
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
 `"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.

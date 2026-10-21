@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::pricing::PriceTable;
+use switchyard_costs::Pricing;
 
 /// Everything the menu bar needs to find the server and price its traffic.
 /// Missing keys fall back to [`Config::default`].
@@ -26,8 +26,11 @@ pub struct Config {
     pub refresh_seconds: u64,
     /// Model the traffic is assumed to have used without Switchyard.
     pub baseline_model: String,
-    /// Per-model rates. Dollar figures are hidden while a seen model is absent.
-    pub prices: PriceTable,
+    /// The shared JSON file supplies rates for the baseline estimate.
+    pub pricing_file: Option<PathBuf>,
+    /// Rates load once when the settings are read.
+    #[serde(skip)]
+    pub prices: Pricing,
 }
 
 impl Default for Config {
@@ -39,7 +42,8 @@ impl Default for Config {
             launchd_label: "com.nvidia.switchyard.server".to_string(),
             refresh_seconds: 30,
             baseline_model: "gpt-5.6-sol".to_string(),
-            prices: PriceTable::new(),
+            pricing_file: None,
+            prices: Pricing::default(),
         }
     }
 }
@@ -53,6 +57,11 @@ impl Config {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
             Err(error) => return Err(format!("read {}: {error}", path.display())),
         };
+        if let Some(path) = config.pricing_file.as_ref() {
+            let path = expand_home(path);
+            config.prices = Pricing::load(&path)?;
+            config.pricing_file = Some(path);
+        }
         config.routing_log = expand_home(&config.routing_log);
         config.config_file = expand_home(&config.config_file);
         Ok(config)
@@ -100,10 +109,6 @@ mod tests {
 server_url = "http://127.0.0.1:9000"
 baseline_model = "sol"
 
-[prices.luna]
-input_per_mtok = 0.25
-cached_input_per_mtok = 0.025
-output_per_mtok = 2.0
 "#,
         )
         .expect("write settings");
@@ -112,7 +117,7 @@ output_per_mtok = 2.0
 
         assert_eq!(config.server_url, "http://127.0.0.1:9000");
         assert_eq!(config.baseline_model, "sol");
-        assert_eq!(config.prices["luna"].cached_input_per_mtok, Some(0.025));
+        assert!(config.pricing_file.is_none());
         assert_eq!(config.refresh_seconds, 30, "unset keys keep their default");
     }
 
@@ -123,7 +128,7 @@ output_per_mtok = 2.0
         let config = Config::load(&dir.path().join("absent.toml")).expect("load");
 
         assert_eq!(config.server_url, "http://127.0.0.1:4123");
-        assert!(config.prices.is_empty());
+        assert!(config.pricing_file.is_none());
         let empty = dir.path().join("empty.toml");
         std::fs::write(&empty, "").expect("write settings");
         let loaded = Config::load(&empty).expect("load empty settings");

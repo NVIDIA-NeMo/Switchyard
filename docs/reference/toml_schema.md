@@ -355,24 +355,59 @@ mode, or in the prompt in `json_object` mode.
 ### `stage_router`
 
 Scores tool signals to pick a tier per turn. See
-[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for the
-optional `handoff_notes` and `classifier` tables and for tuning.
+[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for how
+the signals work and for tuning.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `capable_target` | Yes | — | Capable tier. |
 | `efficient_target` | Yes | — | Efficient tier. |
 | `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
-| `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. |
+| `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. `efficient_first_threshold` is accepted as an alias. |
+| `capable_first_threshold` | No | `0.0` | Threshold used after an outer classifier selects the capable tier. Only a [composite](#composite) route sets that tier, so this key has no effect on a standalone `stage_router` route. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `capable_hold_turns` | No | `2` | Requests kept on the capable tier after escalation. A clean test pass clears the hold early; `0` disables it. |
+| `capable_hold_turns` | No | `2` | Requests kept on the capable tier after an escalation the signals or a hard override picked. A clean test pass clears the hold early; `0` disables it. |
 | `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
 | `tool_semantics.mutate` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as state-changing production. |
 | `tool_semantics.plan` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as planning or task decomposition. |
 | `tool_semantics.new` | No | `[]` | Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier. |
-| `classifier.classify_trigger` | No | `every_request` | When the judge runs. See the `llm_classifier` route. `new_session` has no effect here. |
-| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the optional classifier judge. Use `json_object` when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. |
+| `handoff_notes` | No | unset | Table of notes appended to the forwarded request when the signals pick a tier. Keys below. |
+| `classifier` | No | unset | Table for the optional capability judge consulted on ambiguous turns. Keys below. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
+
+#### `handoff_notes` keys
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `handoff_notes.escalation_note` | Yes, when the table is present | — | Note appended to the request when the signals or a hard override escalate to the capable tier. |
+| `handoff_notes.deescalation_note` | No | unset | Note appended to the request whenever the signals select the efficient tier, whether or not a capable turn came before. |
+| `handoff_notes.only_on_wrong_signal_escalation` | No | `true` | When `true`, only the escalating turn itself carries the escalation note. `false` also adds it to the capable-hold turns that follow. |
+
+#### `classifier` keys
+
+The judge runs when the signals are ambiguous or the request has no tool
+history. It runs as a step inside the stage cascade, not as a standalone route,
+so it is consulted on every ambiguous turn and never retains a verdict.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `classifier.target` | Yes, when the table is present | — | Target the judge is called through. Not a routing destination. |
+| `classifier.base_threshold` | For LLM judges | — | Lowest `p_solve` that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
+| `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `classifier.fail_open` | No | `true` | When `true`, judge client failures and deadlines let the turn fall open to the picker default and record fail-open evidence. When `false`, they stop the request. |
+| `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with `base_threshold`, `threshold_step`, `prompt`, `response_format_type`, or `max_output_tokens`; the load error is `decision cannot use LLM judge settings`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
+| `classifier.classify_trigger` | No | `every_request` | Accepted for compatibility with `llm_classifier`. No effect on the stage fallback judge: it runs on every ambiguous turn and retains no verdict, so `user_turn` and `new_session` change nothing here. Use a [composite](#composite) route to judge once per user turn. |
+| `classifier.message_hash_fallback` | No | `false` | Accepted for compatibility. No effect on the stage fallback judge. Setting it with the default trigger is a load error. |
+| `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and the latest user follow-up. When set, it also sees that many trailing messages. This counts messages, while the route's `recent_turn_window` counts tool results, so the two values are different units. |
+| `classifier.prompt` | No | packaged prompt | Replaces the capability judge prompt. The verdict schema is unchanged. |
+| `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the LLM judge. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Not with `classifier.decision`. |
+| `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the LLM judge verdict. Must be at least `1`. Not with `classifier.decision`. |
+
+`classifier.response_schema`, `classifier.policy`, and any `classifier.mode`
+other than `capability` are rejected on a `stage_router` route with
+`custom classifier settings require composite with mode = custom`.
+`classifier.mode = "capability"` is accepted and changes nothing. Use a
+[composite](#composite) route for a custom judge.
 
 ### `auto`
 
@@ -427,7 +462,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.base_threshold` | For LLM judges | unset | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
-| `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. |
+| `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with the LLM judge keys (`base_threshold`, `threshold_step`, `prompt`, `response_format_type`, `max_output_tokens`). |
 | `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
 | `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |

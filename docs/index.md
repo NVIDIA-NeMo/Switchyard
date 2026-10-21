@@ -18,12 +18,15 @@ The Server Path builds and runs the standalone `switchyard-server` binary.
 
 ## Explore
 
+- [Benchmarks](benchmarks.md): compare Terminal-Bench 2.1 and DeepSWE results and open their routing configs
 - [Core Concepts](core_concepts.md): learn the LLM client, target, and route layers
 - [Routing Algorithms](routing_algorithms/overview.md): choose how requests select a model
 - [Architecture](architecture.md): understand the proxy and library components
 - [Server CLI Reference](cli_reference.md): inspect `switchyard-server` commands and options
 - [Rust API](reference/rust_api.md): browse libsy and protocol crate documentation
 - [Context-Window Handling](operations/context_window.md): configure eviction and retry behavior
+- [Tuning](tuning/index.md): the loop from verifying routing to recording a result
+- [Troubleshooting](operations/troubleshooting.md): symptoms, silent misconfigurations, and fixes
 
 ## Reference
 

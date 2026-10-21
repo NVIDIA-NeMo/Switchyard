@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-desktop"
+version.workspace = true
+description = "Installer and server key helper for a local Switchyard server"
+authors.workspace = true
+edition.workspace = true
+homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+switchyard-runner.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+toml = "0.9"
+toml_edit = "0.25"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Vendored libdbus builds without the libdbus-1 development package on Ubuntu or Arch.
+[target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service = { version = "4.1", features = ["crypto-rust", "vendored"] }
+
+[target.'cfg(windows)'.dependencies]
+mslnk = "0.1.8"
+self-replace = "1.5"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials", "Win32_System_Console"] }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+plist = "1"

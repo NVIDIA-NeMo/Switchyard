@@ -122,10 +122,11 @@ impl Classifier for FallOpen {
 
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
-    /// Judge configuration. `recent_turn_window` is worth setting to this router's
-    /// `recent_window` so the judge reads the same span the signal scorer scored.
-    /// Note: `classify_trigger = new_session` and `message_hash_fallback` have no effect here —
-    /// the judge runs as a cascade classifier, not a standalone algorithm.
+    /// Judge configuration. Its `recent_turn_window` counts trailing messages, while
+    /// this router's `recent_window` counts tool results.
+    /// Note: `classify_trigger` and `message_hash_fallback` have no effect here. The judge
+    /// runs as a cascade classifier on every ambiguous turn, not as a standalone algorithm,
+    /// so no verdict is retained.
     pub config: TaskClassifierConfig,
 }
 
@@ -662,6 +663,37 @@ mod tests {
             2,
             "each undecided turn is its own question"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_fallback_judge_ignores_the_retaining_triggers() -> Result<()> {
+        for trigger in [ClassifyTrigger::UserTurn, ClassifyTrigger::NewSession] {
+            let recorder = Arc::new(Recorder::default());
+            let mut config = config_with_judge(&recorder, 0.9);
+            config
+                .llm_fallback
+                .as_mut()
+                .expect("config_with_judge sets a judge")
+                .config
+                .classify_trigger = trigger;
+            let router = recording_router(config)?;
+
+            // Two tool continuations of one user turn in one session. A standalone
+            // capability route with this trigger would judge once and retain the
+            // target; inside the stage cascade the judge is a plain classifier.
+            for _ in 0..2 {
+                test_drive_with_models(
+                    router.clone(),
+                    turn_request(false),
+                    runtime_models(),
+                    recorder.serve(),
+                )
+                .await?;
+            }
+
+            assert_eq!(recorder.judge_calls(), 2, "{trigger:?} retained a verdict");
+        }
         Ok(())
     }
 
