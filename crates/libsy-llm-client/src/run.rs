@@ -31,9 +31,9 @@ use switchyard_libsy::{
     RuntimeModels, drive,
 };
 use switchyard_protocol::{
-    AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
-    ModelId, Request, Response, ResponseAccumulator, RoutedDecisionClient, RoutedLlmClient,
-    RoutingFallbackReason, Usage, WireFormat,
+    AggLlmResponse, InfraProvider, LlmClientError, LlmResponse, LlmResponseChunk,
+    LlmResponseStream, Message, ModelId, Request, Response, ResponseAccumulator,
+    RoutedDecisionClient, RoutedLlmClient, RoutingFallbackReason, Usage, WireFormat,
 };
 use switchyard_translation::prepare_request_for_target;
 
@@ -219,6 +219,18 @@ async fn serve(
     let call = match call {
         Call::Model(call) => *call,
         Call::Decision(call) => return serve_decision(&clients, *call, &observations).await,
+        Call::Infra(call) => {
+            let request = call.request.clone();
+            let candidates = call.candidates.clone();
+            return call
+                .respond(async {
+                    match &clients.infra {
+                        Some(provider) => provider.probe(&request, &candidates).await,
+                        None => Default::default(),
+                    }
+                })
+                .await;
+        }
     };
     let observe = |observation| {
         if let Some(observations) = &observations {
@@ -625,6 +637,7 @@ fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
 pub struct ClientRouter {
     inner: Arc<ClientRouting>,
     rate_limit_fallback_disabled: Arc<HashSet<ModelId>>,
+    infra: Option<Arc<dyn InfraProvider>>,
 }
 
 struct ClientRouting {
@@ -712,6 +725,7 @@ impl ClientRouter {
             .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)));
         Self {
             rate_limit_fallback_disabled: Arc::default(),
+            infra: None,
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
                 decision_clients,
@@ -739,6 +753,7 @@ impl ClientRouter {
     ) -> Self {
         Self {
             rate_limit_fallback_disabled: Arc::default(),
+            infra: None,
             inner: Arc::new(ClientRouting {
                 routing: Routing::Single(client),
                 decision_clients,
@@ -748,6 +763,12 @@ impl ClientRouter {
                 track_provider_state: false,
             }),
         }
+    }
+
+    /// Attach a trusted infrastructure provider; unset providers return unavailable observations.
+    pub fn with_infra_provider(mut self, provider: Arc<dyn InfraProvider>) -> Self {
+        self.infra = Some(provider);
+        self
     }
 
     /// Stop completion fallback on HTTP 429 for the given models.

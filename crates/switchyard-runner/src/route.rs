@@ -223,6 +223,22 @@ impl Route {
         .map_err(Into::into)
     }
 
+    /// Route with fresh infrastructure lookups while retaining configured judge clients.
+    pub async fn decide_with_infra(
+        &self,
+        request: Request,
+        provider: Arc<dyn switchyard_protocol::InfraProvider>,
+    ) -> Result<RoutingOutcome, RunnerError> {
+        switchyard_llm_client::decide(
+            Arc::clone(&self.algorithm),
+            self.clients.clone().with_infra_provider(provider),
+            request,
+            Arc::clone(&self.models),
+        )
+        .await
+        .map_err(Into::into)
+    }
+
     /// Routes with a host-owned client for routing-time LLM calls, such as judges.
     ///
     /// The host owns transport, credentials, and target request settings. Configured

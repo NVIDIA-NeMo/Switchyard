@@ -1836,7 +1836,9 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
                 ))))
                 .await?;
             }
-            Ok(Step::CallDecision(_)) => return Err(test_error("unexpected decision call")),
+            Ok(Step::CallInfra(_) | Step::CallDecision(_)) => {
+                return Err(test_error("unexpected auxiliary call"));
+            }
             Ok(Step::Done(_)) => {
                 return Err(test_error("expected the failed call to fail the run"));
             }

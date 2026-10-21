@@ -346,6 +346,7 @@ async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
             let call = match call {
                 Call::Model(call) => *call,
                 Call::Decision(call) => return serve_decision(*call).await,
+                Call::Infra(_) => panic!("unexpected infrastructure call"),
             };
             let candidates = call.models.clone();
             observed.lock().push(candidates.clone());

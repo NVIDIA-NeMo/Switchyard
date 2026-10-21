@@ -25,7 +25,7 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{
-    Category, DecisionRequest, DecisionResponse, ModelId, Request, Response,
+    Category, DecisionRequest, DecisionResponse, InfraSignals, ModelId, Request, Response,
 };
 
 use crate::{DriverError, LibsyError, Result, State, observability};
@@ -252,6 +252,29 @@ impl Drop for CallDecision {
     }
 }
 
+/// A read-only infrastructure lookup, fulfilled by the host after task routing.
+pub struct CallInfra {
+    /// Request whose cache and load estimates are needed.
+    pub request: Request,
+    /// Concrete model IDs to inspect; excludes classifier-only targets.
+    pub candidates: Vec<ModelId>,
+    reply: oneshot::Sender<InfraSignals>,
+}
+
+impl CallInfra {
+    /// Return observations, or an empty map when unavailable. Cancels work when routing stops.
+    pub async fn respond(self, work: impl Future<Output = InfraSignals>) -> Result<()> {
+        let mut reply = self.reply;
+        let signals = tokio::select! {
+            biased;
+            _ = reply.closed() => return Ok(()),
+            signals = work => signals,
+        };
+        reply.send(signals).ok();
+        Ok(())
+    }
+}
+
 /// The terminal result of routing.
 pub struct RoutingOutcome {
     /// Models selected by the algorithm, ordered best model first.
@@ -370,6 +393,15 @@ impl Driver {
         *self.evidence.lock() = Some(evidence);
     }
 
+    /// Retain the task decision alongside a subsequent policy adjustment.
+    pub(crate) fn annotate_evidence(&self, key: &str, value: Value) {
+        let mut evidence = self.evidence.lock();
+        let object = evidence.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(object) = object.as_object_mut() {
+            object.insert(key.to_owned(), value);
+        }
+    }
+
     /// Supply fallback evidence without replacing a decision made earlier in the cascade.
     pub(crate) fn set_evidence_if_empty(&self, evidence: Value) {
         let mut current = self.evidence.lock();
@@ -481,6 +513,26 @@ impl Driver {
             .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
     }
 
+    /// Ask the host for request-specific infrastructure observations without reserving capacity.
+    pub async fn call_infra(
+        &self,
+        request: Request,
+        candidates: Vec<ModelId>,
+    ) -> Result<InfraSignals> {
+        let (reply, response) = oneshot::channel();
+        self.step_tx
+            .send(Ok(Step::CallInfra(Box::new(CallInfra {
+                request,
+                candidates,
+                reply,
+            }))))
+            .await
+            .map_err(|_| DriverError::StreamClosed)?;
+        response
+            .await
+            .map_err(|_| DriverError::ResponseDropped.into())
+    }
+
     /// The available models for this category, typically ordered best-first.
     pub fn models_for(&self, category: &Category) -> &[ModelId] {
         match self.scope {
@@ -548,6 +600,8 @@ pub enum Step {
     CallModel(Box<CallModel>),
     /// The host fulfills this decision call with [`CallDecision::respond`].
     CallDecision(Box<CallDecision>),
+    /// The host fulfills this advisory lookup with [`CallInfra::respond`].
+    CallInfra(Box<CallInfra>),
     /// The algorithm finished with its routing outcome — the last step of a run.
     Done(Box<RoutingOutcome>),
 }
@@ -559,6 +613,8 @@ pub enum Call {
     Model(Box<CallModel>),
     /// Fulfilled with a [`DecisionResponse`].
     Decision(Box<CallDecision>),
+    /// Fulfilled with request-specific infrastructure observations.
+    Infra(Box<CallInfra>),
 }
 
 /// Drive [`Algorithm::run_stream`] to its routing outcome, serving calls concurrently.
@@ -612,6 +668,7 @@ where
                     None => break, // stream has ended, no more steps
                     Some(item) => match item? {
                         Step::CallModel(call) => in_flight.push(serve(Call::Model(call))),
+                        Step::CallInfra(call) => in_flight.push(serve(Call::Infra(call))),
                         Step::CallDecision(call) => {
                             in_flight.push(serve(Call::Decision(call)));
                         }
@@ -1067,6 +1124,7 @@ mod tests {
                             let call = match call {
                                 Call::Model(call) => return call.respond(std::future::ready(Ok(reply("llm reply")))).await,
                                 Call::Decision(call) => *call,
+                                Call::Infra(_) => panic!("unexpected infrastructure call"),
                             };
                             assert_eq!(call.algorithm, "mixed");
                             assert_eq!(call.model, "decision");
@@ -1215,7 +1273,9 @@ mod tests {
         let mut final_completion = None;
         while let Some(step) = stream.next().await {
             match step? {
-                Step::CallDecision(_) => return Err(test_error("unexpected decision call")),
+                Step::CallInfra(_) | Step::CallDecision(_) => {
+                    return Err(test_error("unexpected auxiliary call"));
+                }
                 Step::CallModel(call) => {
                     saw_call = true;
                     assert_eq!(call.models, vec![ModelId::from("offload/model")]);
@@ -1333,7 +1393,9 @@ mod tests {
         let mut saw_error = false;
         while let Some(step) = stream.next().await {
             match step {
-                Ok(Step::CallDecision(_)) => return Err(test_error("unexpected decision call")),
+                Ok(Step::CallInfra(_) | Step::CallDecision(_)) => {
+                    return Err(test_error("unexpected auxiliary call"));
+                }
                 Ok(Step::CallModel(mut call)) => {
                     call.recover_errors = true;
                     call.respond(std::future::ready(Err(test_error(

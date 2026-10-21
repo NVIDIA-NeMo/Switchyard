@@ -252,7 +252,9 @@ impl Run {
                         Some(serde_json::to_string(&outcome.state).map_err(routing_error)?);
                 }
             }
-            Step::CallModel(_) => return Err(error("ERR_ROUTING", "Unexpected model call")),
+            Step::CallModel(_) | Step::CallInfra(_) => {
+                return Err(error("ERR_ROUTING", "Unexpected host call"));
+            }
         }
         Ok(result)
     }

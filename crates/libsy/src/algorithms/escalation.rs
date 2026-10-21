@@ -627,6 +627,7 @@ mod tests {
                     let call = match call {
                         crate::Call::Model(call) => *call,
                         crate::Call::Decision(call) => return serve_decision(*call).await,
+                        crate::Call::Infra(_) => panic!("unexpected infrastructure call"),
                     };
                     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
                     let request = call.request.clone();

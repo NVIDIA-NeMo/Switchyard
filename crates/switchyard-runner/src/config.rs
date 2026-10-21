@@ -108,6 +108,7 @@ struct RouteConfig {
     reasoning: Option<bool>,
     vision: Option<bool>,
     algorithm: AlgorithmSpec,
+    infra: Option<libsy::InfraRouterConfig>,
 }
 
 struct TargetPromptPolicy {
@@ -126,6 +127,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let infra = take_optional(&mut table, "infra")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -135,6 +137,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             reasoning,
             vision,
             algorithm,
+            infra,
         })
     }
 }
@@ -303,6 +306,31 @@ impl DeploymentConfig {
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            let algorithm = if let Some(infra) = &config.infra {
+                let supported = match &config.algorithm {
+                    AlgorithmSpec::StageRouter { .. } | AlgorithmSpec::Auto { .. } => true,
+                    AlgorithmSpec::LlmClassifier { config } => {
+                        matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
+                            && config.escalation.is_none()
+                    }
+                    _ => false,
+                };
+                if !supported {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name}: infra supports stage_router, auto or capability llm_classifier"
+                    )));
+                }
+                Arc::new(
+                    libsy::InfraRouter::new(algorithm, infra.clone()).map_err(|error| {
+                        RunnerError::configuration_source(
+                            format!("route {route_name}: {error}"),
+                            error,
+                        )
+                    })?,
+                ) as Arc<dyn libsy::Algorithm>
+            } else {
+                algorithm
+            };
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
             {
@@ -2495,5 +2523,32 @@ advisor_target = "advisor"
             "advisor_target = \"advisor\"\nmax_reviews = 0",
         );
         assert!(error_message(&invalid).contains("max_reviews must be at least 1"));
+    }
+
+    #[test]
+    fn infrastructure_policy_validates_options_and_supported_routes() {
+        let infra = r#"
+[routes.classifier.infra]
+probe_timeout_ms = 300
+max_signal_age_ms = 1000
+min_active_requests = 8
+max_spillover_active_requests = 1
+prefill_costs = [1.0, 4.0]
+request_penalty_tokens = 4096.0
+min_improvement = 0.2
+"#;
+        let valid = format!("{VALID_CONFIG}{infra}");
+        runner_from_toml(&valid).unwrap();
+        for (before, after) in [
+            ("probe_timeout_ms = 300", "probe_timeout_ms = 0"),
+            ("min_improvement = 0.2", "min_improvement = 1.0"),
+            ("prefill_costs = [1.0, 4.0]", "prefill_costs = [1.0, nan]"),
+            ("routes.classifier.infra", "routes.random.infra"),
+        ] {
+            assert!(
+                runner_from_toml(&valid.replace(before, after)).is_err(),
+                "{after}"
+            );
+        }
     }
 }

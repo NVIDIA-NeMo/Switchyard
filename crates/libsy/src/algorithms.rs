@@ -23,3 +23,5 @@ pub mod util;
 
 #[cfg(test)]
 mod subagent_affinity_tests;
+
+pub mod infra;

@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.dynamo]
+format = "openai_chat"
+base_url = "http://switchyard-gateway/v1"
+
+# Use a private inference endpoint that bypasses this PreProc to avoid recursion.
+[llm_clients.judge]
+format = "openai_chat"
+base_url = "http://qwen-large-frontend:8000/v1"
+timeout_ms = 2000
+max_retries = 0
+
+[targets.qwen-small]
+id = "Qwen/Qwen3-0.6B"
+llm_client = "dynamo"
+
+[targets.qwen-large]
+id = "Qwen/Qwen3-1.7B"
+llm_client = "judge"
+
+[routes.task]
+id = "auto"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "qwen-large"
+weak_target = "qwen-small"
+strong_target = "qwen-large"
+classify_trigger = "new_session"
+base_threshold = 0.5
+fail_open = true
+max_output_tokens = 256
+
+# Illustrative values: calibrate on your model pair and workload before enabling.
+# Remove this table for task-only routing.
+[routes.task.infra]
+probe_timeout_ms = 300
+max_signal_age_ms = 1000
+min_active_requests = 8
+max_spillover_active_requests = 1
+prefill_costs = [1.0, 4.0]
+request_penalty_tokens = 4096.0
+min_improvement = 0.2

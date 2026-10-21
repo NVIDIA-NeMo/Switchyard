@@ -188,6 +188,32 @@ Every route takes the common keys below, plus the keys for its type.
 | `reasoning` | No | unset | When `false`, the server rejects reasoning controls with HTTP 400 before dispatch. Explicit `true` and unset values do not restrict requests. The server does not include this declaration in `GET /v1/models`. |
 | `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. When `false`, the server rejects images with HTTP 400 before dispatch, including images in tool results. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. Declare `true` only when every target the route can select accepts images. |
 
+### Optional infrastructure check
+
+A `stage_router`, `auto`, or capability `llm_classifier` route without escalation may
+include `[routes.<name>.infra]`. It checks fresh serving observations after the task
+router selects the efficient model. Both tiers must have one model. The host supplies
+observations through `Route::decide_with_infra`; without a provider, the task decision
+is retained. Delegated sub-agent routing is unchanged.
+
+```toml
+[routes.example.infra]
+probe_timeout_ms = 300
+max_signal_age_ms = 1000
+min_active_requests = 8
+max_spillover_active_requests = 1
+prefill_costs = [1.0, 4.0]
+request_penalty_tokens = 4096.0
+min_improvement = 0.2
+```
+
+All keys are required when the table is present. Values above are illustrative, not
+measured defaults. The timeout, age, source-load threshold, costs and request penalty
+must be positive; `min_improvement` must be in `[0, 1)`. The policy compares relative
+work scores, not response-time estimates. See the
+[Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-infrastructure-signals)
+for the score definition, host setup and limitations.
+
 ### `noop`
 
 Returns a buffered assistant response containing `OK` without calling an

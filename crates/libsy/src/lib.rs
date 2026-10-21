@@ -6,8 +6,8 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels, Step,
-    StepStream, drive,
+    Algorithm, Call, CallDecision, CallInfra, CallModel, Driver, RoutingOutcome, RuntimeModels,
+    Step, StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::outcome_metadata::OutcomeMetadata;
@@ -20,6 +20,7 @@ pub use error::{DriverError, LibsyError, Result};
 mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig};
+pub use algorithms::infra::{InfraRouter, InfraRouterConfig};
 pub use algorithms::llm_class::{
     CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
     LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
