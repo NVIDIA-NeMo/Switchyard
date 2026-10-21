@@ -372,14 +372,6 @@ impl View {
     }
     fn key(&mut self, controller: &mut Controller, code: KeyCode) -> Result<(), String> {
         match code {
-            KeyCode::Tab => {
-                self.page = (self.page + 1) % PAGES.len();
-                self.scroll = 0;
-            }
-            KeyCode::BackTab => {
-                self.page = (self.page + PAGES.len() - 1) % PAGES.len();
-                self.scroll = 0;
-            }
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::F(5) => self.refresh(controller)?,
@@ -653,7 +645,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                     );
                     frame.render_widget(
                         Paragraph::new(format!(
-                            "Tab: section · PgUp/PgDn: scroll · F5: refresh · \
+                            "←/→ or Tab: section · PgUp/PgDn: scroll · F5: refresh\n\
                              h: details · Esc: dismiss · q: quit\n\
                              Forms: Tab: field · ←/→: cursor · \
                              Ctrl-U: clear · Enter: submit · Esc: cancel\n\
@@ -687,17 +679,22 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                match key.code {
+                    KeyCode::Tab | KeyCode::Right if view.form.is_none() => {
+                        view.page = (view.page + 1) % PAGES.len();
+                        view.scroll = 0;
+                        continue;
+                    }
+                    KeyCode::BackTab | KeyCode::Left if view.form.is_none() => {
+                        view.page = (view.page + PAGES.len() - 1) % PAGES.len();
+                        view.scroll = 0;
+                        continue;
+                    }
+                    _ => {}
+                }
                 if busy {
                     match key.code {
                         KeyCode::Char('q') if view.form.is_none() => quit_pending = true,
-                        KeyCode::Tab if view.form.is_none() => {
-                            view.page = (view.page + 1) % PAGES.len();
-                            view.scroll = 0;
-                        }
-                        KeyCode::BackTab if view.form.is_none() => {
-                            view.page = (view.page + PAGES.len() - 1) % PAGES.len();
-                            view.scroll = 0;
-                        }
                         KeyCode::PageDown => view.scroll = view.scroll.saturating_add(10),
                         KeyCode::PageUp => view.scroll = view.scroll.saturating_sub(10),
                         _ => {}
