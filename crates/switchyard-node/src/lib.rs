@@ -10,6 +10,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
 use napi_derive::napi;
+use opentelemetry::context::FutureExt as _;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,6 +22,10 @@ use switchyard_libsy::{
 use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
 };
+
+mod metrics;
+mod prediction;
+pub use prediction::{task_prediction, task_prediction_request};
 
 // The JS wrapper turns these prefixes into public Error codes.
 fn error(code: &str, message: impl std::fmt::Display) -> napi::Error {
@@ -153,6 +158,7 @@ impl NativeComposite {
         &self,
         messages_json: String,
         state_json: Option<String>,
+        metric_context_json: Option<String>,
     ) -> napi::Result<NativeRun> {
         let request = Request {
             llm_request: LlmRequest {
@@ -174,11 +180,18 @@ impl NativeComposite {
         let stream =
             futures::stream::once(async move { router.run_stream(request, models, state) })
                 .flatten();
+        let stream: StepStream = match metric_context_json {
+            Some(json) => {
+                let identity: metrics::MetricContext = parse(&json)?;
+                Box::pin(stream.with_context(identity.context()?))
+            }
+            None => Box::pin(stream),
+        };
         Ok(NativeRun {
             slot: Mutex::new(RunSlot {
                 run: Some(Run {
                     initial_state,
-                    stream: Box::pin(stream),
+                    stream,
                     pending: None,
                 }),
                 abort: None,

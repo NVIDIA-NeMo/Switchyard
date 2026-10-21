@@ -3773,11 +3773,13 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "opentelemetry",
  "parking_lot",
  "serde",
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
+ "switchyard-token-prediction",
 ]
 
 [[package]]
@@ -3914,6 +3916,16 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "switchyard-token-prediction"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "switchyard-protocol",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

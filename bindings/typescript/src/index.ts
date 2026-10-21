@@ -56,14 +56,79 @@ export interface DecisionResponse {
   id?: string | null;
   model?: string | null;
   answers: Record<string, DecisionAnswer>;
-  usage?: {
-    input_tokens?: number | null;
-    cached_input_tokens?: number | null;
-    cache_creation_input_tokens?: number | null;
-    output_tokens?: number | null;
-    total_tokens?: number | null;
-    reasoning_tokens?: number | null;
-  };
+  usage?: TokenUsage;
+}
+
+/** Normalized usage; input_tokens excludes cache reads and creation. */
+export interface TokenUsage {
+  input_tokens?: number | null;
+  cached_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  output_tokens?: number | null;
+  total_tokens?: number | null;
+  reasoning_tokens?: number | null;
+}
+
+/** Host-owned indices, starting at zero within each session and agent. */
+export interface MetricContext {
+  session_id: string;
+  agent_id: string;
+  agent_turn_idx: number;
+  user_turn_idx: number;
+}
+
+export type MetricFilter = Partial<MetricContext>;
+
+/** Usage of a completed agent call, excluding cache reads and counting reasoning once. */
+export interface ResponseUsage {
+  uncached_input_tokens: number;
+  output_tokens: number;
+  reasoning_tokens: number;
+}
+
+/** Total task budget, including usage so far; means are conditional on a finite budget. */
+export interface TaskPrediction {
+  predicted_tokens: number | null;
+  expected_upper_tokens: number | null;
+  selected_interval: [number, number] | null;
+  selected_choice: string;
+  impossible_probability: number;
+  finite_budget_probability: number;
+}
+
+/** Builds the Rust predictor's 80-range task-completion Choice request. */
+export function taskPredictionRequest(model: string, history: readonly unknown[], priorUsage: readonly ResponseUsage[]): DecisionRequest {
+  try { return JSON.parse(native.taskPredictionRequest(json({ model, history, prior_usage: priorUsage }))); }
+  catch (error) { throw publicError(error); }
+}
+
+/** Decodes a complete Choice distribution using the Rust task-budget predictor. */
+export function taskPrediction(response: DecisionResponse): TaskPrediction {
+  try { return JSON.parse(native.taskPrediction(json(response))); }
+  catch (error) { throw publicError(error); }
+}
+
+/** A completed host call. Replaying the same ID within a session is idempotent. */
+export interface CallMetrics {
+  id: string;
+  context: MetricContext;
+  model: string;
+  call_kind: "answer" | "decision" | "request";
+  is_success: boolean;
+  duration_ms: number;
+  /** Time to first generated content; omit when no token was observed. */
+  ttft_ms?: number;
+  usage?: TokenUsage;
+}
+
+export interface MetricsSnapshot {
+  series: {
+    name: string;
+    labels: Record<string, string>;
+    value:
+      | { type: "counter" | "gauge"; value: number }
+      | { type: "histogram"; count: number; sum: number; buckets: { upper_bound: number; count: number }[] };
+  }[];
 }
 
 export interface DecisionAnswer {
@@ -84,10 +149,21 @@ interface NativeRun {
 }
 
 interface NativeComposite {
-  start(messages: string, state: string | null): NativeRun;
+  start(messages: string, state: string | null, metricContext: string | null): NativeRun;
 }
 
-const native: { NativeComposite: new (options: string) => NativeComposite } =
+interface NativeMetrics {
+  record(observation: string): boolean;
+  stats(query: string): string;
+  prometheus(query: string): string;
+}
+
+const native: {
+  NativeComposite: new (options: string) => NativeComposite;
+  NativeMetrics: new () => NativeMetrics;
+  taskPredictionRequest(input: string): string;
+  taskPrediction(response: string): string;
+} =
   createRequire(import.meta.url)("./switchyard.node");
 
 function abortError(): Error {
@@ -99,7 +175,7 @@ function errorMessage(error: unknown): string {
 }
 
 function publicError(error: unknown, cause?: unknown): Error {
-  const match = /^(ERR_CONFIG|ERR_INVALID_REQUEST|ERR_ROUTING|ABORT_ERR): (.*)$/s.exec(errorMessage(error));
+  const match = /^(ERR_CONFIG|ERR_INVALID_REQUEST|ERR_ROUTING|ERR_METRICS|ABORT_ERR): (.*)$/s.exec(errorMessage(error));
   if (match?.[1] === "ABORT_ERR") return abortError();
   const code = match?.[1] ?? "ERR_ROUTING";
   return Object.assign(new Error(match?.[2] ?? errorMessage(error),code === "ERR_ROUTING" ? { cause } : undefined), { code });
@@ -135,6 +211,7 @@ export class CompositeRouter {
     state?: CompositeState;
     decide(request: DecisionRequest): Promise<DecisionResponse>;
     signal?: AbortSignal;
+    metricContext?: MetricContext;
   }): Promise<Selection> {
     const { signal } = options;
     if (signal?.aborted) throw abortError();
@@ -148,7 +225,10 @@ export class CompositeRouter {
       };
     });
     try {
-      run = this.#native.start(json(messages), options.state === undefined ? null : json(options.state));
+      run = this.#native.start(
+        json(messages), options.state === undefined ? null : json(options.state),
+        options.metricContext === undefined ? null : json(options.metricContext),
+      );
       signal?.addEventListener("abort", onAbort, { once: true });
       let response: string | null = null;
       let failure: string | null = null;
@@ -181,5 +261,32 @@ export class CompositeRouter {
       signal?.removeEventListener("abort", onAbort);
       run?.close();
     }
+  }
+}
+
+/** Shared in-process Switchyard collector. No server is required.
+ * The first instance installs the Rust meter provider. Retains up to 20,000 series per instrument.
+ */
+export class Metrics {
+  readonly #native: NativeMetrics;
+
+  constructor() {
+    try { this.#native = new native.NativeMetrics(); }
+    catch (error) { throw publicError(error); }
+  }
+
+  record(observation: CallMetrics): boolean {
+    try { return this.#native.record(json(observation)); }
+    catch (error) { throw publicError(error); }
+  }
+
+  stats(filter: MetricFilter = {}): MetricsSnapshot {
+    try { return JSON.parse(this.#native.stats(json(filter))); }
+    catch (error) { throw publicError(error); }
+  }
+
+  prometheus(filter: MetricFilter = {}): string {
+    try { return this.#native.prometheus(json(filter)); }
+    catch (error) { throw publicError(error); }
   }
 }

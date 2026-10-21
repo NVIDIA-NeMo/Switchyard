@@ -22,8 +22,10 @@ futures.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-switchyard-libsy.workspace = true
+switchyard-libsy = { workspace = true, features = ["metrics"] }
 switchyard-protocol.workspace = true
+switchyard-token-prediction.workspace = true
+opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
 
 [build-dependencies]
 napi-build = "2"

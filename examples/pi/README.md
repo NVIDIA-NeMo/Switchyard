@@ -85,3 +85,95 @@ answer without a usable `advantage` probability retains the previous tier.
 
 For the binding API, see
 [`bindings/typescript`](../../bindings/typescript/README.md).
+
+## Status metrics
+
+With `switchyard/auto` selected, the status bar shows estimated remaining task
+tokens and time, cumulative session metrics, and the latest request's metrics:
+
+```text
+SY remaining ~247.9k tok ETA ~12m30s | session 2.1k/420ms/8.30s | last 180/350ms/1.20s
+```
+
+`session` and `last` list **tokens / TTFT / request latency**. Session TTFT is
+an average; session latency is a sum. Narrow terminals may truncate the line.
+Measured tokens include routing, prediction, and completion usage, including cached tokens. Timing
+starts when routing begins. TTFT ends at the first text, reasoning, or tool-call
+content. Request latency ends when Pi finishes the assistant message, before tool
+execution. Missing measurements appear as `—`. Direct helper requests, such as
+compaction summaries, are excluded.
+
+The extension records Pi's measurements in the in-process Rust metrics collector
+and reads its filtered snapshots for the status bar. No metrics server is needed.
+Each observation carries `session_id`, `agent_id` (`root`), `agent_turn_idx`, and
+`user_turn_idx`. Indices start at zero. Agent indices advance on each request;
+continuations and retries retain the user index.
+
+Completed measurements are saved in Pi's session entries. Resume and reload
+restore them without counting them twice. Totals cover all branches in the same
+session; a fork with a new session ID starts fresh. The collector retains up to
+20,000 label combinations per instrument; further combinations enter an overflow
+series and cannot be queried by session or turn.
+
+### Task forecast
+
+Before each agent request, including continuations and retries, the extension
+makes an additional classifier call using `decision_model` and Pi's credentials.
+It uses the Rust `switchyard-token-prediction` crate's task-completion question:
+80 budget ranges through 1.5 million tokens, plus `impossible`. This call adds
+latency and may cost money. Its usage is included in the session and request metrics.
+
+The forecast estimates **total uncached input plus output until task completion**,
+including agent tokens already used. The displayed remaining estimate uses the
+probability-weighted mean of finite range upper bounds, minus agent usage so far,
+with a minimum of zero. It updates after each completed response. Reasoning is
+counted once as output.
+Prediction and routing classifier usage is excluded from the forecast's prior
+agent usage. Its token definition differs from measured session totals, which
+include cache reads and classifier work. The estimate is conditional on a finite
+budget. All-impossible results and errors show `remaining unavailable` and allow
+completion routing to proceed.
+
+The predictor reads the current session branch, retaining the initial task and
+recent messages. History is limited to 4,000 characters per message and about
+60,000 characters overall. Earlier completed-call usage remains included even
+after compaction. Forecasts and their usage baseline are saved for reload and
+resume; each agent request refreshes them for its current branch. Once Pi settles
+the user turn and waits for input, the forecast is cleared, including its saved
+display state. Tool continuations keep it visible. Direct helper requests skip
+prediction.
+
+### Time estimate
+
+ETA uses successful agent responses from the current session that have known
+input/output usage, TTFT, and positive time after the first token. The extension
+splits remaining tokens using the **mean per-response uncached input / output mix**.
+Each response contributes its output fraction, `output / (uncached input + output)`,
+with equal weight. This keeps a single large prompt from dominating the split.
+Cache writes count as uncached input; cache reads are excluded. Reasoning is
+already part of output.
+
+Input-side time uses mean TTFT per expected remaining response. TTFT includes
+routing, prediction, network delay, and input processing. Output speed is total
+output tokens divided by total time after the first token. Expected remaining
+responses are estimated output tokens divided by mean output per response.
+ETA adds that count times mean TTFT to the estimated output generation time.
+This treats TTFT as a request delay and counts it once, including fully cached calls.
+
+Tool execution time is measured between Pi's tool start and end events. Overlapping
+and nested calls count their combined wall time once. Sequential execution
+intervals add together. Failed tools still contribute their observed execution
+time. ETA adds expected remaining responses times mean tool wall time per
+response. Responses without tools count in this average too. Tool time is paired
+with the same responses used for model timing.
+
+The formula is `remaining responses * (mean TTFT + mean tool wall time) +
+remaining output tokens / output tokens per second`. Tool intervals are saved in
+session entries and restored once on reload/resume. Model request latency in
+`session` and `last` continues to end before tool execution.
+
+ETA assumes the session's token mix, speeds, and tool usage continue. User input
+time is excluded. Before a usable response is observed, it shows `ETA —`. It
+updates with completed responses and tool execution intervals, and clears with
+the token forecast when the user turn settles. A new session starts with fresh
+calibration.

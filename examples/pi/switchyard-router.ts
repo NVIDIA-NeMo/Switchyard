@@ -5,12 +5,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CompositeRouter, type CompositeOptions, type CompositeState, type DecisionRequest,
-  type DecisionResponse, type RoutingContent, type RoutingMessage,
+  type DecisionResponse, type RoutingContent, type RoutingMessage, taskPrediction,
 } from "@switchyard/libsy";
 import type {
   ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, Message,
 } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerMetrics, tokenUsage } from "./metrics.ts";
+import { predictionRequest } from "./prediction.ts";
 
 const POLICY = {
   classifier: {
@@ -85,7 +87,8 @@ function decisionResponse(request: DecisionRequest, result: ClassifierResult): D
       provider_confidence: answer.confidence,
     }];
   }));
-  return { model: `${result.provider}/${result.model}`, answers };
+  return { model: `${result.provider}/${result.model}`, answers,
+    ...(result.usage ? { usage: tokenUsage(result.usage) } : {}) };
 }
 
 function routingMessages(messages: readonly Message[]): RoutingMessage[] {
@@ -115,6 +118,7 @@ function routingMessages(messages: readonly Message[]): RoutingMessage[] {
 }
 
 export default function (pi: ExtensionAPI) {
+  const metrics = registerMetrics(pi);
   let loaded: ReturnType<typeof loadRouter> | undefined;
   let classifierModel: ClassifierModel<ClassifierApi> | undefined;
   pi.registerVirtualModel<CompositeState>({
@@ -123,24 +127,47 @@ export default function (pi: ExtensionAPI) {
     name: "Auto (Switchyard)",
     thinkingLevels: ["medium"],
     async route(request, ctx) {
-      const { router, classifier } = loaded ??= loadRouter();
-      const judge = classifierModel ??= ctx.modelRegistry.findOfType("classifier", classifier.provider, classifier.id);
-      if (!judge) throw new Error(`Unknown classifier: ${classifier.reference}`);
-      const selection = await router.route(routingMessages(request.messages), {
-        state: request.state,
-        signal: request.signal,
-        decide: async (decision) => decisionResponse(decision, await ctx.modelRegistry.classify(
-          judge, classifierContext(decision), { signal: request.signal },
-        )),
-      }).catch((error) => {
-        // The binding wraps classifier errors as routing failures; preserve cancellation for Pi.
-        if (error.cause?.name === "AbortError") throw error.cause;
+      const measurement = metrics.begin(request.reason, ctx);
+      try {
+        const { router, classifier } = loaded ??= loadRouter();
+        const judge = classifierModel ??= ctx.modelRegistry.findOfType("classifier", classifier.provider, classifier.id);
+        if (!judge) throw new Error(`Unknown classifier: ${classifier.reference}`);
+        const selection = await router.route(routingMessages(request.messages), {
+          state: request.state,
+          signal: request.signal,
+          metricContext: measurement?.context,
+          decide: async (decision) => {
+            const classify = () => ctx.modelRegistry.classify(judge, classifierContext(decision), { signal: request.signal });
+            return decisionResponse(decision, measurement
+              ? await measurement.classify(classifier.reference, classify) : await classify());
+          },
+        }).catch((error) => {
+          // The binding wraps classifier errors as routing failures; preserve cancellation for Pi.
+          if (error.cause?.name === "AbortError") throw error.cause;
+          throw error;
+        });
+        const identity = modelIdentity(selection.model);
+        const model = ctx.modelRegistry.find(identity.provider, identity.id);
+        if (!model) throw new Error(`Model ${identity.reference} is not in the catalog`);
+        if (measurement) {
+          try {
+            const branchMessages = ctx.sessionManager.getBranch().flatMap((entry) => entry.type === "message"
+              && (entry.message.role === "assistant" || entry.message.role === "user" || entry.message.role === "toolResult") ? [entry.message] : []);
+            const prediction = predictionRequest(classifier.reference, branchMessages.length ? branchMessages : request.messages);
+            const result = await measurement.classify(classifier.reference,
+              () => ctx.modelRegistry.classify(judge, classifierContext(prediction), { signal: request.signal }));
+            const used = (prediction.context as { token_usage: { tokens_used_so_far: number } }).token_usage.tokens_used_so_far;
+            measurement.prediction(taskPrediction(decisionResponse(prediction, result)), used);
+          } catch {
+            measurement.prediction(null);
+          }
+          if (request.signal?.aborted) throw Object.assign(new Error("Prediction cancelled"), { name: "AbortError", code: "ABORT_ERR" });
+        }
+        return { model, thinkingLevel: "medium", state: selection.state };
+      } catch (error) {
+        measurement?.fail();
         throw error;
-      });
-      const identity = modelIdentity(selection.model);
-      const model = ctx.modelRegistry.find(identity.provider, identity.id);
-      if (!model) throw new Error(`Model ${identity.reference} is not in the catalog`);
-      return { model, thinkingLevel: "medium", state: selection.state };
+      }
     },
   });
 }

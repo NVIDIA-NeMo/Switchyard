@@ -21,6 +21,7 @@ members = [
     "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
     "crates/switchyard-translation",
+    "crates/switchyard-token-prediction",
 ]
 
 [workspace.package]
@@ -57,6 +58,7 @@ switchyard-protocol = { path = "crates/protocol", version = "0.3.0" }
 switchyard-runner = { path = "crates/switchyard-runner", version = "0.3.0" }
 switchyard-server = { path = "crates/switchyard-server", version = "0.3.0" }
 switchyard-translation = { path = "crates/switchyard-translation", version = "0.3.0" }
+switchyard-token-prediction = { path = "crates/switchyard-token-prediction", version = "0.3.0" }
 strum_macros = "0.28"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }

@@ -4,9 +4,10 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CompositeRouter } from "@switchyard/libsy";
+import { CompositeRouter, Metrics } from "@switchyard/libsy";
 import extension from "../switchyard-router.ts";
 
 const config = {
@@ -14,6 +15,7 @@ const config = {
   capable_model: "openai-codex/gpt-6.1-sol",
   efficient_model: "openai-codex/gpt-6-luna",
 };
+const routingCalls = (registry) => registry.classify.mock.calls.filter((call) => call.arguments[1].questions.route);
 const request = (fields = {}) => ({
   reason: "user", messages: [{ role: "user", content: "task" }],
   thinkingLevel: "high", signal: new AbortController().signal, ...fields,
@@ -42,8 +44,23 @@ function setup(t, answer = result()) {
     classify: t.mock.fn(async () => answer),
   };
   let definition;
-  extension({ registerVirtualModel: (value) => { definition = value; } });
-  return { definition, registry, path, route: (req) => definition.route(req, { modelRegistry: registry }) };
+  const handlers = new Map();
+  const entries = [];
+  const sessionId = randomUUID();
+  const ctx = {
+    modelRegistry: registry, hasUI: true,
+    sessionManager: { getSessionId: () => sessionId, getEntries: () => entries, getBranch: () => entries },
+    ui: { setStatus: t.mock.fn() },
+  };
+  extension({
+    registerVirtualModel: (value) => { definition = value; },
+    on: (name, handler) => { handlers.set(name, handler); },
+    appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+  });
+  return { definition, registry, path, ctx, entries,
+    emit: (event) => handlers.get(event.type)?.(event, ctx),
+    route: (req) => definition.route(req, ctx) };
+
 }
 
 function tool(id, name, args, text, isError = false) {
@@ -63,7 +80,7 @@ test("Pi classifies the libsy question and retains the capable tier on a read co
   assert.ok(initial.state);
   assert.equal(registry.findOfType.mock.callCount(), 1);
   assert.deepEqual(registry.findOfType.mock.calls[0].arguments, ["classifier", "openrouter", "inception/mercury-decide:free"]);
-  assert.equal(registry.classify.mock.callCount(), 1);
+  assert.equal(routingCalls(registry).length, 1);
   const [judge, context, options] = registry.classify.mock.calls[0].arguments;
   assert.equal(judge, registry.findOfType.mock.calls[0].result);
   assert.deepEqual(options, { signal: req.signal });
@@ -82,7 +99,7 @@ test("Pi classifies the libsy question and retains the capable tier on a read co
   }));
   assert.deepEqual(continued, { model: initial.model, thinkingLevel: "medium", state: undefined });
   assert.equal(registry.findOfType.mock.callCount(), 1);
-  assert.equal(registry.classify.mock.callCount(), 1);
+  assert.equal(routingCalls(registry).length, 1);
 });
 
 test("cutoff equality selects efficient, then a tool failure holds capable for two requests", async (t) => {
@@ -101,7 +118,7 @@ test("cutoff equality selects efficient, then a tool failure holds capable for t
     state = selected.state ?? state;
     assert.equal(selected.model.id, expected);
   }
-  assert.equal(registry.classify.mock.callCount(), 1);
+  assert.equal(routingCalls(registry).length, 1);
 });
 
 test("classifier lookup, answer validation, failures, and cancellation", async (t) => {
@@ -116,9 +133,9 @@ test("classifier lookup, answer validation, failures, and cancellation", async (
     registry.classify.mock.mockImplementation(async () => answer);
     await assert.rejects(route(request()), expected);
   }
-  const calls = registry.classify.mock.callCount();
+  const calls = routingCalls(registry).length;
   await assert.rejects(route(request({ signal: AbortSignal.abort() })), { name: "AbortError", code: "ABORT_ERR" });
-  assert.equal(registry.classify.mock.callCount(), calls);
+  assert.equal(routingCalls(registry).length, calls);
   assert.equal(registry.findOfType.mock.callCount(), 1);
 });
 
@@ -126,11 +143,11 @@ test("a missing classifier fails until it appears, then the lookup is cached", a
   const { route, registry } = setup(t);
   registry.findOfType.mock.mockImplementationOnce(() => undefined);
   await assert.rejects(route(request()), { message: `Unknown classifier: ${config.decision_model}` });
-  assert.equal(registry.classify.mock.callCount(), 0);
+  assert.equal(routingCalls(registry).length, 0);
   await route(request());
   await route(request());
   assert.equal(registry.findOfType.mock.callCount(), 2);
-  assert.equal(registry.classify.mock.callCount(), 2);
+  assert.equal(routingCalls(registry).length, 2);
 });
 
 test("config loads lazily, names missing fields, and is cached until reload", async (t) => {
@@ -194,4 +211,100 @@ test("message and classifier adapters preserve content and model identities", as
       type: "choice", instructions: "Choose a model", criteria: { advantage: "Complex work", no_advantage: '{"task":"Simple work"}', unspecified: "null" },
     } },
   });
+});
+
+test("the virtual model reports routing and answer metrics in the same native context", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const usage = { input: 10, output: 2, cacheRead: 3, cacheWrite: 0, totalTokens: 15,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  const { route, ctx, emit, entries } = setup(t, { ...result(), usage });
+  const selection = await route(request());
+  const identity = entries[0].data.context;
+  now = 20;
+  emit({ type: "message_update", message: { role: "assistant" },
+    assistantMessageEvent: { type: "text_delta", delta: "hello" } });
+  now = 60;
+  emit({ type: "message_end", message: { role: "assistant", ...selection.model,
+    model: selection.model.id, usage, stopReason: "stop" } });
+  assert.equal(ctx.ui.setStatus.mock.calls.at(-1).arguments[1],
+    "SY remaining unavailable | session 45/20ms/60ms | last 45/20ms/60ms");
+  const snapshot = new Metrics().stats(identity);
+  const count = (name) => snapshot.series.filter((series) => series.name === name)
+    .reduce((sum, series) => sum + series.value.value, 0);
+  assert.equal(count("switchyard_llm_call_total_tokens_total"), 45);
+  assert.equal(count("switchyard_runs_total"), 1);
+  assert.equal(count("switchyard_decision_calls_total"), 1);
+  assert.equal(count("switchyard_inference_requests_total"), 1);
+});
+
+function forecast(choice = "b002") {
+  const probabilities = Object.fromEntries(Array.from({ length: 80 }, (_, i) => [`b${String(i + 1).padStart(3, "0")}`, 0]));
+  probabilities.impossible = 0;
+  probabilities[choice] = 1;
+  return { ...result(), answers: { minimum_likely_budget: { type: "choice", choice, probabilities } } };
+}
+
+test("task prediction appears before completion and refreshes for continuations using branch usage", async (t) => {
+  const { route, registry, ctx, emit, entries } = setup(t);
+  const weighted = forecast();
+  weighted.answers.minimum_likely_budget.probabilities.b001 = 0.5;
+  weighted.answers.minimum_likely_budget.probabilities.b002 = 0.5;
+  registry.classify.mock.mockImplementation(async (_, context) => context.questions.route ? result() : weighted);
+  const initial = await route(request());
+  assert.equal(registry.classify.mock.callCount(), 2);
+  const [judge, prediction, options] = registry.classify.mock.calls[1].arguments;
+  assert.equal(judge, registry.findOfType.mock.calls[0].result);
+  assert.equal(Object.keys(prediction.questions.minimum_likely_budget.criteria).length, 81);
+  assert.equal(prediction.state.task_history[0].message, "task");
+  assert.equal(prediction.state.token_usage.tokens_used_so_far, 0);
+  assert.ok(options.signal instanceof AbortSignal);
+  assert.match(ctx.ui.setStatus.mock.calls.at(-1).arguments[1], /^SY remaining ~3\.0k tok ETA [^|]+ \|/);
+  const assistant = { role: "assistant", provider: "openai-codex", model: initial.model.id,
+    content: [{ type: "text", text: "checking parser" }], stopReason: "toolUse",
+    usage: { input: 800, cacheWrite: 200, cacheRead: 5000, output: 100, reasoning: 40, totalTokens: 6100 } };
+  emit({ type: "message_end", message: assistant });
+  const completedStatus = ctx.ui.setStatus.mock.calls.at(-1).arguments[1];
+  assert.ok(completedStatus.length <= 80);
+  assert.match(completedStatus, /^SY remaining ~1\.9k tok ETA [^|]+ \|/);
+  assert.ok(!completedStatus.includes("impossible"));
+  assert.match(completedStatus, /session 6\.1k\/.+ \| last 6\.1k\//);
+  const branch = [
+    { type: "message", message: { role: "user", content: "original task" } },
+    { type: "message", message: assistant },
+    { type: "message", message: { role: "toolResult", toolName: "bash", isError: false, content: [{ type: "text", text: "tests pass" }] } },
+  ];
+  ctx.sessionManager.getBranch = () => branch;
+  registry.classify.mock.mockImplementation(async (_, context) => context.questions.route ? result() : forecast("impossible"));
+  await route(request({ reason: "continuation", state: initial.state, messages: [{ role: "user", content: "compacted summary" }] }));
+  const continued = registry.classify.mock.calls.at(-1).arguments[1];
+  assert.equal(continued.state.task_history[0].message, "original task");
+  assert.equal(continued.state.token_usage.tokens_used_so_far, 1100);
+  assert.equal(continued.state.token_usage.reasoning_output_tokens_so_far, 40);
+  assert.match(ctx.ui.setStatus.mock.calls.at(-1).arguments[1], /^SY remaining unavailable \|/);
+  assert.equal(entries.filter((entry) => entry.customType === "switchyard.prediction.v1").length, 2);
+  emit({ type: "agent_settled" });
+  assert.ok(!ctx.ui.setStatus.mock.calls.at(-1).arguments[1].includes("remaining"));
+});
+
+test("prediction failure allows completion routing, direct helpers skip prediction, and cancellation propagates", async (t) => {
+  const { route, registry, ctx } = setup(t);
+  registry.classify.mock.mockImplementation(async (_, context) => {
+    if (context.questions.route) return result();
+    throw new Error("prediction unavailable");
+  });
+  const initial = await route(request());
+  assert.equal(initial.model.id, "gpt-6.1-sol");
+  assert.match(ctx.ui.setStatus.mock.calls.at(-1).arguments[1], /^SY remaining unavailable/);
+  const calls = registry.classify.mock.callCount();
+  await route(request({ reason: "direct" }));
+  assert.equal(registry.classify.mock.callCount(), calls + 1);
+
+  const controller = new AbortController();
+  registry.classify.mock.mockImplementation(async (_, context) => {
+    if (context.questions.route) return result();
+    controller.abort();
+    return { ...forecast(), stopReason: "aborted" };
+  });
+  await assert.rejects(route(request({ signal: controller.signal })), { name: "AbortError", code: "ABORT_ERR" });
 });

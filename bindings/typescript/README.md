@@ -95,6 +95,7 @@ Treat `CompositeState` as opaque. It carries the judge's tier and stage holds.
 | `ERR_CONFIG` | Invalid composite options |
 | `ERR_INVALID_REQUEST` | Invalid messages, state, or decision response JSON |
 | `ERR_ROUTING` | The algorithm or classifier call failed |
+| `ERR_METRICS` | The metrics collector or export failed |
 | `ABORT_ERR` | Routing was cancelled; the error name is `AbortError` |
 
 A rejected `decide` call follows `classifier.fail_open`. With `false`, routing
@@ -105,3 +106,66 @@ keeps that fallback tier.
 An aborted signal closes the Rust run and rejects promptly, including while
 `decide` is pending. Late callback results are ignored. Pass the same signal to
 your classifier client to cancel its work too.
+
+## In-process metrics
+
+`Metrics` exposes the Rust collector without a server. Create it before routing
+so the collector receives the full run. All instances share one collector. The
+first instance installs the Rust meter provider, with a limit of 20,000 label
+combinations per instrument. Further combinations enter an overflow series.
+
+```ts
+import { Metrics, type MetricContext } from "@switchyard/libsy";
+
+const metrics = new Metrics();
+const metricContext: MetricContext = {
+  session_id: "session-1", agent_id: "root",
+  agent_turn_idx: 0, user_turn_idx: 0,
+};
+const selection = await router.route(messages, { decide, metricContext });
+
+// Record completion measurements from the host's model client.
+metrics.record({
+  id: "completion-1", context: metricContext, model: selection.model,
+  call_kind: "answer", is_success: true, duration_ms: 1200, ttft_ms: 150,
+  usage: { input_tokens: 100, output_tokens: 30, total_tokens: 130 },
+});
+
+const session = metrics.stats({ session_id: "session-1", agent_id: "root" });
+const turn = metrics.stats(metricContext);
+const all = metrics.stats();
+const prometheus = metrics.prometheus();
+```
+
+`route` labels its routing metrics with the supplied context. Hosts supply their
+own nonnegative turn indices. Use `record` for host-owned classifier and completion
+usage and timing. Call kinds are `decision`, `answer`, and `request` (for a failed
+request before completion). Recording the same ID within a session twice returns
+`false` and adds no measurements, so saved observations can be replayed on reload.
+
+`stats` returns metric series with labels and counter, gauge, or histogram values.
+`prometheus` returns Prometheus text. Both accept any subset of the four context
+fields; omit the filter to get all collected metrics.
+
+## Task-completion forecasts
+
+`taskPredictionRequest` and `taskPrediction` wrap the Rust
+`switchyard-token-prediction` crate:
+
+```ts
+import { taskPredictionRequest, taskPrediction } from "@switchyard/libsy";
+
+const request = taskPredictionRequest("provider/judge", [
+  { source: "user", message: "Fix the parser" },
+], [{ uncached_input_tokens: 800, output_tokens: 100, reasoning_tokens: 40 }]);
+const forecast = taskPrediction(await decide(request));
+// forecast.predicted_tokens is the estimated total task budget, including prior usage.
+// forecast.impossible_probability is reported separately.
+```
+
+Supply the observed task history and completed-call usage. The forecast counts
+uncached input plus output, including reasoning once, across the whole task.
+History preparation and transport belong to the caller. The request contains
+80 finite budget ranges through 1.5 million tokens and an `impossible` option.
+The response must include probabilities for all 81 options. Token means are
+conditional on a finite budget and are `null` when all mass is on `impossible`.

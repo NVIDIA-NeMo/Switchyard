@@ -106,6 +106,24 @@ pub fn for_request(request: &Request) -> Context {
     current.with_value(labels)
 }
 
+/// Uses turn indices supplied by a host that already tracks its session and agent.
+///
+/// This does not advance Switchyard's request counters. Poll hosted routing work
+/// in this context and attach it while recording the host's model-call metrics.
+pub fn for_turn(
+    session_id: &str,
+    agent_id: &str,
+    agent_turn_idx: i64,
+    user_turn_idx: i64,
+) -> Context {
+    Context::current().with_value(Labels(vec![
+        KeyValue::new("session_id", session_id.to_owned()),
+        KeyValue::new("agent_id", agent_id.to_owned()),
+        KeyValue::new("agent_turn_idx", agent_turn_idx),
+        KeyValue::new("user_turn_idx", user_turn_idx),
+    ]))
+}
+
 /// Appends the current request's identity and turn indices to metric attributes.
 pub fn attributes(base: &[KeyValue]) -> Vec<KeyValue> {
     let mut attributes = base.to_vec();
