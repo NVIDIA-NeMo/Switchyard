@@ -31,8 +31,7 @@ use switchyard_libsy::{
     Algorithm, PickerMode, RuntimeModels, StageRouter, StageRouterConfig, State, Step,
 };
 use switchyard_protocol::{
-    Category, ContentBlock, LlmResponse, Message, Request, Role, ToolCall, ToolResult,
-    completion_text, text_request,
+    Category, ContentBlock, Message, Request, Role, ToolCall, ToolResult, text_request,
 };
 
 // run_stream starts asynchronous tasks, so this example needs a Tokio runtime.
@@ -101,21 +100,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return Err("A decision client is required for this algorithm.".into());
                 }
                 Step::Done(outcome) => {
-                    // Done means routing is complete, not necessarily the final LLM call.
+                    // Stage returns a selected model and request, with response: None.
                     println!("{label} -> Selected: {}", outcome.selected_model_id()?);
-                    match outcome.response {
-                        Some(response) => {
-                            // Reuse an answer produced during routing, with no extra call.
-                            if let LlmResponse::Agg(answer) = response.llm_response {
-                                println!("{label} -> Answer: {}", completion_text(&answer));
-                            }
-                        }
-                        None => {
-                            // This example stops at selection and makes no provider call.
-                            // For an answer, send outcome.request through your client,
-                            // or pass it to your gateway to make that call later.
-                        }
-                    }
+                    // Stop here for routing only, or send outcome.request through your
+                    // client for an answer. Your gateway can also make that call later.
                 }
             }
         }
@@ -140,7 +128,7 @@ The demo IDs `"Efficient"` and `"Capable"` stand in for your models. The fresh r
 
 The `0.5` value is a routing confidence threshold, not a measured probability of task success. This preset is called **Auto** in TOML. Evaluate your agent and model pool against a single-model baseline before relying on savings.
 
-The loop shows every `Step`. This Stage preset yields only `Done`; the other branches report missing clients. Inside `Done`, reuse `Some(response)`. With `None`, send `outcome.request` through your client or leave that call to your gateway. The request already contains the selected model and any routing-time rewrites; `selected_model_ids` lists ordered fallbacks.
+The loop shows every `Step`. This Stage preset yields only `Done`; the other branches report missing clients. **Stage selects the model; it does not produce the answer.** Its `outcome.response` is `None`. Your application decides whether to call the selected model or pass the request back to its gateway. `outcome.request` includes the selected model and any routing-time rewrites; `selected_model_ids` lists ordered fallbacks.
 
 Next, add a client to this same program.
 
@@ -161,11 +149,11 @@ cargo add serde_json@1
 <details markdown="1">
 <summary>OpenRouter adapter: append to src/main.rs</summary>
 
-This reuses `Request` and `LlmResponse` from the imports above. It uses `reqwest` for HTTP and `switchyard-translation` for provider JSON. It returns a buffered response and requires no client trait implementation.
+This reuses `Request` from the imports above. It uses `reqwest` for HTTP and `switchyard-translation` for provider JSON. It returns a buffered response and requires no client trait implementation.
 
 ```rust
 use switchyard_libsy::LibsyError;
-use switchyard_protocol::Response;
+use switchyard_protocol::{LlmResponse, Response, completion_text};
 use switchyard_translation::{
     WireFormat, decode_aggregated_response, encode_request,
 };
@@ -242,10 +230,12 @@ Step::CallModel(call) => {
 }
 ```
 
-Inside `Step::Done`, keep `Some(response)` unchanged and replace its `None` branch with:
+Replace the existing `Step::Done` branch with this host-side final call:
 
 ```rust
-None => {
+Step::Done(outcome) => {
+    println!("{label} -> Selected: {}", outcome.selected_model_id()?);
+    // Stage has finished selecting. This call is made by your application.
     // Use the returned request, including its selected model and rewrites.
     let response = client.call(outcome.request).await?;
     if let LlmResponse::Agg(answer) = response.llm_response {
@@ -254,7 +244,7 @@ None => {
 }
 ```
 
-Your gateway can leave that branch as a routing-only handoff instead. `Some(response)` already has an answer and needs no extra call. Keep `Step::CallDecision` as-is unless you supply a separate [decision client](reference/host_integration.md#serve-routing-time-calls).
+For routing-only use, leave the original `Done` branch in place. Other algorithms may return an answer in `outcome.response`; see the [general integration pattern](../README.md#start-with-libsy) for response reuse. Keep `Step::CallDecision` as-is unless you supply a separate [decision client](reference/host_integration.md#serve-routing-time-calls).
 
 Run the same file again. **This now makes two billable model calls**, one for each request:
 

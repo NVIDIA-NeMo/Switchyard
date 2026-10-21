@@ -60,6 +60,8 @@ while let Some(step) = steps.next().await {
 }
 ```
 
+Stage returns a model selection with `outcome.response` set to `None`; your client makes the final LLM call. The response-reuse branch above supports other algorithms that already obtained an answer.
+
 Your application supplies:
 
 - **Routing inputs:** an algorithm, model pool, request, and `State`.
