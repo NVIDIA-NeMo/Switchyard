@@ -15,7 +15,7 @@ use opentelemetry::context::FutureExt as _;
 use opentelemetry::metrics::ObservableGauge;
 use opentelemetry::{Context, KeyValue, global};
 use switchyard_libsy::Result;
-use switchyard_protocol::{LlmResponse, LlmResponseChunk, ModelId, Response, WireFormat};
+use switchyard_protocol::{LlmResponse, LlmResponseChunk, ModelId, Response, Usage, WireFormat};
 use switchyard_translation::{DiagnosticSeverity, TranslationDiagnostic};
 
 static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
@@ -150,6 +150,91 @@ const fn diagnostic_severity_label(severity: &DiagnosticSeverity) -> &'static st
     }
 }
 
+/// Records complete inference-request timing, including routing and stream consumption.
+pub(crate) fn observe_request(
+    mut observation: RequestMetrics,
+    result: Result<(ModelId, Response)>,
+) -> Result<(ModelId, Response)> {
+    observation.outcome = Some(result.is_ok());
+    result.map(|(model, mut response)| {
+        if let LlmResponse::Stream(source) = response.llm_response {
+            observation.outcome = None;
+            response.llm_response = LlmResponse::Stream(Box::pin(stream::unfold(
+                (source, observation),
+                |(mut source, mut observation)| async move {
+                    let Some(item) = source.next().await else {
+                        observation.outcome.get_or_insert(true);
+                        return None;
+                    };
+                    match &item {
+                        Err(_) => observation.outcome = Some(false),
+                        Ok(event) => {
+                            for chunk in event.normalized() {
+                                match chunk {
+                                    LlmResponseChunk::StreamError { .. }
+                                    | LlmResponseChunk::DecodeError { .. } => {
+                                        observation.outcome = Some(false)
+                                    }
+                                    LlmResponseChunk::MessageStop { .. } => {
+                                        observation.outcome.get_or_insert(true);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    Some((item, (source, observation)))
+                },
+            )));
+        }
+        (model, response)
+    })
+}
+
+pub(crate) struct RequestMetrics {
+    context: Context,
+    algorithm: String,
+    started: Instant,
+    outcome: Option<bool>,
+}
+
+impl RequestMetrics {
+    pub(crate) fn new(algorithm: String, started: Instant) -> Self {
+        Self {
+            context: Context::current(),
+            algorithm,
+            started,
+            outcome: None,
+        }
+    }
+}
+
+impl Drop for RequestMetrics {
+    fn drop(&mut self) {
+        let _guard = self.context.clone().attach();
+        let attributes = switchyard_libsy::metric_context::attributes(&[
+            KeyValue::new("algorithm", self.algorithm.clone()),
+            KeyValue::new(
+                "outcome",
+                if self.outcome.unwrap_or(false) {
+                    "ok"
+                } else {
+                    "error"
+                },
+            ),
+        ]);
+        let meter = global::meter("switchyard");
+        meter
+            .u64_counter("switchyard.inference_requests")
+            .build()
+            .add(1, &attributes);
+        meter
+            .f64_histogram("switchyard.inference_duration_ms")
+            .build()
+            .record(self.started.elapsed().as_secs_f64() * 1000.0, &attributes);
+    }
+}
+
 /// Records the time needed to produce the routing outcome, including classifier calls,
 /// target resolution, request rewrites, and decision publishing.
 pub(crate) fn record_routing_overhead(algorithm: &str, overhead: Duration) {
@@ -179,8 +264,13 @@ pub(crate) fn observe_routed_request(
         duration: answer_duration,
         started: Instant::now(),
         outcome: Some(result.is_ok()),
+        usage: None,
     };
     result.map(|mut response| {
+        call.usage = response
+            .llm_response
+            .as_agg()
+            .map(|response| response.usage.clone());
         if let LlmResponse::Stream(stream) = response.llm_response {
             call.outcome = None;
             let metric_context = Context::current();
@@ -195,6 +285,9 @@ pub(crate) fn observe_routed_request(
                         Ok(event) => {
                             for chunk in event.normalized() {
                                 match chunk {
+                                    LlmResponseChunk::Usage(usage) => {
+                                        call.usage = Some(usage.clone())
+                                    }
                                     LlmResponseChunk::StreamError { .. }
                                     | LlmResponseChunk::DecodeError { .. } => {
                                         call.outcome = Some(false)
@@ -224,6 +317,7 @@ struct RoutedCallMetrics {
     started: Instant,
     // Dropping an open stream is a failure; a terminal message permits a successful drop.
     outcome: Option<bool>,
+    usage: Option<Usage>,
 }
 
 impl Drop for RoutedCallMetrics {
@@ -237,6 +331,47 @@ impl Drop for RoutedCallMetrics {
             record_answer_call(&self.algorithm, &self.model, duration, is_success);
         }
         record_routed_request(&self.model, duration, is_success);
+        if let Some(usage) = &self.usage {
+            if self.duration.is_some() {
+                switchyard_libsy::metrics::record_usage(
+                    &self.algorithm,
+                    self.model.as_str(),
+                    "answer",
+                    usage,
+                );
+            }
+            if is_success {
+                record_response_usage(self.model.as_str(), usage);
+            }
+        }
+    }
+}
+
+/// Records terminal answer usage for compatibility with the server's metric names.
+fn record_response_usage(model: &str, usage: &Usage) {
+    let attributes =
+        switchyard_libsy::metric_context::attributes(&[KeyValue::new("model", model.to_owned())]);
+    let cached = usage.cached_input_tokens();
+    let creation = usage.cache_creation_input_tokens();
+    let prompt =
+        (usage.input_tokens.is_some() || cached.is_some() || creation.is_some()).then(|| {
+            usage
+                .input_tokens
+                .unwrap_or(0)
+                .saturating_add(cached.unwrap_or(0))
+                .saturating_add(creation.unwrap_or(0))
+        });
+    let meter = global::meter("switchyard");
+    for (name, value) in [
+        ("switchyard.prompt_tokens", prompt),
+        ("switchyard.completion_tokens", usage.output_tokens),
+        ("switchyard.cached_tokens", cached),
+        ("switchyard.cache_creation_tokens", creation),
+        ("switchyard.reasoning_tokens", usage.reasoning_tokens),
+    ] {
+        if let Some(value) = value {
+            meter.u64_counter(name).build().add(value, &attributes);
+        }
     }
 }
 

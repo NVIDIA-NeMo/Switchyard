@@ -141,7 +141,6 @@ fn record_terminal(
     cache_eligible: f64,
 ) {
     let total_latency = started.elapsed();
-    record_usage(usage, model);
     record_latency(model, total_latency);
     let mut token_usage = token_usage(usage);
     token_usage.cacheable_prompt_tokens =
@@ -151,35 +150,6 @@ fn record_terminal(
 
 fn attributes(model: &str) -> [KeyValue; 1] {
     [KeyValue::new("model", model.to_string())]
-}
-
-fn record_usage(usage: &Usage, model: &str) {
-    let attributes = attributes(model);
-    let meter = global::meter("switchyard");
-    let cached = usage.cached_input_tokens();
-    let cache_creation = usage.cache_creation_input_tokens();
-
-    if usage.input_tokens.is_some() || cached.is_some() || cache_creation.is_some() {
-        let prompt =
-            usage.input_tokens.unwrap_or(0) + cached.unwrap_or(0) + cache_creation.unwrap_or(0);
-        meter
-            .u64_counter("switchyard.prompt_tokens")
-            .build()
-            .add(prompt, &libsy::metric_context::attributes(&attributes));
-    }
-    for (name, value) in [
-        ("switchyard.completion_tokens", usage.output_tokens),
-        ("switchyard.cached_tokens", cached),
-        ("switchyard.cache_creation_tokens", cache_creation),
-        ("switchyard.reasoning_tokens", usage.reasoning_tokens),
-    ] {
-        if let Some(value) = value {
-            meter
-                .u64_counter(name)
-                .build()
-                .add(value, &libsy::metric_context::attributes(&attributes));
-        }
-    }
 }
 
 fn record_latency(model: &str, latency: Duration) {

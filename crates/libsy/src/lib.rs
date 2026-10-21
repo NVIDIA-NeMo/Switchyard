@@ -54,3 +54,6 @@ mod observability;
 
 /// Request identity and turn indices shared by Switchyard metrics.
 pub mod metric_context;
+
+/// Token accounting and optional in-process metric collection.
+pub mod metrics;

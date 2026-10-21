@@ -179,6 +179,12 @@ async fn route(
 }
 ```
 
+For metrics without an HTTP server, enable `switchyard-libsy`'s `metrics` feature
+and install `switchyard_libsy::metrics::Metrics` before calling `run`. Its `stats`
+and `prometheus` methods accept a `MetricFilter` for session, agent, and turn indices.
+The driver records routing, decision, and answer token usage without a `RunObserver`.
+See [Rust metric queries](../../docs/reference/opentelemetry.md#rust-metrics-without-a-server).
+
 When targets are served by different clients — a judge on one provider and the serving
 models on another, say — build the router from `ModelId -> client` with
 [`ClientRouter::new`] instead. A model missing from that map fails with

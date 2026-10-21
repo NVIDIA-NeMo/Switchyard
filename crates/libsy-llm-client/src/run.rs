@@ -61,10 +61,17 @@ pub async fn run(
     models: Arc<RuntimeModels>,
     observer: Option<RunObserver>,
 ) -> Result<(ModelId, Response)> {
+    metrics::initialize();
     let metric_context = switchyard_libsy::metric_context::for_request(&request);
-    run_inner(algorithm, clients, request, models, observer)
-        .with_context(metric_context)
-        .await
+    let algorithm_name = algorithm.name().to_owned();
+    let started = Instant::now();
+    async move {
+        let observation = metrics::RequestMetrics::new(algorithm_name, started);
+        let result = run_inner(algorithm, clients, request, models, observer).await;
+        metrics::observe_request(observation, result)
+    }
+    .with_context(metric_context)
+    .await
 }
 
 async fn run_inner(
@@ -191,9 +198,18 @@ async fn serve_decision(
     let client = clients.route_decision(&call.model);
     let model = call.model.clone();
     let request = call.request.clone();
+    let algorithm = call.algorithm.clone();
     call.respond(async {
         let started = Instant::now();
         let result = async { client?.call(request).await }.await;
+        if let Ok(response) = &result {
+            switchyard_libsy::metrics::record_usage(
+                &algorithm,
+                model.as_str(),
+                "decision",
+                &response.usage,
+            );
+        }
         tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
         if let Some(observations) = observations {
             observations
@@ -406,9 +422,8 @@ async fn call_one(
     let result = async {
         let mut response = client?.call(request).await?;
         if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
-            let (chunks, usage) = buffer_routing_stream(chunks).await?;
-            routing_usage = usage;
-            response.llm_response = LlmResponse::Stream(chunks);
+            response.llm_response =
+                LlmResponse::Stream(buffer_routing_stream(chunks, &mut routing_usage).await?);
         }
         Ok(response)
     }
@@ -422,6 +437,19 @@ async fn call_one(
     });
     let result = observability::observe_client_call(result);
     let result = if is_routing {
+        if let Some(usage) = result
+            .as_ref()
+            .ok()
+            .and_then(|response| {
+                response
+                    .llm_response
+                    .as_agg()
+                    .map(|response| &response.usage)
+            })
+            .or(routing_usage.as_ref())
+        {
+            switchyard_libsy::metrics::record_usage(algorithm, model_id.as_str(), "routing", usage);
+        }
         result
     } else {
         metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
@@ -443,13 +471,13 @@ async fn call_one(
 // Routing logs need the final usage, but replay must keep signed provider events intact.
 async fn buffer_routing_stream(
     mut chunks: LlmResponseStream,
-) -> std::result::Result<(LlmResponseStream, Option<Usage>), LlmClientError> {
+    usage: &mut Option<Usage>,
+) -> std::result::Result<LlmResponseStream, LlmClientError> {
     let mut events = Vec::new();
-    let mut usage = None;
     while let Some(event) = chunks.try_next().await? {
         for chunk in event.normalized() {
             match chunk {
-                LlmResponseChunk::Usage(latest) => usage = Some(latest.clone()),
+                LlmResponseChunk::Usage(latest) => *usage = Some(latest.clone()),
                 LlmResponseChunk::DecodeError { message } => {
                     return Err(LlmClientError::ResponseTranslation(message.clone()));
                 }
@@ -464,7 +492,7 @@ async fn buffer_routing_stream(
         }
         events.push(event);
     }
-    Ok((stream::iter(events.into_iter().map(Ok)).boxed(), usage))
+    Ok(stream::iter(events.into_iter().map(Ok)).boxed())
 }
 
 /// Whether a failed candidate is worth routing around.

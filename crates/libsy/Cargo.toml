@@ -16,6 +16,10 @@ keywords = ["llm", "routing", "orchestration", "openai", "anthropic"]
 categories = ["asynchronous", "web-programming"]
 publish = ["crates-io"]
 
+[features]
+# In-process metric queries and Prometheus export for embedding applications.
+metrics = ["dep:opentelemetry_sdk", "dep:opentelemetry-prometheus", "dep:prometheus"]
+
 [dependencies]
 async-trait.workspace = true
 serde.workspace = true
@@ -39,6 +43,9 @@ tokio-stream = "0.1"
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 uuid.workspace = true
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics"], optional = true }
+opentelemetry-prometheus = { version = "0.32", optional = true }
+prometheus = { version = "0.14", optional = true }
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.

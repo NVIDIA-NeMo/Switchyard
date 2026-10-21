@@ -10,6 +10,87 @@ Libsy installs none of these and sends no telemetry itself. Environment variable
 alone do not enable collection. See [OTel Rust setup](https://opentelemetry.io/docs/languages/rust/)
 and [OTLP configuration](https://opentelemetry.io/docs/specs/otel/protocol/exporter/).
 
+## Rust metrics without a server
+
+Enable the `metrics` feature on `switchyard-libsy` to collect and query metrics in
+process. This needs no HTTP server, observer callback, or external collector.
+
+```toml
+switchyard-libsy = { version = "0.3", features = ["metrics"] }
+```
+
+Install the provider once, before running requests:
+
+```rust
+use switchyard_libsy::metrics::{MetricFilter, Metrics};
+
+let metrics = Metrics::install()?;
+
+// Run requests through switchyard_llm_client::run(..., None).await.
+// Consume or drop response streams before querying their final measurements.
+
+let turn = MetricFilter {
+    session_id: Some("session-123"),
+    agent_id: Some("worker-1"),
+    agent_turn_idx: Some(3),
+    ..MetricFilter::default()
+};
+let stats = metrics.stats(turn);
+let prompt_tokens = stats.counter_total("switchyard_llm_call_prompt_tokens_total");
+let text = metrics.prometheus(turn)?;
+
+let all_stats = metrics.stats(MetricFilter::default());
+let all_text = metrics.prometheus(MetricFilter::default())?;
+```
+
+Set `user_turn_idx` instead of `agent_turn_idx` to select all inference requests
+in that user turn. Set both to require both to match. Unspecified fields match all
+values. Series without the requested labels, including process-wide gauges, are
+excluded from a filtered result. No matching data returns an empty snapshot;
+unknown token counts remain absent.
+
+`stats` returns a serializable `MetricsSnapshot` with every selected counter,
+gauge, and histogram. Each series retains its name, labels, value, or histogram
+count, sum, and buckets. Metric names use the same spelling as Prometheus.
+`counter_total` sums a named counter across the selected series. `gather` exposes
+the underlying Prometheus metric families. Queries are cumulative and do not
+clear previously recorded values.
+
+The Rust snapshot preserves metric series rather than copying the server's
+`/v1/stats` model-summary JSON schema. `prometheus` provides the text representation
+used by `/metrics`. Server-only measurements, such as HTTP ingress timing and
+cache-eligibility estimates, require that server code to run. Library request
+latency is available as `switchyard_inference_duration_ms`, from entry to `run`
+through stream completion or drop.
+
+`Metrics::new` creates a collector without installing its provider. Use
+`opentelemetry::global::set_meter_provider(metrics.meter_provider().clone())` when
+the host owns setup. `install` replaces any existing global meter provider.
+Retain the handle while collecting. The default SDK limit is 2000 series per
+instrument. For longer histories, use `Metrics::with_cardinality_limit(limit)`
+and install its provider explicitly. Once the limit is reached, new series are
+combined into an overflow series and lose their original request labels.
+
+The client driver records `switchyard.llm_call.{input_tokens,prompt_tokens,
+completion_tokens,total_tokens,cached_tokens,cache_creation_tokens,reasoning_tokens}`
+for each call, with
+`algorithm`, `selected_model`, and `call_kind` (`routing`, `answer`, or `decision`)
+plus request identity. Input tokens exclude cached input. Prompt tokens include
+uncached input, cache reads, and cache creation. Total tokens retain the provider
+or codec total when available. These counters include routing responses even when they are
+reused as the answer or discarded without replay. Available streamed answer usage
+is recorded on stream completion or drop, including usage reported before a
+stream error. Missing provider usage cannot be recovered. Hosts serving libsy's
+offloaded calls without the client driver can use `metrics::record_usage` once
+per call in the request's metric context.
+
+The existing `switchyard.prompt_tokens`, `switchyard.completion_tokens`, and cache
+and reasoning counters cover successful terminal answers. They are now emitted
+by the client driver; the server uses those same counters without recording them
+again. Use the `switchyard.llm_call.*` counters to include routing and decision
+work. Reasoning tokens are a separate provider detail; do not add them to output
+counts without checking whether the provider already includes them.
+
 ## Spans and attributes
 
 | Span | Emitted by | Meaning |
