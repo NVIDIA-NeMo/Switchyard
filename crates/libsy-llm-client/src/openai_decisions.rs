@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use reqwest::Url;
+use reqwest::{Url, header::HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
@@ -16,24 +16,67 @@ use switchyard_protocol::{
     Usage,
 };
 
-use crate::decision_http::DecisionHttpClient;
-use crate::{LlmClientError, Result};
+use crate::client::convert_reqwest_error;
+use crate::{LlmClientError, Result, metrics};
 
 /// Serves typed questions through OpenAI's Decisions API.
-pub struct OpenAiDecisionClient(DecisionHttpClient);
+pub struct OpenAiDecisionClient {
+    client: reqwest::Client,
+    endpoint: Url,
+    api_key: String,
+}
 
 impl OpenAiDecisionClient {
     /// `endpoint` includes `/v1/decisions`. Each call makes one attempt, with
     /// `timeout` covering both the request and response body.
     pub fn new(endpoint: Url, api_key: String, timeout: Duration) -> Result<Self> {
-        DecisionHttpClient::new(endpoint, api_key, timeout).map(Self)
+        if HeaderValue::try_from(format!("Bearer {api_key}")).is_err() {
+            return Err(LlmClientError::Configuration {
+                message: "OpenAI Decisions API key cannot be encoded as an HTTP header".into(),
+            });
+        }
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(convert_reqwest_error)?;
+        Ok(Self {
+            client,
+            endpoint,
+            api_key,
+        })
     }
 }
 
 #[async_trait]
 impl RoutedDecisionClient for OpenAiDecisionClient {
     async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse> {
-        let response: WireResponse = self.0.post(&encode(&request)?).await?;
+        let response = self
+            .client
+            .post(self.endpoint.clone())
+            .bearer_auth(&self.api_key)
+            .json(&encode(&request)?)
+            .send()
+            .await
+            .inspect_err(|_| metrics::record_upstream_attempt(None))
+            .map_err(convert_reqwest_error)?;
+        let status = response.status();
+        let body = response
+            .bytes()
+            .await
+            .inspect_err(|_| metrics::record_upstream_attempt(None))
+            .map_err(convert_reqwest_error)?;
+        metrics::record_upstream_attempt(Some(status.as_u16()));
+        if !status.is_success() {
+            return Err(LlmClientError::UpstreamHttp {
+                status,
+                body: String::from_utf8_lossy(&body).replace(&self.api_key, "[REDACTED]"),
+            });
+        }
+        let response: WireResponse =
+            serde_json::from_slice(&body).map_err(|source| LlmClientError::InvalidResponse {
+                source: Box::new(source),
+            })?;
         let mut questions = request.questions;
         let mut answers = BTreeMap::new();
         for answer in response.answers {
