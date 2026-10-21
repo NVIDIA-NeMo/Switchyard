@@ -390,7 +390,7 @@ For the request, response, and streaming types the steps carry, see
 - [Core Concepts](core_concepts.md): LLM clients, targets, and routes
 - [`switchyard-server`](../crates/switchyard-server/README.md): server configuration,
   routing algorithms, TLS, and metrics
-- [Rust API reference](reference/rust_api.md): generated libsy and protocol
+- [Rust API reference](reference/rust_api.md): generated libsy, protocol, and translation
   documentation, crate setup, and API boundaries
 - [`switchyard-translation`](../crates/switchyard-translation/README.md):
   request, response, and stream translation

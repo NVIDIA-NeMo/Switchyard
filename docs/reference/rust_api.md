@@ -38,6 +38,10 @@ Import algorithms and orchestration types from `switchyard_libsy`. Import
 requests, responses, metadata, decisions, and LLM client traits from
 `switchyard_protocol`. Keep both dependencies on compatible versions.
 
+Add `switchyard-translation` when your application directly converts requests,
+responses, or streams between provider formats. Use a version compatible with
+your other Switchyard dependencies.
+
 ## CI previews
 
 The Documentation workflow publishes a preview for same-repository pull
