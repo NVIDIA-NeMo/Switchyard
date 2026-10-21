@@ -33,3 +33,4 @@ tracing.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 tokio.workspace = true
+wiremock = "0.6"

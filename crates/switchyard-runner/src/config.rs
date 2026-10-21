@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    SystemOneClient, TranslatingLlmClient,
+    OpenAiDecisionClient, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -46,8 +46,7 @@ pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> 
         .filter_map(|client| client.api_key_env.clone())
         .collect();
     for client in config.decision_clients.values() {
-        let DecisionClientConfig::SystemOne { api_key_env, .. } = client;
-        variables.insert(api_key_env.clone());
+        variables.insert(client.api_key_env.clone());
     }
     if variables
         .iter()
@@ -421,7 +420,8 @@ impl DeploymentConfig {
             .iter()
             .map(|(name, config)| {
                 validate_value("decision client name", name)?;
-                let DecisionClientConfig::SystemOne {
+                let DecisionClientConfig {
+                    format,
                     endpoint,
                     api_key_env,
                     timeout_ms,
@@ -432,17 +432,20 @@ impl DeploymentConfig {
                     )));
                 }
                 let api_key = read_api_key(&format!("decision client {name}"), api_key_env)?;
-                let client = SystemOneClient::new(
-                    endpoint.0.clone(),
-                    api_key.clone(),
-                    Duration::from_millis(*timeout_ms),
-                )
+                let timeout = Duration::from_millis(*timeout_ms);
+                let client = match format {
+                    DecisionFormat::SystemOne => {
+                        SystemOneClient::new(endpoint.0.clone(), api_key.clone(), timeout)
+                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                    }
+                    DecisionFormat::OpenaiDecisions => {
+                        OpenAiDecisionClient::new(endpoint.0.clone(), api_key.clone(), timeout)
+                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                    }
+                }
                 .map_err(|error| RunnerError::configuration(error.to_string()))?;
                 provider_api_keys.push(api_key);
-                Ok((
-                    name.clone(),
-                    Arc::new(client) as Arc<dyn RoutedDecisionClient>,
-                ))
+                Ok((name.clone(), client))
             })
             .collect()
     }
@@ -766,13 +769,19 @@ enum ContextDiscovery {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
-enum DecisionClientConfig {
-    SystemOne {
-        endpoint: HttpBaseUrl,
-        api_key_env: String,
-        timeout_ms: u64,
-    },
+#[serde(deny_unknown_fields)]
+struct DecisionClientConfig {
+    format: DecisionFormat,
+    endpoint: HttpBaseUrl,
+    api_key_env: String,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DecisionFormat {
+    SystemOne,
+    OpenaiDecisions,
 }
 
 #[derive(Debug, Deserialize)]
