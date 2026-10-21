@@ -1246,7 +1246,7 @@
   <span class="md-ellipsis">
     
   
-    Operations
+    Tuning
   
 
     
@@ -1262,11 +1262,126 @@
             <span class="md-nav__icon md-icon"></span>
             
   
+    Tuning
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tuning Loop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
     Operations
   
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -1351,10 +1466,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -1372,8 +1487,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1609,7 +1724,7 @@ It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.</
 <tr>
 <td>Add Switchyard routing to a Rust application</td>
 <td>Library Path</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bfff2fd7e1768cb5392ef26fbe32d1420eb71f3f/crates/libsy/README.md"><code>switchyard-libsy</code></a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ad8411deee4813bea0f46694b7cc263962b40447/crates/libsy/README.md"><code>switchyard-libsy</code></a></td>
 </tr>
 <tr>
 <td>Add Switchyard routing to NeMo Relay</td>
@@ -1638,15 +1753,17 @@ It supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.</
 <li><a href="cli_reference/">Server CLI Reference</a>: inspect <code>switchyard-server</code> commands and options</li>
 <li><a href="reference/rust_api/">Rust API</a>: browse libsy and protocol crate documentation</li>
 <li><a href="operations/context_window/">Context-Window Handling</a>: configure eviction and retry behavior</li>
+<li><a href="tuning/">Tuning</a>: the loop from verifying routing to recording a result</li>
+<li><a href="operations/troubleshooting/">Troubleshooting</a>: symptoms, silent misconfigurations, and fixes</li>
 </ul>
 <h2 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bfff2fd7e1768cb5392ef26fbe32d1420eb71f3f/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration, endpoints, and metrics</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ad8411deee4813bea0f46694b7cc263962b40447/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration, endpoints, and metrics</li>
 <li><a href="reference/rust_api/#switchyard-libsy"><code>switchyard-libsy</code></a>: embeddable routing algorithms</li>
 <li><a href="reference/rust_api/#switchyard-protocol"><code>switchyard-protocol</code></a>: provider-neutral API types</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bfff2fd7e1768cb5392ef26fbe32d1420eb71f3f/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>: protocol translation</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bfff2fd7e1768cb5392ef26fbe32d1420eb71f3f/crates/switchyard-nemo-relay-plugin/README.md"><code>switchyard-nemo-relay-plugin</code></a>: native plugin build and configuration</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bfff2fd7e1768cb5392ef26fbe32d1420eb71f3f/examples/dynamo-preproc/README.md">Dynamo / agentgateway</a>: Switchyard PreProc integration example</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ad8411deee4813bea0f46694b7cc263962b40447/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>: protocol translation</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ad8411deee4813bea0f46694b7cc263962b40447/crates/switchyard-nemo-relay-plugin/README.md"><code>switchyard-nemo-relay-plugin</code></a>: native plugin build and configuration</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ad8411deee4813bea0f46694b7cc263962b40447/examples/dynamo-preproc/README.md">Dynamo / agentgateway</a>: Switchyard PreProc integration example</li>
 </ul>
 
 
