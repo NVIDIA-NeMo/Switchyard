@@ -2054,7 +2054,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Every request</td>
 <td>Optional. Keeps the capable hold.</td>
 <td>Picker default</td>
-<td><a href="../../benchmarks/">Terminal-Bench 2.1 and DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="../../benchmarks/">Terminal-Bench 2.1 and DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2064,7 +2064,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Per trigger</td>
 <td>Optional. Needed to retain a verdict.</td>
 <td>Strong target</td>
-<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml">smoke-test config</a> is checked in.</td>
+<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml">smoke-test config</a> is checked in.</td>
 <td>That config</td>
 </tr>
 <tr>
@@ -2074,7 +2074,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Latches once. Reversible with de-escalation.</td>
 <td>Required to latch. Without it, <code>confirmations = 1</code> escalates single turns only.</td>
 <td>An unreadable verdict keeps the current tier. A failed judge call stops the request in the server.</td>
-<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">checked-in profile</a>, and a <a href="https://www.langchain.com/blog/switchyard-agent-routing-benchmark">public report</a></td>
+<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">checked-in profile</a>, and a <a href="https://www.langchain.com/blog/switchyard-agent-routing-benchmark">public report</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2084,7 +2084,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Per trigger</td>
 <td>Optional. Needed to retain a verdict.</td>
 <td><code>default_target</code></td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 profiles</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 profiles</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2104,7 +2104,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Once per session</td>
 <td>Recommended. Latches the handoff.</td>
 <td>Stays on the planner</td>
-<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2114,7 +2114,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Never. One executor serves.</td>
 <td>Scopes the review budget</td>
 <td>An unreadable verdict or a failed advisor call lets the buffered executor turn through (<code>fail_open</code>, default <code>true</code>). <code>fail_open = false</code> stops the request.</td>
-<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2125,7 +2125,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>See <a href="../vgr_routing/">the page</a></td>
 <td>Cloud tier</td>
 <td>Not benchmarked. Planned for 0.4.0.</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/examples/vgr-local-servers.toml"><code>examples/vgr-local-servers.toml</code></a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/examples/vgr-local-servers.toml"><code>examples/vgr-local-servers.toml</code></a></td>
 </tr>
 <tr>
 <td><code>prefill_router</code></td>
@@ -2226,22 +2226,22 @@ and the one dial to move first.</p>
 <ol>
 <li><strong>A coding agent, and cost comes first.</strong> Start with <code>auto</code>. When you need to
    tune, copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE stage profile</a>
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE stage profile</a>
    and move <code>confidence_threshold</code> as described in
    <a href="../stage_router_routing/#tuning-confidence_threshold">Tuning <code>confidence_threshold</code></a>.</li>
 <li><strong>Long sessions where the cheap model should run until a judge reports that it is failing.</strong>
    Use escalation. Copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a>,
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a>,
    send a session ID, and move <code>confirmations</code> as described in
    <a href="../escalation_router_routing/#tuning-options">Tuning options</a>.</li>
 <li><strong>One executor you want to keep, with a stronger model as a quality gate.</strong>
    Use the advisor gate. Copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE advisor profile</a>
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE advisor profile</a>
    and move <code>max_reviews</code> together with <code>gate_min_tool_results</code> as described in
    <a href="../advisor_gate_routing/#tuning">Tuning</a>.</li>
 </ol>
 <p>For multi-turn support traffic with few tool results, the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0f4c9b5fca8b2bb546e1c53e3e0345701f2ff960/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 custom-classifier profiles</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/af0ab5ebc5a6a0e93b0adc3a9981880daf4dc581/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 custom-classifier profiles</a>
 are the measured starting point. Their dial is the judge rubric in <code>prompt</code>.</p>
 <h3 id="auto">Auto<a class="headerlink" href="#auto" title="Permanent link">&para;</a></h3>
 <p>Auto is a preset, not a separate routing algorithm. An <code>auto</code> route builds a
