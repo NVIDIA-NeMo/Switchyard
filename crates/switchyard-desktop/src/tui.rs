@@ -1315,7 +1315,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     if base > room {
         status[1] = Span::raw(if running { "up" } else { "down" });
     }
-    if base + url.chars().count() + updated.chars().count() <= room {
+    if !app.data.metrics.server_url.is_empty()
+        && base + url.chars().count() + updated.chars().count() <= room
+    {
         status.push(Span::styled(url, theme.muted));
     }
     if base + updated.chars().count() <= room {
