@@ -12,6 +12,7 @@ use crate::{
     harness::{self, Harness},
     history, models, pricing, rollup, server,
     server_config::{ALGORITHMS, Choice, Route, ServerConfig},
+    sessions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -100,6 +101,21 @@ pub enum Action {
         tool: Harness,
         name: String,
     },
+    Launch {
+        preview_token: Option<String>,
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+        project: String,
+    },
+    PreviewLaunch {
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+        project: String,
+    },
     LoginAccount {
         tool: Harness,
         name: String,
@@ -116,6 +132,16 @@ pub enum Action {
     OpenAccount {
         tool: Harness,
         name: String,
+    },
+    OpenSession {
+        id: String,
+    },
+    PreviewSessionCleanup {
+        id: String,
+    },
+    RemoveSession {
+        id: String,
+        preview_token: Option<String>,
     },
     Restart {},
     PreviewUpdate {},
@@ -150,6 +176,12 @@ pub enum Action {
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub update_status: Value,
+    /// Each value is the `session.json` file that `sessions::launch` wrote for a managed
+    /// worktree session, plus `process_status`. The snapshot passes these files through as JSON.
+    pub session_inventory: Vec<Value>,
+    /// This field holds the error that stopped the inventory read. `session_inventory` is empty
+    /// when this field is set.
+    pub session_inventory_error: Option<String>,
     /// This field is `None` only in the terminal app's placeholder snapshot, which it shows
     /// when the app settings cannot be loaded.
     pub settings: Option<AppSettings>,
@@ -402,6 +434,17 @@ impl Review {
     }
 }
 
+// Each Controller retains one launch review until the next preview or a selected config change.
+// Review keeps raw settings private; Launch uses these values and the reviewed Git commit.
+struct ReviewedLaunch {
+    review: Review,
+    project: Value,
+    model: String,
+    server_url: String,
+    login: bool,
+    account: Option<PathBuf>,
+}
+
 pub struct Controller {
     settings: PathBuf,
     config: Config,
@@ -410,9 +453,11 @@ pub struct Controller {
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
     tool_review: Option<Review>,
+    session_cleanup: Option<(String, String, Value)>,
     account_archive: Option<(Harness, String, String)>,
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
+    launch_review: Option<ReviewedLaunch>,
 }
 impl Controller {
     pub fn new(config: Config, settings: PathBuf) -> Self {
@@ -423,9 +468,11 @@ impl Controller {
             generation: 0,
             route_reviews: Default::default(),
             tool_review: None,
+            session_cleanup: None,
             account_archive: None,
             route_change: None,
             update_review: None,
+            launch_review: None,
         }
     }
     fn reload(&mut self) -> Result<(), String> {
@@ -435,6 +482,7 @@ impl Controller {
             self.route_reviews.clear();
             self.tool_review = None;
             self.route_change = None;
+            self.launch_review = None;
         }
         self.config = config;
 
@@ -636,6 +684,10 @@ impl Controller {
         let update_status = install_metadata(&self.settings)
             .and_then(|path| switchyard_desktop::install::update_status(&path))
             .unwrap_or_else(|error| json!({"state":"unavailable","message":error}));
+        let (session_inventory, session_inventory_error) = match sessions::inventory() {
+            Ok(inventory) => (inventory, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
         let sessions = history.sessions();
         let Config {
             server_url,
@@ -648,6 +700,8 @@ impl Controller {
         } = self.config.clone();
         Ok(Snapshot {
             update_status,
+            session_inventory,
+            session_inventory_error,
             data_state: DataState {
                 usage: Source {
                     state: usage_state,
@@ -726,9 +780,16 @@ impl Controller {
             }
             Action::OpenUpdateLog {} => self.update_log().map(Some),
             Action::OpenLogs {} => logs_dir().map(Some),
-            // An account folder opens in the editor too, because a terminal may run over SSH,
-            // where `open` would start a file manager on another screen.
+            // Account and session folders open in the editor too, because a terminal may run
+            // over SSH, where `open` would start a file manager on another screen.
             Action::OpenAccount { tool, name } => account_path(*tool, Some(name)),
+            Action::OpenSession { id } => {
+                let receipt = sessions::managed_session(id)?;
+                let worktree = receipt["worktree"]
+                    .as_str()
+                    .ok_or("Missing session directory.")?;
+                Ok(Some(PathBuf::from(worktree)))
+            }
             _ => Ok(None),
         }
     }
@@ -1055,6 +1116,102 @@ impl Controller {
             Action::AddAccount { tool, name } => {
                 accounts::add(tool, name.trim()).map(Reply::message)
             }
+            Action::Launch {
+                tool,
+                account,
+                route,
+                id,
+                project,
+                preview_token,
+            } => {
+                let inputs =
+                    json!({"tool":tool,"account":account,"route":route,"id":id,"project":project});
+                let plan = self
+                    .launch_review
+                    .as_ref()
+                    .ok_or("Review the session before opening Terminal.")?;
+                plan.review.check(preview_token.as_deref(), &inputs)?;
+                let current = sessions::preview(std::path::Path::new(&project))?;
+                if current != plan.project {
+                    return Err(
+                        "The project changed since review. Review the session again.".into(),
+                    );
+                }
+                sessions::launch(
+                    tool,
+                    std::path::Path::new(
+                        plan.project["project"]
+                            .as_str()
+                            .ok_or("Missing reviewed project.")?,
+                    ),
+                    &plan.model,
+                    &plan.server_url,
+                    plan.login,
+                    plan.account.as_deref(),
+                    plan.project["revision"]
+                        .as_str()
+                        .ok_or("Missing reviewed commit.")?,
+                )
+                .map(Reply::message)
+            }
+            Action::PreviewLaunch {
+                tool,
+                account,
+                route,
+                id,
+                project,
+            } => {
+                if tool == Harness::CodexApp {
+                    return Err("Use Codex app’s workspace controls or choose Codex CLI.".into());
+                }
+                if harness::binary(tool).is_none() {
+                    return Err("Install the selected harness first.".into());
+                }
+                let inputs =
+                    json!({"tool":tool,"account":account,"route":route,"id":id,"project":project});
+                let review = Review::capture(
+                    inputs.clone(),
+                    vec![self.config.config_file.clone(), self.settings.clone()],
+                )?;
+                let app_config = Config::load(&self.settings)?;
+                review.check(Some(&review.token), &inputs)?;
+                if app_config.config_file != self.config.config_file {
+                    return Err("Review these changes again before applying them.".into());
+                }
+                let config = ServerConfig::parse(review.original()?).map_err(
+                    |_| "The server config contains invalid TOML. Open it in Settings to fix it.",
+                )?;
+                let route = current_route(&config, &route, Some(&id))?;
+                let login = login_mode(tool, &config, &route)?;
+                let account = account_path(tool, account.as_deref())?;
+                let project_review = sessions::preview(std::path::Path::new(&project))?;
+                let mut data = project_review.clone();
+                data["tool"] = json!(tool);
+                data["route"] = json!(route.id);
+                data["account_directory"] = json!(account);
+                data["server_url"] = json!(app_config.server_url);
+                data["login"] = json!(login);
+                if tool == Harness::Pi {
+                    data["settings_notice"] = json!(
+                        "Pi uses isolated session settings. \
+                         Personal settings and extensions are not copied."
+                    );
+                }
+                review.check(Some(&review.token), &inputs)?;
+                data["preview_token"] = json!(review.token);
+                self.launch_review = Some(ReviewedLaunch {
+                    review,
+                    project: project_review,
+                    model: route.id,
+                    server_url: app_config.server_url,
+                    login,
+                    account,
+                });
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
             Action::LoginAccount { tool, name } => {
                 let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
                 accounts::login(tool, &path, &name).map(Reply::message)
@@ -1097,6 +1254,37 @@ impl Controller {
                 let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
                 server::command("open", &[&path.display().to_string()])?;
                 Ok(Reply::message("Opened the account folder.".into()))
+            }
+            Action::OpenSession { id } => {
+                let receipt = sessions::managed_session(&id)?;
+                server::command(
+                    "open",
+                    &[receipt["worktree"]
+                        .as_str()
+                        .ok_or("Missing session directory.")?],
+                )?;
+                Ok(Reply::message("Opened the session folder.".into()))
+            }
+            Action::PreviewSessionCleanup { id } => {
+                let data = sessions::cleanup_preview(&id)?;
+                let token = uuid::Uuid::now_v7().to_string();
+                self.session_cleanup = Some((id, token.clone(), data.clone()));
+                let mut data = data;
+                data["preview_token"] = json!(token);
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
+            Action::RemoveSession { id, preview_token } => {
+                let (expected_id, token, data) = self
+                    .session_cleanup
+                    .as_ref()
+                    .ok_or("Review session cleanup first.")?;
+                if &id != expected_id || preview_token.as_deref() != Some(token.as_str()) {
+                    return Err("Review session cleanup again.".into());
+                }
+                sessions::cleanup(&id, data).map(Reply::message)
             }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
@@ -1363,6 +1551,169 @@ fn update(settings: &std::path::Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The subprocess isolates harness discovery and every launch destination.
+    #[cfg(unix)]
+    #[test]
+    fn session_launch_requires_an_unchanged_review_before_creating_files() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::{fs, process::Command};
+        if let Some(home) = std::env::var_os("SWITCHYARD_LAUNCH_REVIEW_FIXTURE") {
+            let home = PathBuf::from(home);
+            let project = home.join("project");
+            let git = |args: &[&str]| {
+                let result = Command::new("/usr/bin/git")
+                    .arg("-C")
+                    .arg(&project)
+                    .args(args)
+                    .output()
+                    .expect("git");
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            };
+            fs::create_dir(&project).expect("project");
+            git(&["init"]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ]);
+            let settings = home.join("desktop.toml");
+            let server = home.join("server.toml");
+            let text = "[llm_clients.c]\n\
+                        base_url='http://localhost:1234'\n\
+                        [targets.m]\n\
+                        id='actual'\n\
+                        llm_client='c'\n\
+                        [routes.r]\n\
+                        id='public'\n\
+                        type='passthrough'\n\
+                        target='m'\n";
+            fs::write(&server, text).expect("server");
+            fs::write(
+                &settings,
+                format!(
+                    "config_file={server:?}\nrouting_log={:?}\n",
+                    home.join("routing.jsonl")
+                ),
+            )
+            .expect("settings");
+            let mut controller =
+                Controller::new(Config::load(&settings).expect("settings"), settings.clone());
+            let preview = |controller: &mut Controller| {
+                controller
+                    .dispatch(Action::PreviewLaunch {
+                        tool: Harness::CodexCli,
+                        account: None,
+                        route: "r".into(),
+                        id: "public".into(),
+                        project: project.display().to_string(),
+                    })
+                    .expect("preview")
+            };
+            let launch = |token: Option<String>, path: String| Action::Launch {
+                tool: Harness::CodexCli,
+                account: None,
+                route: "r".into(),
+                id: "public".into(),
+                project: path,
+                preview_token: token,
+            };
+            let reviewed = preview(&mut controller);
+            let token = reviewed.data["preview_token"]
+                .as_str()
+                .expect("token")
+                .to_string();
+            for rejected in [
+                launch(None, project.display().to_string()),
+                launch(Some("wrong".into()), project.display().to_string()),
+                launch(Some(token.clone()), home.display().to_string()),
+            ] {
+                assert!(controller.dispatch(rejected).is_err());
+            }
+            fs::write(&server, format!("{text}# external edit\n")).expect("edit");
+            assert!(
+                controller
+                    .dispatch(launch(Some(token), project.display().to_string()))
+                    .is_err()
+            );
+            assert_eq!(
+                fs::read_to_string(&server).expect("preserved"),
+                format!("{text}# external edit\n")
+            );
+            let reviewed = preview(&mut controller);
+            let token = reviewed.data["preview_token"]
+                .as_str()
+                .expect("token")
+                .to_string();
+            let original = fs::read_to_string(&settings).expect("settings");
+            fs::write(&settings, format!("{original}# external settings\n")).expect("edit");
+            assert!(
+                controller
+                    .dispatch(launch(Some(token), project.display().to_string()))
+                    .is_err()
+            );
+            let reviewed = preview(&mut controller);
+            let token = reviewed.data["preview_token"]
+                .as_str()
+                .expect("token")
+                .to_string();
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "changed",
+            ]);
+            assert!(
+                controller
+                    .dispatch(launch(Some(token), project.display().to_string()))
+                    .err()
+                    .expect("changed HEAD")
+                    .contains("project changed")
+            );
+            assert!(!home.join(".switchyard/worktrees").exists());
+            assert!(!home.join("terminal-called").exists());
+            assert_eq!(fs::read_dir(&home).expect("files").count(), 4);
+            return;
+        }
+        let home = tempfile::tempdir().expect("fixture");
+        let bin = home.path().join("bin");
+        fs::create_dir(&bin).expect("bin");
+        for name in ["codex", "open", "osascript"] {
+            let path = bin.join(name);
+            fs::write(
+                &path,
+                "#!/bin/sh\ntouch \"$HOME/terminal-called\"\nexit 0\n",
+            )
+            .expect("stub");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("executable");
+        }
+        let output=Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "controller::tests::session_launch_requires_an_unchanged_review_before_creating_files"])
+            .env("SWITCHYARD_LAUNCH_REVIEW_FIXTURE",home.path()).env("HOME",home.path())
+            .env("PATH",format!("{}:/usr/bin:/bin",bin.display())).output().expect("child");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     #[test]
     // An algorithm switch must not give stale choices a revision for externally edited bytes.
     fn algorithm_switches_keep_the_first_revision_and_external_edits_reject_it() {

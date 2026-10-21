@@ -528,7 +528,6 @@ fn configured(
     Ok(incoming)
 }
 
-#[cfg(test)]
 pub fn install(
     tool: Harness,
     files: &[PathBuf],
