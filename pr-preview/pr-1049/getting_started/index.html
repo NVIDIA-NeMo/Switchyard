@@ -2237,7 +2237,7 @@ more control over how requests are routed.</p>
 <code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
 model on <code>GET /v1/models</code>.</p>
 <p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/01f2715e2e82a8e937c061a5939de69b8d62b8bc/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
+and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a0531fbed3e443720caa4e90b08378493932055e/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
 the complete TOML schema, route options, TLS, and metrics.</p>
 <h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
 <p><strong>No API key / auth error</strong></p>
@@ -2329,7 +2329,7 @@ Decision calls use the same pattern with their existing decision response type.<
 returns normally. Python waits for task cleanup before returning. For concurrent
 algorithms, schedule each Python handler with <code>asyncio.create_task</code> and cancel and
 await remaining handlers when the run ends; see the complete
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/01f2715e2e82a8e937c061a5939de69b8d62b8bc/examples/libsy.py">Python example</a>. Awaiting handlers one at a time inside the
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a0531fbed3e443720caa4e90b08378493932055e/examples/libsy.py">Python example</a>. Awaiting handlers one at a time inside the
 step loop serializes their execution. Rust hosts can use <code>libsy::drive</code> to manage
 concurrent handlers and their lifetime.</p>
 <p>After a response stream is delivered, its consumer controls its lifetime.
@@ -2344,16 +2344,16 @@ the same identity, selected models, and supported evidence fields. See
 the <a href="../reference/opentelemetry/">OpenTelemetry reference</a> for field names, metrics,
 and export setup. libsy does not install an exporter or send telemetry itself.</p>
 <p>For the request, response, and streaming types the steps carry, see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/01f2715e2e82a8e937c061a5939de69b8d62b8bc/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a0531fbed3e443720caa4e90b08378493932055e/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
 <hr />
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/01f2715e2e82a8e937c061a5939de69b8d62b8bc/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a0531fbed3e443720caa4e90b08378493932055e/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
   routing algorithms, TLS, and metrics</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol
   documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/01f2715e2e82a8e937c061a5939de69b8d62b8bc/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a0531fbed3e443720caa4e90b08378493932055e/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
   request, response, and stream translation</li>
 </ul>
 
