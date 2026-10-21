@@ -1250,7 +1250,7 @@
   <span class="md-ellipsis">
     
   
-    Operations
+    Tuning
   
 
     
@@ -1266,11 +1266,126 @@
             <span class="md-nav__icon md-icon"></span>
             
   
+    Tuning
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tuning Loop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
     Operations
   
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -1355,10 +1470,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -1376,8 +1491,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1640,19 +1755,16 @@ stamp every request of one evaluation with it, sub-agents included, so the
 budget means "reviews for this task" even behind a gateway shared by many
 tasks — then the session id resolved from harness headers (such as
 <code>x-switchyard-session-id</code>), and one scope per server when neither is present.
-For hosts that return client errors to the core algorithm, a failed consult refunds
-the review budget and counts toward a separate cap of 3. The Rust runner stops on
-HTTP client errors before returning them to the algorithm, so failed HTTP calls
-do not refund this budget. An unparseable verdict still refunds the budget and
-passes the turn through as APPROVE.</p>
+A failed consult refunds the review budget and counts toward a separate cap of 3.
+An unparseable verdict also refunds the budget and passes the turn through as
+APPROVE.</p>
 <p>Long sessions are truncated middle-out before the consult: the transcript keeps
 the task statement at the start and the most recent work at the end, marked
 <code>...&lt;middle of the conversation truncated&gt;...</code>, capped at
-<code>transcript_max_chars</code>. <code>fail_open</code> controls failures returned to the core
-algorithm by its host. The Rust runner stops the request after an HTTP client's
-configured retries fail or its deadline expires, even with <code>fail_open = true</code>.
-HTTP client errors also stop the request when <code>timeout_ms</code> is unset. A timeout
-before the answer starts returns <code>504</code>.</p>
+<code>transcript_max_chars</code>. <code>fail_open</code> (default <code>true</code>) lets the buffered executor
+turn through when the advisor call fails after its client's retries or deadline,
+and <code>/v1/stats</code> counts the failure under <code>advisor_gate.consult_failures</code>. With
+<code>fail_open = false</code> the request stops with a server error instead.</p>
 <p>Gate behavior is observable at <code>/v1/stats</code> under <code>advisor_gate</code>: verdicts by
 trigger, consult failures by reason, and REDO-discarded turns with their token
 counts (the client never saw those turns, so terminal usage accounting alone
