@@ -730,6 +730,12 @@ pub trait Algorithm: Send + Sync + 'static {
     /// emits for its runs.
     fn name(&self) -> &str;
 
+    /// Validate and prepare input before routing or a host's stored-state shortcut.
+    /// Hosts may also call this before `run_stream`, so changes must be idempotent.
+    fn prepare_request(&self, _request: &mut Request) -> Result<()> {
+        Ok(())
+    }
+
     /// Select a route, requesting external work through [`Driver`] as needed.
     /// [`run_stream`](Self::run_stream) runs this method and exposes its work to the host.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;
@@ -743,7 +749,7 @@ pub trait Algorithm: Send + Sync + 'static {
     /// Every invocation owns a separate [`Driver`].
     fn run_stream(
         self: Arc<Self>,
-        request: Request,
+        mut request: Request,
         models: Arc<RuntimeModels>,
         state: State,
     ) -> StepStream {
@@ -754,7 +760,12 @@ pub trait Algorithm: Send + Sync + 'static {
             async move {
                 let algorithm = self.name().to_string();
                 // Catch a panicking algorithm so the run still publishes a terminal step.
-                let route = AssertUnwindSafe(self.route(driver.clone(), request)).catch_unwind();
+                let route_driver = driver.clone();
+                let route = AssertUnwindSafe(async move {
+                    self.prepare_request(&mut request)?;
+                    self.route(route_driver, request).await
+                })
+                .catch_unwind();
                 let result = observability::observe_run(&algorithm, async move {
                     route.await.unwrap_or_else(|payload| {
                         Err(LibsyError::AlgorithmError {

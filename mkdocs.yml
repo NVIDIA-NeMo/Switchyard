@@ -40,6 +40,7 @@ nav:
       - Composite Routing: routing_algorithms/composite_routing.md
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
+      - Best of N Actions: routing_algorithms/best_of_n_actions.md
       - Verification-Gated Routing: routing_algorithms/vgr_routing.md
   - Operations:
       - Context-Window Handling: operations/context_window.md

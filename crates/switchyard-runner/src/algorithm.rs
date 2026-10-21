@@ -10,14 +10,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
-    AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
-    ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
-    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
-    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
-    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
-    Vgr, VgrConfig,
+    AdvisorGate, AdvisorGateConfig, Algorithm, BestOfNActions, BestOfNActionsConfig, BreakerConfig,
+    CapabilityJudgeConfig, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
+    CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
+    CustomClassifierPolicy, DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger,
+    HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
+    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels,
+    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -398,6 +398,13 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Samples next actions from one generator and returns the first sample.
+    BestOfNActions {
+        /// Target used for every sampled generation.
+        generator_target: String,
+        #[serde(flatten)]
+        config: BestOfNActionsConfig,
+    },
     /// Plans on the capable target, then permanently hands off after the first mutation.
     PlanExecute {
         /// Target used before the first edit or write.
@@ -770,6 +777,9 @@ impl AlgorithmSpec {
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
             Self::Noop { .. } => Vec::new(),
+            Self::BestOfNActions {
+                generator_target, ..
+            } => vec![generator_target],
             Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
             Self::Passthrough {
                 target, subagents, ..
@@ -905,6 +915,9 @@ impl AlgorithmSpec {
     fn runtime_model_names(&self, route_name: &str) -> AlgorithmResult<RuntimeModelNames> {
         let parent = match self {
             Self::Noop { .. } => HashMap::new(),
+            Self::BestOfNActions {
+                generator_target, ..
+            } => category_models([(Category::Any, vec![generator_target.clone()])]),
             Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
                 category_models([(Category::Any, targets.clone())])
             }
@@ -1007,27 +1020,32 @@ impl AlgorithmSpec {
     }
 
     /// Response target and routing-only dependency for routers that answer while routing.
-    pub(crate) fn routing_response_and_dependency(&self) -> Option<(&str, &str)> {
+    pub(crate) fn routing_response_and_dependency(&self) -> Option<(&str, Option<&str>)> {
         match self {
+            Self::BestOfNActions {
+                generator_target, ..
+            } => Some((generator_target, None)),
             Self::LlmClassifier { config, .. }
                 if matches!(config.classifier_mode(), ClassifierMode::Escalation) =>
             {
                 Some((
                     config.weak_target.as_deref()?,
-                    config.classifier_target.as_str(),
+                    Some(config.classifier_target.as_str()),
                 ))
             }
             Self::Advisor {
                 executor_target,
                 advisor_target,
                 ..
-            } => Some((executor_target, advisor_target)),
+            } => Some((executor_target, Some(advisor_target))),
             Self::Vgr { config } => Some((
                 &config.local_target,
-                config
-                    .judge_target
-                    .as_deref()
-                    .unwrap_or(&config.local_target),
+                Some(
+                    config
+                        .judge_target
+                        .as_deref()
+                        .unwrap_or(&config.local_target),
+                ),
             )),
             Self::Noop { .. }
             | Self::Random { .. }
@@ -1472,6 +1490,15 @@ fn build_algorithm(
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
+        AlgorithmSpec::BestOfNActions { config, .. } => {
+            let algorithm = BestOfNActions::new(config.clone()).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("best_of_n_actions route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Random {
             targets: names,
             weights,

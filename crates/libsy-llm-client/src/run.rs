@@ -56,10 +56,11 @@ use crate::{metrics, observability};
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
-    request: Request,
+    mut request: Request,
     models: Arc<RuntimeModels>,
     observer: Option<RunObserver>,
 ) -> Result<(ModelId, Response)> {
+    algorithm.prepare_request(&mut request)?;
     let algorithm_name = algorithm.name().to_string();
     let run_started = Instant::now();
     let routing_clients = clients.clone();
@@ -130,9 +131,10 @@ pub async fn run(
 pub async fn decide(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
-    request: Request,
+    mut request: Request,
     models: Arc<RuntimeModels>,
 ) -> Result<RoutingOutcome> {
+    algorithm.prepare_request(&mut request)?;
     let routing_clients = clients.clone();
     let mut outcome = match clients.stored_state_owner(&request) {
         Some(owner) => continue_on(owner, algorithm.name(), request),
@@ -193,6 +195,7 @@ fn emit_routing_observations(
     let (Some(observer), Some(observations)) = (observer, observations) else {
         return;
     };
+    // TODO: Match sampled answers by call ID when several calls share the answered model.
     let mut answer_observed = false;
     for observation in observations.lock().drain(..) {
         observer(match observation {
@@ -1050,6 +1053,175 @@ mod tests {
 
     struct AnsweredAlgorithm {
         model: ModelId,
+    }
+
+    #[tokio::test]
+    async fn best_of_n_actions_overrides_preserved_temperature_and_sends_exactly_n_requests()
+    -> Result<()> {
+        use switchyard_libsy::{BestOfNActions, BestOfNActionsConfig};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "sample", "object": "chat.completion", "model": "generator",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(
+            TranslatingLlmClient::new(&[ModelConfig::new(
+                "generator",
+                Backend::OpenAiChat(HttpBackendConfig {
+                    base_url: server.uri(),
+                    api_key: None,
+                    forward_auth: false,
+                    extra_headers: BTreeMap::new(),
+                    extra_body: BTreeMap::new(),
+                    omit_body_fields: BTreeSet::new(),
+                    reasoning_effort: None,
+                    max_retries: 0,
+                    failure_cooldown: std::time::Duration::ZERO,
+                    timeout: None,
+                }),
+                None,
+            )])
+            .unwrap(),
+        );
+        let clients = ClientRouter::new_with_target_prompts(
+            HashMap::from([("generator".into(), client)]),
+            HashMap::from([("generator".into(), "Use the tools.".into())]),
+            Some("generator".into()),
+        );
+        let request = Request {
+            llm_request: switchyard_translation::decode_request(
+                WireFormat::OpenAiChat,
+                &json!({"model": "route", "messages": [{"role": "user", "content": "fix it"}], "temperature": 0.0}),
+            ).unwrap(),
+            ..Request::default()
+        };
+        let (_, response) = run(
+            Arc::new(BestOfNActions::new(BestOfNActionsConfig {
+                num_candidates: 3,
+                temperature: 0.7,
+                ..Default::default()
+            })?),
+            clients,
+            request,
+            to_category_map(&["generator"]),
+            None,
+        )
+        .await?;
+        assert_eq!(
+            completion_text(response.llm_response.as_agg().unwrap()),
+            "done"
+        );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body["model"], "generator");
+            assert_eq!(body["temperature"], 0.7);
+            assert_eq!(body["messages"][0]["content"], "Use the tools.");
+            assert_eq!(body["messages"][1]["content"], "fix it");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn best_of_n_actions_checks_and_prepares_continuations_before_the_state_owner_shortcut()
+    -> Result<()> {
+        use switchyard_libsy::{BestOfNActions, BestOfNActionsConfig};
+
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        });
+        let clients = ClientRouter::single(client.clone());
+        clients
+            .inner
+            .state_owners
+            .lock()
+            .remember(
+                Some("stored-response"),
+                Some("stored-conversation"),
+                &"generator".into(),
+                None,
+            )
+            .unwrap();
+        for (field, id) in [
+            ("previous_response_id", "stored-response"),
+            ("conversation", "stored-conversation"),
+        ] {
+            let mut input = request();
+            input
+                .llm_request
+                .extensions
+                .fields
+                .insert(field.into(), json!(id));
+            assert!(clients.stored_state_owner(&input).is_some());
+            let algorithm = Arc::new(BestOfNActions::new(BestOfNActionsConfig::default())?);
+            let result = run(
+                algorithm.clone(),
+                clients.clone(),
+                input.clone(),
+                to_category_map(&["generator"]),
+                None,
+            )
+            .await;
+            assert!(matches!(
+                result,
+                Err(LibsyError::ClientCall {
+                    source: LlmClientError::InvalidRequest { .. },
+                    ..
+                })
+            ));
+            let result = decide(
+                algorithm,
+                clients.clone(),
+                input,
+                to_category_map(&["generator"]),
+            )
+            .await;
+            assert!(matches!(
+                result,
+                Err(LibsyError::ClientCall {
+                    source: LlmClientError::InvalidRequest { .. },
+                    ..
+                })
+            ));
+        }
+        assert!(client.calls.lock().is_empty());
+
+        let mut input = request();
+        input.llm_request.sampling.temperature = Some(0.0);
+        input
+            .llm_request
+            .extensions
+            .fields
+            .insert("previous_response_id".into(), json!("stored-response"));
+        let algorithm = Arc::new(BestOfNActions::new(BestOfNActionsConfig {
+            num_candidates: 1,
+            temperature: 0.7,
+            ..Default::default()
+        })?);
+        run(
+            algorithm.clone(),
+            clients.clone(),
+            input.clone(),
+            to_category_map(&["generator"]),
+            None,
+        )
+        .await?;
+        assert_eq!(
+            client.requests.lock()[0].llm_request.sampling.temperature,
+            Some(0.7)
+        );
+        let outcome = decide(algorithm, clients, input, to_category_map(&["generator"])).await?;
+        assert_eq!(outcome.request.llm_request.sampling.temperature, Some(0.7));
+        Ok(())
     }
 
     #[async_trait]

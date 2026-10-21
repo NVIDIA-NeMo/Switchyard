@@ -653,14 +653,18 @@ impl DeploymentConfig {
         if !policy.prompts.contains_key(&response.id) {
             return Ok(policy);
         }
-        let dependency = self.targets.get(dependency_name).ok_or_else(|| {
-            RunnerError::configuration(format!("route references unknown target {dependency_name}"))
-        })?;
-        if response.id == dependency.id {
-            return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
-                response.id,
-            )));
+        if let Some(dependency_name) = dependency_name {
+            let dependency = self.targets.get(dependency_name).ok_or_else(|| {
+                RunnerError::configuration(format!(
+                    "route references unknown target {dependency_name}"
+                ))
+            })?;
+            if response.id == dependency.id {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} cannot apply system_prompt to target {response_name}: model {} is also used by routing-only target {dependency_name}",
+                    response.id,
+                )));
+            }
         }
         policy.routing_answer_target = Some(response.id.clone());
         Ok(policy)
@@ -979,6 +983,82 @@ fn validate_value(label: &str, value: &str) -> RunnerResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use switchyard_protocol::Category;
+
+    const SAMPLED_CONFIG: &str = r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://localhost:8000/v1"
+[targets.executor]
+id = "generator"
+llm_client = "local"
+system_prompt = "Use the supplied tools."
+[routes.sampled]
+id = "switchyard/sampled-actions"
+type = "best_of_n_actions"
+generator_target = "executor"
+"#;
+
+    #[test]
+    fn best_of_n_actions_resolves_defaults_overrides_and_target_prompt() -> RunnerResult<()> {
+        for settings in [
+            "",
+            "\nnum_candidates = 2\ntemperature = 0.6\ncandidate_timeout_ms = 5000",
+        ] {
+            let configured = format!("{SAMPLED_CONFIG}{settings}");
+            let deployment: DeploymentConfig = toml::from_str(&configured).unwrap();
+            let route = &deployment.routes["sampled"];
+            assert_eq!(route.algorithm.routing_target_names(), ["executor"]);
+            assert_eq!(route.algorithm.callable_target_names(), ["executor"]);
+            assert!(!route.algorithm.supports_model_selection());
+            let policy = deployment.build_route_target_prompts("sampled", route)?;
+            assert_eq!(policy.routing_answer_target, Some("generator".into()));
+            let AlgorithmSpec::BestOfNActions { config, .. } = &route.algorithm else {
+                panic!("wrong algorithm");
+            };
+            assert_eq!(
+                config.temperature,
+                if settings.is_empty() { 0.8 } else { 0.6 }
+            );
+            assert_eq!(
+                config.num_candidates,
+                if settings.is_empty() { 4 } else { 2 }
+            );
+            assert_eq!(
+                config.candidate_timeout_ms,
+                if settings.is_empty() { 60_000 } else { 5_000 }
+            );
+            let runner = Runner::from_toml(&configured)?;
+            let route = runner.route("switchyard/sampled-actions").unwrap();
+            assert_eq!(route.algorithm_name(), "best_of_n_actions");
+            assert_eq!(
+                route.models().models_for(&Category::Any),
+                [ModelId::from("generator")]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn best_of_n_actions_rejects_invalid_configuration() {
+        for (setting, expected) in [
+            ("num_candidates = 0", "num_candidates must be at least 1"),
+            ("temperature = nan", "temperature must be finite"),
+            ("temperature = 3.0", "temperature must be finite"),
+            (
+                "candidate_timeout_ms = 0",
+                "candidate_timeout_ms must be at least 1",
+            ),
+            ("temperatur = 0.8", "temperatur"),
+        ] {
+            let message = match Runner::from_toml(&format!("{SAMPLED_CONFIG}\n{setting}")) {
+                Ok(_) => panic!("invalid configuration was accepted"),
+                Err(error) => error.to_string(),
+            };
+            assert!(message.contains(expected), "{message}");
+        }
+    }
 
     #[test]
     fn route_presentation_fields_are_split_from_the_algorithm() {

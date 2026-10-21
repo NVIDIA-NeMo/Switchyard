@@ -216,6 +216,20 @@ see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 | `target` | Yes | Target used for parent and harness-maintenance requests. |
 | `subagents` | No | Nested `passthrough` or `llm_classifier` policy used only for delegated sub-agent work. Nested classifiers currently support only `mode = "custom"`. |
 
+### `best_of_n_actions`
+
+Samples next actions concurrently from one generator and returns sample `0` in
+request order. Scoring and deduplication remain TODOs. See
+[Best of N Actions](../routing_algorithms/best_of_n_actions.md) for response
+behavior and supported requests.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `generator_target` | Yes | — | Target used for every sample. |
+| `num_candidates` | No | `4` | Positive number of separate generation calls. |
+| `temperature` | No | `0.8` | Overrides the caller's temperature. Finite value in `0..=2`, subject to provider limits. |
+| `candidate_timeout_ms` | No | `60000` | Positive deadline for each complete candidate when `N > 1`. |
+
 ### `random`
 
 Splits traffic across targets. See
