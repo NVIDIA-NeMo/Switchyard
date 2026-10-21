@@ -31,7 +31,7 @@ Refer to the [embedding example](https://github.com/NVIDIA-NeMo/Switchyard/blob/
 
 ## Routing algorithms
 
-Start with Auto. Choose Task, Execution, or Composite when you need more control. These names describe routing choices. The configuration keys are unchanged.
+Start with Auto. Choose Task, Execution, or Composite when you need more control. These names describe routing choices.
 
 | Choice | How it chooses |
 | --- | --- |
@@ -40,7 +40,7 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 | **[Execution](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/stage_router_routing/)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. |
 | **[Composite](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/composite_routing/)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. |
 
-The [routing overview](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/overview/) retains the full catalogue, including [Plan/Execute](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/plan_execute_routing/), [escalation](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/escalation_router_routing/), [advisor](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/advisor_gate_routing/), [sub-agent](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/subagent_routing/), and [random](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/random_routing/) strategies. Integration support varies: check the gateway guide before choosing an algorithm.
+The [routing overview](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/overview/) retains the full catalogue, including [Plan/Execute](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/plan_execute_routing/), [escalation](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/escalation_router_routing/), [advisor](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/advisor_gate_routing/), [sub-agent](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/subagent_routing/), and [random](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/random_routing/) strategies.
 
 [Prefill routing](https://nvidia-nemo.github.io/Switchyard/routing_algorithms/prefill_routing/) is designed for fast, efficient model selection using a model's prefill activations and a classifier trained on your own evaluation data.
 
