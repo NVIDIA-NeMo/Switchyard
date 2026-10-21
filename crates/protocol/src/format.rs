@@ -20,6 +20,9 @@ pub enum WireFormat {
     /// OpenAI Responses API.
     #[serde(rename = "openai_responses")]
     OpenAiResponses,
+    /// Amazon Bedrock Converse API; the host owns AWS transport framing.
+    #[serde(rename = "bedrock_converse")]
+    BedrockConverse,
 }
 
 impl WireFormat {
@@ -29,6 +32,7 @@ impl WireFormat {
             Self::OpenAiChat => "openai_chat",
             Self::AnthropicMessages => "anthropic_messages",
             Self::OpenAiResponses => "openai_responses",
+            Self::BedrockConverse => "bedrock_converse",
         }
     }
 }
