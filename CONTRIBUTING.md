@@ -213,6 +213,7 @@ public symbols from the owning crate or package rather than the top-level
 - **Code comments** — explain the *why*, not the *what*. One line max unless complex.
 - **Docstrings** — include for public APIs. Format: one-line summary, blank line, details, examples.
 - **README** — keep in sync with CLI surface (commands, flags, new subcommands).
+- **[PyPI description](crates/switchyard-py/pypi.md)** — keep in sync with Python API, project, and documentation link changes.
 - **docs/** — architecture, design decisions, advanced usage.
 
 ## Questions?
