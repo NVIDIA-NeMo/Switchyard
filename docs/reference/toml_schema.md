@@ -175,6 +175,34 @@ model ID as that route's judge or reviewer because those calls would otherwise b
 at the client boundary; Switchyard rejects that configuration when it loads.
 Token-count requests do not apply target system prompts.
 
+## `[decision_clients.<name>]`
+
+Decision clients serve typed judgments for routing classifiers.
+
+| Key | Required | Meaning |
+|---|:---:|---|
+| `format` | Yes | `system_one` or `openai_decisions`. |
+| `endpoint` | Yes | Full API URL, including the endpoint path. |
+| `api_key_env` | Yes | Environment variable holding a non-empty API key. |
+| `timeout_ms` | Yes | Request and response deadline in milliseconds; must be at least `1`. |
+
+For [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions):
+
+```toml
+[decision_clients.decisions]
+format = "openai_decisions"
+endpoint = "https://api.openai.com/v1/decisions"
+api_key_env = "OPENAI_API_KEY"
+timeout_ms = 5000
+
+[decision_targets.judge]
+id = "gpt-6-luna"
+decision_client = "decisions"
+```
+
+Each `decision_targets` entry pairs an upstream model `id` with a `decision_client`.
+OpenAI receives structured context, instructions, and descriptions as JSON text.
+
 ## `[routes.<name>]`
 
 Every route takes the common keys below, plus the keys for its type.

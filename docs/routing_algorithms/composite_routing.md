@@ -111,22 +111,8 @@ evidence = { description = "Add task-relevant evidence comparing a and b." }
 ```
 
 Both candidates must be completion targets. The judge must be a decision target.
-For [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions),
-use these client and model settings with the same classifier configuration:
-
-```toml
-[decision_clients.decisions]
-format = "openai_decisions"
-endpoint = "https://api.openai.com/v1/decisions"
-api_key_env = "OPENAI_API_KEY"
-timeout_ms = 5000
-
-[decision_targets.judge]
-id = "gpt-6-luna"
-decision_client = "decisions"
-```
-
-Structured context, instructions, and descriptions are sent as JSON text.
+See the [decision client reference](../reference/toml_schema.md#decision_clientsname)
+for OpenAI Decisions configuration.
 
 The classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
