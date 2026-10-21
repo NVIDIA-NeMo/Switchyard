@@ -671,6 +671,7 @@ impl FormatCodec for GeminiGenerateContentCodec {
                     "topP",
                     "topK",
                     "maxOutputTokens",
+                    "stopSequences",
                     "responseMimeType",
                     "responseJsonSchema",
                     "responseSchema",
@@ -688,6 +689,23 @@ impl FormatCodec for GeminiGenerateContentCodec {
                 if config.get(key).is_some_and(|v| v.as_u64().is_none()) {
                     return Err(invalid(key, "expected a non-negative integer"));
                 }
+            }
+            if let Some(stops) = config.get("stopSequences") {
+                if !stops
+                    .as_array()
+                    .is_some_and(|values| values.iter().all(Value::is_string))
+                {
+                    return Err(invalid("stopSequences", "expected an array of strings"));
+                }
+                // Chat reads stop_sequences; Anthropic reads stop.
+                request
+                    .extensions
+                    .fields
+                    .insert("stop_sequences".into(), stops.clone());
+                request
+                    .extensions
+                    .fields
+                    .insert("stop".into(), stops.clone());
             }
             request.sampling = SamplingParams {
                 temperature: config.get("temperature").and_then(Value::as_f64),
@@ -759,7 +777,9 @@ impl FormatCodec for GeminiGenerateContentCodec {
             )?;
         }
         for key in request.extensions.fields.keys() {
-            if key == crate::codecs::common::ANTHROPIC_REQUEST_KEY {
+            if matches!(key.as_str(), "stop" | "stop_sequences")
+                || key == crate::codecs::common::ANTHROPIC_REQUEST_KEY
+            {
                 continue;
             }
             push_lossy(
@@ -830,6 +850,27 @@ impl FormatCodec for GeminiGenerateContentCodec {
             }});
         }
         let mut config = serde_json::Map::new();
+        if let Some(stops) = request
+            .extensions
+            .fields
+            .get("stop_sequences")
+            .or_else(|| request.extensions.fields.get("stop"))
+        {
+            let stops = match stops {
+                Value::String(stop) => json!([stop]),
+                Value::Array(values) if values.iter().all(Value::is_string) => stops.clone(),
+                Value::Null => Value::Null,
+                _ => {
+                    return Err(invalid(
+                        "stopSequences",
+                        "expected a string or array of strings",
+                    ));
+                }
+            };
+            if !stops.is_null() {
+                config.insert("stopSequences".into(), stops);
+            }
+        }
         for (key, value) in [
             (
                 "temperature",
@@ -957,14 +998,19 @@ impl FormatCodec for GeminiGenerateContentCodec {
         }
         if let Some(usage) = body.get("usageMetadata") {
             let cached = usage.get("cachedContentTokenCount").and_then(Value::as_u64);
+            let reasoning = usage.get("thoughtsTokenCount").and_then(Value::as_u64);
             response.usage = Usage {
                 input_tokens: usage
                     .get("promptTokenCount")
                     .and_then(Value::as_u64)
                     .map(|n| n.saturating_sub(cached.unwrap_or(0))),
                 cache: Usage::cache_details(cached, None),
-                output_tokens: usage.get("candidatesTokenCount").and_then(Value::as_u64),
-                reasoning_tokens: usage.get("thoughtsTokenCount").and_then(Value::as_u64),
+                output_tokens: usage
+                    .get("candidatesTokenCount")
+                    .and_then(Value::as_u64)
+                    .map(|n| n.saturating_add(reasoning.unwrap_or(0)))
+                    .or(reasoning),
+                reasoning_tokens: reasoning,
                 total_tokens: usage.get("totalTokenCount").and_then(Value::as_u64),
             };
         }
@@ -1054,7 +1100,12 @@ impl FormatCodec for GeminiGenerateContentCodec {
                 }),
             ),
             ("cachedContentTokenCount", usage.cached_input_tokens()),
-            ("candidatesTokenCount", usage.output_tokens),
+            (
+                "candidatesTokenCount",
+                usage
+                    .output_tokens
+                    .map(|n| n.saturating_sub(usage.reasoning_tokens.unwrap_or(0))),
+            ),
             ("thoughtsTokenCount", usage.reasoning_tokens),
             ("totalTokenCount", usage.total_tokens),
         ] {

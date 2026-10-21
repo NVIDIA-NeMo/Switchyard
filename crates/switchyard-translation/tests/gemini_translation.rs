@@ -150,7 +150,7 @@ fn media_and_thoughts_reach_neutral_ir_without_visible_reasoning() {
 }
 
 #[test]
-fn response_usage_normalizes_cache_and_keeps_reasoning_separate() {
+fn response_usage_normalizes_cache_and_includes_reasoning_in_output() {
     let engine = TranslationEngine::default();
     let body = json!({"responseId":"r1","modelVersion":"gemini-test","candidates":[
         {"index":0,"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"MAX_TOKENS"},
@@ -161,7 +161,7 @@ fn response_usage_normalizes_cache_and_keeps_reasoning_separate() {
         .unwrap()
         .response;
     assert_eq!(ir.usage.input_tokens, Some(30));
-    assert_eq!(ir.usage.output_tokens, Some(20));
+    assert_eq!(ir.usage.output_tokens, Some(30));
     assert_eq!(ir.usage.reasoning_tokens, Some(10));
     assert_eq!(ir.outputs[1].stop_reason, Some(StopReason::ContentFilter));
     assert_eq!(
@@ -171,6 +171,92 @@ fn response_usage_normalizes_cache_and_keeps_reasoning_separate() {
             .body,
         body
     );
+}
+
+#[test]
+fn stop_sequences_translate_in_both_directions() {
+    let engine = TranslationEngine::default();
+    let native = json!({"contents":[{"role":"user","parts":[{"text":"Hello"}]}],
+        "generationConfig":{"stopSequences":["END", "DONE"]}});
+    let chat = engine
+        .translate_request(GEMINI, WireFormat::OpenAiChat, &native, &reconstruct())
+        .unwrap();
+    assert_eq!(chat.body["stop"], json!(["END", "DONE"]));
+    let anthropic = engine
+        .translate_request(
+            GEMINI,
+            WireFormat::AnthropicMessages,
+            &native,
+            &reconstruct(),
+        )
+        .unwrap();
+    assert_eq!(anthropic.body["stop_sequences"], json!(["END", "DONE"]));
+    for (format, body) in [
+        (WireFormat::OpenAiChat, chat.body),
+        (
+            WireFormat::OpenAiChat,
+            json!({"messages":[{"role":"user","content":"Hello"}],"stop":"END"}),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"messages":[{"role":"user","content":"Hello"}],"max_tokens":100,"stop_sequences":["END", "DONE"]}),
+        ),
+    ] {
+        let expected = if body["stop"].is_string() {
+            json!(["END"])
+        } else {
+            json!(["END", "DONE"])
+        };
+        let translated = engine
+            .translate_request(format, GEMINI, &body, &reconstruct())
+            .unwrap();
+        assert_eq!(
+            translated.body["generationConfig"]["stopSequences"],
+            expected
+        );
+    }
+    let back = engine
+        .translate_request(GEMINI, GEMINI, &native, &reconstruct())
+        .unwrap();
+    assert_eq!(back.body, native);
+}
+
+#[test]
+fn reasoning_tokens_survive_cross_format_usage_translation() {
+    let engine = TranslationEngine::default();
+    for (candidates, thoughts, output) in [
+        (Some(20), Some(10), 30),
+        (Some(20), None, 20),
+        (None, Some(10), 10),
+    ] {
+        let mut usage = json!({"promptTokenCount":100,"totalTokenCount":100 + output});
+        if let Some(count) = candidates {
+            usage["candidatesTokenCount"] = json!(count);
+        }
+        if let Some(count) = thoughts {
+            usage["thoughtsTokenCount"] = json!(count);
+        }
+        let native = json!({"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}],"usageMetadata":usage});
+        let chat = engine
+            .translate_response(GEMINI, WireFormat::OpenAiChat, &native, &reconstruct())
+            .unwrap();
+        assert_eq!(chat.body["usage"]["completion_tokens"], output);
+        assert_eq!(
+            chat.body["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            json!(thoughts)
+        );
+        let back = engine
+            .translate_response(WireFormat::OpenAiChat, GEMINI, &chat.body, &reconstruct())
+            .unwrap();
+        assert_eq!(
+            back.body["usageMetadata"]["candidatesTokenCount"],
+            candidates.unwrap_or(0)
+        );
+        assert_eq!(
+            back.body["usageMetadata"]["thoughtsTokenCount"],
+            json!(thoughts)
+        );
+    }
 }
 
 #[test]
@@ -378,6 +464,8 @@ fn mismatched_tool_result_and_invalid_generation_numbers_fail() {
         json!({"temperature":"hot"}),
         json!({"maxOutputTokens":-1}),
         json!({"topK":1.5}),
+        json!({"stopSequences":"END"}),
+        json!({"stopSequences":[1]}),
     ] {
         assert!(
             engine

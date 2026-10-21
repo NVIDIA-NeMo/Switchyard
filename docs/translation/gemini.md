@@ -6,9 +6,11 @@ same neutral IR as OpenAI Chat, OpenAI Responses, and Anthropic Messages.
 
 The codec covers conversation text, system instructions, function declarations,
 calls and results, inline images/audio/video, audio/video file URIs, thinking
-text, common sampling and JSON output settings, stop reasons, and token usage.
-Gemini cache-read input tokens are separated from uncached input. Thought tokens
-remain separate from visible output tokens.
+text, common sampling and JSON output settings, stop sequences, stop reasons,
+and token usage. Gemini cache-read input tokens are separated from uncached
+input. Output token counts include thought tokens, with the thought count also
+reported separately. Encoding Gemini usage subtracts that detail from the
+candidate count.
 
 The model belongs in the Gemini request URL. The codec does not add a `model`
 property to native request JSON. Callers own URL selection. This does not add
