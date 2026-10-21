@@ -84,6 +84,9 @@ pub enum ClassifierPolicyConfig {
         target: String,
         /// Frozen task ledger, resolved beside a file-loaded deployment.
         db_path: PathBuf,
+        /// Use a typed decision target for requirement status and evidence choices.
+        #[serde(default)]
+        decision_api: bool,
     },
 }
 
@@ -107,7 +110,11 @@ impl ClassifierPolicyConfig {
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<CustomClassifierPolicy> {
         match self {
-            Self::RequirementFeedback { target, db_path } => {
+            Self::RequirementFeedback {
+                target,
+                db_path,
+                decision_api,
+            } => {
                 let target = resolve_target_model_id(route_name, &target, targets)?;
                 let source = std::fs::read_to_string(&db_path).map_err(|error| {
                     AlgorithmConfigError::with_source(
@@ -124,7 +131,9 @@ impl ClassifierPolicyConfig {
                 let policy = RequirementFeedbackPolicy::new(target, ledger).map_err(|error| {
                     AlgorithmConfigError::with_source("invalid requirement ledger", error)
                 })?;
-                Ok(CustomClassifierPolicy::RequirementFeedback(policy))
+                Ok(CustomClassifierPolicy::RequirementFeedback(
+                    policy.with_decision_api(decision_api),
+                ))
             }
             Self::TargetSelector { selector } => {
                 Ok(CustomClassifierPolicy::target_selector(selector))
@@ -842,6 +851,34 @@ impl AlgorithmSpec {
             Self::LlmClassifier { config } => {
                 matches!(config.classifier_mode(), ClassifierMode::Capability)
                     && config.classify_trigger == ClassifyTrigger::EveryRequest
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn uses_decision_target(&self, name: &str) -> bool {
+        if self
+            .decision_judge()
+            .is_some_and(|(judge, _)| judge == name)
+        {
+            return true;
+        }
+        match self {
+            Self::LlmClassifier { config }
+                if matches!(
+                    config.policy,
+                    Some(ClassifierPolicyConfig::RequirementFeedback {
+                        decision_api: true,
+                        ..
+                    })
+                ) =>
+            {
+                config.models.as_ref().is_some_and(|models| {
+                    models
+                        .get(&Category::Judge)
+                        .iter()
+                        .any(|judge| judge == name)
+                })
             }
             _ => false,
         }

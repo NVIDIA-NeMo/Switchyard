@@ -334,6 +334,40 @@ The policy uses the existing `JudgeClassifier`, `StructuredJudge`,
 `JsonSchemaDecoder`, transcript renderer, and `append_note`. It is a custom
 classifier policy and cannot serve as a composite tier judge.
 
+To use the composite router's typed decision API, set
+`policy.decision_api = true` and define `models.judge` under
+`[decision_targets]` instead of `[targets]`:
+
+```toml
+[decision_clients.decisions]
+format = "system_one"
+endpoint = "https://openrouter.ai/api/alpha/decisions"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_ms = 60000
+
+[decision_targets.judge]
+id = "inception/mercury-decide:free"
+decision_client = "decisions"
+```
+
+This opt-in mode asks three independent choice questions per requirement in one
+request: status, verification, and the strongest evidence block (or `none`). It
+copies the selected block verbatim from the observed transcript, then uses the
+same ledger and citation validator and note injection. Missing or inconsistent
+choices reject the entire assessment and the acting model continues without a
+note. No generated explanation is available; the note identifies the selected
+status, verification, and source block explicitly. The original requirements,
+current assessments, one-hot vectors, and met bits remain in the handoff.
+
+The existing custom route still requires `response_schema` for compatibility;
+typed decision mode uses its fixed choice contract instead. The prompt and full
+transcript remain the judge context. No generation or reasoning settings are
+sent to the decision API. Debug logs record the complete typed request, response,
+usage, elapsed time, rejection/failure events, and exact injected note. Model
+probabilities are preserved in the response log; they are not calibrated
+correctness guarantees. A local Mercury replay missed an `inflight` conflict
+that Astra identified, so lower latency does not establish equivalent accuracy.
+
 Measure actual verifier pass rate and total dollar cost, including observer
 calls and feedback tokens. Accuracy gains have not been established. Full-prefix
 review adds an LLM call and its latency to every request; event-triggered review

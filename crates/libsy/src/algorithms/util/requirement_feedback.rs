@@ -3,15 +3,20 @@
 
 //! Cited requirement assessments appended to one configured target's request.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+
+use async_trait::async_trait;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use switchyard_protocol::{ContentBlock, Message, ModelId, Request, Role};
+use switchyard_protocol::{
+    Category, ChoiceOption, ContentBlock, DecisionKind, DecisionQuestion, DecisionRequest,
+    DecisionResponse, DecisionValue, Message, ModelId, Request, Response, Role,
+};
 
 use super::llm_judge::{ClassifierInput, JudgePolicy};
 use super::transcript::message_text;
-use crate::{Classification, Driver, LibsyError, Result, State};
+use crate::{Classification, Classifier, Driver, LibsyError, Result, State};
 
 /// A task ledger prepared before observing solution work.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -42,6 +47,7 @@ pub struct Requirement {
 pub struct RequirementFeedbackPolicy {
     target: ModelId,
     ledger: RequirementLedger,
+    pub(crate) decision_api: bool,
 }
 
 impl RequirementFeedbackPolicy {
@@ -62,7 +68,17 @@ impl RequirementFeedbackPolicy {
                 message: "requirement ledger needs an original instruction, unique nonempty IDs, criteria, evidence scopes, and exact source quotes".into(),
             });
         }
-        Ok(Self { target, ledger })
+        Ok(Self {
+            target,
+            ledger,
+            decision_api: false,
+        })
+    }
+
+    /// Uses typed decision questions instead of a generated JSON assessment.
+    pub fn with_decision_api(mut self, enabled: bool) -> Self {
+        self.decision_api = enabled;
+        self
     }
 
     /// Adds the frozen ledger and the shared evidence rubric to the judge prompt.
@@ -167,6 +183,163 @@ impl ClassifierInput for RequirementFeedbackPolicy {
                 json!(messages),
             ),
         )]
+    }
+}
+
+/// Reuses the decision transport and the same cited feedback policy.
+pub(crate) struct RequirementDecisionClassifier {
+    pub policy: RequirementFeedbackPolicy,
+    pub prompt: String,
+}
+
+fn choice(instructions: Value, options: Vec<ChoiceOption>) -> DecisionQuestion {
+    DecisionQuestion {
+        instructions,
+        kind: DecisionKind::Choice { options },
+    }
+}
+
+fn options(ids: &[&str]) -> Vec<ChoiceOption> {
+    ids.iter()
+        .map(|id| ChoiceOption {
+            id: (*id).into(),
+            description: Some(json!(id)),
+        })
+        .collect()
+}
+
+impl RequirementDecisionClassifier {
+    fn decision(
+        &self,
+        state: &State,
+        request: &Request,
+    ) -> (DecisionRequest, BTreeMap<String, Value>) {
+        let transcript = self.policy.build_messages(state, request);
+        let mut evidence = BTreeMap::new();
+        for (message_index, message) in request.llm_request.messages.iter().enumerate() {
+            for (block_index, block) in message.content.iter().enumerate() {
+                let call_id = match block {
+                    ContentBlock::ToolCall(call) if message.role == Role::Assistant => &call.id,
+                    ContentBlock::ToolResult(result)
+                        if matches!(message.role, Role::Tool | Role::User) =>
+                    {
+                        &result.tool_call_id
+                    }
+                    _ => continue,
+                };
+                let quote = block_text(message.role, block);
+                if !quote.trim().is_empty() {
+                    evidence.insert(format!("m{message_index}_b{block_index}"), json!({
+                        "message": message_index, "block": block_index, "call_id": call_id, "quote": quote
+                    }));
+                }
+            }
+        }
+        let mut evidence_options = options(&["none"]);
+        evidence_options.extend(evidence.iter().map(|(id, citation)| ChoiceOption {
+            id: id.clone(), description: Some(json!({"message": citation["message"], "block": citation["block"], "call_id": citation["call_id"]})),
+        }));
+        let mut questions = BTreeMap::new();
+        for requirement in &self.policy.ledger.requirements {
+            questions.insert(format!("{}_status", requirement.id), choice(json!({
+                "requirement": requirement,
+                "instructions": "Assess ONLY this observed prefix. missing=no evidence; weak=claims or indirect evidence; incomplete=partial implementation or stale/unverified work; supported_as_met=current tool-result evidence establishes the whole criterion; contradicted=tool-result evidence demonstrates a conflict. Read relevant code and checks, not the agent's claim of completion."
+            }), options(&["missing", "weak", "incomplete", "supported_as_met", "contradicted"])));
+            questions.insert(format!("{}_verification", requirement.id), choice(json!({
+                "requirement": requirement,
+                "instructions": "Select current only if relevant verification covers the current artifact; stale if later edits invalidate the check; missing if absent; not_required only if this criterion needs no execution check."
+            }), options(&["missing", "current", "stale", "not_required"])));
+            questions.insert(format!("{}_evidence", requirement.id), choice(json!({
+                "requirement": requirement,
+                "instructions": "Select the single strongest source block supporting your status judgment. Use none if there is no evidence. supported_as_met and contradicted need a tool RESULT, not just a proposed command. References identify exact message/block indices in the transcript."
+            }), evidence_options.clone()));
+        }
+        (
+            DecisionRequest {
+                model: None,
+                context: json!({"instructions": self.policy.extend_prompt(&self.prompt), "transcript": transcript}),
+                questions,
+            },
+            evidence,
+        )
+    }
+
+    fn verdict(
+        &self,
+        response: &DecisionResponse,
+        decision: &DecisionRequest,
+        evidence: &BTreeMap<String, Value>,
+        request: &Request,
+    ) -> Option<Value> {
+        if response.answers.len() != decision.questions.len() {
+            return None;
+        }
+        let selected = |id: &str| -> Option<&str> {
+            let DecisionValue::Choice { selected, .. } = &response.answers.get(id)?.value else {
+                return None;
+            };
+            let DecisionKind::Choice { options } = &decision.questions.get(id)?.kind else {
+                return None;
+            };
+            options
+                .iter()
+                .any(|option| option.id == *selected)
+                .then_some(selected.as_str())
+        };
+        let mut rows = Vec::new();
+        for requirement in &self.policy.ledger.requirements {
+            let status = selected(&format!("{}_status", requirement.id))?;
+            let verification = selected(&format!("{}_verification", requirement.id))?;
+            let source = selected(&format!("{}_evidence", requirement.id))?;
+            let citations = if source == "none" {
+                vec![]
+            } else {
+                vec![evidence.get(source)?.clone()]
+            };
+            rows.push(json!({"id": requirement.id, "status": status, "verification": verification,
+                "explanation": format!("Decision-model selection: {status}; verification: {verification}; evidence block: {source}. No free-form explanation was generated."),
+                "evidence": citations}));
+        }
+        Some(
+            json!({"through_message": request.llm_request.messages.len().checked_sub(1)?, "requirements": rows}),
+        )
+    }
+}
+
+#[async_trait]
+impl Classifier for RequirementDecisionClassifier {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(Classification, Option<Response>)> {
+        let judge = driver.first_model_for(&Category::Judge)?;
+        let (mut decision, evidence) = self.decision(state, request);
+        decision.model = Some(judge.clone());
+        let started = std::time::Instant::now();
+        tracing::debug!(target: "switchyard::shadow", event = "judge_request", judge_model = %judge,
+            session_id = request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
+            correlation_id = request.metadata.as_ref().and_then(|m| m.correlation_id.as_deref()),
+            payload = %json!(decision), "requirement decision request");
+        match driver.call_decision(decision.clone(), judge.clone()).await {
+            Ok(response) => {
+                tracing::debug!(target: "switchyard::shadow", event = "judge_response", judge_model = %judge,
+                    session_id = request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
+                    correlation_id = request.metadata.as_ref().and_then(|m| m.correlation_id.as_deref()),
+                    elapsed_ms = started.elapsed().as_millis() as u64, payload = %json!(response), "requirement decision response");
+                if let Some(verdict) = self.verdict(&response, &decision, &evidence, request) {
+                    self.policy.apply_handoff_note(&verdict, request);
+                } else {
+                    tracing::warn!(target: "switchyard::shadow", event = "feedback_rejected", reason = "invalid_decision_choices", "requirement feedback omitted");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(target: "switchyard::shadow", event = "judge_failed", elapsed_ms = started.elapsed().as_millis() as u64,
+                    reason = super::llm_judge::libsy_error_reason(&error), "requirement decision failed; continuing without feedback");
+            }
+        }
+        Ok((super::decisive(&self.policy.target), None))
     }
 }
 
@@ -346,6 +519,97 @@ mod tests {
             "explanation": "The regression check passed.",
             "evidence": [{"message": 2, "block": 0, "call_id": "test-1", "quote": "parser regression passed"}]
         }]})
+    }
+
+    #[test]
+    fn decision_choices_reuse_evidence_validation_and_note_vectors() {
+        let classifier = RequirementDecisionClassifier {
+            policy: policy().with_decision_api(true),
+            prompt: "Review requirements".into(),
+        };
+        let request = request();
+        let (decision, evidence) = classifier.decision(&State::default(), &request);
+        assert!(!decision.context.to_string().contains("private reasoning"));
+        let response = |status: &str, verification: &str, source: &str| DecisionResponse {
+            id: None,
+            model: None,
+            usage: Default::default(),
+            answers: [
+                ("R01_status", status),
+                ("R01_verification", verification),
+                ("R01_evidence", source),
+            ]
+            .into_iter()
+            .map(|(id, selected)| {
+                (
+                    id.into(),
+                    switchyard_protocol::DecisionAnswer {
+                        value: DecisionValue::Choice {
+                            selected: selected.into(),
+                            probabilities: None,
+                        },
+                        provider_confidence: None,
+                    },
+                )
+            })
+            .collect(),
+        };
+        for (status, verification, source, valid) in [
+            ("missing", "missing", "none", true),
+            ("supported_as_met", "current", "m2_b0", true),
+            ("contradicted", "current", "m2_b0", true),
+            ("incomplete", "stale", "m1_b1", true),
+            ("supported_as_met", "stale", "m2_b0", false),
+            ("supported_as_met", "current", "m1_b1", false),
+            ("supported_as_met", "current", "none", false),
+            ("supported_as_met", "current", "invented", false),
+            ("invented", "current", "m2_b0", false),
+        ] {
+            let verdict = classifier.verdict(
+                &response(status, verification, source),
+                &decision,
+                &evidence,
+                &request,
+            );
+            assert_eq!(
+                verdict
+                    .as_ref()
+                    .and_then(|v| classifier.policy.assessment(v, &request))
+                    .is_some(),
+                valid,
+                "{status} {verification} {source}"
+            );
+        }
+        let mut incomplete = response("missing", "missing", "none");
+        incomplete.answers.remove("R01_evidence");
+        assert!(
+            classifier
+                .verdict(&incomplete, &decision, &evidence, &request)
+                .is_none()
+        );
+        let verdict = classifier
+            .verdict(
+                &response("supported_as_met", "current", "m2_b0"),
+                &decision,
+                &evidence,
+                &request,
+            )
+            .unwrap();
+        let mut injected = request.clone();
+        classifier
+            .policy
+            .apply_handoff_note(&verdict, &mut injected);
+        let note = injected
+            .llm_request
+            .messages
+            .last()
+            .unwrap()
+            .text_content("")
+            .unwrap();
+        assert!(note.contains(r#""one_hot":[0,0,0,1,0]"#));
+        assert!(note.contains("parser regression passed"));
+        assert!(note.contains("Fix the parser."));
+        assert!(note.contains("No free-form explanation was generated."));
     }
 
     #[test]

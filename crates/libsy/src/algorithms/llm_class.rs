@@ -28,7 +28,7 @@ use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
     SerdeDecoder, StructuredJudge,
 };
-use super::util::requirement_feedback::RequirementFeedbackPolicy;
+use super::util::requirement_feedback::{RequirementDecisionClassifier, RequirementFeedbackPolicy};
 use super::util::target_selector::TargetSelectorPolicy;
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -761,6 +761,12 @@ impl LlmTaskClassifier {
         config.validate()?;
         let (policy, prompt) = match &config.policy {
             CustomClassifierPolicy::RequirementFeedback(feedback) => {
+                if feedback.decision_api {
+                    return Ok(Arc::new(RequirementDecisionClassifier {
+                        policy: feedback.clone(),
+                        prompt: config.prompt.clone(),
+                    }));
+                }
                 let contract = ClassifierContract::from_inner_schema(
                     &feedback.extend_prompt(&config.prompt),
                     config.response_schema.clone(),
