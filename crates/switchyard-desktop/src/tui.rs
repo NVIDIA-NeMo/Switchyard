@@ -116,9 +116,9 @@ const UPDATE_KEYS: &[Key] = &[
 const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
 const CONFIRM_KEYS: &[Key] = &[("y", "confirm", ""), ("n", "cancel", "")];
 
-/// The Settings page lists one entry per controller action. `App::start_action` matches
-/// `ActionKind` without a wildcard arm, so a new controller action breaks the build until it
-/// has an entry here.
+/// The Settings page lists one entry per controller action. A new controller action breaks the
+/// build until `App::start_action` runs it, and `every_controller_action_has_a_settings_key`
+/// fails until it has an entry here.
 const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
     (
         'o',
