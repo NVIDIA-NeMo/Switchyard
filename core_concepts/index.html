@@ -1294,7 +1294,7 @@
   <span class="md-ellipsis">
     
   
-    Operations
+    Tuning
   
 
     
@@ -1310,11 +1310,126 @@
             <span class="md-nav__icon md-icon"></span>
             
   
+    Tuning
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tuning Loop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
     Operations
   
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -1399,10 +1514,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -1420,8 +1535,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1745,7 +1860,7 @@ inside the TOML file. Their <code>id</code> fields have different external meani
 putting that ID in its <code>model</code> field. The native Rust server does not discover
 or register additional provider models automatically. Each entry reports the route's
 declared <code>context_window</code> as its top-level <code>context_length</code> field (see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7dddc65a099704a97cb1dd0f4858acc15ac2cda5/crates/switchyard-server/README.md#model-discovery">model discovery</a>). The
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f7295b7aa547c030327107d23d31f91fc4b7c7d9/crates/switchyard-server/README.md#model-discovery">model discovery</a>). The
 response includes an empty Codex <code>models</code> array so Codex keeps its own catalog and instructions. Select route
 aliases explicitly; they do not appear automatically in Codex's model picker.</p>
 <h2 id="routing-algorithms">Routing Algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h2>
@@ -1800,8 +1915,8 @@ selected target uses a different upstream protocol.</p>
 <li><a href="../cli_reference/">Server CLI Reference</a>: standalone server arguments.</li>
 <li><a href="../routing_algorithms/llm_classifier_routing/">LLM Classifier Routing</a>: configure classifier routing.</li>
 <li><a href="../architecture/">Architecture</a>: follow a request through the server and Rust crates.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7dddc65a099704a97cb1dd0f4858acc15ac2cda5/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7dddc65a099704a97cb1dd0f4858acc15ac2cda5/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f7295b7aa547c030327107d23d31f91fc4b7c7d9/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: complete TOML schema, endpoints, and metrics.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f7295b7aa547c030327107d23d31f91fc4b7c7d9/crates/libsy/README.md"><code>switchyard-libsy</code></a>: embed and extend routing algorithms in Rust.</li>
 <li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy and protocol documentation.</li>
 </ul>
 
