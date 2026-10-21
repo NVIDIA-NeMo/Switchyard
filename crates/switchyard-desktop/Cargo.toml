@@ -32,6 +32,8 @@ shlex = "2"
 strum = { version = "0.28", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL"] }
 security-framework = "3"
 
 [target.'cfg(unix)'.dependencies]
@@ -44,6 +46,7 @@ dbus-secret-service = { version = "4.1", features = ["crypto-rust", "vendored"] 
 [target.'cfg(windows)'.dependencies]
 mslnk = "0.1.8"
 self-replace = "1.5"
+windows = { version = "0.62.2", features = ["Management_Deployment", "ApplicationModel"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
