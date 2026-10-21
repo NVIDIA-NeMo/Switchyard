@@ -34,8 +34,8 @@ def test_getting_started_documents_current_paths() -> None:
     assert "cargo add switchyard-llm-client" not in guide
     assert "client.call(outcome.request).await?" in guide
     assert "```python" not in guide + readme
-    assert "Fresh request -> Selected: Efficient" in guide
-    assert "Tool failure -> Selected: Capable" in guide
+    assert "Selected: Efficient" in guide
+    assert "Selected: Capable" in guide
     assert "## See routing change" not in guide
     assert "operations/local_evaluation.md" in guide
     assert "switchyard launch" not in guide

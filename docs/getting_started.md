@@ -2,7 +2,7 @@
 
 Add routing to your existing Rust gateway or agent harness with **libsy**, Switchyard's core library. Your application keeps its model clients, credentials, and service.
 
-Start with a local routing decision, then send the selected request through a model client. Python bindings are covered [separately](reference/host_integration.md#python-bindings).
+Start with a local routing decision. Then add tool history or send the selected request through your own model client. Python bindings are covered [separately](reference/host_integration.md#python-bindings).
 
 ## Install
 
@@ -20,91 +20,52 @@ cargo add tokio@1 --features macros,rt
 
 ## Route a request
 
-Replace `src/main.rs` with this complete example. It routes two requests through the same Stage router: a fresh request and a recovery request with a failed tool call.
+Replace `src/main.rs` with this complete example. It selects a model locally, without an API key:
 
 ```rust
-// Arc lets both requests share the router and model pool.
 use std::{collections::HashMap, sync::Arc};
-// StreamExt provides next() for reading the algorithm's steps.
 use futures::StreamExt;
 use switchyard_libsy::{
     Algorithm, PickerMode, RuntimeModels, StageRouter, StageRouterConfig, State, Step,
 };
-use switchyard_protocol::{
-    Category, ContentBlock, Message, Request, Role, ToolCall, ToolResult, text_request,
-};
+use switchyard_protocol::{Category, Request, text_request};
 
-// run_stream starts asynchronous tasks, so this example needs a Tokio runtime.
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // EfficientFirst is the default when tool signals do not decide the tier.
-    // 0.5 is the signal-confidence threshold. No LLM judge is configured here.
+    // Start with Efficient when tool history gives no reason to change models.
     let router = Arc::new(StageRouter::new(StageRouterConfig::new(
         PickerMode::EfficientFirst, 0.5,
     ))?);
-    // Replace these demo IDs with provider model IDs when adding a client.
     let efficient = "Efficient";
     let capable = "Capable";
-    // Efficient/Capable assign roles; Any lists the full model pool.
+    // Assign model roles; Any lists the full pool. These are local demo IDs.
     let models = Arc::new(RuntimeModels::new(HashMap::from([
         (Category::Efficient, vec![efficient.into()]),
         (Category::Capable, vec![capable.into()]),
         (Category::Any, vec![efficient.into(), capable.into()]),
     ])));
-    // None leaves the model unset so the router can select it.
-    // This request has only a user prompt, with no previous tool activity.
-    let fresh = Request {
+    // Leave the model unset so Stage can select it.
+    let request = Request {
         llm_request: text_request(None, "Run the tests."),
         ..Default::default()
     };
 
-    // Copy the prompt and add the history an agent would send after a tool failure.
-    // These messages describe past activity; this example does not execute bash.
-    let mut recovery = fresh.clone();
-    recovery.llm_request.messages.extend([
-        // The assistant previously asked the bash tool to run the tests.
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
-                id: "c1".into(),
-                name: "bash".into(),
-                arguments: r#"{"command":"cargo test"}"#.parse()?,
-            })],
-        },
-        // Match the result to that call with the same ID, c1.
-        Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
-                tool_call_id: "c1".into(),
-                is_error: Some(true),
-                // This critical error makes Stage select Capable.
-                content: vec![ContentBlock::Text {
-                    text: "MemoryError: cannot allocate memory\nKilled".into(),
-                }],
-            })],
-        },
-    ]);
-
-    for (label, request) in [("Fresh request", fresh), ("Tool failure", recovery)] {
-        // These are independent examples, each with fresh routing state.
-        let mut steps = router.clone().run_stream(request, models.clone(), State::default());
-        while let Some(step) = steps.next().await {
-            // Each item is Result<Step>; ? returns a routing error to the caller.
-            match step? {
-                Step::CallModel(_) => {
-                    // A routing-time LLM call would need a client. This preset makes none.
-                    return Err("An LLM client is required for this algorithm.".into());
-                }
-                Step::CallDecision(_) => {
-                    // Typed decision questions would need a separate decision client.
-                    return Err("A decision client is required for this algorithm.".into());
-                }
-                Step::Done(outcome) => {
-                    // Stage returns a selected model and request, with response: None.
-                    println!("{label} -> Selected: {}", outcome.selected_model_id()?);
-                    // Stop here for routing only, or send outcome.request through your
-                    // client for an answer. Your gateway can also make that call later.
-                }
+    // State holds routing state; next() reads each result from the step stream.
+    let mut steps = router.run_stream(request, models, State::default());
+    while let Some(step) = steps.next().await {
+        match step? {
+            Step::CallModel(_) => {
+                // Other presets may ask your LLM client to serve a routing-time call.
+                return Err("An LLM client is required for this algorithm.".into());
+            }
+            Step::CallDecision(_) => {
+                // Typed decision questions need a decision-model client.
+                return Err("A decision client is required for this algorithm.".into());
+            }
+            Step::Done(outcome) => {
+                println!("Selected: {}", outcome.selected_model_id()?);
+                // Stage selects the model; your client or gateway can send
+                // outcome.request for the final answer, now or later.
             }
         }
     }
@@ -113,30 +74,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ```bash
-# Both model selections are local; this makes no provider requests.
+# Model selection is local; this makes no provider requests.
 cargo run
 ```
 
 Expected output, after Cargo's build messages:
 
 ```text
-Fresh request -> Selected: Efficient
-Tool failure -> Selected: Capable
+Selected: Efficient
 ```
 
-The demo IDs `"Efficient"` and `"Capable"` stand in for your models. The fresh request follows `EfficientFirst`; the same prompt with a critical tool failure selects **Capable**. Both decisions are local and need no API key. See the [Stage router guide](routing_algorithms/stage_router_routing.md) for its signal rules.
+This Stage preset yields only `Done`, with `outcome.response` set to `None`. Your application owns the final model call. The loop also shows where other algorithms can ask for intermediate model calls.
 
-The `0.5` value is a routing confidence threshold, not a measured probability of task success. This preset is called **Auto** in TOML. Evaluate your agent and model pool against a single-model baseline before relying on savings.
+`0.5` is a signal-confidence threshold, not a measured probability of task success. This preset is **Auto** in TOML. See the [Stage router guide](routing_algorithms/stage_router_routing.md) for signal rules, and evaluate your workload before relying on savings.
 
-The loop shows every `Step`. This Stage preset yields only `Done`; the other branches report missing clients. **Stage selects the model; it does not produce the answer.** Its `outcome.response` is `None`. Your application decides whether to call the selected model or pass the request back to its gateway. `outcome.request` includes the selected model and any routing-time rewrites; `selected_model_ids` lists ordered fallbacks.
+<details markdown="1">
+<summary>Try the same prompt after a tool failure</summary>
 
-Next, add a client to this same program.
+Keep the same program. Insert this block immediately before `let mut steps = ...`, then run `cargo run` again:
+
+```rust
+use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
+
+let mut request = request;
+// Describe the agent's past activity; this example does not execute bash.
+request.llm_request.messages.extend([
+    Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolCall(ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"cargo test"}"#.parse()?,
+        })],
+    },
+    Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult(ToolResult {
+            // The result refers to the tool call above by its ID.
+            tool_call_id: "c1".into(),
+            is_error: Some(true),
+            content: vec![ContentBlock::Text {
+                text: "MemoryError: cannot allocate memory\nKilled".into(),
+            }],
+        })],
+    },
+]);
+```
+
+The critical failure makes Stage select **Capable** for the same user prompt:
+
+```text
+Selected: Capable
+```
+
+Both runs are local and need no API key. Remove the inserted block to return to the fresh request.
+
+</details>
 
 ## Use libsy with your client
 
-**You do not have to use Switchyard's HTTP client.** Keep your existing SDK, or create your own client. Continue in `src/main.rs`, keeping the router, model pool, requests, and loop above.
+**You do not have to use Switchyard's HTTP client.** Keep your existing SDK, or create your own client. The same program can send Stage's selected request through [OpenRouter](https://openrouter.ai/docs/quickstart).
 
-For a working [OpenRouter](https://openrouter.ai/docs/quickstart) client, add these dependencies and append the adapter below to the same file:
+Add the dependencies:
 
 ```bash
 # Translation converts neutral protocol types to and from provider JSON.
@@ -145,6 +144,48 @@ cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard
 cargo add reqwest@0.13 --no-default-features --features json,rustls
 cargo add serde_json@1
 ```
+
+For the complete program, replace `src/main.rs` with the [OpenRouter example](assets/quickstart/openrouter.rs). It includes the router above and the adapter below. To extend your existing file instead, apply the edits shown here.
+
+Create an [OpenRouter key](https://openrouter.ai/settings/keys) with access to your chosen models:
+
+```bash
+export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
+```
+
+In `main`, replace the two demo model-ID assignments with:
+
+```rust
+// Use provider model IDs for the same Efficient and Capable roles.
+let efficient = "z-ai/glm-5.2";
+let capable = "anthropic/claude-opus-4.8";
+// Reuse one HTTP client, with a 60-second timeout for each call.
+let client = OpenRouterClient {
+    http: reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60)).build()?,
+    api_key: std::env::var("OPENROUTER_API_KEY")?,
+};
+```
+
+Inside `match step?`, replace the `CallModel` and `Done` arms with these. Keep `CallDecision` unchanged; it needs a separate [decision client](reference/host_integration.md#serve-routing-time-calls).
+
+```rust
+Step::CallModel(call) => {
+    // Pass the future to respond so libsy can cancel pending routing calls.
+    let request = call.request.clone();
+    call.respond(client.call(request)).await?;
+}
+Step::Done(outcome) => {
+    println!("Selected: {}", outcome.selected_model_id()?);
+    // Stage has selected the model. Your application now makes the final call.
+    let response = client.call(outcome.request).await?;
+    if let LlmResponse::Agg(answer) = response.llm_response {
+        println!("Answer: {}", completion_text(&answer));
+    }
+}
+```
+
+Append the adapter to the same file:
 
 <details markdown="1">
 <summary>OpenRouter adapter: append to src/main.rs</summary>
@@ -200,68 +241,22 @@ impl OpenRouterClient {
 
 </details>
 
-Create a key in your [OpenRouter account](https://openrouter.ai/settings/keys) with access to these models, or substitute models you can use. They also appear in our [Terminal-Bench 2.1 results](benchmarks.md#terminal-bench-21).
-
-```bash
-export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
-```
-
-In `main`, replace the two demo ID assignments with this block. The existing model pool uses the new IDs automatically:
-
-```rust
-// Use provider IDs for the same Efficient and Capable roles.
-let efficient = "z-ai/glm-5.2";
-let capable = "anthropic/claude-opus-4.8";
-// Reuse one HTTP client; each provider call has a 60-second timeout.
-let client = OpenRouterClient {
-    http: reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60)).build()?,
-    api_key: std::env::var("OPENROUTER_API_KEY")?,
-};
-```
-
-Replace the existing `Step::CallModel` branch with:
-
-```rust
-Step::CallModel(call) => {
-    // Pass the future to respond so libsy can cancel pending routing calls.
-    let request = call.request.clone();
-    call.respond(client.call(request)).await?;
-}
-```
-
-Replace the existing `Step::Done` branch with this host-side final call:
-
-```rust
-Step::Done(outcome) => {
-    println!("{label} -> Selected: {}", outcome.selected_model_id()?);
-    // Stage has finished selecting. This call is made by your application.
-    // Use the returned request, including its selected model and rewrites.
-    let response = client.call(outcome.request).await?;
-    if let LlmResponse::Agg(answer) = response.llm_response {
-        println!("{label} -> Answer: {}", completion_text(&answer));
-    }
-}
-```
-
-For routing-only use, leave the original `Done` branch in place. Other algorithms may return an answer in `outcome.response`; see the [general integration pattern](../README.md#start-with-libsy) for response reuse. Keep `Step::CallDecision` as-is unless you supply a separate [decision client](reference/host_integration.md#serve-routing-time-calls).
-
-Run the same file again. **This now makes two billable model calls**, one for each request:
+Run the program again. **This makes one billable model call**:
 
 ```bash
 cargo run
 ```
 
-Expected shape; the answer text depends on the model:
+For the fresh request, expect this shape; the answer text depends on the model:
 
 ```text
-Fresh request -> Selected: z-ai/glm-5.2
-Fresh request -> Answer: <model reply>
-Tool failure -> Selected: anthropic/claude-opus-4.8
-Tool failure -> Answer: <model reply>
+Selected: z-ai/glm-5.2
+Answer: <model reply>
 ```
 
-Your own client can fill the same call sites by returning `switchyard_protocol::Response` and adapting errors to `libsy::Result`. The [optional Switchyard HTTP client](../crates/libsy-llm-client/README.md) provides translation, streaming, retries, and fallback. This loop serves calls sequentially; use [`libsy::drive`](reference/host_integration.md#concurrent-calls-and-cancellation) for concurrent algorithms.
+With the optional tool-failure history, the selected model is `anthropic/claude-opus-4.8`. For routing only, keep the original `Done` arm. Other algorithms may supply an answer in `outcome.response`; the [general integration pattern](../README.md#start-with-libsy) shows how to reuse it.
+
+Your client returns `switchyard_protocol::Response` and adapts errors to `libsy::Result`. The [optional Switchyard HTTP client](../crates/libsy-llm-client/README.md) provides translation, streaming, retries, and fallback. Use [`libsy::drive`](reference/host_integration.md#concurrent-calls-and-cancellation) for concurrent algorithms; this loop serves calls sequentially.
 
 ## Next steps
 
