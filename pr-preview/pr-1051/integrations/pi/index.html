@@ -1328,7 +1328,7 @@
   <span class="md-ellipsis">
     
   
-    Operations
+    Tuning
   
 
     
@@ -1344,11 +1344,126 @@
             <span class="md-nav__icon md-icon"></span>
             
   
+    Tuning
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tuning Loop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
     Operations
   
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -1433,10 +1548,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -1454,8 +1569,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1846,11 +1961,8 @@ response <code>model</code> field, and pi's Anthropic client stores that id on t
 message. When routing picks another target on the next turn, pi treats the change as a
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
-<p>Set <code>cost</code> on the model entry for pi's native estimate. One rate table under a
-router alias is an approximation when targets have different prices. For a
-separate total that uses each served model and includes routing calls, see
-<a href="../costs/">Display Switchyard session costs</a>.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/2da925180aa7925e456634d9246da4a59fd65dc5/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/95641fd22152bb356dc2724a8002c305874b6d88/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
 <p>An LLM gateway, such as a LiteLLM proxy, can serve Claude on three endpoints:
@@ -1917,21 +2029,64 @@ tokens. Then read the records:</p>
 second shows <code>cached_tokens</code> close to <code>prompt_tokens</code>. If the second record shows
 <code>"cached_tokens": 0</code>, the gateway read nothing from the cache.</p>
 <h4 id="estimate-the-cost">Estimate the cost<a class="headerlink" href="#estimate-the-cost" title="Permanent link">&para;</a></h4>
-<p>Start the server with <code>--pricing-file prices.json</code> as well, and each record gets a <code>cost</code>.
-The file maps each record's <code>model</code> value to prices in USD per million tokens. This
-example uses Anthropic's list prices for Claude Sonnet 5 on 2026-10-02:</p>
+<p>The server matches each token count in the routing log to a rate in the pricing file:</p>
+<table>
+<thead>
+<tr>
+<th>Tokens in the record</th>
+<th>Pricing-file key</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt_tokens - cached_tokens - cache_creation_tokens</code></td>
+<td><code>input</code></td>
+</tr>
+<tr>
+<td><code>cached_tokens</code></td>
+<td><code>cache_read</code></td>
+</tr>
+<tr>
+<td><code>cache_creation_tokens - cache_creation_1h_tokens</code></td>
+<td><code>cache_write</code></td>
+</tr>
+<tr>
+<td><code>cache_creation_1h_tokens</code>, when reported</td>
+<td><code>cache_write_1h</code></td>
+</tr>
+<tr>
+<td><code>completion_tokens</code></td>
+<td><code>output</code></td>
+</tr>
+</tbody>
+</table>
+<p>Treat a missing <code>cache_creation_1h_tokens</code> count as zero. That count is part of
+<code>cache_creation_tokens</code>, so it must not be charged twice.</p>
+<p>Write the prices to <code>prices.json</code> in USD per million tokens, and key each entry by the
+record's <code>model</code> value. This example uses Anthropic's list prices for Claude Sonnet 5 on
+2026-10-02:</p>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;claude-sonnet-5&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.20</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.50</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.00</span><span class="p">}</span>
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>The example's <code>cache_write</code> price is for a 5-minute cache. A 1-hour cache costs 2 times
-the input price instead of 1.25 times; set it as <code>cache_write_1h</code>. When the gateway
-reports its own charge, the server records that charge instead of the estimate. Read
-each request's cost with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, model, cost}&#39;</span><span class="w"> </span>PATH
+<p>For your own models, copy the entry for each model and replace the key with its exact
+<code>model</code> value from the routing log. Use the served model ID rather than the routing alias,
+and replace the example's numbers with your provider's rates. List recorded model IDs with:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.model&#39;</span><span class="w"> </span>PATH<span class="w"> </span><span class="p">|</span><span class="w"> </span>sort<span class="w"> </span>-u
 </span></code></pre></div>
-<p><a href="../costs/">Display Switchyard session costs</a> describes the pricing file and how the
-server totals a session.</p>
+<p>Every entry requires <code>input</code>, <code>output</code>, <code>cache_read</code>, and <code>cache_write</code>. Set a rate to zero
+only when that usage is free. Each rate must be a finite number from 0 to 10000 USD per
+million tokens.</p>
+<p>The example's <code>cache_write</code> price is for a 5-minute cache. A 1-hour cache costs 2 times
+the input price instead of 1.25 times; set <code>cache_write_1h</code> to <code>4.00</code> for that example.
+Include that rate to estimate reported one-hour cache writes; without it, the estimate
+remains unknown.</p>
+<p>Start the server with <code>--pricing-file prices.json</code> as well as <code>--routing-log-file PATH</code>.
+The server records the gateway's reported charge when available, even without rates.
+Otherwise it uses the pricing file to estimate the cost. If usage is missing or the model
+has no rates, the estimate is unknown. Read each request's cost with:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, model, cost}&#39;</span><span class="w"> </span>PATH
+</span></code></pre></div>
 <h3 id="thinking">Thinking<a class="headerlink" href="#thinking" title="Permanent link">&para;</a></h3>
 <p>With <code>reasoning: true</code> on the model entry, pi sends a thinking level on every request,
 even when you do not pass <code>--thinking</code>. Switchyard passes that level to an OpenAI-format
@@ -1939,7 +2094,7 @@ target in OpenAI form: <code>reasoning_effort</code> on <code>openai_chat</code>
 <code>openai_responses</code>. The tested gateway turned either field into Anthropic's older
 <code>thinking: {type: "enabled"}</code>. Claude Opus 5.5 and Sonnet 5 refuse that form, so the
 gateway returned HTTP 400:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>&quot;thinking.type.enabled&quot; is not supported for this model. Use &quot;thinking.type.adaptive&quot; and &quot;output_config.effort&quot; to control thinking behavior.
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>&quot;thinking.type.enabled&quot; is not supported for this model. Use &quot;thinking.type.adaptive&quot; and &quot;output_config.effort&quot; to control thinking behavior.
 </span></code></pre></div>
 <p>For an <code>anthropic_messages</code> target, Switchyard sends the level in the form that Claude
 accepts: <code>thinking: {type: "adaptive"}</code> with <code>output_config.effort</code>. pi's thinking level
@@ -1947,10 +2102,10 @@ then takes effect.</p>
 <p>If a Claude target must stay on an OpenAI format, remove the effort field from its
 requests with <a href="../../reference/toml_schema/#targetsname"><code>omit_body_fields</code></a>. Claude then
 thinks at its default effort, and pi's thinking level has no effect on that target:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">[targets.claude]</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_chat&quot;</span><span class="w">  </span><span class="c1"># format = &quot;openai_chat&quot;</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning_effort&quot;</span><span class="p">]</span><span class="w">  </span><span class="c1"># use &quot;reasoning&quot; on openai_responses</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">[targets.claude]</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_chat&quot;</span><span class="w">  </span><span class="c1"># format = &quot;openai_chat&quot;</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning_effort&quot;</span><span class="p">]</span><span class="w">  </span><span class="c1"># use &quot;reasoning&quot; on openai_responses</span>
 </span></code></pre></div>
 <p>Switchyard applies the target's <code>extra_body</code> and <code>reasoning_effort</code> after the removal, so
 either can set the field again.</p>
