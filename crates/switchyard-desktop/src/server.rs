@@ -1,20 +1,150 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module validates server configs and restarts the server service.
+//! This module validates and saves server configs and restarts the server service.
 
-use std::io::Write;
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use chrono::Local;
 use switchyard_desktop::install::credentials::KeyStatus;
 
 use crate::config::Config;
 use crate::health::{ServerStatus, probe};
+use crate::server_config::{Algorithm, Choice, ServerConfig};
 
 /// RESTART_WAIT limits how long the app waits for the restarted server to answer `/health`.
 const RESTART_WAIT: Duration = Duration::from_secs(10);
+
+/// BACKUPS_PER_SECOND limits the number of backups for one file within one second.
+const BACKUPS_PER_SECOND: u32 = 100;
+
+/// SaveResult distinguishes a saved config from a failed restart or health check.
+pub struct SaveResult {
+    pub message: String,
+    pub warning: bool,
+    pub details: Vec<String>,
+}
+
+/// This function switches a route to new models, checks the result with the server's
+/// `--dry-run`, saves it, and restarts the server.
+///
+/// The result names the changed file and reports whether the restart succeeded.
+/// The details contain the backup path and edit notes. An error means the file was not changed.
+pub fn apply(
+    settings: &Config,
+    route: &str,
+    algorithm: &Algorithm,
+    choices: &[Choice],
+    expected: &str,
+) -> Result<SaveResult, String> {
+    let path = &settings.config_file;
+    // Read the file again so an edit made while the window was open is kept.
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Could not read {}: {error}. Check config_file in the app settings.",
+            path.display()
+        )
+    })?;
+    check_original(&text, expected)?;
+    let config = ServerConfig::parse(&text)?;
+    let edited = config.edit(route, algorithm, choices)?;
+    save_edit(settings, &text, edited, "Updated the route.")
+}
+
+pub fn remove(
+    settings: &Config,
+    route: &str,
+    id: &str,
+    expected: &str,
+) -> Result<SaveResult, String> {
+    let text = std::fs::read_to_string(&settings.config_file).map_err(|error| error.to_string())?;
+    check_original(&text, expected)?;
+    let config = ServerConfig::parse(&text)?;
+    if !config.routes().iter().any(|r| r.key == route && r.id == id) {
+        return Err("The route changed or was removed. Refresh and choose it again.".into());
+    }
+    let edited = config.remove(route)?;
+    save_edit(settings, &text, edited, "Removed the route.")
+}
+
+pub fn save_route_change(
+    settings: &Config,
+    expected: &str,
+    edited: crate::server_config::Edited,
+) -> Result<SaveResult, String> {
+    let text = std::fs::read_to_string(&settings.config_file).map_err(|error| error.to_string())?;
+    check_original(&text, expected)?;
+    save_edit(settings, &text, edited, "Changed the routes.")
+}
+
+fn check_original(text: &str, expected: &str) -> Result<(), String> {
+    if text != expected {
+        return Err("The server config changed since the editor loaded. \
+                    Review it again; your draft is preserved."
+            .into());
+    }
+    Ok(())
+}
+
+fn save_edit(
+    settings: &Config,
+    text: &str,
+    edited: crate::server_config::Edited,
+    summary: &str,
+) -> Result<SaveResult, String> {
+    let path = &settings.config_file;
+    if edited.text == text {
+        return Ok(SaveResult {
+            message: "Nothing to save. The route already uses this algorithm and these models."
+                .into(),
+            warning: false,
+            details: Vec::new(),
+        });
+    }
+
+    let binary = server_binary()?;
+    let backup = save_checked(&binary, path, text, &edited.text)?;
+    let saved = format!("{summary} Changed {}.", path.display());
+    let health = format!("{}/health", settings.server_url);
+    let (message, warning) = match restart(&settings.launchd_label) {
+        Err(error) => (
+            format!(
+                "{saved} Switchyard could not restart: {error}. \
+                 Use Restart server in Settings to try again."
+            ),
+            true,
+        ),
+        Ok(()) if wait_for_health(&settings.server_url) => {
+            (format!("{saved} Restarted Switchyard."), false)
+        }
+        Ok(()) => (
+            format!(
+                "{saved} Switchyard restarted but did not answer {health} within {} seconds. \
+                 Check the server log in ~/.switchyard/logs/.",
+                RESTART_WAIT.as_secs()
+            ),
+            true,
+        ),
+    };
+    let mut details = vec![format!("Backup: {}", backup.display())];
+    details.extend(edited.notes);
+    if warning {
+        details.push(format!(
+            "To undo, copy {} over {} and use Restart server in Settings.",
+            backup.display(),
+            path.display()
+        ));
+    }
+    Ok(SaveResult {
+        message,
+        warning,
+        details,
+    })
+}
 
 /// This function finds the installed helper, which is the only program that reads or writes
 /// server keys.
@@ -102,6 +232,120 @@ fn server_binary() -> Result<PathBuf, String> {
             "switchyard-server",
         )),
     )
+}
+
+/// This function checks `text` with `switchyard-server --dry-run`, then replaces `path`
+/// with it, keeping `original`, the text that `path` held, as a timestamped
+/// backup. Returns the backup's path.
+///
+/// The real file is `path`, or the file it points to when `path` is a
+/// symlink. The new text goes to a temporary file next to the real file. The
+/// temporary file is synced to disk and then renamed over the real file, so a
+/// reader never sees a half-written config. On Unix, the directory is synced
+/// after the rename, so a power loss keeps both the new file and the backup.
+/// When the check fails, or when the real file no longer holds `original`
+/// after the backup is written, the temporary file and the new backup are
+/// removed, `path` does not change, and the error is returned.
+fn save_checked(binary: &Path, path: &Path, original: &str, text: &str) -> Result<PathBuf, String> {
+    // Resolve a symlink and replace the file it points to, so the link stays.
+    let file = std::fs::canonicalize(path)
+        .map_err(|error| format!("Could not find {}: {error}", path.display()))?;
+    let dir = file.parent().unwrap_or(Path::new("/"));
+    let mut candidate = tempfile::Builder::new()
+        .prefix(".switchyard-picker-")
+        .suffix(".toml")
+        .tempfile_in(dir)
+        .map_err(|error| format!("Could not create a file in {}: {error}", dir.display()))?;
+    candidate
+        .write_all(text.as_bytes())
+        .and_then(|()| candidate.as_file().sync_all())
+        .map_err(|error| format!("Could not write {}: {error}", candidate.path().display()))?;
+    if let Ok(metadata) = std::fs::metadata(&file) {
+        candidate
+            .as_file()
+            .set_permissions(metadata.permissions())
+            .map_err(|error| {
+                format!(
+                    "Could not copy the permissions of {}: {error}",
+                    path.display()
+                )
+            })?;
+    }
+
+    // Name the real file in errors, not the temporary one.
+    check(binary, candidate.path()).map_err(|error| {
+        error.replace(
+            &candidate.path().display().to_string(),
+            &path.display().to_string(),
+        )
+    })?;
+
+    let backup = back_up(&file, original)
+        .map_err(|error| format!("Could not back up {}: {error}", path.display()))?;
+    // The check and the backup take a moment. Keep an edit that another
+    // program saved in the meantime. Compare right before the rename, because
+    // the rename replaces the file whatever it holds.
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(original) {
+        let _ = std::fs::remove_file(&backup);
+        return Err(format!(
+            "Could not replace {}, because it changed on disk while Apply was checking it. \
+             Click Apply again to apply your choices to the new file.",
+            path.display()
+        ));
+    }
+    candidate
+        .persist(&file)
+        .map_err(|error| format!("Could not replace {}: {}", path.display(), error.error))?;
+    // The rename has already saved the file, so a failed directory sync does not
+    // return an error. Windows has no directory sync.
+    #[cfg(unix)]
+    if let Ok(directory) = std::fs::File::open(dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(backup)
+}
+
+/// This function writes `text` to a new backup of `file` and returns its path. The backup
+/// is `<file>.switchyard-backup.<timestamp>`, the name the installer uses,
+/// with `-2`, `-3`, and so on added when that name is taken, so a backup
+/// never replaces another one. The backup gets the file's permissions before
+/// it gets the text.
+fn back_up(file: &Path, text: &str) -> Result<PathBuf, std::io::Error> {
+    let permissions = std::fs::metadata(file)?.permissions();
+    let stamp = Local::now().format("%Y%m%d%H%M%S");
+    for number in 1..=BACKUPS_PER_SECOND {
+        let suffix = if number == 1 {
+            String::new()
+        } else {
+            format!("-{number}")
+        };
+        let backup = PathBuf::from(format!(
+            "{}.switchyard-backup.{stamp}{suffix}",
+            file.display()
+        ));
+        let mut out = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup)
+        {
+            Ok(out) => out,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let written = out
+            .set_permissions(permissions.clone())
+            .and_then(|()| out.write_all(text.as_bytes()))
+            .and_then(|()| out.sync_all());
+        if let Err(error) = written {
+            let _ = std::fs::remove_file(&backup);
+            return Err(error);
+        }
+        return Ok(backup);
+    }
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        format!("{BACKUPS_PER_SECOND} backups from this second already exist"),
+    ))
 }
 
 /// This function asks the installed helper to run the server's dry-run on `config` with the
@@ -216,10 +460,142 @@ pub fn command(program: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    const OLD: &str = "schema_version=1\n[targets]\n[routes]\n#old\n";
+    const NEW: &str = "schema_version=1\n[targets]\n[routes]\n#new\n";
+    const NEWER: &str = "schema_version=1\n[targets]\n[routes]\n#newer\n";
     use std::os::unix::fs::PermissionsExt;
+
+    /// The fixture forwards the helper's validation command to a stand-in server that runs `body`.
+    fn fake_server(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("switchyard-server");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make script executable");
+        let helper = dir.join("switchyard-desktop-install");
+        std::fs::write(&helper, r#"#!/bin/sh
+test "$#" -eq 5 && test "$1" = validate && test "$2" = --server && test "$4" = --config && test -f "$5" || exit 1
+exec "$3" --config "$5" --dry-run
+"#).expect("write helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make helper executable");
+        path
+    }
+
+    fn backups(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| path.display().to_string().contains(".switchyard-backup."))
+            .collect()
+    }
+
+    #[test]
+    fn a_config_that_fails_the_check_is_not_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("composite.toml");
+        std::fs::write(&config, OLD).expect("write config");
+        // The real server names the file it was given; the error must name
+        // the user's file instead of the temporary copy.
+        let binary = fake_server(
+            dir.path(),
+            r#"echo "invalid server config $2: route gateway cannot forward both" >&2; exit 1"#,
+        );
+
+        let error = save_checked(&binary, &config, OLD, NEW).expect_err("check fails");
+
+        assert_eq!(
+            error,
+            format!(
+                "invalid server config {}: route gateway cannot forward both",
+                config.display()
+            )
+        );
+        assert_eq!(std::fs::read_to_string(&config).expect("read"), OLD);
+        assert!(backups(dir.path()).is_empty());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("read dir").count(),
+            3,
+            "the temporary file is removed"
+        );
+    }
+
+    #[test]
+    fn a_config_that_passes_the_check_replaces_the_file_and_keeps_a_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("composite.toml");
+        std::fs::write(&config, OLD).expect("write config");
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o640))
+            .expect("set permissions");
+        let binary = fake_server(
+            dir.path(),
+            r#"grep -q new "$2" && echo "server OK: gateway""#,
+        );
+
+        let backup = save_checked(&binary, &config, OLD, NEW).expect("saved");
+
+        assert_eq!(std::fs::read_to_string(&config).expect("read"), NEW);
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&config), 0o640, "the file keeps its permissions");
+        assert_eq!(backups(dir.path()).len(), 1);
+        assert_eq!(std::fs::read_to_string(&backup).expect("read"), OLD);
+        assert_eq!(mode(&backup), 0o640, "the backup gets the same permissions");
+        save_checked(&binary, &config, NEW, NEWER).expect("saved again");
+        let mut kept: Vec<_> = backups(dir.path())
+            .iter()
+            .map(|path| std::fs::read_to_string(path).expect("backup"))
+            .collect();
+        kept.sort();
+        assert_eq!(kept, [NEW, OLD]);
+        assert_eq!(std::fs::read_to_string(&config).expect("read"), NEWER);
+    }
+
+    #[test]
+    fn a_file_that_changes_during_the_check_is_not_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("composite.toml");
+        std::fs::write(&config, OLD).expect("write config");
+        // Another program saves the file while the check runs.
+        let binary = fake_server(
+            dir.path(),
+            &format!("echo edited-elsewhere > '{}'", config.display()),
+        );
+
+        let error = save_checked(&binary, &config, OLD, NEW).expect_err("file changed");
+
+        assert!(error.contains(&config.display().to_string()), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&config).expect("read"),
+            "edited-elsewhere\n"
+        );
+        assert!(backups(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn saving_through_a_symlink_replaces_the_linked_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("dotfiles.toml");
+        let link = dir.path().join("composite.toml");
+        std::fs::write(&real, OLD).expect("write config");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let binary = fake_server(dir.path(), r#"echo "server OK: gateway""#);
+
+        save_checked(&binary, &link, OLD, NEW).expect("saved");
+
+        let link_type = std::fs::symlink_metadata(&link)
+            .expect("metadata")
+            .file_type();
+        assert!(link_type.is_symlink(), "the link is kept");
+        assert_eq!(std::fs::read_to_string(&real).expect("read"), NEW);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
