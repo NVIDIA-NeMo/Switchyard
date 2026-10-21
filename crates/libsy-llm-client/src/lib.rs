@@ -22,6 +22,7 @@
 
 pub mod backend;
 pub mod client;
+mod decision_http;
 pub mod error;
 pub mod metrics;
 mod observability;
