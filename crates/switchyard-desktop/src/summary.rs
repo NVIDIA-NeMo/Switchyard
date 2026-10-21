@@ -145,7 +145,7 @@ fn model_shares(week: &Totals) -> Vec<String> {
 }
 
 /// This function formats a token count compactly, since exact totals are not useful here.
-fn tokens(value: u64) -> String {
+pub(crate) fn tokens(value: u64) -> String {
     match value {
         0..=9_999 => value.to_string(),
         10_000..=999_999 => format!("{:.0}K", value as f64 / 1_000.0),
@@ -155,7 +155,7 @@ fn tokens(value: u64) -> String {
 }
 
 /// This function formats dollars, keeping the sign readable when routing cost more than it saved.
-fn money(value: f64) -> String {
+pub(crate) fn money(value: f64) -> String {
     if value < 0.0 {
         format!("-${:.2}", -value)
     } else {

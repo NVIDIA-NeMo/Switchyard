@@ -26,7 +26,8 @@ toml = "0.9"
 toml_edit = "0.25"
 url = "2"
 uuid.workspace = true
-ratatui = "0.30.2"
+# Popups use Paragraph::line_count to size and scroll wrapped text.
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 shlex = "2"
 strum = { version = "0.28", features = ["derive"] }
 

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use switchyard_costs::CostTotals;
 
 /// CLASSIFIER_TIER matches the tier recorded for classifier and judge calls.
-const CLASSIFIER_TIER: &str = "classifier";
+pub(crate) const CLASSIFIER_TIER: &str = "classifier";
 
 /// ModelTokens stores recorded token counts and costs for one model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
