@@ -1862,19 +1862,8 @@ and replace its LLM classifier settings with:</p>
 </span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">evidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">description</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Add task-relevant evidence comparing a and b.&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
 <p>Both candidates must be completion targets. The judge must be a decision target.
-For <a href="https://developers.openai.com/api/docs/guides/decisions">OpenAI Decisions</a>,
-use these client and model settings with the same classifier configuration:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[decision_clients.decisions]</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_decisions&quot;</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.openai.com/v1/decisions&quot;</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENAI_API_KEY&quot;</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5000</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="k">[decision_targets.judge]</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gpt-6-luna&quot;</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="n">decision_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;decisions&quot;</span>
-</span></code></pre></div>
-<p>Structured context, instructions, and descriptions are sent as JSON text.</p>
+See the <a href="../../reference/toml_schema/#decision_clientsname">decision client reference</a>
+for OpenAI Decisions configuration.</p>
 <p>The classifier selects capable when <code>probabilities.advantage</code> exceeds <code>cutoff</code>.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 <code>base_threshold</code>, <code>threshold_step</code> and <code>prompt</code> when using a decision model.
