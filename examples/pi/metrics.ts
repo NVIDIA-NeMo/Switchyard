@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomUUID } from "node:crypto";
-import { Metrics, type CallMetrics, type MetricContext, type MetricsSnapshot, type TokenUsage, type TaskPrediction } from "@switchyard/libsy";
-import type { ClassifierResult, Usage } from "@earendil-works/pi-ai";
+import { Metrics, estimateCost, type CallMetrics, type MetricContext, type MetricsSnapshot, type TokenUsage, type TaskPrediction, type TokenRates, type CostTotals } from "@switchyard/libsy";
+import type { ClassifierResult, Usage, ModelCost, ModelCostRates } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CompletionTiming, completionDuration } from "./completion-time.ts";
 
@@ -17,8 +17,31 @@ export function tokenUsage(usage: Usage | undefined): TokenUsage | undefined {
   return {
     input_tokens: usage.input, output_tokens: usage.output,
     cached_input_tokens: usage.cacheRead, cache_creation_input_tokens: usage.cacheWrite,
+    cache_creation_1h_input_tokens: usage.cacheWrite1h,
     total_tokens: usage.totalTokens, reasoning_tokens: usage.reasoning,
   };
+}
+
+export function tokenRates(cost: ModelCost | undefined, usage: Pick<Usage, "input" | "cacheRead" | "cacheWrite"> | undefined): TokenRates | undefined {
+  if (!cost) return undefined;
+  let rates: ModelCostRates = cost;
+  let threshold = -1;
+  const input = usage ? usage.input + usage.cacheRead + usage.cacheWrite : 0;
+  for (const tier of cost.tiers ?? []) {
+    if (input > tier.inputTokensAbove && tier.inputTokensAbove > threshold) {
+      rates = tier;
+      threshold = tier.inputTokensAbove;
+    }
+  }
+  // Pi prices one-hour cache writes at twice the input rate.
+  return { input: rates.input, output: rates.output, cache_read: rates.cacheRead,
+    cache_write: rates.cacheWrite, cache_write_1h: rates.input * 2 };
+}
+
+function dollars(cost: CostTotals | undefined): string {
+  if (!cost || (cost.unknown_calls > 0 && cost.known_usd === 0)) return "$—";
+  const prefix = cost.unknown_calls > 0 ? "≥" : cost.estimated_calls > 0 ? "~" : "";
+  return `${prefix}$${cost.known_usd.toFixed(4)}`;
 }
 
 function total(snapshot: MetricsSnapshot, name: string): number | undefined {
@@ -56,12 +79,14 @@ interface Session {
   prediction?: TaskPrediction | null;
   tokensUsed: number;
   completion: CompletionTiming;
+  modelCost?: ModelCost;
 }
 
 interface Active {
   context: MetricContext;
   started: number;
   firstToken?: number;
+  cost?: ModelCost;
 }
 
 interface ToolWindow {
@@ -90,10 +115,11 @@ export function registerMetrics(pi: ExtensionAPI) {
         continue;
       }
       if (entry.type === "custom" && entry.customType === PREDICTION_ENTRY) {
-        const saved = entry.data as { session_id: string; prediction: TaskPrediction | null; tokens_used_so_far?: number; cleared?: boolean };
+        const saved = entry.data as { session_id: string; prediction: TaskPrediction | null; tokens_used_so_far?: number; cleared?: boolean; model_cost?: ModelCost };
         if (saved.session_id === id) {
           state.prediction = saved.cleared ? undefined : saved.prediction;
           state.tokensUsed = saved.tokens_used_so_far ?? state.tokensUsed;
+          state.modelCost = saved.model_cost ?? state.modelCost;
         }
         continue;
       }
@@ -121,16 +147,20 @@ export function registerMetrics(pi: ExtensionAPI) {
     const filter = { session_id: ctx.sessionManager.getSessionId(), agent_id: "root" };
     const all = metrics().stats(filter);
     const last = state.lastTurn === undefined ? { series: [] } : metrics().stats({ ...filter, agent_turn_idx: state.lastTurn });
+    const allCost = dollars(metrics().costs(filter));
+    const lastCost = dollars(state.lastTurn === undefined ? undefined : metrics().costs({ ...filter, agent_turn_idx: state.lastTurn }));
     const count = (snapshot: MetricsSnapshot) => tokens(total(snapshot, "switchyard_llm_call_total_tokens_total"));
     const ttft = (snapshot: MetricsSnapshot) => duration(timing(snapshot, "switchyard_inference_ttft_ms", true));
     const latency = (snapshot: MetricsSnapshot) => duration(timing(snapshot, "switchyard_inference_duration_ms"));
     const forecast = state.prediction;
     const remaining = forecast?.expected_upper_tokens == null ? undefined : Math.max(0, forecast.expected_upper_tokens - state.tokensUsed);
+    const projected = remaining === undefined ? undefined : state.completion.remainingUsage(remaining);
+    const rates = tokenRates(state.modelCost, { input: state.completion.meanPromptTokens, cacheRead: 0, cacheWrite: 0 });
+    const estimate = projected && rates ? estimateCost(projected, rates) : null;
+    const estimatedCost = estimate ? `~$${estimate.usd.toFixed(4)}` : "$—";
     const task = forecast === undefined ? "" : remaining === undefined ? "remaining unavailable | "
-      : `remaining ~${tokens(Math.round(remaining))} tok ETA ${completionDuration(state.completion.estimateMs(remaining))} | `;
-    const stats = forecast === undefined
-      ? `session ${count(all)} tok TTFT avg ${ttft(all)} req ${latency(all)} | last ${count(last)} tok TTFT ${ttft(last)} req ${latency(last)}`
-      : `session ${count(all)}/${ttft(all)}/${latency(all)} | last ${count(last)}/${ttft(last)}/${latency(last)}`;
+      : `remaining ~${tokens(Math.round(remaining))} tok ${estimatedCost} ETA ${completionDuration(state.completion.estimateMs(remaining))} | `;
+    const stats = `session ${count(all)}/${allCost}/${ttft(all)}/${latency(all)} | last ${count(last)}/${lastCost}/${ttft(last)}/${latency(last)}`;
     ctx.ui.setStatus(STATUS_KEY, `SY ${task}${stats}`);
   }
 
@@ -198,6 +228,7 @@ export function registerMetrics(pi: ExtensionAPI) {
       duration_ms: performance.now() - current.started,
       ...(current.firstToken === undefined ? {} : { ttft_ms: current.firstToken - current.started }),
       usage: tokenUsage(event.message.usage),
+      rates: tokenRates(current.cost, event.message.usage),
     });
     tools = event.message.stopReason === "toolUse" ? { context: current.context, running: new Set(), started: 0 } : undefined;
   });
@@ -218,21 +249,22 @@ export function registerMetrics(pi: ExtensionAPI) {
       active = current;
       return {
         context: current.context,
+        modelCost(cost: ModelCost | undefined) { current.cost = cost; session(ctx).modelCost = cost; },
         prediction(value: TaskPrediction | null, tokensUsed?: number) {
           if (ctx.sessionManager.getSessionId() !== current.context.session_id || active !== current) return;
           session(ctx).prediction = value;
           if (tokensUsed !== undefined) session(ctx).tokensUsed = tokensUsed;
-          pi.appendEntry(PREDICTION_ENTRY, { session_id: current.context.session_id, prediction: value, tokens_used_so_far: session(ctx).tokensUsed });
+          pi.appendEntry(PREDICTION_ENTRY, { session_id: current.context.session_id, prediction: value, tokens_used_so_far: session(ctx).tokensUsed, model_cost: session(ctx).modelCost });
           render(ctx);
         },
-        async classify(model: string, call: () => Promise<ClassifierResult>) {
+        async classify(model: string, call: () => Promise<ClassifierResult>, cost?: ModelCost) {
           const started = performance.now();
           let result: ClassifierResult | undefined;
           try { return result = await call(); }
           finally {
             record(ctx, { context: current.context, model, call_kind: "decision",
               is_success: result?.stopReason === "stop", duration_ms: performance.now() - started,
-              usage: tokenUsage(result?.usage) });
+              usage: tokenUsage(result?.usage), rates: tokenRates(cost, result?.usage) });
           }
         },
         fail() {

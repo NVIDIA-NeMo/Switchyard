@@ -22,6 +22,7 @@ futures.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+switchyard-costs.workspace = true
 switchyard-libsy = { workspace = true, features = ["metrics"] }
 switchyard-protocol.workspace = true
 switchyard-token-prediction.workspace = true

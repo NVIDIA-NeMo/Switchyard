@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { Metrics } from "@switchyard/libsy";
-import { registerMetrics } from "../metrics.ts";
+import { registerMetrics, tokenRates, tokenUsage } from "../metrics.ts";
 
 function usage(input, output, cacheRead = 0, cacheWrite = 0, reasoning) {
   return { input, output, cacheRead, cacheWrite, reasoning, totalTokens: input + output + cacheRead + cacheWrite,
@@ -69,7 +69,7 @@ test("status shows session totals and last request including classifier usage", 
   update(fixture, "text_delta", { delta: "answer" });
   fixture.time(100);
   fixture.emit("message_end", { message: assistant(usage(100, 20, 30, 0, 5)) });
-  assert.equal(fixture.status(), "SY session 160 tok TTFT avg 50ms req 100ms | last 160 tok TTFT 50ms req 100ms");
+  assert.equal(fixture.status(), "SY session 160/$—/50ms/100ms | last 160/$—/50ms/100ms");
   assert.ok(fixture.status().length <= 80);
   const records = fixture.entries().map((entry) => entry.data);
   assert.equal(records.length, 2);
@@ -92,11 +92,11 @@ test("status shows session totals and last request including classifier usage", 
     partial: { content: [{ type: "toolCall", id: "read", name: "read", arguments: {} }] } });
   fixture.time(160);
   fixture.emit("message_end", { message: assistant(usage(5, 2), "toolUse") });
-  assert.equal(fixture.status(), "SY session 167 tok TTFT avg 45ms req 160ms | last 7 tok TTFT 40ms req 60ms");
+  assert.equal(fixture.status(), "SY session 167/$—/45ms/160ms | last 7/$—/40ms/60ms");
   // Tool execution time is outside the completed request's latency.
   fixture.time(1160);
   fixture.emit("message_end", { message: { role: "toolResult" } });
-  assert.match(fixture.status(), /req 160ms \| last 7 tok TTFT 40ms req 60ms$/);
+  assert.match(fixture.status(), /session 167\/\$—\/45ms\/160ms \| last 7\/\$—\/40ms\/60ms$/);
 
   const savedStatus = fixture.status();
   fixture.reload();
@@ -114,7 +114,7 @@ test("failures retain reported tokens and leave missing TTFT unknown", async (t)
   const result = await request.classify("provider/judge", async () => ({ stopReason: "error", usage: usage(5, 0) }));
   assert.equal(result.stopReason, "error");
   request.fail();
-  assert.equal(fixture.status(), "SY session 5 tok TTFT avg — req 10ms | last 5 tok TTFT — req 10ms");
+  assert.equal(fixture.status(), "SY session 5/$—/—/10ms | last 5/$—/—/10ms");
   fixture.emit("message_end", { message: assistant(usage(0, 0), "error") });
   assert.equal(fixture.entries().length, 2);
   assert.equal(fixture.entries()[1].data.is_success, false);
@@ -125,7 +125,7 @@ test("failures retain reported tokens and leave missing TTFT unknown", async (t)
   assert.equal(retry.context.user_turn_idx, 0);
   fixture.time(30);
   fixture.emit("message_end", { message: assistant(usage(8, 2), "aborted") });
-  assert.equal(fixture.status(), "SY session 15 tok TTFT avg — req 20ms | last 10 tok TTFT — req 10ms");
+  assert.equal(fixture.status(), "SY session 15/$—/—/20ms | last 10/$—/—/10ms");
   assert.equal(fixture.entries().at(-1).data.is_success, false);
 });
 
@@ -136,7 +136,7 @@ test("new and forked sessions start fresh, and resume restores once", (t) => {
   fixture.emit("message_end", { message: assistant(usage(10, 2)) });
   const saved = fixture.status(), parentRecords = fixture.entries();
   const child = fixture.switchSession(undefined, structuredClone(parentRecords));
-  assert.equal(fixture.status(), "SY session — tok TTFT avg — req — | last — tok TTFT — req —");
+  assert.equal(fixture.status(), "SY session —/$0.0000/—/— | last —/$—/—/—");
   assert.equal(fixture.begin().context.agent_turn_idx, 0);
   fixture.switchSession(first.context.session_id);
   assert.equal(fixture.status(), saved);
@@ -165,11 +165,11 @@ test("task predictions survive reload and resume, reset on forks, and reject lat
   const forecast = { predicted_tokens: 3000, expected_upper_tokens: 4000, selected_interval: [2000, 4000],
     selected_choice: "b002", finite_budget_probability: 0.8, impossible_probability: 0.2 };
   active.prediction(forecast, 3000);
-  assert.match(fixture.status(), /^SY remaining ~1\.0k tok ETA [^|]+ \|/);
+  assert.match(fixture.status(), /^SY remaining ~1\.0k tok \$— ETA [^|]+ \|/);
   fixture.time(10);
   fixture.emit("message_end", { message: assistant(usage(10, 2)) });
   const saved = fixture.status();
-  assert.match(saved, /^SY remaining ~988 tok ETA [^|]+ \|/);
+  assert.match(saved, /^SY remaining ~988 tok \$— ETA [^|]+ \|/);
   fixture.emit("turn_end");
   fixture.emit("agent_end");
   assert.equal(fixture.status(), saved);
@@ -193,7 +193,7 @@ test("task predictions survive reload and resume, reset on forks, and reject lat
   assert.ok(!fixture.status().includes("remaining"));
   const pendingAfterClear = fixture.begin("user");
   pendingAfterClear.prediction(forecast, 3900);
-  assert.match(fixture.status(), /^SY remaining ~100 tok ETA [^|]+ \|/);
+  assert.match(fixture.status(), /^SY remaining ~100 tok \$— ETA [^|]+ \|/);
   fixture.emit("agent_settled");
   pendingAfterClear.prediction(forecast, 0);
   assert.ok(!fixture.status().includes("remaining"));
@@ -205,12 +205,12 @@ test("remaining usage counts cache writes and output once, excludes cache reads,
     selected_choice: "b002", finite_budget_probability: 0.8, impossible_probability: 0.2 };
   fixture.begin().prediction(forecast, 3000);
   fixture.emit("message_end", { message: assistant(usage(100, 20, 9000, 30, 10), "toolUse") });
-  assert.match(fixture.status(), /^SY remaining ~850 tok ETA [^|]+ \|/);
+  assert.match(fixture.status(), /^SY remaining ~850 tok \$— ETA [^|]+ \|/);
   assert.ok(!fixture.status().includes("impossible"));
   fixture.reload();
-  assert.match(fixture.status(), /^SY remaining ~850 tok ETA [^|]+ \|/);
+  assert.match(fixture.status(), /^SY remaining ~850 tok \$— ETA [^|]+ \|/);
   fixture.begin("continuation").prediction(forecast, 4500);
-  assert.match(fixture.status(), /^SY remaining ~0 tok ETA [^|]+ \|/);
+  assert.match(fixture.status(), /^SY remaining ~0 tok \$— ETA [^|]+ \|/);
 });
 
 test("ETA uses session timing, survives reload, resets on forks, and clears when the user turn settles", (t) => {
@@ -219,12 +219,12 @@ test("ETA uses session timing, survives reload, resets on forks, and clears when
   const forecast = (total) => ({ predicted_tokens: total - 100, expected_upper_tokens: total,
     selected_interval: [0, total], selected_choice: "b002", finite_budget_probability: 1, impossible_probability: 0 });
   fixture.begin().prediction(forecast(2500), 0);
-  assert.match(fixture.status(), /^SY remaining ~2\.5k tok ETA — \|/);
+  assert.match(fixture.status(), /^SY remaining ~2\.5k tok \$— ETA — \|/);
   fixture.time(2000);
   update(fixture, "text_delta", { delta: "checking parser" });
   fixture.time(6000);
   fixture.emit("message_end", { message: assistant(usage(700, 200, 10000, 100, 50), "toolUse") });
-  assert.match(fixture.status(), /^SY remaining ~1\.5k tok ETA ~9s \|/);
+  assert.match(fixture.status(), /^SY remaining ~1\.5k tok \$— ETA ~9s \|/);
   const saved = fixture.status();
   fixture.time(16000);
   fixture.emit("message_end", { message: { role: "toolResult" } });
@@ -236,22 +236,22 @@ test("ETA uses session timing, survives reload, resets on forks, and clears when
   const entries = structuredClone(fixture.entries());
   fixture.switchSession(undefined, entries);
   fixture.begin().prediction(forecast(2500), 1000);
-  assert.match(fixture.status(), /^SY remaining ~1\.5k tok ETA — \|/);
+  assert.match(fixture.status(), /^SY remaining ~1\.5k tok \$— ETA — \|/);
   fixture.switchSession(parent);
   assert.equal(fixture.status(), saved);
   fixture.begin("continuation").prediction(forecast(4500), 1000);
-  assert.match(fixture.status(), /^SY remaining ~3\.5k tok ETA ~21s \|/);
+  assert.match(fixture.status(), /^SY remaining ~3\.5k tok \$— ETA ~21s \|/);
   fixture.time(20000);
   update(fixture, "thinking_delta", { delta: "checking tests" });
   fixture.time(28000);
   fixture.emit("message_end", { message: assistant(usage(1600, 400, 10000, 0, 100)) });
-  assert.match(fixture.status(), /^SY remaining ~1\.5k tok ETA ~9s \|/);
+  assert.match(fixture.status(), /^SY remaining ~1\.5k tok \$— ETA ~9s \|/);
   fixture.emit("agent_settled");
   assert.ok(!fixture.status().includes("ETA"));
   fixture.reload();
   assert.ok(!fixture.status().includes("ETA"));
   fixture.begin().prediction(forecast(3000), 3000);
-  assert.match(fixture.status(), /^SY remaining ~0 tok ETA ~0s \|/);
+  assert.match(fixture.status(), /^SY remaining ~0 tok \$— ETA ~0s \|/);
 });
 
 test("ETA includes sequential, overlapping and nested tool wall time and restores it once", (t) => {
@@ -313,4 +313,80 @@ test("ETA includes sequential, overlapping and nested tool wall time and restore
   assert.ok(!fixture.status().includes("ETA"));
   fixture.reload();
   assert.ok(!fixture.status().includes("ETA"));
+});
+
+test("status costs include classifiers and completion, preserve partial totals, and replay once", async (t) => {
+  const fixture = setup(t);
+  const prices = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 3 };
+  const first = fixture.begin();
+  first.modelCost(prices);
+  await first.classify("provider/judge", async () => ({ stopReason: "stop", usage: usage(50, 10) }), prices);
+  const reported = { ...usage(100, 20, 300, 50, 10), cacheWrite1h: 10 };
+  fixture.emit("message_end", { message: assistant(reported) });
+  assert.match(fixture.status(), /session 530\/~\$0\.0008\//);
+  assert.match(fixture.status(), /last 530\/~\$0\.0008\//);
+  assert.equal(fixture.entries().at(-1).data.usage.cache_creation_1h_input_tokens, 10);
+  const native = new Metrics();
+  const totals = native.costs(first.context);
+  assert.ok(Math.abs(totals.total_usd - 0.00082) < 1e-12);
+  assert.equal(totals.estimated_calls, 2);
+  fixture.begin("continuation");
+  fixture.emit("message_end", { message: assistant(usage(10, 2)) });
+  assert.match(fixture.status(), /session 542\/≥\$0\.0008\//);
+  assert.match(fixture.status(), /last 12\/\$—\//);
+  const saved = fixture.status();
+  fixture.reload();
+  fixture.reload();
+  assert.equal(fixture.status(), saved);
+  assert.equal(native.costs({ session_id: first.context.session_id }).unknown_calls, 1);
+  fixture.switchSession(undefined, structuredClone(fixture.entries()));
+  assert.match(fixture.status(), /session —\/\$0\.0000\//);
+  const free = fixture.begin();
+  free.modelCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  fixture.emit("message_end", { message: assistant(usage(10, 2)) });
+  assert.match(fixture.status(), /session 12\/~\$0\.0000\//);
+});
+
+test("Pi pricing tiers use full prompt usage and retain one-hour cache-write detail", () => {
+  const prices = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 3, tiers: [
+    { inputTokensAbove: 500, input: 6, output: 30, cacheRead: 0.6, cacheWrite: 9 },
+    { inputTokensAbove: 100, input: 4, output: 20, cacheRead: 0.4, cacheWrite: 6 },
+  ] };
+  assert.equal(tokenRates(prices, usage(100, 20, 300, 100)).input, 4);
+  assert.deepEqual(tokenRates(prices, usage(100, 20, 300, 101)), {
+    input: 6, output: 30, cache_read: 0.6, cache_write: 9, cache_write_1h: 12,
+  });
+  assert.equal(tokenUsage({ ...usage(10, 2, 3, 4), cacheWrite1h: 1 }).cache_creation_1h_input_tokens, 1);
+  assert.equal(tokenRates(undefined, usage(10, 2)), undefined);
+});
+
+test("remaining monetary estimate uses current-model rates, session token mix and per-request tiers", (t) => {
+  const fixture = setup(t);
+  const prices = { input: 2, output: 10, cacheRead: 0.25, cacheWrite: 3, tiers: [
+    { inputTokensAbove: 12000, input: 4, output: 20, cacheRead: 0.5, cacheWrite: 6 },
+  ] };
+  const forecast = { predicted_tokens: 2400, expected_upper_tokens: 2500, selected_interval: [2000, 4000],
+    selected_choice: "b002", finite_budget_probability: 1, impossible_probability: 0 };
+  const active = fixture.begin();
+  active.modelCost(prices);
+  active.prediction(forecast, 0);
+  assert.match(fixture.status(), /^SY remaining ~2\.5k tok \$— ETA —/);
+  fixture.time(2000);
+  update(fixture, "text_delta", { delta: "checking" });
+  fixture.time(6000);
+  fixture.emit("message_end", { message: assistant(usage(700, 200, 10000, 100), "toolUse") });
+  // Remaining usage: 1,050 input + 150 writes + 300 output, plus 15,000 cache reads.
+  // Mean prompt is 10,800 tokens per request, below the 12,000-token tier boundary.
+  assert.match(fixture.status(), /^SY remaining ~1\.5k tok ~\$0\.0093 ETA ~9s/);
+  assert.match(fixture.status(), /session 11\.0k\/~\$0\.0062\//);
+  const saved = fixture.status();
+  fixture.reload();
+  assert.equal(fixture.status(), saved);
+  fixture.reload();
+  assert.equal(fixture.status(), saved);
+  fixture.emit("agent_settled");
+  assert.ok(!fixture.status().includes("remaining"));
+  assert.match(fixture.status(), /session 11\.0k\/~\$0\.0062\//);
+  fixture.reload();
+  assert.ok(!fixture.status().includes("remaining"));
 });

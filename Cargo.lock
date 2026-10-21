@@ -3777,6 +3777,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "switchyard-costs",
  "switchyard-libsy",
  "switchyard-protocol",
  "switchyard-token-prediction",

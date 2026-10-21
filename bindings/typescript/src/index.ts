@@ -61,9 +61,11 @@ export interface DecisionResponse {
 
 /** Normalized usage; input_tokens excludes cache reads and creation. */
 export interface TokenUsage {
+  provider_cost?: number | null;
   input_tokens?: number | null;
   cached_input_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
+  cache_creation_1h_input_tokens?: number | null;
   output_tokens?: number | null;
   total_tokens?: number | null;
   reasoning_tokens?: number | null;
@@ -119,6 +121,35 @@ export interface CallMetrics {
   /** Time to first generated content; omit when no token was observed. */
   ttft_ms?: number;
   usage?: TokenUsage;
+  rates?: TokenRates;
+}
+
+/** USD per million tokens, using switchyard-costs pricing fields. */
+export interface TokenRates {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_write: number;
+  cache_write_1h?: number;
+}
+
+export interface CostTotals {
+  known_usd: number;
+  unknown_calls: number;
+  estimated_calls: number;
+  provider_reported_calls: number;
+  total_usd: number | null;
+}
+
+export interface RecordedCost {
+  usd: number;
+  source: "estimated" | "provider_reported";
+}
+
+/** Prices projected usage with switchyard-costs without recording a charge. */
+export function estimateCost(usage: TokenUsage, rates: TokenRates): RecordedCost | null {
+  try { return JSON.parse(native.estimateCost(json({ usage, rates }))); }
+  catch (error) { throw publicError(error); }
 }
 
 export interface MetricsSnapshot {
@@ -156,6 +187,7 @@ interface NativeMetrics {
   record(observation: string): boolean;
   stats(query: string): string;
   prometheus(query: string): string;
+  costs(query: string): string;
 }
 
 const native: {
@@ -163,6 +195,7 @@ const native: {
   NativeMetrics: new () => NativeMetrics;
   taskPredictionRequest(input: string): string;
   taskPrediction(response: string): string;
+  estimateCost(input: string): string;
 } =
   createRequire(import.meta.url)("./switchyard.node");
 
@@ -282,6 +315,11 @@ export class Metrics {
 
   stats(filter: MetricFilter = {}): MetricsSnapshot {
     try { return JSON.parse(this.#native.stats(json(filter))); }
+    catch (error) { throw publicError(error); }
+  }
+
+  costs(filter: MetricFilter = {}): CostTotals {
+    try { return JSON.parse(this.#native.costs(json(filter))); }
     catch (error) { throw publicError(error); }
   }
 

@@ -133,6 +133,7 @@ metrics.record({
 
 const session = metrics.stats({ session_id: "session-1", agent_id: "root" });
 const turn = metrics.stats(metricContext);
+const cost = metrics.costs(metricContext);
 const all = metrics.stats();
 const prometheus = metrics.prometheus();
 ```
@@ -146,6 +147,23 @@ request before completion). Recording the same ID within a session twice returns
 `stats` returns metric series with labels and counter, gauge, or histogram values.
 `prometheus` returns Prometheus text. Both accept any subset of the four context
 fields; omit the filter to get all collected metrics.
+
+`record` accepts optional `rates` in USD per million tokens: `input`, `output`,
+`cache_read`, `cache_write`, and optional `cache_write_1h`. The Rust
+`switchyard-costs` crate prices usage and gives a valid `usage.provider_cost`
+precedence over estimates. Supply `usage.cache_creation_1h_input_tokens` when
+one-hour cache writes are reported.
+
+`costs(filter)` returns `known_usd`, `unknown_calls`, `estimated_calls`,
+`provider_reported_calls`, and `total_usd`. The total is `null` if any model call
+has unknown cost; request-failure markers are excluded. Replayed observation IDs
+contribute once. Known costs also appear in metric snapshots and Prometheus as
+`switchyard_llm_call_cost_usd_total`.
+
+`estimateCost(usage, rates)` returns `{ usd, source: "estimated" }` or `null` for
+incomplete usage or cache-write rates. It calls `switchyard-costs::Pricing::estimate`
+without recording a charge or changing totals. Provider-reported charges in the
+supplied usage are ignored for this forecast calculation.
 
 ## Task-completion forecasts
 

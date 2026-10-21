@@ -3,17 +3,43 @@
 
 //! Metrics for model calls performed by the JavaScript host.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use napi_derive::napi;
 use opentelemetry::{Context, KeyValue, global};
 use parking_lot::Mutex;
 use serde::Deserialize;
+use switchyard_costs::{CostSource, CostTotals, Pricing, RecordedCost};
 use switchyard_libsy::metrics::{MetricFilter, Metrics};
 use switchyard_protocol::Usage;
 
 use crate::{error, parse};
+
+fn pricing(model: &str, rates: Option<&serde_json::Value>) -> napi::Result<Pricing> {
+    match rates {
+        Some(rates) => {
+            let json = serde_json::to_vec(&HashMap::from([(model, rates)]))
+                .map_err(|err| error("ERR_INVALID_REQUEST", err))?;
+            Pricing::parse(&json).map_err(|err| error("ERR_INVALID_REQUEST", err))
+        }
+        None => Ok(Pricing::default()),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Estimate {
+    usage: Usage,
+    rates: serde_json::Value,
+}
+
+#[napi]
+pub fn estimate_cost(input_json: String) -> napi::Result<String> {
+    let input: Estimate = parse(&input_json)?;
+    let cost = pricing("forecast", Some(&input.rates))?.estimate("forecast", &input.usage);
+    serde_json::to_string(&cost).map_err(|err| error("ERR_METRICS", err))
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +71,7 @@ impl MetricContext {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum CallKind {
     Answer,
@@ -64,6 +90,7 @@ struct Observation {
     duration_ms: f64,
     ttft_ms: Option<f64>,
     usage: Option<Usage>,
+    rates: Option<serde_json::Value>,
 }
 
 #[derive(Default, Deserialize)]
@@ -76,6 +103,22 @@ struct Query {
 }
 
 impl Query {
+    fn matches(&self, context: &MetricContext) -> bool {
+        self.session_id
+            .as_ref()
+            .is_none_or(|id| id == &context.session_id)
+            && self
+                .agent_id
+                .as_ref()
+                .is_none_or(|id| id == &context.agent_id)
+            && self
+                .agent_turn_idx
+                .is_none_or(|idx| idx == context.agent_turn_idx)
+            && self
+                .user_turn_idx
+                .is_none_or(|idx| idx == context.user_turn_idx)
+    }
+
     fn filter(&self) -> MetricFilter<'_> {
         MetricFilter {
             session_id: self.session_id.as_deref(),
@@ -89,7 +132,13 @@ impl Query {
 struct Store {
     metrics: Metrics,
     // Session records are replayed on extension reload and must contribute once.
-    recorded: Mutex<HashSet<(String, String)>>,
+    recorded: Mutex<HashMap<(String, String), RecordedCall>>,
+}
+
+struct RecordedCall {
+    context: MetricContext,
+    kind: CallKind,
+    cost: Option<RecordedCost>,
 }
 
 #[napi]
@@ -134,8 +183,14 @@ impl NativeMetrics {
                 "Expected an ID, model, and finite nonnegative timing",
             ));
         }
+        let pricing = pricing(&observation.model, observation.rates.as_ref())?;
+        let cost = observation
+            .usage
+            .as_ref()
+            .and_then(|usage| pricing.cost(&observation.model, usage));
         let mut recorded = self.store.recorded.lock();
-        if !recorded.insert((observation.context.session_id.clone(), observation.id)) {
+        let key = (observation.context.session_id.clone(), observation.id);
+        if recorded.contains_key(&key) {
             return Ok(false);
         }
         let _guard = context.attach();
@@ -160,6 +215,23 @@ impl NativeMetrics {
             ),
         ]);
         let meter = global::meter("switchyard");
+        if !matches!(observation.call_kind, CallKind::Request)
+            && let Some(cost) = cost
+        {
+            let mut cost_attributes = attributes.clone();
+            cost_attributes.push(KeyValue::new("call_kind", kind));
+            cost_attributes.push(KeyValue::new(
+                "cost_source",
+                match cost.source {
+                    CostSource::ProviderReported => "provider_reported",
+                    CostSource::Estimated => "estimated",
+                },
+            ));
+            meter
+                .f64_counter("switchyard.llm_call.cost_usd")
+                .build()
+                .add(cost.usd, &cost_attributes);
+        }
         let duration_metric = if matches!(observation.call_kind, CallKind::Decision) {
             "switchyard.classifier_duration_ms"
         } else {
@@ -179,7 +251,27 @@ impl NativeMetrics {
             .f64_histogram(duration_metric)
             .build()
             .record(observation.duration_ms, &attributes);
+        recorded.insert(
+            key,
+            RecordedCall {
+                context: observation.context,
+                kind: observation.call_kind,
+                cost,
+            },
+        );
         Ok(true)
+    }
+
+    #[napi]
+    pub fn costs(&self, query_json: String) -> napi::Result<String> {
+        let query: Query = parse(&query_json)?;
+        let mut totals = CostTotals::default();
+        for call in self.store.recorded.lock().values() {
+            if !matches!(call.kind, CallKind::Request) && query.matches(&call.context) {
+                totals.add(call.cost);
+            }
+        }
+        serde_json::to_string(&totals).map_err(|err| error("ERR_METRICS", err))
     }
 
     #[napi]

@@ -90,3 +90,16 @@ test("a large uncached-input response does not collapse ETA by diluting per-requ
   assert.ok(Math.abs(estimate - expected) < 1e-8);
   assert.ok(estimate > 40000 && estimate < 50000);
 });
+
+test("projected monetary usage splits the uncached budget and estimates cache reads separately", () => {
+  const timing = new CompletionTiming();
+  assert.equal(timing.remainingUsage(1000), undefined);
+  assert.equal(timing.remainingUsage(0).output_tokens, 0);
+  timing.record(call({ usage: { input_tokens: 700, cache_creation_input_tokens: 100,
+    cache_creation_1h_input_tokens: 20, cached_input_tokens: 10000, output_tokens: 200 } }));
+  assert.deepEqual(timing.remainingUsage(1500), {
+    input_tokens: 1050, output_tokens: 300, cached_input_tokens: 15000,
+    cache_creation_input_tokens: 150, cache_creation_1h_input_tokens: 30,
+  });
+  assert.equal(timing.meanPromptTokens, 10800);
+});

@@ -24,6 +24,7 @@ use switchyard_protocol::{
 };
 
 mod metrics;
+pub use metrics::estimate_cost;
 mod prediction;
 pub use prediction::{task_prediction, task_prediction_request};
 

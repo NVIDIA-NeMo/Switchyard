@@ -228,7 +228,7 @@ test("the virtual model reports routing and answer metrics in the same native co
   emit({ type: "message_end", message: { role: "assistant", ...selection.model,
     model: selection.model.id, usage, stopReason: "stop" } });
   assert.equal(ctx.ui.setStatus.mock.calls.at(-1).arguments[1],
-    "SY remaining unavailable | session 45/20ms/60ms | last 45/20ms/60ms");
+    "SY remaining unavailable | session 45/$—/20ms/60ms | last 45/$—/20ms/60ms");
   const snapshot = new Metrics().stats(identity);
   const count = (name) => snapshot.series.filter((series) => series.name === name)
     .reduce((sum, series) => sum + series.value.value, 0);
@@ -259,14 +259,14 @@ test("task prediction appears before completion and refreshes for continuations 
   assert.equal(prediction.state.task_history[0].message, "task");
   assert.equal(prediction.state.token_usage.tokens_used_so_far, 0);
   assert.ok(options.signal instanceof AbortSignal);
-  assert.match(ctx.ui.setStatus.mock.calls.at(-1).arguments[1], /^SY remaining ~3\.0k tok ETA [^|]+ \|/);
+  assert.match(ctx.ui.setStatus.mock.calls.at(-1).arguments[1], /^SY remaining ~3\.0k tok \$— ETA [^|]+ \|/);
   const assistant = { role: "assistant", provider: "openai-codex", model: initial.model.id,
     content: [{ type: "text", text: "checking parser" }], stopReason: "toolUse",
     usage: { input: 800, cacheWrite: 200, cacheRead: 5000, output: 100, reasoning: 40, totalTokens: 6100 } };
   emit({ type: "message_end", message: assistant });
   const completedStatus = ctx.ui.setStatus.mock.calls.at(-1).arguments[1];
   assert.ok(completedStatus.length <= 80);
-  assert.match(completedStatus, /^SY remaining ~1\.9k tok ETA [^|]+ \|/);
+  assert.match(completedStatus, /^SY remaining ~1\.9k tok \$— ETA [^|]+ \|/);
   assert.ok(!completedStatus.includes("impossible"));
   assert.match(completedStatus, /session 6\.1k\/.+ \| last 6\.1k\//);
   const branch = [

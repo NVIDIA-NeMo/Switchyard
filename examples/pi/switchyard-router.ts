@@ -139,7 +139,7 @@ export default function (pi: ExtensionAPI) {
           decide: async (decision) => {
             const classify = () => ctx.modelRegistry.classify(judge, classifierContext(decision), { signal: request.signal });
             return decisionResponse(decision, measurement
-              ? await measurement.classify(classifier.reference, classify) : await classify());
+              ? await measurement.classify(classifier.reference, classify, judge.cost) : await classify());
           },
         }).catch((error) => {
           // The binding wraps classifier errors as routing failures; preserve cancellation for Pi.
@@ -149,13 +149,14 @@ export default function (pi: ExtensionAPI) {
         const identity = modelIdentity(selection.model);
         const model = ctx.modelRegistry.find(identity.provider, identity.id);
         if (!model) throw new Error(`Model ${identity.reference} is not in the catalog`);
+        measurement?.modelCost(model.cost);
         if (measurement) {
           try {
             const branchMessages = ctx.sessionManager.getBranch().flatMap((entry) => entry.type === "message"
               && (entry.message.role === "assistant" || entry.message.role === "user" || entry.message.role === "toolResult") ? [entry.message] : []);
             const prediction = predictionRequest(classifier.reference, branchMessages.length ? branchMessages : request.messages);
             const result = await measurement.classify(classifier.reference,
-              () => ctx.modelRegistry.classify(judge, classifierContext(prediction), { signal: request.signal }));
+              () => ctx.modelRegistry.classify(judge, classifierContext(prediction), { signal: request.signal }), judge.cost);
             const used = (prediction.context as { token_usage: { tokens_used_so_far: number } }).token_usage.tokens_used_so_far;
             measurement.prediction(taskPrediction(decisionResponse(prediction, result)), used);
           } catch {

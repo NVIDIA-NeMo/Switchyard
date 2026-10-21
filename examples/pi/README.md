@@ -89,13 +89,13 @@ For the binding API, see
 ## Status metrics
 
 With `switchyard/auto` selected, the status bar shows estimated remaining task
-tokens and time, cumulative session metrics, and the latest request's metrics:
+tokens, completion cost and time, session metrics, and the latest request's metrics:
 
 ```text
-SY remaining ~247.9k tok ETA ~12m30s | session 2.1k/420ms/8.30s | last 180/350ms/1.20s
+SY remaining ~247.9k tok ~$1.4500 ETA ~12m30s | session 2.1k/~$0.0123/420ms/8.30s | last 180/~$0.0012/350ms/1.20s
 ```
 
-`session` and `last` list **tokens / TTFT / request latency**. Session TTFT is
+`session` and `last` list **tokens / USD cost / TTFT / request latency**. Session TTFT is
 an average; session latency is a sum. Narrow terminals may truncate the line.
 Measured tokens include routing, prediction, and completion usage, including cached tokens. Timing
 starts when routing begins. TTFT ends at the first text, reasoning, or tool-call
@@ -114,6 +114,37 @@ restore them without counting them twice. Totals cover all branches in the same
 session; a fork with a new session ID starts fresh. The collector retains up to
 20,000 label combinations per instrument; further combinations enter an overflow
 series and cannot be queried by session or turn.
+
+### Monetary cost
+
+`switchyard-costs` computes session and latest-request cost from Pi's catalog
+rates and each call's token usage. Routing and prediction classifiers count too.
+Pricing follows Pi's prompt-size tiers and separate cache-read, cache-write, and
+one-hour cache-write rates. Reasoning tokens are already part of output.
+
+`~$0.0123` marks an estimate. `$—` means cost is unknown. `≥$0.0123` shows a known
+subtotal when some calls are unpriced. A configured free model has a known zero
+cost. Pi's precomputed usage cost is not treated as a provider-reported charge.
+
+Each saved measurement includes its applicable rates so resume/reload preserves
+the original estimate without double counting. Older measurements without rates
+remain unpriced. Known costs are also emitted as
+`switchyard_llm_call_cost_usd_total`. The Rust collector's cost queries retain
+unknown-call counts alongside the known subtotal.
+
+The amount beside `remaining` estimates future completion cost using the current
+selected model's rates. It splits the remaining uncached-input-plus-output budget
+using the session's per-response token mix. Cache writes retain their observed
+share, including one-hour writes. Additional cache reads are projected separately
+from the observed cache-read ratio; they do not consume the uncached token budget.
+Pricing tiers use mean prompt size per request, rather than all remaining tokens.
+Future routing and prediction classifier fees are excluded from this completion
+estimate; their observed costs remain included in session and request spend.
+
+Before usable session measurements or model rates are available, remaining cost
+shows `$—`. The estimate updates with completed responses, restores on reload,
+and clears with the token forecast when the user turn settles. It assumes the
+current model and observed token mix continue.
 
 ### Task forecast
 
