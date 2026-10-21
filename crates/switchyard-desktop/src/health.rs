@@ -87,6 +87,19 @@ pub(crate) fn validate_url(server_url: &str) -> Result<url::Url, String> {
     Ok(url)
 }
 
+pub fn details(server_url: &str) -> serde_json::Value {
+    match request(server_url) {
+        Ok(true) => serde_json::json!({"state":"running","reason":null}),
+        Ok(false) => {
+            serde_json::json!({
+                "state": "unreachable",
+                "reason": "The health endpoint did not return HTTP 200."
+            })
+        }
+        Err(error) => serde_json::json!({"state":"unreachable","reason":error.to_string()}),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
