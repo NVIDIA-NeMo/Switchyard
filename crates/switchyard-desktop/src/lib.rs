@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The installer that `cargo desktop`, the installed `switchyard-desktop-install` helper, and the
-//! desktop app share.
+//! Desktop settings, server checks, and installation support.
 
+pub mod config;
+pub mod health;
 pub mod install;

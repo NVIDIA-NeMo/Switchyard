@@ -73,6 +73,11 @@ pub struct RecordedCost {
 }
 
 impl Pricing {
+    /// This method reports whether the file includes rates for a model.
+    pub fn contains(&self, model: &str) -> bool {
+        self.0.contains_key(model)
+    }
+
     /// This method loads the rates shipped with this version of Switchyard.
     pub fn bundled() -> Result<Self, String> {
         Self::parse_toml(include_str!("../prices.toml"))

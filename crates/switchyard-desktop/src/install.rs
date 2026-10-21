@@ -16,6 +16,10 @@ use std::{
 
 use switchyard_costs::Pricing;
 
+use crate::config::{
+    self, Config, DEFAULT_PORT, DESKTOP_CONFIG, HOME_DIR, PRICES_FILE, ROUTING_LOG, SERVER_CONFIG,
+};
+
 pub mod credentials;
 // Linux and any other system without launchd or Task Scheduler use systemd; execute rejects
 // unsupported systems before they change anything.
@@ -36,7 +40,6 @@ pub fn executable_name(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-const SERVER: &str = "com.nvidia.switchyard.server";
 const BUNDLED_CONFIG: &str = include_str!("../../../scripts/config/composite.toml");
 const UPDATE_LOCK: &str = ".switchyard-desktop-update.lock";
 const PORT_ERROR: &str = "SY_PORT must be a number from 1 to 65535.";
@@ -87,10 +90,7 @@ impl Settings {
         Ok(selected)
     }
     pub fn from_env() -> Result<Self, String> {
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(PathBuf::from)
-            .ok_or("Could not find your home directory.")?;
+        let home = config::home_dir()?;
         let path = |name, default| std::env::var_os(name).map(PathBuf::from).unwrap_or(default);
         let value = |name: &str, default: &str| {
             std::env::var(name).or_else(|error| match error {
@@ -98,12 +98,12 @@ impl Settings {
                 std::env::VarError::NotUnicode(_) => Err(format!("{name} must be UTF-8.")),
             })
         };
-        let port = value("SY_PORT", "4123")?;
+        let port = value("SY_PORT", &DEFAULT_PORT.to_string())?;
         if !port.bytes().all(|b| b.is_ascii_digit()) {
             return Err(PORT_ERROR.into());
         }
         let settings = Self {
-            sy_home: path("SY_HOME", home.join(".switchyard")),
+            sy_home: path("SY_HOME", home.join(HOME_DIR)),
             codex_home: path("CODEX_HOME", home.join(".codex")),
             service_dir: if cfg!(target_os = "macos") {
                 home.join("Library/LaunchAgents")
@@ -202,11 +202,11 @@ impl Settings {
         self.bin_dir().join(executable_name(name))
     }
     pub fn desktop_settings(&self) -> PathBuf {
-        self.sy_home.join("desktop.toml")
+        self.sy_home.join(DESKTOP_CONFIG)
     }
     /// This optional file overrides bundled rates for the server and app baseline.
     pub fn prices_file(&self) -> PathBuf {
-        self.sy_home.join("prices.json")
+        self.sy_home.join(PRICES_FILE)
     }
     /// This method builds the installed server command with any existing price override.
     /// The caller configures and starts the process.
@@ -214,12 +214,12 @@ impl Settings {
         let mut command = Command::new(self.binary("switchyard-server"));
         command
             .arg("--config")
-            .arg(self.sy_home.join("composite.toml"));
+            .arg(self.sy_home.join(SERVER_CONFIG));
         command.args(["--host", "127.0.0.1"]);
         command.arg("--port").arg(self.port.to_string());
         command
             .arg("--routing-log-file")
-            .arg(self.sy_home.join("routing.jsonl"));
+            .arg(self.sy_home.join(ROUTING_LOG));
 
         let prices = self.prices_file();
         if prices.exists() {
@@ -491,8 +491,8 @@ fn installation_plan(s: &Settings, action: &str) -> String {
     ];
     for (path, label) in [
         (s.desktop_settings(), "app settings"),
-        (s.sy_home.join("composite.toml"), "server config"),
-        (s.sy_home.join("routing.jsonl"), "usage history"),
+        (s.sy_home.join(SERVER_CONFIG), "server config"),
+        (s.sy_home.join(ROUTING_LOG), "usage history"),
     ] {
         let verb = if removing || path.exists() {
             "Preserve"
@@ -776,7 +776,7 @@ fn build(s: &Settings) -> Result<(), String> {
 /// Checks the server config that the install keeps, or the bundled one on a first install, and
 /// returns the API key variables that have no saved key.
 fn check_server_config(s: &Settings, require_route: bool) -> Result<Vec<String>, String> {
-    let config = s.sy_home.join("composite.toml");
+    let config = s.sy_home.join(SERVER_CONFIG);
     let existing = present(&config)?;
     let staged = tempfile::NamedTempFile::new().map_err(err)?;
     let checked = if existing {
@@ -830,11 +830,11 @@ fn replace_installation(s: &Settings, desktop_settings: Option<&str>) -> Result<
         let bytes = fs::read(s.release(binary)).map_err(err)?;
         write(&s.binary(binary), &bytes, true)?;
     }
-    write_once(&s.sy_home.join("composite.toml"), BUNDLED_CONFIG)?;
+    write_once(&s.sy_home.join(SERVER_CONFIG), BUNDLED_CONFIG)?;
     if let Some(text) = desktop_settings {
         write(&s.desktop_settings(), text.as_bytes(), false)?;
     } else {
-        write_once(&s.desktop_settings(), &desktop_config(s))?;
+        write_once(&s.desktop_settings(), &desktop_config(s)?)?;
     }
     for record in [s.sy_home.join("install.toml"), s.install_record()] {
         write(&record, metadata.as_bytes(), false)?;
@@ -944,9 +944,9 @@ fn reconcile_desktop_port(s: &Settings) -> Result<Option<String>, String> {
     let old_port = if previous.exists() {
         Settings::load(&previous)?.port
     } else {
-        4123
+        DEFAULT_PORT
     };
-    let expected = format!("http://127.0.0.1:{old_port}");
+    let expected = config::server_url(old_port);
     let current = document
         .get("server_url")
         .map(|value| {
@@ -971,7 +971,7 @@ fn reconcile_desktop_port(s: &Settings) -> Result<Option<String>, String> {
     if current.is_some_and(|url| url != expected || s.port == old_port) {
         return Ok(None);
     }
-    document["server_url"] = toml_edit::value(format!("http://127.0.0.1:{}", s.port));
+    document["server_url"] = toml_edit::value(config::server_url(s.port));
     let updated = document.to_string();
     Ok((updated != text).then_some(updated))
 }
@@ -980,7 +980,7 @@ fn reconcile_desktop_port(s: &Settings) -> Result<Option<String>, String> {
 // config or, on a new install, the bundled one. A missing route returns `None` here;
 // check_public_route rejects it later with the list of valid route IDs.
 fn route_context_window(s: &Settings) -> Result<Option<i64>, String> {
-    let path = s.sy_home.join("composite.toml");
+    let path = s.sy_home.join(SERVER_CONFIG);
     let text = read_optional(&path).map_err(|e| format!("Read {}: {e}", path.display()))?;
     let document: toml::Value = toml::from_str(text.as_deref().unwrap_or(BUNDLED_CONFIG))
         .map_err(|e| format!("Parse {}: {e}", path.display()))?;
@@ -1051,34 +1051,16 @@ fn merge_codex_profile(
     Ok(document.to_string())
 }
 
-fn desktop_config(s: &Settings) -> String {
-    let mut config = format!(
-        "server_url = {:?}\n\
-         routing_log = {}\n\
-         config_file = {}\n\
-         launchd_label = {:?}\n\
-         refresh_seconds = 30\n\
-         \n\
-         # Savings compare recorded costs with answer tokens priced at baseline_model rates.\n\
-         # The app uses bundled rates unless pricing_file is set.\n\
-         baseline_model = \"gpt-6-sol\"\n",
-        format!("http://127.0.0.1:{}", s.port),
-        toml_string(&s.sy_home.join("routing.jsonl").to_string_lossy()),
-        toml_string(&s.sy_home.join("composite.toml").to_string_lossy()),
-        SERVER,
-    );
+// The installer and app share defaults so generated settings keep the selected directory and port.
+fn desktop_config(s: &Settings) -> Result<String, String> {
+    let mut config = Config::for_directory(&s.sy_home, s.port);
     let prices = s.prices_file();
     if prices.exists() {
-        config.push_str(&format!(
-            "pricing_file = {}\n",
-            toml_string(&prices.to_string_lossy())
-        ));
+        config.prices_file = Some(prices);
     }
-    config
+    toml::to_string(&config).map_err(err)
 }
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.into()).to_string()
-}
+
 #[cfg(any(target_os = "macos", windows))]
 fn xml(value: &str) -> String {
     value
