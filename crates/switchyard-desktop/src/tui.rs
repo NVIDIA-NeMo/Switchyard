@@ -119,7 +119,7 @@ const CONFIRM_KEYS: &[Key] = &[("y", "confirm", ""), ("n", "cancel", "")];
 /// The Settings page lists one entry per controller action. `App::start_action` matches
 /// `ActionKind` without a wildcard arm, so a new controller action breaks the build until it
 /// has an entry here.
-const ACTIONS: [(char, &str, &str, ActionKind); 12] = [
+const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
     (
         'o',
         "Open server config",
