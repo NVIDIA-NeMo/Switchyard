@@ -1289,7 +1289,7 @@
   <span class="md-ellipsis">
     
   
-    Operations
+    Tuning
   
 
     
@@ -1305,11 +1305,126 @@
             <span class="md-nav__icon md-icon"></span>
             
   
+    Tuning
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tuning Loop
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
     Operations
   
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -1394,10 +1509,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -1415,8 +1530,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1669,7 +1784,7 @@
 <p>Add routing to your existing Rust gateway or agent harness with <strong>libsy</strong>, Switchyard's core library. Your application keeps its model clients, credentials, and service.</p>
 <p>Start with a local routing decision, then send the selected request through a model client. Python bindings are covered <a href="../reference/host_integration/#python-bindings">separately</a>.</p>
 <h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
-<p>You need Rust 1.96.1+ with Cargo and a native build toolchain. See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5596b03b186023460eee2a21b995a8f17891f98f/INSTALLATION.md#requirements">installation requirements</a>. These examples use the development API, pinned to one Git revision. The released <code>0.3.0</code> crates do not include <code>Step::CallDecision</code> and use a different <code>respond</code> API.</p>
+<p>You need Rust 1.96.1+ with Cargo and a native build toolchain. See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0d2a20c4e8c197b098f05e624842f91a1a8b9681/INSTALLATION.md#requirements">installation requirements</a>. These examples use the development API, pinned to one Git revision. The released <code>0.3.0</code> crates do not include <code>Step::CallDecision</code> and use a different <code>respond</code> API.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cargo<span class="w"> </span>new<span class="w"> </span>switchyard-demo
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>switchyard-demo
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Keep libsy and its protocol types on the same API revision.</span>
@@ -1688,97 +1803,85 @@
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="n">Algorithm</span><span class="p">,</span><span class="w"> </span><span class="n">PickerMode</span><span class="p">,</span><span class="w"> </span><span class="n">RuntimeModels</span><span class="p">,</span><span class="w"> </span><span class="n">StageRouter</span><span class="p">,</span><span class="w"> </span><span class="n">StageRouterConfig</span><span class="p">,</span><span class="w"> </span><span class="n">State</span><span class="p">,</span><span class="w"> </span><span class="n">Step</span><span class="p">,</span>
 </span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="p">};</span>
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::{</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="n">Category</span><span class="p">,</span><span class="w"> </span><span class="n">ContentBlock</span><span class="p">,</span><span class="w"> </span><span class="n">LlmResponse</span><span class="p">,</span><span class="w"> </span><span class="n">Message</span><span class="p">,</span><span class="w"> </span><span class="n">Request</span><span class="p">,</span><span class="w"> </span><span class="n">Role</span><span class="p">,</span><span class="w"> </span><span class="n">ToolCall</span><span class="p">,</span><span class="w"> </span><span class="n">ToolResult</span><span class="p">,</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="n">completion_text</span><span class="p">,</span><span class="w"> </span><span class="n">text_request</span><span class="p">,</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="p">};</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="c1">// run_stream starts asynchronous tasks, so this example needs a Tokio runtime.</span>
-</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="cp">#[tokio::main(flavor = </span><span class="s">&quot;current_thread&quot;</span><span class="cp">)]</span>
-</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="c1">// EfficientFirst is the default when tool signals do not decide the tier.</span>
-</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="c1">// 0.5 is the signal-confidence threshold. No LLM judge is configured here.</span>
-</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">router</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">StageRouter</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">StageRouterConfig</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
-</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">        </span><span class="n">PickerMode</span><span class="p">::</span><span class="n">EfficientFirst</span><span class="p">,</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span>
-</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="p">))</span><span class="o">?</span><span class="p">);</span>
-</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="c1">// Replace these demo IDs with provider model IDs when adding a client.</span>
-</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">efficient</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;Efficient&quot;</span><span class="p">;</span>
-</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">capable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;Capable&quot;</span><span class="p">;</span>
-</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="c1">// Efficient/Capable assign roles; Any lists the full model pool.</span>
-</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">RuntimeModels</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">HashMap</span><span class="p">::</span><span class="n">from</span><span class="p">([</span>
-</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Efficient</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">efficient</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
-</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Capable</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">capable</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
-</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Any</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">efficient</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span><span class="w"> </span><span class="n">capable</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
-</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">    </span><span class="p">])));</span>
-</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">    </span><span class="c1">// None leaves the model unset so the router can select it.</span>
-</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="w">    </span><span class="c1">// This request has only a user prompt, with no previous tool activity.</span>
-</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">fresh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Request</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a><span class="w">        </span><span class="n">llm_request</span><span class="p">:</span><span class="w"> </span><span class="nc">text_request</span><span class="p">(</span><span class="nb">None</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Run the tests.&quot;</span><span class="p">),</span>
-</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a><span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
-</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a><span class="w">    </span><span class="p">};</span>
-</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>
-</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a><span class="w">    </span><span class="c1">// Copy the prompt and add the history an agent would send after a tool failure.</span>
-</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a><span class="w">    </span><span class="c1">// These messages describe past activity; this example does not execute bash.</span>
-</span><span id="__span-1-39"><a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">recovery</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">fresh</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-1-40"><a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a><span class="w">    </span><span class="n">recovery</span><span class="p">.</span><span class="n">llm_request</span><span class="p">.</span><span class="n">messages</span><span class="p">.</span><span class="n">extend</span><span class="p">([</span>
-</span><span id="__span-1-41"><a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a><span class="w">        </span><span class="c1">// The assistant previously asked the bash tool to run the tests.</span>
-</span><span id="__span-1-42"><a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a><span class="w">        </span><span class="n">Message</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-43"><a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a><span class="w">            </span><span class="n">role</span><span class="p">:</span><span class="w"> </span><span class="nc">Role</span><span class="p">::</span><span class="n">Assistant</span><span class="p">,</span>
-</span><span id="__span-1-44"><a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a><span class="w">            </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">ToolCall</span><span class="p">(</span><span class="n">ToolCall</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-45"><a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a><span class="w">                </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;c1&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-1-46"><a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a><span class="w">                </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bash&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-1-47"><a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a><span class="w">                </span><span class="n">arguments</span><span class="p">:</span><span class="w"> </span><span class="nc">r</span><span class="p">#</span><span class="s">&quot;{&quot;</span><span class="n">command</span><span class="s">&quot;:&quot;</span><span class="n">cargo</span><span class="w"> </span><span class="n">test</span><span class="s">&quot;}&quot;</span><span class="p">#.</span><span class="n">parse</span><span class="p">()</span><span class="o">?</span><span class="p">,</span>
-</span><span id="__span-1-48"><a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a><span class="w">            </span><span class="p">})],</span>
-</span><span id="__span-1-49"><a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a><span class="w">        </span><span class="p">},</span>
-</span><span id="__span-1-50"><a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a><span class="w">        </span><span class="c1">// Match the result to that call with the same ID, c1.</span>
-</span><span id="__span-1-51"><a id="__codelineno-1-51" name="__codelineno-1-51" href="#__codelineno-1-51"></a><span class="w">        </span><span class="n">Message</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-52"><a id="__codelineno-1-52" name="__codelineno-1-52" href="#__codelineno-1-52"></a><span class="w">            </span><span class="n">role</span><span class="p">:</span><span class="w"> </span><span class="nc">Role</span><span class="p">::</span><span class="n">User</span><span class="p">,</span>
-</span><span id="__span-1-53"><a id="__codelineno-1-53" name="__codelineno-1-53" href="#__codelineno-1-53"></a><span class="w">            </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">ToolResult</span><span class="p">(</span><span class="n">ToolResult</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-54"><a id="__codelineno-1-54" name="__codelineno-1-54" href="#__codelineno-1-54"></a><span class="w">                </span><span class="n">tool_call_id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;c1&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-1-55"><a id="__codelineno-1-55" name="__codelineno-1-55" href="#__codelineno-1-55"></a><span class="w">                </span><span class="n">is_error</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="kc">true</span><span class="p">),</span>
-</span><span id="__span-1-56"><a id="__codelineno-1-56" name="__codelineno-1-56" href="#__codelineno-1-56"></a><span class="w">                </span><span class="c1">// This critical error makes Stage select Capable.</span>
-</span><span id="__span-1-57"><a id="__codelineno-1-57" name="__codelineno-1-57" href="#__codelineno-1-57"></a><span class="w">                </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">Text</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-58"><a id="__codelineno-1-58" name="__codelineno-1-58" href="#__codelineno-1-58"></a><span class="w">                    </span><span class="n">text</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MemoryError: cannot allocate memory</span><span class="se">\n</span><span class="s">Killed&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-1-59"><a id="__codelineno-1-59" name="__codelineno-1-59" href="#__codelineno-1-59"></a><span class="w">                </span><span class="p">}],</span>
-</span><span id="__span-1-60"><a id="__codelineno-1-60" name="__codelineno-1-60" href="#__codelineno-1-60"></a><span class="w">            </span><span class="p">})],</span>
-</span><span id="__span-1-61"><a id="__codelineno-1-61" name="__codelineno-1-61" href="#__codelineno-1-61"></a><span class="w">        </span><span class="p">},</span>
-</span><span id="__span-1-62"><a id="__codelineno-1-62" name="__codelineno-1-62" href="#__codelineno-1-62"></a><span class="w">    </span><span class="p">]);</span>
-</span><span id="__span-1-63"><a id="__codelineno-1-63" name="__codelineno-1-63" href="#__codelineno-1-63"></a>
-</span><span id="__span-1-64"><a id="__codelineno-1-64" name="__codelineno-1-64" href="#__codelineno-1-64"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">label</span><span class="p">,</span><span class="w"> </span><span class="n">request</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="p">[(</span><span class="s">&quot;Fresh request&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">fresh</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="s">&quot;Tool failure&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">recovery</span><span class="p">)]</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-65"><a id="__codelineno-1-65" name="__codelineno-1-65" href="#__codelineno-1-65"></a><span class="w">        </span><span class="c1">// These are independent examples, each with fresh routing state.</span>
-</span><span id="__span-1-66"><a id="__codelineno-1-66" name="__codelineno-1-66" href="#__codelineno-1-66"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">steps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">router</span><span class="p">.</span><span class="n">clone</span><span class="p">().</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">models</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span><span class="w"> </span><span class="n">State</span><span class="p">::</span><span class="n">default</span><span class="p">());</span>
-</span><span id="__span-1-67"><a id="__codelineno-1-67" name="__codelineno-1-67" href="#__codelineno-1-67"></a><span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">step</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">steps</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-68"><a id="__codelineno-1-68" name="__codelineno-1-68" href="#__codelineno-1-68"></a><span class="w">            </span><span class="c1">// Each item is Result&lt;Step&gt;; ? returns a routing error to the caller.</span>
-</span><span id="__span-1-69"><a id="__codelineno-1-69" name="__codelineno-1-69" href="#__codelineno-1-69"></a><span class="w">            </span><span class="k">match</span><span class="w"> </span><span class="n">step</span><span class="o">?</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-70"><a id="__codelineno-1-70" name="__codelineno-1-70" href="#__codelineno-1-70"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">CallModel</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-71"><a id="__codelineno-1-71" name="__codelineno-1-71" href="#__codelineno-1-71"></a><span class="w">                    </span><span class="c1">// A routing-time LLM call would need a client. This preset makes none.</span>
-</span><span id="__span-1-72"><a id="__codelineno-1-72" name="__codelineno-1-72" href="#__codelineno-1-72"></a><span class="w">                    </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="s">&quot;An LLM client is required for this algorithm.&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">());</span>
-</span><span id="__span-1-73"><a id="__codelineno-1-73" name="__codelineno-1-73" href="#__codelineno-1-73"></a><span class="w">                </span><span class="p">}</span>
-</span><span id="__span-1-74"><a id="__codelineno-1-74" name="__codelineno-1-74" href="#__codelineno-1-74"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">CallDecision</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-75"><a id="__codelineno-1-75" name="__codelineno-1-75" href="#__codelineno-1-75"></a><span class="w">                    </span><span class="c1">// Typed decision questions would need a separate decision client.</span>
-</span><span id="__span-1-76"><a id="__codelineno-1-76" name="__codelineno-1-76" href="#__codelineno-1-76"></a><span class="w">                    </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="s">&quot;A decision client is required for this algorithm.&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">());</span>
-</span><span id="__span-1-77"><a id="__codelineno-1-77" name="__codelineno-1-77" href="#__codelineno-1-77"></a><span class="w">                </span><span class="p">}</span>
-</span><span id="__span-1-78"><a id="__codelineno-1-78" name="__codelineno-1-78" href="#__codelineno-1-78"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">Done</span><span class="p">(</span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-79"><a id="__codelineno-1-79" name="__codelineno-1-79" href="#__codelineno-1-79"></a><span class="w">                    </span><span class="c1">// Done means routing is complete, not necessarily the final LLM call.</span>
-</span><span id="__span-1-80"><a id="__codelineno-1-80" name="__codelineno-1-80" href="#__codelineno-1-80"></a><span class="w">                    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{label} -&gt; Selected: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">selected_model_id</span><span class="p">()</span><span class="o">?</span><span class="p">);</span>
-</span><span id="__span-1-81"><a id="__codelineno-1-81" name="__codelineno-1-81" href="#__codelineno-1-81"></a><span class="w">                    </span><span class="k">match</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">response</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-82"><a id="__codelineno-1-82" name="__codelineno-1-82" href="#__codelineno-1-82"></a><span class="w">                        </span><span class="nb">Some</span><span class="p">(</span><span class="n">response</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-83"><a id="__codelineno-1-83" name="__codelineno-1-83" href="#__codelineno-1-83"></a><span class="w">                            </span><span class="c1">// Reuse an answer produced during routing, with no extra call.</span>
-</span><span id="__span-1-84"><a id="__codelineno-1-84" name="__codelineno-1-84" href="#__codelineno-1-84"></a><span class="w">                            </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-85"><a id="__codelineno-1-85" name="__codelineno-1-85" href="#__codelineno-1-85"></a><span class="w">                                </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{label} -&gt; Answer: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">));</span>
-</span><span id="__span-1-86"><a id="__codelineno-1-86" name="__codelineno-1-86" href="#__codelineno-1-86"></a><span class="w">                            </span><span class="p">}</span>
-</span><span id="__span-1-87"><a id="__codelineno-1-87" name="__codelineno-1-87" href="#__codelineno-1-87"></a><span class="w">                        </span><span class="p">}</span>
-</span><span id="__span-1-88"><a id="__codelineno-1-88" name="__codelineno-1-88" href="#__codelineno-1-88"></a><span class="w">                        </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-89"><a id="__codelineno-1-89" name="__codelineno-1-89" href="#__codelineno-1-89"></a><span class="w">                            </span><span class="c1">// This example stops at selection and makes no provider call.</span>
-</span><span id="__span-1-90"><a id="__codelineno-1-90" name="__codelineno-1-90" href="#__codelineno-1-90"></a><span class="w">                            </span><span class="c1">// For an answer, send outcome.request through your client,</span>
-</span><span id="__span-1-91"><a id="__codelineno-1-91" name="__codelineno-1-91" href="#__codelineno-1-91"></a><span class="w">                            </span><span class="c1">// or pass it to your gateway to make that call later.</span>
-</span><span id="__span-1-92"><a id="__codelineno-1-92" name="__codelineno-1-92" href="#__codelineno-1-92"></a><span class="w">                        </span><span class="p">}</span>
-</span><span id="__span-1-93"><a id="__codelineno-1-93" name="__codelineno-1-93" href="#__codelineno-1-93"></a><span class="w">                    </span><span class="p">}</span>
-</span><span id="__span-1-94"><a id="__codelineno-1-94" name="__codelineno-1-94" href="#__codelineno-1-94"></a><span class="w">                </span><span class="p">}</span>
-</span><span id="__span-1-95"><a id="__codelineno-1-95" name="__codelineno-1-95" href="#__codelineno-1-95"></a><span class="w">            </span><span class="p">}</span>
-</span><span id="__span-1-96"><a id="__codelineno-1-96" name="__codelineno-1-96" href="#__codelineno-1-96"></a><span class="w">        </span><span class="p">}</span>
-</span><span id="__span-1-97"><a id="__codelineno-1-97" name="__codelineno-1-97" href="#__codelineno-1-97"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-1-98"><a id="__codelineno-1-98" name="__codelineno-1-98" href="#__codelineno-1-98"></a><span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
-</span><span id="__span-1-99"><a id="__codelineno-1-99" name="__codelineno-1-99" href="#__codelineno-1-99"></a><span class="p">}</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="n">Category</span><span class="p">,</span><span class="w"> </span><span class="n">ContentBlock</span><span class="p">,</span><span class="w"> </span><span class="n">Message</span><span class="p">,</span><span class="w"> </span><span class="n">Request</span><span class="p">,</span><span class="w"> </span><span class="n">Role</span><span class="p">,</span><span class="w"> </span><span class="n">ToolCall</span><span class="p">,</span><span class="w"> </span><span class="n">ToolResult</span><span class="p">,</span><span class="w"> </span><span class="n">text_request</span><span class="p">,</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="p">};</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="c1">// run_stream starts asynchronous tasks, so this example needs a Tokio runtime.</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="cp">#[tokio::main(flavor = </span><span class="s">&quot;current_thread&quot;</span><span class="cp">)]</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="c1">// EfficientFirst is the default when tool signals do not decide the tier.</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="c1">// 0.5 is the signal-confidence threshold. No LLM judge is configured here.</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">router</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">StageRouter</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">StageRouterConfig</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">        </span><span class="n">PickerMode</span><span class="p">::</span><span class="n">EfficientFirst</span><span class="p">,</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="p">))</span><span class="o">?</span><span class="p">);</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">    </span><span class="c1">// Replace these demo IDs with provider model IDs when adding a client.</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">efficient</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;Efficient&quot;</span><span class="p">;</span>
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">capable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;Capable&quot;</span><span class="p">;</span>
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="c1">// Efficient/Capable assign roles; Any lists the full model pool.</span>
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">RuntimeModels</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">HashMap</span><span class="p">::</span><span class="n">from</span><span class="p">([</span>
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Efficient</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">efficient</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Capable</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">capable</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Any</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">efficient</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span><span class="w"> </span><span class="n">capable</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">    </span><span class="p">])));</span>
+</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">    </span><span class="c1">// None leaves the model unset so the router can select it.</span>
+</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">    </span><span class="c1">// This request has only a user prompt, with no previous tool activity.</span>
+</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">fresh</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Request</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="w">        </span><span class="n">llm_request</span><span class="p">:</span><span class="w"> </span><span class="nc">text_request</span><span class="p">(</span><span class="nb">None</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Run the tests.&quot;</span><span class="p">),</span>
+</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a><span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
+</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a><span class="w">    </span><span class="p">};</span>
+</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>
+</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a><span class="w">    </span><span class="c1">// Copy the prompt and add the history an agent would send after a tool failure.</span>
+</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a><span class="w">    </span><span class="c1">// These messages describe past activity; this example does not execute bash.</span>
+</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">recovery</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">fresh</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-1-39"><a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a><span class="w">    </span><span class="n">recovery</span><span class="p">.</span><span class="n">llm_request</span><span class="p">.</span><span class="n">messages</span><span class="p">.</span><span class="n">extend</span><span class="p">([</span>
+</span><span id="__span-1-40"><a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a><span class="w">        </span><span class="c1">// The assistant previously asked the bash tool to run the tests.</span>
+</span><span id="__span-1-41"><a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a><span class="w">        </span><span class="n">Message</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-42"><a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a><span class="w">            </span><span class="n">role</span><span class="p">:</span><span class="w"> </span><span class="nc">Role</span><span class="p">::</span><span class="n">Assistant</span><span class="p">,</span>
+</span><span id="__span-1-43"><a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a><span class="w">            </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">ToolCall</span><span class="p">(</span><span class="n">ToolCall</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-44"><a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a><span class="w">                </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;c1&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-1-45"><a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a><span class="w">                </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bash&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-1-46"><a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a><span class="w">                </span><span class="n">arguments</span><span class="p">:</span><span class="w"> </span><span class="nc">r</span><span class="p">#</span><span class="s">&quot;{&quot;</span><span class="n">command</span><span class="s">&quot;:&quot;</span><span class="n">cargo</span><span class="w"> </span><span class="n">test</span><span class="s">&quot;}&quot;</span><span class="p">#.</span><span class="n">parse</span><span class="p">()</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-1-47"><a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a><span class="w">            </span><span class="p">})],</span>
+</span><span id="__span-1-48"><a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a><span class="w">        </span><span class="p">},</span>
+</span><span id="__span-1-49"><a id="__codelineno-1-49" name="__codelineno-1-49" href="#__codelineno-1-49"></a><span class="w">        </span><span class="c1">// Match the result to that call with the same ID, c1.</span>
+</span><span id="__span-1-50"><a id="__codelineno-1-50" name="__codelineno-1-50" href="#__codelineno-1-50"></a><span class="w">        </span><span class="n">Message</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-51"><a id="__codelineno-1-51" name="__codelineno-1-51" href="#__codelineno-1-51"></a><span class="w">            </span><span class="n">role</span><span class="p">:</span><span class="w"> </span><span class="nc">Role</span><span class="p">::</span><span class="n">User</span><span class="p">,</span>
+</span><span id="__span-1-52"><a id="__codelineno-1-52" name="__codelineno-1-52" href="#__codelineno-1-52"></a><span class="w">            </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">ToolResult</span><span class="p">(</span><span class="n">ToolResult</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-53"><a id="__codelineno-1-53" name="__codelineno-1-53" href="#__codelineno-1-53"></a><span class="w">                </span><span class="n">tool_call_id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;c1&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-1-54"><a id="__codelineno-1-54" name="__codelineno-1-54" href="#__codelineno-1-54"></a><span class="w">                </span><span class="n">is_error</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="kc">true</span><span class="p">),</span>
+</span><span id="__span-1-55"><a id="__codelineno-1-55" name="__codelineno-1-55" href="#__codelineno-1-55"></a><span class="w">                </span><span class="c1">// This critical error makes Stage select Capable.</span>
+</span><span id="__span-1-56"><a id="__codelineno-1-56" name="__codelineno-1-56" href="#__codelineno-1-56"></a><span class="w">                </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">Text</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-57"><a id="__codelineno-1-57" name="__codelineno-1-57" href="#__codelineno-1-57"></a><span class="w">                    </span><span class="n">text</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MemoryError: cannot allocate memory</span><span class="se">\n</span><span class="s">Killed&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-1-58"><a id="__codelineno-1-58" name="__codelineno-1-58" href="#__codelineno-1-58"></a><span class="w">                </span><span class="p">}],</span>
+</span><span id="__span-1-59"><a id="__codelineno-1-59" name="__codelineno-1-59" href="#__codelineno-1-59"></a><span class="w">            </span><span class="p">})],</span>
+</span><span id="__span-1-60"><a id="__codelineno-1-60" name="__codelineno-1-60" href="#__codelineno-1-60"></a><span class="w">        </span><span class="p">},</span>
+</span><span id="__span-1-61"><a id="__codelineno-1-61" name="__codelineno-1-61" href="#__codelineno-1-61"></a><span class="w">    </span><span class="p">]);</span>
+</span><span id="__span-1-62"><a id="__codelineno-1-62" name="__codelineno-1-62" href="#__codelineno-1-62"></a>
+</span><span id="__span-1-63"><a id="__codelineno-1-63" name="__codelineno-1-63" href="#__codelineno-1-63"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">label</span><span class="p">,</span><span class="w"> </span><span class="n">request</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="p">[(</span><span class="s">&quot;Fresh request&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">fresh</span><span class="p">),</span><span class="w"> </span><span class="p">(</span><span class="s">&quot;Tool failure&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">recovery</span><span class="p">)]</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-64"><a id="__codelineno-1-64" name="__codelineno-1-64" href="#__codelineno-1-64"></a><span class="w">        </span><span class="c1">// These are independent examples, each with fresh routing state.</span>
+</span><span id="__span-1-65"><a id="__codelineno-1-65" name="__codelineno-1-65" href="#__codelineno-1-65"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">steps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">router</span><span class="p">.</span><span class="n">clone</span><span class="p">().</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">models</span><span class="p">.</span><span class="n">clone</span><span class="p">(),</span><span class="w"> </span><span class="n">State</span><span class="p">::</span><span class="n">default</span><span class="p">());</span>
+</span><span id="__span-1-66"><a id="__codelineno-1-66" name="__codelineno-1-66" href="#__codelineno-1-66"></a><span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">step</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">steps</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-67"><a id="__codelineno-1-67" name="__codelineno-1-67" href="#__codelineno-1-67"></a><span class="w">            </span><span class="c1">// Each item is Result&lt;Step&gt;; ? returns a routing error to the caller.</span>
+</span><span id="__span-1-68"><a id="__codelineno-1-68" name="__codelineno-1-68" href="#__codelineno-1-68"></a><span class="w">            </span><span class="k">match</span><span class="w"> </span><span class="n">step</span><span class="o">?</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-69"><a id="__codelineno-1-69" name="__codelineno-1-69" href="#__codelineno-1-69"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">CallModel</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-70"><a id="__codelineno-1-70" name="__codelineno-1-70" href="#__codelineno-1-70"></a><span class="w">                    </span><span class="c1">// A routing-time LLM call would need a client. This preset makes none.</span>
+</span><span id="__span-1-71"><a id="__codelineno-1-71" name="__codelineno-1-71" href="#__codelineno-1-71"></a><span class="w">                    </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="s">&quot;An LLM client is required for this algorithm.&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">());</span>
+</span><span id="__span-1-72"><a id="__codelineno-1-72" name="__codelineno-1-72" href="#__codelineno-1-72"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-1-73"><a id="__codelineno-1-73" name="__codelineno-1-73" href="#__codelineno-1-73"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">CallDecision</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-74"><a id="__codelineno-1-74" name="__codelineno-1-74" href="#__codelineno-1-74"></a><span class="w">                    </span><span class="c1">// Typed decision questions would need a separate decision client.</span>
+</span><span id="__span-1-75"><a id="__codelineno-1-75" name="__codelineno-1-75" href="#__codelineno-1-75"></a><span class="w">                    </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="s">&quot;A decision client is required for this algorithm.&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">());</span>
+</span><span id="__span-1-76"><a id="__codelineno-1-76" name="__codelineno-1-76" href="#__codelineno-1-76"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-1-77"><a id="__codelineno-1-77" name="__codelineno-1-77" href="#__codelineno-1-77"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">Done</span><span class="p">(</span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-78"><a id="__codelineno-1-78" name="__codelineno-1-78" href="#__codelineno-1-78"></a><span class="w">                    </span><span class="c1">// Stage returns a selected model and request, with response: None.</span>
+</span><span id="__span-1-79"><a id="__codelineno-1-79" name="__codelineno-1-79" href="#__codelineno-1-79"></a><span class="w">                    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{label} -&gt; Selected: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">selected_model_id</span><span class="p">()</span><span class="o">?</span><span class="p">);</span>
+</span><span id="__span-1-80"><a id="__codelineno-1-80" name="__codelineno-1-80" href="#__codelineno-1-80"></a><span class="w">                    </span><span class="c1">// Stop here for routing only, or send outcome.request through your</span>
+</span><span id="__span-1-81"><a id="__codelineno-1-81" name="__codelineno-1-81" href="#__codelineno-1-81"></a><span class="w">                    </span><span class="c1">// client for an answer. Your gateway can also make that call later.</span>
+</span><span id="__span-1-82"><a id="__codelineno-1-82" name="__codelineno-1-82" href="#__codelineno-1-82"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-1-83"><a id="__codelineno-1-83" name="__codelineno-1-83" href="#__codelineno-1-83"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-1-84"><a id="__codelineno-1-84" name="__codelineno-1-84" href="#__codelineno-1-84"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-1-85"><a id="__codelineno-1-85" name="__codelineno-1-85" href="#__codelineno-1-85"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-86"><a id="__codelineno-1-86" name="__codelineno-1-86" href="#__codelineno-1-86"></a><span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
+</span><span id="__span-1-87"><a id="__codelineno-1-87" name="__codelineno-1-87" href="#__codelineno-1-87"></a><span class="p">}</span>
 </span></code></pre></div>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Both model selections are local; this makes no provider requests.</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cargo<span class="w"> </span>run
@@ -1789,7 +1892,7 @@
 </span></code></pre></div>
 <p>The demo IDs <code>"Efficient"</code> and <code>"Capable"</code> stand in for your models. The fresh request follows <code>EfficientFirst</code>; the same prompt with a critical tool failure selects <strong>Capable</strong>. Both decisions are local and need no API key. See the <a href="../routing_algorithms/stage_router_routing/">Stage router guide</a> for its signal rules.</p>
 <p>The <code>0.5</code> value is a routing confidence threshold, not a measured probability of task success. This preset is called <strong>Auto</strong> in TOML. Evaluate your agent and model pool against a single-model baseline before relying on savings.</p>
-<p>The loop shows every <code>Step</code>. This Stage preset yields only <code>Done</code>; the other branches report missing clients. Inside <code>Done</code>, reuse <code>Some(response)</code>. With <code>None</code>, send <code>outcome.request</code> through your client or leave that call to your gateway. The request already contains the selected model and any routing-time rewrites; <code>selected_model_ids</code> lists ordered fallbacks.</p>
+<p>The loop shows every <code>Step</code>. This Stage preset yields only <code>Done</code>; the other branches report missing clients. <strong>Stage selects the model; it does not produce the answer.</strong> Its <code>outcome.response</code> is <code>None</code>. Your application decides whether to call the selected model or pass the request back to its gateway. <code>outcome.request</code> includes the selected model and any routing-time rewrites; <code>selected_model_ids</code> lists ordered fallbacks.</p>
 <p>Next, add a client to this same program.</p>
 <h2 id="use-libsy-with-your-client">Use libsy with your client<a class="headerlink" href="#use-libsy-with-your-client" title="Permanent link">&para;</a></h2>
 <p><strong>You do not have to use Switchyard's HTTP client.</strong> Keep your existing SDK, or create your own client. Continue in <code>src/main.rs</code>, keeping the router, model pool, requests, and loop above.</p>
@@ -1802,9 +1905,9 @@
 </span></code></pre></div>
 <details>
 <summary>OpenRouter adapter: append to src/main.rs</summary>
-<p>This reuses <code>Request</code> and <code>LlmResponse</code> from the imports above. It uses <code>reqwest</code> for HTTP and <code>switchyard-translation</code> for provider JSON. It returns a buffered response and requires no client trait implementation.</p>
+<p>This reuses <code>Request</code> from the imports above. It uses <code>reqwest</code> for HTTP and <code>switchyard-translation</code> for provider JSON. It returns a buffered response and requires no client trait implementation.</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_libsy</span><span class="p">::</span><span class="n">LibsyError</span><span class="p">;</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::</span><span class="n">Response</span><span class="p">;</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::{</span><span class="n">LlmResponse</span><span class="p">,</span><span class="w"> </span><span class="n">Response</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">};</span>
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_translation</span><span class="p">::{</span>
 </span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="n">WireFormat</span><span class="p">,</span><span class="w"> </span><span class="n">decode_aggregated_response</span><span class="p">,</span><span class="w"> </span><span class="n">encode_request</span><span class="p">,</span>
 </span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">};</span>
@@ -1870,16 +1973,18 @@
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>Inside <code>Step::Done</code>, keep <code>Some(response)</code> unchanged and replace its <code>None</code> branch with:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span><span class="c1">// Use the returned request, including its selected model and rewrites.</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">outcome</span><span class="p">.</span><span class="n">request</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">        </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{label} -&gt; Answer: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">));</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="p">}</span>
+<p>Replace the existing <code>Step::Done</code> branch with this host-side final call:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">Step</span><span class="p">::</span><span class="n">Done</span><span class="p">(</span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{label} -&gt; Selected: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">selected_model_id</span><span class="p">()</span><span class="o">?</span><span class="p">);</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="c1">// Stage has finished selecting. This call is made by your application.</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="c1">// Use the returned request, including its selected model and rewrites.</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">outcome</span><span class="p">.</span><span class="n">request</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">        </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{label} -&gt; Answer: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">));</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>Your gateway can leave that branch as a routing-only handoff instead. <code>Some(response)</code> already has an answer and needs no extra call. Keep <code>Step::CallDecision</code> as-is unless you supply a separate <a href="../reference/host_integration/#serve-routing-time-calls">decision client</a>.</p>
+<p>For routing-only use, leave the original <code>Done</code> branch in place. Other algorithms may return an answer in <code>outcome.response</code>; see the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0d2a20c4e8c197b098f05e624842f91a1a8b9681/README.md#start-with-libsy">general integration pattern</a> for response reuse. Keep <code>Step::CallDecision</code> as-is unless you supply a separate <a href="../reference/host_integration/#serve-routing-time-calls">decision client</a>.</p>
 <p>Run the same file again. <strong>This now makes two billable model calls</strong>, one for each request:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>cargo<span class="w"> </span>run
 </span></code></pre></div>
@@ -1889,15 +1994,15 @@
 </span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>Tool failure -&gt; Selected: anthropic/claude-opus-4.8
 </span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>Tool failure -&gt; Answer: &lt;model reply&gt;
 </span></code></pre></div>
-<p>Your own client can fill the same call sites by returning <code>switchyard_protocol::Response</code> and adapting errors to <code>libsy::Result</code>. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5596b03b186023460eee2a21b995a8f17891f98f/crates/libsy-llm-client/README.md">optional Switchyard HTTP client</a> provides translation, streaming, retries, and fallback. This loop serves calls sequentially; use <a href="../reference/host_integration/#concurrent-calls-and-cancellation"><code>libsy::drive</code></a> for concurrent algorithms.</p>
+<p>Your own client can fill the same call sites by returning <code>switchyard_protocol::Response</code> and adapting errors to <code>libsy::Result</code>. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0d2a20c4e8c197b098f05e624842f91a1a8b9681/crates/libsy-llm-client/README.md">optional Switchyard HTTP client</a> provides translation, streaming, retries, and fallback. This loop serves calls sequentially; use <a href="../reference/host_integration/#concurrent-calls-and-cancellation"><code>libsy::drive</code></a> for concurrent algorithms.</p>
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Explore the Rust API:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5596b03b186023460eee2a21b995a8f17891f98f/crates/libsy/README.md">libsy crate</a> and <a href="../reference/rust_api/">generated API reference</a>.</li>
-<li><strong>Use a gateway integration:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5596b03b186023460eee2a21b995a8f17891f98f/examples/litellm/README.md">LiteLLM</a> or <a href="../integrations/nemo_relay/">NeMo Relay</a>. Check each guide's supported algorithms and versions.</li>
+<li><strong>Explore the Rust API:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0d2a20c4e8c197b098f05e624842f91a1a8b9681/crates/libsy/README.md">libsy crate</a> and <a href="../reference/rust_api/">generated API reference</a>.</li>
+<li><strong>Use a gateway integration:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0d2a20c4e8c197b098f05e624842f91a1a8b9681/examples/litellm/README.md">LiteLLM</a> or <a href="../integrations/nemo_relay/">NeMo Relay</a>. Check each guide's supported algorithms and versions.</li>
 <li><strong>Choose another algorithm:</strong> <a href="../routing_algorithms/overview/">routing overview</a>.</li>
 <li><strong>Try the standalone proxy:</strong> <a href="../operations/local_evaluation/">local evaluation guide</a>. The server is for demos, evaluation, and personal use, not a supported production path.</li>
 <li><strong>Use Python:</strong> <a href="../reference/host_integration/#python-bindings">Python bindings</a>.</li>
-<li><strong>Use an agent directly:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5596b03b186023460eee2a21b995a8f17891f98f/examples/claude/README.md">Claude Code example</a>, <a href="../integrations/pi/">pi</a>, or <a href="../integrations/oh_my_pi/">Oh My Pi</a>.</li>
+<li><strong>Use an agent directly:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0d2a20c4e8c197b098f05e624842f91a1a8b9681/examples/claude/README.md">Claude Code example</a>, <a href="../integrations/pi/">pi</a>, or <a href="../integrations/oh_my_pi/">Oh My Pi</a>.</li>
 </ul>
 
 
