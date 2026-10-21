@@ -36,20 +36,36 @@ routing_log = "~/.switchyard/routing.jsonl"
 baseline_model = "gpt-5.6-sol"
 refresh_seconds = 30
 
-pricing_file = "~/.switchyard/prices.json"
+# This optional file replaces the bundled price table.
+# pricing_file = "~/.switchyard/prices.toml"
 ```
 
-The server's `--pricing-file` and the menubar's `pricing_file` use the same JSON file.
+The server and menubar use the same [bundled rates](../switchyard-costs/prices.toml) by
+default. To override them, point the server's `--pricing-file` and the menubar's
+`pricing_file` at the same TOML or JSON file. The file replaces the entire bundled table.
+Bundled rates stay fixed until you install a version with updated rates. The table
+includes standard OpenAI and Claude text-token rates. Estimates exclude long-context
+and service-tier adjustments, OpenAI's 12-hour cache-write pricing, tool fees, and
+time-based cache storage. Entries with provider prefixes use list-rate estimates;
+billed charges may differ. Use an override when your provider charges different rates.
 Key each entry by the model ID in the routing log. Rates are in USD per million tokens:
 
-```json
-{"gpt-5.6-sol":{"input":1.25,"cache_read":0.125,"cache_write":1.25,"output":10}}
+```toml
+["gpt-5.6-sol"]
+input = 4
+cache_read = 0.4
+cache_write = 5
+output = 20
 ```
 
-These example rates preserve the installer's previous assumptions. Replace them with
-what you pay. The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains
+Use a `.toml` extension for TOML. The extension check ignores case; other filenames
+are read as JSON.
+
+These example rates are estimates. Replace them with your provider's rates.
+The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains
 cache-write rates and how to add other models. Rates load at startup; restart both
-applications after editing them.
+applications after editing them. An unreadable or invalid override file stops startup;
+the applications do not use bundled rates instead.
 
 ## How savings are computed
 
@@ -66,9 +82,11 @@ or required one-hour cache-write rate keeps the baseline unknown. Missing or inv
 usage also keeps the baseline unknown. Token counts still
 appear when savings cannot be calculated. The log can be read while the server is offline.
 
-Codex's `codex-auto-review` model keeps the installer's baseline rates by default.
-Update that entry when changing `baseline_model` if you want those reviews to have
-the same estimated cost with and without Switchyard. ChatGPT subscription traffic
+The bundled `codex-auto-review` rates match `gpt-6-sol`. Codex sends these approval
+reviews even without Switchyard. If your `baseline_model` uses different rates, add
+matching `codex-auto-review` rates to your override file to give those reviews the
+same estimated cost with and without Switchyard. Matching review costs leave dollar
+savings unchanged but reduce the savings percentage. ChatGPT subscription traffic
 may have no per-token bill; token-rate estimates are comparisons at the supplied rates.
 
 ## Migrate older settings and logs

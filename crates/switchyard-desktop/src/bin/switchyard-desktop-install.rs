@@ -150,22 +150,11 @@ fn serve(file: &Path) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     let s = Settings::load(file)?;
     let config = s.sy_home.join("composite.toml");
-    let mut server = std::process::Command::new(s.binary("switchyard-server"));
+    let mut server = s.server_command();
     #[cfg(target_os = "linux")]
     credentials::wait_for_keyring()?;
     credentials::configure(&mut server, &config)?;
-    let error = server
-        .arg("--config")
-        .arg(config)
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &s.port.to_string(),
-            "--routing-log-file",
-        ])
-        .arg(s.sy_home.join("routing.jsonl"))
-        .exec();
+    let error = server.exec();
     Err(format!("Could not start the server: {error}"))
 }
 

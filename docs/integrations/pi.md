@@ -155,7 +155,10 @@ second shows `cached_tokens` close to `prompt_tokens`. If the second record show
 
 #### Estimate the cost
 
-The server matches each token count in the routing log to a rate in the pricing file:
+The server uses bundled rates by default. To use your provider's rates or add missing
+models, supply a TOML or JSON file with `--pricing-file`. It replaces the entire bundled table.
+An unreadable or invalid file stops startup; the server does not substitute bundled rates.
+The server matches each token count in the routing log to a rate:
 
 | Tokens in the record | Pricing-file key |
 |---|---|
@@ -168,15 +171,21 @@ The server matches each token count in the routing log to a rate in the pricing 
 Treat a missing `cache_creation_1h_tokens` count as zero. That count is part of
 `cache_creation_tokens`, so it must not be charged twice.
 
-Write the prices to `prices.json` in USD per million tokens, and key each entry by the
+Write the prices to `prices.toml` in USD per million tokens, and key each entry by the
 record's `model` value. This example uses Anthropic's list prices for Claude Sonnet 5 on
 2026-10-02:
 
-```json
-{
-  "claude-sonnet-5": {"input": 2.00, "cache_read": 0.20, "cache_write": 2.50, "output": 10.00}
-}
+```toml
+["claude-sonnet-5"]
+input = 2.00
+cache_read = 0.20
+cache_write = 2.50
+output = 10.00
 ```
+
+Put each quoted model ID in a top-level table, as shown above. Quotes keep dots
+within the ID. The `.toml` extension check ignores case; other filenames are read
+as JSON, so existing JSON overrides still work.
 
 For your own models, copy the entry for each model and replace the key with its exact
 `model` value from the routing log. Use the served model ID rather than the routing alias,
@@ -195,10 +204,11 @@ the input price instead of 1.25 times; set `cache_write_1h` to `4.00` for that e
 Include that rate to estimate reported one-hour cache writes; without it, the estimate
 remains unknown.
 
-Start the server with `--pricing-file prices.json` as well as `--routing-log-file PATH`.
+To use your file, start the server with `--pricing-file prices.toml` as well as
+`--routing-log-file PATH`.
 The server records the gateway's reported charge when available, even without rates.
-Otherwise it uses the pricing file to estimate the cost. If usage is missing or the model
-has no rates, the estimate is unknown. Read each request's cost with:
+Otherwise it uses bundled rates or your override file to estimate the cost. If usage
+is missing or the model has no rates, the estimate is unknown. Read each request's cost with:
 
 ```bash
 jq -c '{route_id, model, cost}' PATH

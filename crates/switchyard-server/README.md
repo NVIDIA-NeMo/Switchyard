@@ -124,21 +124,36 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
-The routing log saves each call's reported charge in USD. Add `--pricing-file prices.json`
-to estimate costs that the upstream does not report. The JSON maps served model IDs to rates
-in USD per million tokens:
+The routing log saves each call's reported charge in USD. When the upstream reports no
+charge, the server estimates it using [bundled rates](../switchyard-costs/prices.toml).
+Bundled rates stay fixed until you install a version with updated rates.
+The table includes OpenAI and Claude text-token rates. Model IDs match exactly,
+including provider prefixes; an unlisted ID has no estimated cost.
+These are standard-rate estimates. They exclude long-context and service-tier
+adjustments, OpenAI's 12-hour cache-write pricing, tool fees, and time-based cache
+storage. Entries with provider prefixes use list-rate estimates; billed charges may differ.
+Use `--pricing-file prices.toml` to replace the entire bundled table with your own rates.
+Use a `.toml` file with quoted served model IDs and rates in USD per million tokens:
 
-```json
-{"upstream/model":{"input":1,"output":5,"cache_read":0.1,"cache_write":2}}
+```toml
+["upstream/model"]
+input = 1
+output = 5
+cache_read = 0.1
+cache_write = 2
 ```
+
+The `.toml` extension check ignores case. Other filenames are read as JSON, so existing
+JSON overrides still work.
 
 Session stats include cost totals. Missing usage or rates leave cost unknown; `known_usd`
 keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rates load once
-at startup, and saved costs do not change when prices change.
+at startup, and saved costs do not change when prices change. An unreadable or invalid
+`--pricing-file` stops startup; the server does not use bundled rates instead.
 
 The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
 rates for your own models. The menubar reads the same file through its `pricing_file`
-setting; its actual spending comes from recorded costs.
+setting when you override the bundled rates; its actual spending comes from recorded costs.
 
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce

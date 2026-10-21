@@ -14,6 +14,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use switchyard_costs::Pricing;
+
 pub mod credentials;
 // Linux and any other system without launchd or Task Scheduler use systemd; execute rejects
 // unsupported systems before they change anything.
@@ -201,6 +203,29 @@ impl Settings {
     }
     pub fn desktop_settings(&self) -> PathBuf {
         self.sy_home.join("desktop.toml")
+    }
+    /// This optional file overrides bundled rates for the server and app baseline.
+    pub fn prices_file(&self) -> PathBuf {
+        self.sy_home.join("prices.json")
+    }
+    /// This method builds the installed server command with any existing price override.
+    /// The caller configures and starts the process.
+    pub fn server_command(&self) -> Command {
+        let mut command = Command::new(self.binary("switchyard-server"));
+        command
+            .arg("--config")
+            .arg(self.sy_home.join("composite.toml"));
+        command.args(["--host", "127.0.0.1"]);
+        command.arg("--port").arg(self.port.to_string());
+        command
+            .arg("--routing-log-file")
+            .arg(self.sy_home.join("routing.jsonl"));
+
+        let prices = self.prices_file();
+        if prices.exists() {
+            command.arg("--pricing-file").arg(prices);
+        }
+        command
     }
     fn profile_file(&self) -> PathBuf {
         self.codex_home
@@ -476,6 +501,12 @@ fn installation_plan(s: &Settings, action: &str) -> String {
         };
         rows.push(format!("{verb} {label}: {}", path.display()));
     }
+    if s.prices_file().exists() {
+        rows.push(format!(
+            "Preserve model price override: {}",
+            s.prices_file().display()
+        ));
+    }
     rows.push(format!(
         "{profile_action} Codex profile: {}",
         profile.display()
@@ -708,6 +739,10 @@ fn prepare(s: &Settings, preserve_profile: bool) -> Result<Prepared, String> {
     #[cfg(not(windows))]
     platform::preflight()?;
     let desktop_settings = reconcile_desktop_port(s)?;
+    let prices = s.prices_file();
+    if present(&prices)? {
+        Pricing::load(&prices).map_err(|e| format!("{e}. Fix this file before installing."))?;
+    }
     build(s)?;
     let missing_keys = check_server_config(s, !preserve_profile || !profile.exists())?;
     Ok(Prepared {
@@ -1017,20 +1052,29 @@ fn merge_codex_profile(
 }
 
 fn desktop_config(s: &Settings) -> String {
-    format!(
+    let mut config = format!(
         "server_url = {:?}\n\
          routing_log = {}\n\
          config_file = {}\n\
          launchd_label = {:?}\n\
          refresh_seconds = 30\n\
          \n\
-         {}",
+         # Savings compare recorded costs with answer tokens priced at baseline_model rates.\n\
+         # The app uses bundled rates unless pricing_file is set.\n\
+         baseline_model = \"gpt-6-sol\"\n",
         format!("http://127.0.0.1:{}", s.port),
         toml_string(&s.sy_home.join("routing.jsonl").to_string_lossy()),
         toml_string(&s.sy_home.join("composite.toml").to_string_lossy()),
         SERVER,
-        include_str!("../prices.toml")
-    )
+    );
+    let prices = s.prices_file();
+    if prices.exists() {
+        config.push_str(&format!(
+            "pricing_file = {}\n",
+            toml_string(&prices.to_string_lossy())
+        ));
+    }
+    config
 }
 fn toml_string(value: &str) -> String {
     toml::Value::String(value.into()).to_string()

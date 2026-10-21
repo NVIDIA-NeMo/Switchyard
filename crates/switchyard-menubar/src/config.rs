@@ -26,7 +26,7 @@ pub struct Config {
     pub refresh_seconds: u64,
     /// Model the traffic is assumed to have used without Switchyard.
     pub baseline_model: String,
-    /// The shared JSON file supplies rates for the baseline estimate.
+    /// An optional TOML or JSON file replaces bundled rates for the baseline estimate.
     pub pricing_file: Option<PathBuf>,
     /// Rates load once when the settings are read.
     #[serde(skip)]
@@ -61,6 +61,8 @@ impl Config {
             let path = expand_home(path);
             config.prices = Pricing::load(&path)?;
             config.pricing_file = Some(path);
+        } else {
+            config.prices = Pricing::bundled()?;
         }
         config.routing_log = expand_home(&config.routing_log);
         config.config_file = expand_home(&config.config_file);

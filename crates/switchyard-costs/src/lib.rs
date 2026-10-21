@@ -73,18 +73,44 @@ pub struct RecordedCost {
 }
 
 impl Pricing {
-    /// This method loads and validates a JSON pricing file.
+    /// This method loads the rates shipped with this version of Switchyard.
+    pub fn bundled() -> Result<Self, String> {
+        Self::parse_toml(include_str!("../prices.toml"))
+    }
+
+    /// This method loads TOML from `.toml` files and JSON from other filenames.
+    /// The extension check ignores ASCII case.
     pub fn load(path: &Path) -> Result<Self, String> {
         let bytes = std::fs::read(path)
             .map_err(|error| format!("read pricing file {}: {error}", path.display()))?;
-        Self::parse(&bytes)
-            .map_err(|error| format!("invalid pricing file {}: {error}", path.display()))
+        let pricing = if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+        {
+            std::str::from_utf8(&bytes)
+                .map_err(|error| error.to_string())
+                .and_then(Self::parse_toml)
+        } else {
+            Self::parse(&bytes)
+        };
+        pricing.map_err(|error| format!("invalid pricing file {}: {error}", path.display()))
     }
 
     /// This function reads a pricing file's JSON and checks every model ID and rate.
     pub fn parse(json: &[u8]) -> Result<Self, String> {
         let pricing: Self = serde_json::from_slice(json).map_err(|error| error.to_string())?;
-        for (model, rate) in &pricing.0 {
+        pricing.validate()
+    }
+
+    /// TOML rates use the same typed fields and validation as JSON rates.
+    fn parse_toml(text: &str) -> Result<Self, String> {
+        let pricing: Self = toml::from_str(text).map_err(|error| error.to_string())?;
+        pricing.validate()
+    }
+
+    /// Both parsers use this check so model IDs and rate limits agree across formats.
+    fn validate(self) -> Result<Self, String> {
+        for (model, rate) in &self.0 {
             if model.trim().is_empty()
                 || model.trim() != model
                 || [
@@ -103,7 +129,7 @@ impl Pricing {
                 ));
             }
         }
-        Ok(pricing)
+        Ok(self)
     }
 
     /// Provider charges take precedence because token rates may omit provider surcharges.

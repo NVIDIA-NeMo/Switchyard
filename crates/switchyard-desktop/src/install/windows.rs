@@ -384,10 +384,13 @@ pub fn temporary_updater(source: &Path) -> Result<tempfile::TempPath, String> {
 }
 /// This function waits for its child so Task Scheduler tracks the app or server's lifetime.
 pub fn launch_managed(s: &Settings, desktop: bool) -> Result<(), String> {
-    let (program, log) = if desktop {
-        ("switchyard-desktop", "logs/desktop.log")
+    let (mut command, log) = if desktop {
+        (
+            Command::new(s.binary("switchyard-desktop")),
+            "logs/desktop.log",
+        )
     } else {
-        ("switchyard-server", "logs/server.log")
+        (s.server_command(), "logs/server.log")
     };
     fs::create_dir_all(s.sy_home.join("logs")).map_err(|e| e.to_string())?;
     let log = fs::OpenOptions::new()
@@ -395,33 +398,23 @@ pub fn launch_managed(s: &Settings, desktop: bool) -> Result<(), String> {
         .append(true)
         .open(s.sy_home.join(log))
         .map_err(|e| e.to_string())?;
-    let mut c = Command::new(s.binary(program));
-    hide_console(&mut c);
-    c.env("HOME", &s.home)
+    hide_console(&mut command);
+    command
+        .env("HOME", &s.home)
         .env("USERPROFILE", &s.home)
         .env("CODEX_HOME", &s.codex_home)
         .env("SY_HOME", &s.sy_home)
         .current_dir(s.bin_dir());
     if desktop {
-        c.arg(s.desktop_settings());
+        command.arg(s.desktop_settings());
     } else {
         let config = s.sy_home.join("composite.toml");
-        c.arg("--config")
-            .arg(&config)
-            .args([
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &s.port.to_string(),
-                "--routing-log-file",
-            ])
-            .arg(s.sy_home.join("routing.jsonl"));
         // The helper has no console, so a missing key is reported in the server log.
-        credentials::configure(&mut c, &config).inspect_err(|error| {
+        credentials::configure(&mut command, &config).inspect_err(|error| {
             let _ = writeln!(&log, "switchyard-desktop-install: {error}");
         })?;
     }
-    let status = c
+    let status = command
         .stdin(Stdio::null())
         .stderr(log.try_clone().map_err(|e| e.to_string())?)
         .stdout(log)

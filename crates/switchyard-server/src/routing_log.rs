@@ -45,7 +45,7 @@ impl RoutingLog {
             .map_err(|error| routing_log_error(&path, error))?;
         Ok(Self {
             file,
-            pricing: Pricing::default(),
+            pricing: Pricing::bundled().map_err(ServerError::new)?,
         })
     }
 

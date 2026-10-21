@@ -52,7 +52,7 @@ pub fn build(status: ServerStatus, usage: &Usage, config: &Config) -> Vec<Row> {
     if estimate(&usage.week, &config.prices, &config.baseline_model).is_none() {
         rows.push(Row::Separator);
         rows.push(label(
-            "Savings need complete recorded costs and baseline rates in prices.json",
+            "Savings need complete recorded costs, answer usage, and baseline rates",
         ));
     }
     rows

@@ -52,7 +52,7 @@ pub(crate) struct ServerArgs {
     #[arg(long, value_name = "PATH")]
     routing_log_file: Option<PathBuf>,
 
-    /// This JSON file maps served model IDs to rates in USD per million tokens.
+    /// This optional TOML or JSON file replaces the entire bundled table of rates in USD per million tokens.
     #[arg(long, value_name = "PATH", requires = "routing_log_file")]
     pricing_file: Option<PathBuf>,
 
