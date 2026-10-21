@@ -1962,7 +1962,7 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90986578003258509e99555714d9d08eeb62cd56/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7ae3ea4cb23026753d837351826a009130e068a5/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
 <p>An LLM gateway, such as a LiteLLM proxy, can serve Claude on three endpoints:
@@ -2029,7 +2029,10 @@ tokens. Then read the records:</p>
 second shows <code>cached_tokens</code> close to <code>prompt_tokens</code>. If the second record shows
 <code>"cached_tokens": 0</code>, the gateway read nothing from the cache.</p>
 <h4 id="estimate-the-cost">Estimate the cost<a class="headerlink" href="#estimate-the-cost" title="Permanent link">&para;</a></h4>
-<p>The server matches each token count in the routing log to a rate in the pricing file:</p>
+<p>The server uses bundled rates by default. To use your provider's rates or add missing
+models, supply a TOML or JSON file with <code>--pricing-file</code>. It replaces the entire bundled table.
+An unreadable or invalid file stops startup; the server does not substitute bundled rates.
+The server matches each token count in the routing log to a rate:</p>
 <table>
 <thead>
 <tr>
@@ -2062,13 +2065,18 @@ second shows <code>cached_tokens</code> close to <code>prompt_tokens</code>. If 
 </table>
 <p>Treat a missing <code>cache_creation_1h_tokens</code> count as zero. That count is part of
 <code>cache_creation_tokens</code>, so it must not be charged twice.</p>
-<p>Write the prices to <code>prices.json</code> in USD per million tokens, and key each entry by the
+<p>Write the prices to <code>prices.toml</code> in USD per million tokens, and key each entry by the
 record's <code>model</code> value. This example uses Anthropic's list prices for Claude Sonnet 5 on
 2026-10-02:</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;claude-sonnet-5&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;input&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.00</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_read&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.20</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_write&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">2.50</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">10.00</span><span class="p">}</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="p">}</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[</span><span class="s2">&quot;claude-sonnet-5&quot;</span><span class="k">]</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">input</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">2.00</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">cache_read</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.20</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">cache_write</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">2.50</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">10.00</span>
 </span></code></pre></div>
+<p>Put each quoted model ID in a top-level table, as shown above. Quotes keep dots
+within the ID. The <code>.toml</code> extension check ignores case; other filenames are read
+as JSON, so existing JSON overrides still work.</p>
 <p>For your own models, copy the entry for each model and replace the key with its exact
 <code>model</code> value from the routing log. Use the served model ID rather than the routing alias,
 and replace the example's numbers with your provider's rates. List recorded model IDs with:</p>
@@ -2081,10 +2089,11 @@ million tokens.</p>
 the input price instead of 1.25 times; set <code>cache_write_1h</code> to <code>4.00</code> for that example.
 Include that rate to estimate reported one-hour cache writes; without it, the estimate
 remains unknown.</p>
-<p>Start the server with <code>--pricing-file prices.json</code> as well as <code>--routing-log-file PATH</code>.
+<p>To use your file, start the server with <code>--pricing-file prices.toml</code> as well as
+<code>--routing-log-file PATH</code>.
 The server records the gateway's reported charge when available, even without rates.
-Otherwise it uses the pricing file to estimate the cost. If usage is missing or the model
-has no rates, the estimate is unknown. Read each request's cost with:</p>
+Otherwise it uses bundled rates or your override file to estimate the cost. If usage
+is missing or the model has no rates, the estimate is unknown. Read each request's cost with:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, model, cost}&#39;</span><span class="w"> </span>PATH
 </span></code></pre></div>
 <h3 id="thinking">Thinking<a class="headerlink" href="#thinking" title="Permanent link">&para;</a></h3>
