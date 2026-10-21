@@ -8,6 +8,7 @@ pub mod escalation;
 pub(crate) mod handoff_note;
 pub(crate) mod llm_judge;
 pub(crate) mod prompts;
+pub(crate) mod requirement_feedback;
 pub(crate) mod robustness;
 pub(crate) mod stage;
 pub mod subagent;

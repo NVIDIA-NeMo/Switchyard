@@ -15,9 +15,9 @@ use libsy::{
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
     DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, HandoffNotePolicy,
     LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
-    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
-    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
-    Vgr, VgrConfig,
+    PickerMode, PlanExecute, PlanExecuteConfig, Random, RequirementFeedbackPolicy,
+    RequirementLedger, RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter,
+    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -78,6 +78,16 @@ pub enum ClassifierPolicyConfig {
         /// TOML note database, resolved beside a file-loaded deployment.
         db_path: PathBuf,
     },
+    /// Adds a cited requirement assessment to one configured target.
+    RequirementFeedback {
+        /// Target name from `[targets]`, also listed in `models.any`.
+        target: String,
+        /// Frozen task ledger, resolved beside a file-loaded deployment.
+        db_path: PathBuf,
+        /// Use a typed decision target for requirement status and evidence choices.
+        #[serde(default)]
+        decision_api: bool,
+    },
 }
 
 /// Which of the three `llm_classifier` behaviors a route uses.
@@ -100,6 +110,31 @@ impl ClassifierPolicyConfig {
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<CustomClassifierPolicy> {
         match self {
+            Self::RequirementFeedback {
+                target,
+                db_path,
+                decision_api,
+            } => {
+                let target = resolve_target_model_id(route_name, &target, targets)?;
+                let source = std::fs::read_to_string(&db_path).map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("failed to read requirement ledger {}", db_path.display()),
+                        error,
+                    )
+                })?;
+                let ledger: RequirementLedger = toml::from_str(&source).map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("invalid requirement ledger {}", db_path.display()),
+                        error,
+                    )
+                })?;
+                let policy = RequirementFeedbackPolicy::new(target, ledger).map_err(|error| {
+                    AlgorithmConfigError::with_source("invalid requirement ledger", error)
+                })?;
+                Ok(CustomClassifierPolicy::RequirementFeedback(
+                    policy.with_decision_api(decision_api),
+                ))
+            }
             Self::TargetSelector { selector } => {
                 Ok(CustomClassifierPolicy::target_selector(selector))
             }
@@ -797,7 +832,8 @@ impl AlgorithmSpec {
             _ => None,
         };
         for policy in policy.into_iter().chain(nested).filter_map(Option::as_mut) {
-            if let ClassifierPolicyConfig::HandoffNote { db_path, .. } = policy
+            if let ClassifierPolicyConfig::HandoffNote { db_path, .. }
+            | ClassifierPolicyConfig::RequirementFeedback { db_path, .. } = policy
                 && db_path.is_relative()
             {
                 *db_path = base.join(&*db_path);
@@ -815,6 +851,34 @@ impl AlgorithmSpec {
             Self::LlmClassifier { config } => {
                 matches!(config.classifier_mode(), ClassifierMode::Capability)
                     && config.classify_trigger == ClassifyTrigger::EveryRequest
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn uses_decision_target(&self, name: &str) -> bool {
+        if self
+            .decision_judge()
+            .is_some_and(|(judge, _)| judge == name)
+        {
+            return true;
+        }
+        match self {
+            Self::LlmClassifier { config }
+                if matches!(
+                    config.policy,
+                    Some(ClassifierPolicyConfig::RequirementFeedback {
+                        decision_api: true,
+                        ..
+                    })
+                ) =>
+            {
+                config.models.as_ref().is_some_and(|models| {
+                    models
+                        .get(&Category::Judge)
+                        .iter()
+                        .any(|judge| judge == name)
+                })
             }
             _ => false,
         }
@@ -1396,11 +1460,12 @@ impl LlmClassifierRouteConfig {
                 }
                 models.validate(route_name, &default_target)?;
                 let policy = required_classifier_field(route_name, "policy", policy)?;
-                if let ClassifierPolicyConfig::HandoffNote { target, .. } = &policy
+                if let ClassifierPolicyConfig::HandoffNote { target, .. }
+                | ClassifierPolicyConfig::RequirementFeedback { target, .. } = &policy
                     && !models.get(&Category::Any).contains(target)
                 {
                     return Err(AlgorithmConfigError::new(format!(
-                        "llm_classifier route {route_name}: handoff_note target {target} must appear in models.any"
+                        "llm_classifier route {route_name}: fixed feedback target {target} must appear in models.any"
                     )));
                 }
                 Ok(LlmClassifierModeConfig::Custom(

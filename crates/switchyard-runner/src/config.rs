@@ -331,7 +331,7 @@ impl DeploymentConfig {
         for (route_name, config) in &self.routes {
             let decision_judge = config.algorithm.decision_judge();
             for name in config.callable_target_names() {
-                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
+                let (exists, kind) = if config.algorithm.uses_decision_target(name) {
                     (self.decision_targets.contains_key(name), "decision")
                 } else {
                     (self.targets.contains_key(name), "LLM")
@@ -540,11 +540,7 @@ impl DeploymentConfig {
         let mut forwarding_origins = BTreeSet::new();
         let mut decisions_by_model = HashMap::new();
         for name in route.callable_target_names() {
-            if route
-                .algorithm
-                .decision_judge()
-                .is_some_and(|(judge, _)| judge == name)
-            {
+            if route.algorithm.uses_decision_target(name) {
                 let target = &self.decision_targets[name];
                 decisions_by_model.insert(
                     target.id.clone(),
@@ -1349,6 +1345,29 @@ capable_hold_turns = 2
 new = ["send_message"]
 "#
         )
+    }
+
+    #[test]
+    fn requirement_decision_target_is_judge_only_and_opt_in() {
+        let source = r#"
+id = "switchyard"
+type = "llm_classifier"
+mode = "custom"
+default_target = "any"
+classify_trigger = "every_request"
+prompt = "Review the requirement evidence."
+response_schema = '{}'
+models = { any = ["main"], judge = ["judge"] }
+policy = { type = "requirement_feedback", target = "main", db_path = "ledger.toml", decision_api = true }
+"#;
+        let route: RouteConfig = toml::from_str(source).unwrap();
+        assert!(route.algorithm.uses_decision_target("judge"));
+        assert!(!route.algorithm.uses_decision_target("main"));
+        assert_eq!(route.routing_target_names(), vec!["main"]);
+        assert_eq!(route.callable_target_names(), vec!["main", "judge"]);
+        let route: RouteConfig =
+            toml::from_str(&source.replace(", decision_api = true", "")).unwrap();
+        assert!(!route.algorithm.uses_decision_target("judge"));
     }
 
     #[test]

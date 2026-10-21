@@ -170,9 +170,13 @@ impl CompositeRouter {
                 })?)
             }
             CompositeJudgeConfig::Custom(config) => {
-                if matches!(config.policy, crate::CustomClassifierPolicy::HandoffNote(_)) {
+                if matches!(
+                    config.policy,
+                    crate::CustomClassifierPolicy::HandoffNote(_)
+                        | crate::CustomClassifierPolicy::RequirementFeedback(_)
+                ) {
                     return Err(LibsyError::AlgorithmError {
-                        message: "composite requires a tier-selecting policy; handoff_note fixes the target".into(),
+                        message: "composite requires a tier-selecting policy; feedback policies fix the target".into(),
                     });
                 }
                 LlmTaskClassifier::custom_classifier(&config, true)?
@@ -321,19 +325,40 @@ mod tests {
             "/note",
             [("retry".into(), "Inspect the failure.".into())].into(),
         )?;
-        let mut config = CustomClassifierConfig::new(
-            "Choose an optional note",
-            serde_json::json!({"type": "object"}),
+        let requirements = crate::RequirementFeedbackPolicy::new(
+            ModelId::from("target"),
+            crate::RequirementLedger {
+                original_instruction: "Fix the parser.".into(),
+                requirements: vec![crate::Requirement {
+                    id: "R01".into(),
+                    criterion: "Fix the parser.".into(),
+                    source_quote: "Fix the parser.".into(),
+                    evidence_needed: "Passing regression test.".into(),
+                }],
+            },
+        )?;
+        for policy in [
             crate::CustomClassifierPolicy::HandoffNote(policy),
-        );
-        config.classify_trigger = ClassifyTrigger::UserTurn;
-        let error = CompositeRouter::new(CompositeRouterConfig {
-            judge: CompositeJudgeConfig::Custom(config),
-            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
-        })
-        .err()
-        .expect("a tier picker cannot preserve the hint policy's fixed target");
-        assert!(error.to_string().contains("handoff_note fixes the target"));
+            crate::CustomClassifierPolicy::RequirementFeedback(requirements),
+        ] {
+            let mut config = CustomClassifierConfig::new(
+                "Assess the task",
+                serde_json::json!({"type": "object"}),
+                policy,
+            );
+            config.classify_trigger = ClassifyTrigger::UserTurn;
+            let error = CompositeRouter::new(CompositeRouterConfig {
+                judge: CompositeJudgeConfig::Custom(config),
+                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+            })
+            .err()
+            .expect("a tier picker cannot preserve the feedback policy's fixed target");
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires a tier-selecting policy")
+            );
+        }
         Ok(())
     }
 

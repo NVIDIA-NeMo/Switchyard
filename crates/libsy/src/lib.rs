@@ -37,6 +37,9 @@ pub use algorithms::util::classifier_contract::{
 };
 pub use algorithms::util::escalation::{DeescalationConfig, EscalationJudgeConfig};
 pub use algorithms::util::prompts::append_note;
+pub use algorithms::util::requirement_feedback::{
+    Requirement, RequirementFeedbackPolicy, RequirementLedger,
+};
 pub use algorithms::util::subagent::{SubagentGate, SubagentOverride};
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignals};
 pub use algorithms::vgr::{

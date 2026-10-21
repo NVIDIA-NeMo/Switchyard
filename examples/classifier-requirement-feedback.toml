@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://localhost:8000/v1"
+
+[targets.target]
+id = "model/target"
+llm_client = "local"
+
+[targets.judge]
+id = "model/judge"
+llm_client = "local"
+
+[routes.requirements]
+id = "switchyard/requirements"
+type = "llm_classifier"
+mode = "custom"
+default_target = "any"
+classify_trigger = "every_request"
+# Full incoming transcript; do not set recent_turn_window.
+max_output_tokens = 4096
+prompt = "Assess requirement evidence to help the acting agent choose its next action."
+models = { any = ["target"], judge = ["judge"] }
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "through_message": {"type": "integer", "minimum": 0},
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"},
+          "status": {"enum": ["missing", "weak", "incomplete", "supported_as_met", "contradicted"]},
+          "verification": {"enum": ["missing", "current", "stale", "not_required"]},
+          "explanation": {"type": "string"},
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "message": {"type": "integer", "minimum": 0},
+                "block": {"type": "integer", "minimum": 0},
+                "call_id": {"type": "string"},
+                "quote": {"type": "string", "minLength": 1}
+              },
+              "required": ["message", "block", "call_id", "quote"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["id", "status", "verification", "explanation", "evidence"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["through_message", "requirements"],
+  "additionalProperties": false
+}
+'''
+
+[routes.requirements.policy]
+type = "requirement_feedback"
+target = "target"
+db_path = "requirement-ledger.toml"

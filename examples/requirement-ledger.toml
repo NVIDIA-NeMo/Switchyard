@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Prepare and freeze this file from the task before observing solution work.
+original_instruction = "Fix the parser and add a regression test."
+
+[[requirements]]
+id = "R01"
+criterion = "The parser handles the reported input correctly."
+source_quote = "Fix the parser"
+evidence_needed = "Inspect the implementation and a passing check of the reported input on the current revision."
+
+[[requirements]]
+id = "R02"
+criterion = "Add a regression test for the reported parser failure."
+source_quote = "add a regression test"
+evidence_needed = "Inspect the added test and its passing result on the current revision."
