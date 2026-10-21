@@ -28,6 +28,7 @@ url = "2"
 uuid.workspace = true
 ratatui = "0.30.2"
 shlex = "2"
+strum = { version = "0.28", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

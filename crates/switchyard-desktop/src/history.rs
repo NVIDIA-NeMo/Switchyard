@@ -11,7 +11,7 @@ use std::path::Path;
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_RECORDS: usize = 5000;
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
 pub struct Entry {
     pub ts: String,
     pub model: String,

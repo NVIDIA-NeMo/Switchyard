@@ -4349,6 +4349,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "strum",
  "switchyard-costs",
  "switchyard-protocol",
  "switchyard-runner",

@@ -3,7 +3,7 @@
 
 //! Ratatui renders snapshots and submits typed operations to the shared controller.
 
-use crate::controller::{Action, Controller};
+use crate::controller::{Action, ActionKind, AppSettings, Availability, Controller, Snapshot};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout},
@@ -17,6 +17,34 @@ use std::{
     time::{Duration, Instant},
 };
 const PAGES: &[&str] = &["Overview", "Usage", "Settings"];
+/// SETTINGS_KEYS lists the Settings page keys and the controller action that each key runs,
+/// either directly or through a form. The Settings page lists these keys as its help text.
+const SETTINGS_KEYS: &[(char, &str, ActionKind)] = &[
+    ('o', "Open server config", ActionKind::OpenConfig),
+    ('c', "Check server config", ActionKind::CheckConfig),
+    ('b', "Restart server", ActionKind::Restart),
+    ('a', "Open app settings", ActionKind::OpenSettings),
+    (
+        'e',
+        "Change baseline model and refresh interval",
+        ActionKind::SavePreferences,
+    ),
+    ('p', "Open model prices", ActionKind::OpenPrices),
+    ('k', "Check saved server keys", ActionKind::ServerKeys),
+    ('s', "Save a server key", ActionKind::SaveServerKey),
+    (
+        'i',
+        "Import a server key from your login shell",
+        ActionKind::ImportServerKey,
+    ),
+    (
+        'x',
+        "Remove a saved server key",
+        ActionKind::RemoveServerKey,
+    ),
+    ('u', "Update from source", ActionKind::PreviewUpdate),
+    ('l', "Open update log", ActionKind::OpenUpdateLog),
+];
 #[derive(Clone)]
 struct Form {
     title: String,
@@ -84,10 +112,14 @@ impl Form {
 enum FormKind {
     Filter,
     Update,
+    Preferences,
+    SaveKey,
+    ImportKey,
+    RemoveKey,
 }
 #[derive(Clone)]
 struct View {
-    snapshot: Value,
+    snapshot: Snapshot,
     page: usize,
     session: usize,
     filter: String,
@@ -99,6 +131,8 @@ struct View {
     showing_details: bool,
     selected_session: Option<String>,
     editor_file: Option<std::path::PathBuf>,
+    /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys.
+    server_keys: Option<Value>,
 }
 impl View {
     fn dispatch(&mut self, controller: &mut Controller, action: Action) {
@@ -136,9 +170,11 @@ impl View {
     fn refresh(&mut self, controller: &mut Controller) -> Result<(), String> {
         self.snapshot = controller.snapshot()?;
         if let Some(session) = &self.selected_session {
-            self.session = self.snapshot["sessions"]
-                .as_array()
-                .and_then(|a| a.iter().position(|v| v.as_str() == Some(session)))
+            self.session = self
+                .snapshot
+                .sessions
+                .iter()
+                .position(|s| s == session)
                 .map_or(usize::MAX, |i| i + 1);
         }
         Ok(())
@@ -167,8 +203,35 @@ impl View {
     }
     fn submit_form(&mut self, controller: &mut Controller) -> Result<(), String> {
         let form = self.form.take().ok_or("No form is open.")?;
+        let Some(action) = self.form_action(&form)? else {
+            return Ok(());
+        };
+        let reply = controller.dispatch(action)?;
+        self.message = reply.message;
+        self.details = reply.data["details"]
+            .as_array()
+            .map(|d| {
+                d.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        if matches!(
+            form.kind,
+            FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey
+        ) {
+            // The key change succeeded. A failed recheck only clears the list.
+            self.load_server_keys(controller).ok();
+        }
+        self.refresh(controller)?;
+        Ok(())
+    }
+    /// This function builds the controller action that a form submits.
+    /// The filter form changes only the view, so it returns `None`.
+    fn form_action(&mut self, form: &Form) -> Result<Option<Action>, String> {
         let value = |i: usize| form.fields[i].1.trim().to_string();
-        let action = match form.kind {
+        Ok(Some(match form.kind {
             FormKind::Update => {
                 if value(0) != "UPDATE" {
                     return Err("Type UPDATE to start the reviewed source update.".into());
@@ -184,33 +247,72 @@ impl View {
             FormKind::Filter => {
                 self.filter = value(0);
                 self.scroll = 0;
-                return Ok(());
+                return Ok(None);
             }
-        };
-        let reply = controller.dispatch(action)?;
-        self.message = reply.message;
-        self.details = reply.data["details"]
-            .as_array()
-            .map(|d| {
-                d.iter()
-                    .filter_map(Value::as_str)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        self.refresh(controller)?;
+            FormKind::Preferences => Action::SavePreferences {
+                baseline_model: value(0),
+                refresh_seconds: value(1).parse().map_err(|_| {
+                    "Enter the refresh interval as a whole number of seconds.".to_string()
+                })?,
+            },
+            FormKind::SaveKey => {
+                if value(1).is_empty() {
+                    return Err("Enter a key first.".into());
+                }
+                Action::SaveServerKey {
+                    name: value(0),
+                    key: value(1),
+                }
+            }
+            FormKind::ImportKey => Action::ImportServerKey { name: value(0) },
+            FormKind::RemoveKey => Action::RemoveServerKey { name: value(0) },
+        }))
+    }
+    /// A failed check clears the list, so the Settings page never shows outdated key states.
+    fn load_server_keys(&mut self, controller: &mut Controller) -> Result<(), String> {
+        self.server_keys = None;
+        self.server_keys = Some(controller.dispatch(Action::ServerKeys {})?.data);
         Ok(())
     }
-    fn body(&self) -> String {
-        let errors = self.snapshot["errors"]
+    fn key_list(&self) -> String {
+        let Some(data) = &self.server_keys else {
+            return "Press k to check which keys are saved.".into();
+        };
+        let keys = data["keys"]
             .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
+            .map(|keys| {
+                keys.iter()
+                    .map(|key| {
+                        format!(
+                            "{} · {}",
+                            string(key, "name"),
+                            if key["saved"] == true {
+                                "Saved"
+                            } else {
+                                "Not saved"
+                            }
+                        )
+                    })
                     .collect::<Vec<_>>()
-                    .join("\n")
             })
             .unwrap_or_default();
+        if keys.is_empty() {
+            return "The server config names no keys with api_key_env.".into();
+        }
+        format!("Stored in {}\n{}", string(data, "store"), keys.join("\n"))
+    }
+    fn connection(&self) -> String {
+        let metrics = &self.snapshot.metrics;
+        if metrics.running {
+            return format!("Connected · {}", metrics.server_url);
+        }
+        match self.snapshot.data_state.health["reason"].as_str() {
+            Some(reason) => format!("Not responding · {} · {reason}", metrics.server_url),
+            None => format!("Not responding · {}", metrics.server_url),
+        }
+    }
+    fn body(&self) -> String {
+        let errors = self.snapshot.errors.join("\n");
         let body = if self.showing_details {
             format!("{}\n\n{}", self.message, self.details)
         } else {
@@ -223,69 +325,115 @@ impl View {
         }
     }
     fn page_body(&self) -> String {
+        // This destructuring has no `..`, so adding a snapshot field breaks the build until the
+        // terminal app shows it. When another place shows a field, the pattern binds it to `_`
+        // and a comment names that place.
+        let Snapshot {
+            update_status,
+            settings,
+            data_state,
+            summary,
+            metrics,
+            today,
+            analytics,
+            estimates,
+            baseline_model: _, // The Settings page shows settings.baseline_model.
+            activity: _,       // run() draws it as the Overview sparkline.
+            sessions,
+            entries,
+            limited,
+            skipped,
+            errors: _,          // body() shows errors above every page.
+            refresh_seconds: _, // run() refreshes on this interval.
+        } = &self.snapshot;
+        let cost = |period: &str| -> Vec<String> {
+            estimates
+                .get(period)
+                .copied()
+                .flatten()
+                .map(|estimate| {
+                    crate::summary::cost_rows(&estimate)
+                        .into_iter()
+                        .map(|row| row.trim().to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let groups =
+            |title: &str,
+             groups: &std::collections::BTreeMap<String, crate::rollup::ModelTokens>| {
+                let mut lines = vec![String::new(), title.to_string()];
+                if groups.is_empty() {
+                    lines.push("None recorded".into());
+                }
+                for (name, tokens) in groups {
+                    lines.push(format!(
+                        "{}  {} calls · {} tokens",
+                        if name.is_empty() {
+                            "Not recorded"
+                        } else {
+                            name
+                        },
+                        tokens.requests,
+                        tokens.total()
+                    ));
+                }
+                lines
+            };
         match self.page {
-            0 if self.snapshot["data_state"]["usage"]["state"] == "unavailable" => {
-                format!(
-                    "CONNECTION\n{} · {}",
-                    if self.snapshot["metrics"]["running"] == true {
-                        "Connected"
-                    } else {
-                        "Not responding"
-                    },
-                    string(&self.snapshot["metrics"], "server_url")
-                )
+            0 if data_state.usage.state == Availability::Unavailable => {
+                format!("CONNECTION\n{}", self.connection())
             }
-            1 if self.snapshot["data_state"]["history"]["state"] == "unavailable" => String::new(),
+            1 if data_state.history.state == Availability::Unavailable => String::new(),
             0 => {
-                let mut period = "";
-                let details = self.snapshot["summary"]
-                    .as_array()
-                    .map(|rows| {
-                        rows.iter()
-                            .filter_map(Value::as_str)
-                            .filter_map(|line| {
-                                if line.starts_with("Today —") {
-                                    period = "Today";
-                                }
-                                if line.starts_with("This week —") {
-                                    period = "Past 7 days";
-                                }
-                                if line.contains("Saved") {
-                                    Some(format!("{period}: {}", line.trim()))
-                                } else if line.contains("prices")
-                                    || line.contains("Savings hidden")
-                                    || line.trim().ends_with('%')
-                                {
-                                    Some(line.trim().into())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<String>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default();
-                format!(
-                    "CONNECTION\n\
-                     {} · {}\n\n\
-                     TODAY\n\
-                     {} model calls · {} tokens\n\n\
-                     PAST 7 DAYS\n\
-                     {} model calls · {} tokens\n\n\
-                     USAGE DETAILS\n\
-                     {}",
-                    if self.snapshot["metrics"]["running"] == true {
-                        "Connected"
-                    } else {
-                        "Not responding"
-                    },
-                    string(&self.snapshot["metrics"], "server_url"),
-                    self.snapshot["metrics"]["today"]["requests"],
-                    self.snapshot["metrics"]["today"]["tokens"],
-                    self.snapshot["metrics"]["week"]["requests"],
-                    self.snapshot["metrics"]["week"]["tokens"],
-                    details
-                )
+                let mut lines = vec![
+                    "CONNECTION".to_string(),
+                    self.connection(),
+                    String::new(),
+                    format!("TODAY · {today}"),
+                    format!(
+                        "{} model calls · {} tokens",
+                        metrics.today.requests, metrics.today.tokens
+                    ),
+                ];
+                lines.extend(cost("today"));
+                lines.extend([
+                    String::new(),
+                    "PAST 7 DAYS".into(),
+                    format!(
+                        "{} model calls · {} tokens",
+                        metrics.week.requests, metrics.week.tokens
+                    ),
+                ]);
+                lines.extend(cost("week"));
+                lines.extend([
+                    String::new(),
+                    "ALL RETAINED HISTORY".into(),
+                    format!(
+                        "{} model calls · {} tokens",
+                        analytics.all.requests(),
+                        analytics.all.tokens()
+                    ),
+                ]);
+                lines.extend(cost("all"));
+                lines.extend(groups(
+                    "ROUTES · PAST 7 DAYS · answers and routing calls",
+                    &analytics.week.routes,
+                ));
+                lines.extend(groups(
+                    "ROUTING CALLS BY MODEL · PAST 7 DAYS",
+                    &analytics.week.classifier,
+                ));
+                let notes: Vec<&str> = summary
+                    .iter()
+                    .map(|line| line.trim())
+                    .filter(|line| line.to_lowercase().contains("savings") || line.ends_with('%'))
+                    .collect();
+                if !notes.is_empty() {
+                    lines.extend([String::new(), "USAGE DETAILS".into()]);
+                    lines.extend(notes.into_iter().map(str::to_string));
+                }
+                lines.join("\n")
             }
             1 => {
                 let selected = self.selected_session.as_deref();
@@ -296,94 +444,140 @@ impl View {
                      Each row is one model call; a turn can contain several calls.\n",
                     selected.unwrap_or("All sessions"),
                     if self.session == usize::MAX {
-                        " (outside recent history)"
+                        " (outside recent history)".to_string()
+                    } else if self.session > 0 {
+                        format!(" ({} of {})", self.session, sessions.len())
                     } else {
-                        ""
+                        String::new()
                     },
                     self.filter,
-                    self.snapshot["entries"].as_array().map_or(0, Vec::len),
-                    if self.snapshot["limited"] == true {
+                    entries.len(),
+                    if *limited {
                         " (8 MiB / 5,000 record limit)"
                     } else {
                         ""
                     },
-                    self.snapshot["skipped"]
+                    skipped
                 )];
-                if let Some(entries) = self.snapshot["entries"].as_array() {
-                    for e in entries.iter().rev() {
-                        if selected.is_some_and(|s| e["session_id"].as_str() != Some(s)) {
-                            continue;
-                        }
-                        if !format!(
-                            "{} {} {}",
-                            string(e, "model"),
-                            string(e, "turn_id"),
-                            string(e, "route_id")
-                        )
-                        .to_lowercase()
-                        .contains(&self.filter.to_lowercase())
-                        {
-                            continue;
-                        }
-                        lines.push(format!(
-                            "{}  {}{}\n\
-                             Session {}  Turn {}  Route {}\n\
-                             Uncached input {}  Cached input {}  Output {}\n",
-                            string(e, "ts"),
-                            string(e, "model"),
-                            if e["tier"] == "classifier" {
-                                " (routing overhead)"
-                            } else {
-                                " (answer call)"
-                            },
-                            e["session_id"]
-                                .as_str()
-                                .filter(|s| !s.is_empty())
-                                .unwrap_or("Not recorded"),
-                            e["turn_id"]
-                                .as_str()
-                                .filter(|s| !s.is_empty())
-                                .unwrap_or("Not recorded"),
-                            e["route_id"]
-                                .as_str()
-                                .filter(|s| !s.is_empty())
-                                .unwrap_or("Not recorded"),
-                            e["prompt_tokens"]
-                                .as_u64()
-                                .unwrap_or_default()
-                                .saturating_sub(e["cached_tokens"].as_u64().unwrap_or_default()),
-                            e["cached_tokens"],
-                            e["completion_tokens"]
-                        ));
+                for e in entries.iter().rev() {
+                    if selected.is_some_and(|s| e.session_id.as_deref() != Some(s)) {
+                        continue;
                     }
+                    if !format!(
+                        "{} {} {}",
+                        e.model,
+                        e.turn_id.as_deref().unwrap_or_default(),
+                        e.route_id
+                    )
+                    .to_lowercase()
+                    .contains(&self.filter.to_lowercase())
+                    {
+                        continue;
+                    }
+                    lines.push(format!(
+                        "{}  {}{}\n\
+                         Session {}  Turn {}  Route {}\n\
+                         Uncached input {}  Cached input {}  Output {}\n",
+                        e.ts,
+                        e.model,
+                        if e.tier == "classifier" {
+                            " (routing overhead)"
+                        } else {
+                            " (answer call)"
+                        },
+                        not_recorded(e.session_id.as_deref()),
+                        not_recorded(e.turn_id.as_deref()),
+                        not_recorded(Some(&e.route_id)),
+                        e.prompt_tokens.saturating_sub(e.cached_tokens),
+                        e.cached_tokens,
+                        e.completion_tokens
+                    ));
                 }
                 lines.join("\n")
             }
-            _ => "o Open server config\n\
-                  a Open app settings\n\
-                  c Check config\n\
-                  b Restart server\n\
-                  u Update from source\n\n\
-                  Files open with $VISUAL, or $EDITOR if $VISUAL is unset or blank.\n\
-                  The default is vi (Unix) or notepad (Windows).\n\n\
-                  Update uses the saved installation checkout."
-                .into(),
+            _ => {
+                let actions = SETTINGS_KEYS
+                    .iter()
+                    .map(|(key, label, _)| format!("{key} {label}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                // This destructuring has no `..`, so adding an app setting breaks the build until
+                // the Settings page shows it.
+                let Some(AppSettings {
+                    path,
+                    server_url,
+                    routing_log,
+                    config_file,
+                    launchd_label,
+                    refresh_seconds,
+                    baseline_model,
+                    prices_file,
+                }) = settings
+                else {
+                    return format!(
+                        "App settings could not be loaded. Press a to open them, \
+                         then F5 to check them again.\n\nACTIONS\n{actions}"
+                    );
+                };
+                let update = [
+                    update_status["state"].as_str(),
+                    update_status["stage"].as_str(),
+                    update_status["message"].as_str(),
+                ]
+                .into_iter()
+                .flatten()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" · ");
+                format!(
+                    "APP SETTINGS · {}\n\
+                     Server URL: {server_url}\n\
+                     Server config: {}\n\
+                     Routing log: {}\n\
+                     Service label: {launchd_label}\n\
+                     Baseline model: {baseline_model}\n\
+                     Refresh interval: {refresh_seconds} seconds\n\
+                     Model prices: {}\n\n\
+                     UPDATE FROM SOURCE\n{}\n\n\
+                     SERVER KEYS\n{}\n\n\
+                     ACTIONS\n{actions}\n\n\
+                     Files open with $VISUAL, or $EDITOR if $VISUAL is unset or blank.\n\
+                     The default is vi (Unix) or notepad (Windows).\n\
+                     Update uses the saved installation checkout.",
+                    path.display(),
+                    config_file.display(),
+                    routing_log.display(),
+                    prices_file
+                        .as_ref()
+                        .map_or("Bundled rates".into(), |file| file.display().to_string()),
+                    if update.is_empty() {
+                        "No update has run"
+                    } else {
+                        &update
+                    },
+                    self.key_list()
+                )
+            }
         }
     }
     fn key(&mut self, controller: &mut Controller, code: KeyCode) -> Result<(), String> {
+        if self.page == 2
+            && let KeyCode::Char(c) = code
+            && let Some(&(.., kind)) = SETTINGS_KEYS.iter().find(|(key, ..)| *key == c)
+        {
+            return self.start(controller, kind);
+        }
         match code {
             KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
             KeyCode::F(5) => self.refresh(controller)?,
             KeyCode::Char('s') if self.page == 1 => {
-                self.session = self.session.saturating_add(1)
-                    % (self.snapshot["sessions"].as_array().map_or(0, Vec::len) + 1);
+                self.session = self.session.saturating_add(1) % (self.snapshot.sessions.len() + 1);
                 self.selected_session = self
                     .session
                     .checked_sub(1)
-                    .and_then(|i| self.snapshot["sessions"].as_array()?.get(i))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
+                    .and_then(|i| self.snapshot.sessions.get(i))
+                    .cloned();
                 self.scroll = 0;
             }
             KeyCode::Char('f') if self.page == 1 => self.form(
@@ -391,25 +585,6 @@ impl View {
                 FormKind::Filter,
                 vec![("Search".into(), self.filter.clone())],
             ),
-            KeyCode::Char('o') if self.page == 2 => {
-                self.dispatch(controller, Action::OpenConfig {})
-            }
-            KeyCode::Char('c') if self.page == 2 => {
-                self.dispatch(controller, Action::CheckConfig {})
-            }
-            KeyCode::Char('a') if self.page == 2 => {
-                self.dispatch(controller, Action::OpenSettings {})
-            }
-            KeyCode::Char('b') if self.page == 2 => self.dispatch(controller, Action::Restart {}),
-            KeyCode::Char('u') if self.page == 2 => {
-                let reply = controller.dispatch(Action::PreviewUpdate {})?;
-                self.preview = Some(reply.data);
-                self.form(
-                    "Review source update · type UPDATE to start",
-                    FormKind::Update,
-                    vec![("Confirmation".into(), String::new())],
-                );
-            }
             KeyCode::Char('h') => {
                 self.showing_details = !self.showing_details;
                 self.scroll = 0;
@@ -423,9 +598,77 @@ impl View {
         }
         Ok(())
     }
+    /// This function starts the action for a Settings page key. The match has no wildcard
+    /// arm, so adding a controller action breaks the build until the terminal app can run it.
+    fn start(&mut self, controller: &mut Controller, kind: ActionKind) -> Result<(), String> {
+        match kind {
+            ActionKind::OpenConfig => self.dispatch(controller, Action::OpenConfig {}),
+            ActionKind::CheckConfig => self.dispatch(controller, Action::CheckConfig {}),
+            ActionKind::Restart => self.dispatch(controller, Action::Restart {}),
+            ActionKind::OpenSettings => self.dispatch(controller, Action::OpenSettings {}),
+            ActionKind::OpenPrices => self.dispatch(controller, Action::OpenPrices {}),
+            ActionKind::OpenUpdateLog => self.dispatch(controller, Action::OpenUpdateLog {}),
+            ActionKind::ServerKeys => {
+                self.load_server_keys(controller)?;
+                self.message = "Checked the saved server keys.".into();
+            }
+            ActionKind::SavePreferences => {
+                let (baseline, refresh) = self
+                    .snapshot
+                    .settings
+                    .as_ref()
+                    .map(|s| (s.baseline_model.clone(), s.refresh_seconds.to_string()))
+                    .unwrap_or_default();
+                self.form(
+                    "Change app preferences",
+                    FormKind::Preferences,
+                    vec![
+                        ("Baseline model ID".into(), baseline),
+                        ("Refresh interval in seconds".into(), refresh),
+                    ],
+                );
+            }
+            ActionKind::SaveServerKey => self.form(
+                "Save a server key · restart the server to use it",
+                FormKind::SaveKey,
+                vec![
+                    ("Key name".into(), String::new()),
+                    ("Key".into(), String::new()),
+                ],
+            ),
+            ActionKind::ImportServerKey => self.form(
+                "Import a server key from your login shell",
+                FormKind::ImportKey,
+                vec![("Key name".into(), String::new())],
+            ),
+            ActionKind::RemoveServerKey => self.form(
+                "Remove a saved server key · the server does not start until it is saved again",
+                FormKind::RemoveKey,
+                vec![("Key name".into(), String::new())],
+            ),
+            // The update form submits Update after the user reads this preview.
+            ActionKind::PreviewUpdate | ActionKind::Update => {
+                let reply = controller.dispatch(Action::PreviewUpdate {})?;
+                self.preview = Some(reply.data);
+                self.form(
+                    "Review source update · type UPDATE to start",
+                    FormKind::Update,
+                    vec![("Confirmation".into(), String::new())],
+                );
+            }
+        }
+        Ok(())
+    }
 }
 fn string(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().into()
+}
+
+// The view shows empty or missing IDs as "Not recorded".
+fn not_recorded(value: Option<&str>) -> &str {
+    value
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Not recorded")
 }
 enum WorkKind {
     Key(KeyCode),
@@ -479,7 +722,11 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
     let (snapshot, page) = match controller.snapshot() {
         Ok(snapshot) => (snapshot, 0),
         Err(error) => (
-            serde_json::json!({"errors":[error],"sessions":[],"history":[],"summary":[],"settings":{}}),
+            Snapshot {
+                errors: vec![error],
+                refresh_seconds: 30,
+                ..Snapshot::default()
+            },
             2,
         ),
     };
@@ -496,6 +743,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
         showing_details: false,
         selected_session: None,
         editor_file: None,
+        server_keys: None,
     };
     ratatui::crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)
         .map_err(|e| e.to_string())?;
@@ -585,13 +833,9 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                         let split = Layout::vertical([Constraint::Min(5), Constraint::Length(6)])
                             .split(body_area);
                         body_area = split[0];
-                        let data = view.snapshot["activity"]
-                            .as_array()
-                            .map(|items| items.iter().filter_map(Value::as_u64).collect::<Vec<_>>())
-                            .unwrap_or_default();
                         frame.render_widget(
                             Sparkline::default()
-                                .data(&data)
+                                .data(view.snapshot.activity)
                                 .style(Style::default().fg(Color::LightBlue))
                                 .block(
                                     Block::bordered()
@@ -608,6 +852,10 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                             .map(|(i, (label, value))| {
                                 let marker = if i == form.index { ">" } else { " " };
                                 let mut value = value.clone();
+                                // The key field shows one bullet per character.
+                                if matches!(form.kind, FormKind::SaveKey) && i == 1 {
+                                    value = "•".repeat(value.chars().count());
+                                }
                                 if i == form.index {
                                     let cursor = value
                                         .char_indices()
@@ -630,6 +878,11 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                                     )
                                 })
                                 .unwrap_or_default(),
+                            FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey
+                                if view.server_keys.is_some() =>
+                            {
+                                format!("\n\nSERVER KEYS\n{}", view.key_list())
+                            }
                             _ => String::new(),
                         };
                         (format!("{rows}{hints}"), form.title.clone())
@@ -735,8 +988,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                     .map_err(|e| e.to_string())?;
                 busy = true;
             }
-            if last.elapsed()
-                > Duration::from_secs(view.snapshot["refresh_seconds"].as_u64().unwrap_or(30))
+            if last.elapsed() > Duration::from_secs(view.snapshot.refresh_seconds)
                 && view.form.is_none()
                 && !busy
             {
@@ -765,11 +1017,11 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use strum::IntoEnumIterator;
 
     fn view() -> View {
         View {
-            snapshot: json!({}),
+            snapshot: Snapshot::default(),
             page: 1,
             session: 0,
             filter: String::new(),
@@ -781,6 +1033,7 @@ mod tests {
             showing_details: false,
             selected_session: None,
             editor_file: None,
+            server_keys: None,
         }
     }
 
@@ -788,14 +1041,51 @@ mod tests {
     // A read failure must not appear as an empty log or zero recorded usage.
     fn unavailable_data_does_not_render_empty_usage() {
         let mut view = view();
-        view.snapshot["data_state"] =
-            json!({"usage":{"state":"unavailable"},"history":{"state":"unavailable"}});
-        view.snapshot["errors"] = json!(["Could not read usage"]);
+        view.snapshot.data_state.usage.state = Availability::Unavailable;
+        view.snapshot.data_state.history.state = Availability::Unavailable;
+        view.snapshot.errors = vec!["Could not read usage".into()];
         view.page = 0;
         assert!(view.body().contains("Could not read usage"));
         assert!(!view.body().contains("model calls"));
         view.page = 1;
         assert!(view.body().contains("Could not read usage"));
         assert!(!view.body().contains("recent calls"));
+    }
+
+    #[test]
+    // Every controller action needs a Settings key, or the desktop app can do something
+    // that the terminal app cannot.
+    fn every_controller_action_has_a_settings_key() {
+        let mut keys: Vec<char> = SETTINGS_KEYS.iter().map(|&(key, ..)| key).collect();
+        // run() handles q before Settings keys, and View::key handles h on every page.
+        keys.extend(['q', 'h']);
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(
+            keys.len(),
+            SETTINGS_KEYS.len() + 2,
+            "Settings keys must be unique and must not use q or h"
+        );
+
+        // Update is the only action without its own key: the u key reviews the update
+        // first, and the review form submits Update.
+        let missing: Vec<ActionKind> = ActionKind::iter()
+            .filter(|&kind| {
+                kind != ActionKind::Update && !SETTINGS_KEYS.iter().any(|&(.., k)| k == kind)
+            })
+            .collect();
+        assert!(missing.is_empty(), "No Settings key runs {missing:?}");
+        let review = Form {
+            title: String::new(),
+            fields: vec![(String::new(), "UPDATE".into())],
+            index: 0,
+            kind: FormKind::Update,
+            cursor: 0,
+            page_scroll: 0,
+        };
+        assert!(matches!(
+            view().form_action(&review),
+            Ok(Some(Action::Update { .. }))
+        ));
     }
 }

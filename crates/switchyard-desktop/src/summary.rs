@@ -88,8 +88,17 @@ fn period(name: &str, totals: &Totals, config: &Config, rates: &Pricing) -> Vec<
         if requests == 1 { "" } else { "s" },
         tokens(totals.tokens())
     )];
-    let estimate = Estimate::new(totals, rates, &config.baseline_model);
-    rows.push(match estimate.actual {
+    rows.extend(cost_rows(&Estimate::new(
+        totals,
+        rates,
+        &config.baseline_model,
+    )));
+    rows
+}
+
+/// This function formats a period's recorded spending and, when it is known, the savings.
+pub fn cost_rows(estimate: &Estimate) -> Vec<String> {
+    let mut rows = vec![match estimate.actual {
         Some(actual) => format!("    Spent {}", money(actual)),
         None => format!(
             "    Known spending {} · total unknown ({} {} no recorded cost)",
@@ -101,7 +110,7 @@ fn period(name: &str, totals: &Totals, config: &Config, rates: &Pricing) -> Vec<
                 "calls have"
             },
         ),
-    });
+    }];
     if let Some(savings) = estimate.savings() {
         rows.push(format!("    Saved {}", saved(&savings)));
     }

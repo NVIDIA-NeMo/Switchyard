@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Both frontends call these operations so validation stays independent of widgets.
+//! Every change that an app makes to the server or to saved settings is an `Action`. The
+//! terminal app matches `ActionKind` without a wildcard arm, so adding an action breaks the
+//! build until the terminal app can run it.
 
-use crate::{config::Config, history, rollup, server};
+use crate::{config::Config, history, pricing, rollup, server};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, strum::EnumDiscriminants)]
+#[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
-    OpenLogs {},
     Restart {},
     PreviewUpdate {},
     Update {
@@ -21,7 +24,6 @@ pub enum Action {
     OpenConfig {},
     OpenPrices {},
     OpenSettings {},
-    RetrySettings {},
     CheckConfig {},
     ServerKeys {},
     SaveServerKey {
@@ -38,6 +40,85 @@ pub enum Action {
         baseline_model: String,
         refresh_seconds: u64,
     },
+}
+
+/// Snapshot holds everything that the apps show. The terminal app destructures it without
+/// `..`, so adding a field breaks the build until the terminal app shows it.
+#[derive(Clone, Default, Serialize)]
+pub struct Snapshot {
+    pub update_status: Value,
+    /// This field is `None` only in the terminal app's placeholder snapshot, which it shows
+    /// when the app settings cannot be loaded.
+    pub settings: Option<AppSettings>,
+    pub data_state: DataState,
+    pub summary: Vec<String>,
+    pub metrics: Metrics,
+    pub today: chrono::NaiveDate,
+    pub analytics: rollup::Usage,
+    /// The keys are `today`, `week`, and `all`. A value is null when usage could not be read.
+    pub estimates: BTreeMap<&'static str, Option<pricing::Estimate>>,
+    pub baseline_model: String,
+    pub activity: [u64; 24],
+    pub sessions: Vec<String>,
+    pub entries: Vec<history::Entry>,
+    pub limited: bool,
+    pub skipped: usize,
+    pub errors: Vec<String>,
+    pub refresh_seconds: u64,
+}
+
+/// AppSettings holds every app setting and the file that stores them. `Controller::snapshot`
+/// destructures `Config` without `..`, so adding a setting to `Config` breaks the build until
+/// it is added here too.
+#[derive(Clone, Default, Serialize)]
+pub struct AppSettings {
+    pub path: PathBuf,
+    pub server_url: String,
+    pub routing_log: PathBuf,
+    pub config_file: PathBuf,
+    pub launchd_label: String,
+    pub refresh_seconds: u64,
+    pub baseline_model: String,
+    pub prices_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct DataState {
+    pub usage: Source,
+    pub history: Source,
+    /// This field holds the `/health` result with `state`, `reason`, `checked_at`, and `url`.
+    pub health: Value,
+}
+
+/// Source records whether the app could read one data file.
+#[derive(Clone, Default, Serialize)]
+pub struct Source {
+    pub state: Availability,
+    pub checked_at: String,
+    pub path: PathBuf,
+}
+
+/// The default is unavailable, so a data file that the app has not read shows no usage.
+#[derive(Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    Available,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct Metrics {
+    pub server_url: String,
+    pub running: bool,
+    pub today: Counts,
+    pub week: Counts,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct Counts {
+    pub requests: u64,
+    pub tokens: u64,
 }
 
 #[derive(Serialize)]
@@ -85,43 +166,35 @@ impl Controller {
             ))
         }
     }
-    pub fn snapshot(&mut self) -> Result<Value, String> {
+    pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.reload()?;
         let mut errors = Vec::new();
         // One local date keeps aggregate totals and frontend filters aligned across midnight.
         let today = chrono::Local::now().date_naive();
-        let mut usage_available = true;
+        let mut usage_state = Availability::Available;
         let usage = self
             .reader
             .read(&self.config.routing_log, today)
             .unwrap_or_else(|error| {
-                usage_available = false;
+                usage_state = Availability::Unavailable;
                 errors.push(format!("Could not read usage: {error}"));
                 rollup::Usage::default()
             });
         // Invalid overrides leave baseline rates unknown and add an error to the snapshot.
-        let rates =
-            crate::pricing::load(self.config.prices_file.as_deref()).unwrap_or_else(|error| {
-                errors.push(format!("Could not read model prices: {error}"));
-                Default::default()
-            });
-        let estimates: std::collections::BTreeMap<_, _> = [
+        let rates = pricing::load(self.config.prices_file.as_deref()).unwrap_or_else(|error| {
+            errors.push(format!("Could not read model prices: {error}"));
+            Default::default()
+        });
+        let estimates = [
             ("today", &usage.today),
             ("week", &usage.week),
             ("all", &usage.all),
         ]
         .into_iter()
         .map(|(period, totals)| {
-            let estimate =
-                crate::pricing::Estimate::new(totals, &rates, &self.config.baseline_model);
-            (
-                period,
-                if usage_available {
-                    json!(estimate)
-                } else {
-                    Value::Null
-                },
-            )
+            let estimate = (usage_state == Availability::Available)
+                .then(|| pricing::Estimate::new(totals, &rates, &self.config.baseline_model));
+            (period, estimate)
         })
         .collect();
         let checked_at = chrono::Utc::now().to_rfc3339();
@@ -134,12 +207,9 @@ impl Controller {
             crate::health::ServerStatus::Stopped
         };
         let summary = crate::summary::build(server_status, &usage, &self.config, &rates);
-        let metrics = json!({"server_url":self.config.server_url,"running":server_status == crate::health::ServerStatus::Running,
-            "today":{"requests":usage.today.requests(),"tokens":usage.today.tokens()},
-            "week":{"requests":usage.week.requests(),"tokens":usage.week.tokens()}});
-        let mut history_available = true;
+        let mut history_state = Availability::Available;
         let history = history::load(&self.config.routing_log).unwrap_or_else(|e| {
-            history_available = false;
+            history_state = Availability::Unavailable;
             errors.push(e);
             history::History::default()
         });
@@ -147,14 +217,66 @@ impl Controller {
         let update_status = install_metadata(&self.settings)
             .and_then(|path| switchyard_desktop::install::update_status(&path))
             .unwrap_or_else(|error| json!({"state":"unavailable","message":error}));
-        Ok(
-            json!({"update_status":update_status,"settings":{"path":self.settings,"config_file":self.config.config_file,"routing_log":self.config.routing_log,"baseline_model":self.config.baseline_model,"refresh_seconds":self.config.refresh_seconds,"prices_file":self.config.prices_file},
-            "data_state":{"usage":{"state":if usage_available {"available"} else {"unavailable"},"checked_at":checked_at,"path":self.config.routing_log},"history":{"state":if history_available {"available"} else {"unavailable"},"checked_at":checked_at,"path":self.config.routing_log},"health":health},
-            "summary":summary,"metrics":metrics,
-            "today":today,"analytics":usage,"estimates":estimates,"baseline_model":self.config.baseline_model,
-            "activity":activity,"sessions":history.sessions(),"entries":history.entries,"limited":history.limited,"skipped":history.skipped,
-            "errors":errors,"refresh_seconds":self.config.refresh_seconds.max(1)}),
-        )
+        let sessions = history.sessions();
+        let Config {
+            server_url,
+            routing_log,
+            config_file,
+            launchd_label,
+            refresh_seconds,
+            baseline_model,
+            prices_file,
+        } = self.config.clone();
+        Ok(Snapshot {
+            update_status,
+            data_state: DataState {
+                usage: Source {
+                    state: usage_state,
+                    checked_at: checked_at.clone(),
+                    path: routing_log.clone(),
+                },
+                history: Source {
+                    state: history_state,
+                    checked_at,
+                    path: routing_log.clone(),
+                },
+                health,
+            },
+            summary,
+            metrics: Metrics {
+                server_url: server_url.clone(),
+                running: server_status == crate::health::ServerStatus::Running,
+                today: Counts {
+                    requests: usage.today.requests(),
+                    tokens: usage.today.tokens(),
+                },
+                week: Counts {
+                    requests: usage.week.requests(),
+                    tokens: usage.week.tokens(),
+                },
+            },
+            today,
+            analytics: usage,
+            estimates,
+            baseline_model: baseline_model.clone(),
+            activity,
+            sessions,
+            entries: history.entries,
+            limited: history.limited,
+            skipped: history.skipped,
+            errors,
+            refresh_seconds: refresh_seconds.max(1),
+            settings: Some(AppSettings {
+                path: self.settings.clone(),
+                server_url,
+                routing_log,
+                config_file,
+                launchd_label,
+                refresh_seconds,
+                baseline_model,
+                prices_file,
+            }),
+        })
     }
     /// The TUI uses these file paths to run an editor in the foreground.
     pub fn editor_target(&mut self, action: &Action) -> Result<Option<PathBuf>, String> {
@@ -164,8 +286,20 @@ impl Controller {
                 self.reload()?;
                 Ok(Some(self.config.config_file.clone()))
             }
+            // When `prices_file` is unset, this arm returns `None` and `dispatch` describes the
+            // bundled rates.
+            Action::OpenPrices {} => {
+                self.reload()?;
+                Ok(self.config.prices_file.clone())
+            }
+            Action::OpenUpdateLog {} => self.update_log().map(Some),
             _ => Ok(None),
         }
+    }
+    fn update_log(&self) -> Result<PathBuf, String> {
+        let metadata =
+            switchyard_desktop::install::Settings::load(&install_metadata(&self.settings)?)?;
+        Ok(metadata.sy_home.join("logs/update.log"))
     }
     pub fn dispatch(&mut self, action: Action) -> Result<Reply, String> {
         if matches!(action, Action::OpenSettings {}) {
@@ -174,11 +308,6 @@ impl Controller {
         }
         self.reload()?;
         match action {
-            Action::OpenLogs {} => {
-                let path = crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))?;
-                server::command("open", &[&path.display().to_string()])?;
-                Ok(Reply::message("Opened Switchyard logs.".into()))
-            }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
@@ -218,7 +347,6 @@ impl Controller {
                     self.settings.display()
                 )))
             }
-            Action::RetrySettings {} => Ok(Reply::message("App settings loaded.".into())),
             Action::OpenSettings {} => unreachable!(),
             Action::PreviewUpdate {} => {
                 let mut data = switchyard_desktop::install::preview_update(&install_metadata(
@@ -258,10 +386,7 @@ impl Controller {
                 update(&self.settings).map(Reply::message)
             }
             Action::OpenUpdateLog {} => {
-                let metadata = switchyard_desktop::install::Settings::load(&install_metadata(
-                    &self.settings,
-                )?)?;
-                let log = metadata.sy_home.join("logs/update.log");
+                let log = self.update_log()?;
                 server::command("open", &[&log.display().to_string()])?;
                 Ok(Reply::message("Opened the update log.".into()))
             }
