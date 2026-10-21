@@ -16,7 +16,7 @@ use crate::history::Entry;
 use crate::pricing::Estimate;
 use crate::rollup::{CLASSIFIER_TIER, ModelTokens, Totals, Usage};
 use crate::server_config::Choice;
-use crate::summary::{money, tokens};
+use crate::summary::{grouped, hidden_savings, money, plural, tokens};
 use chrono::{DateTime, Utc};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -2446,22 +2446,6 @@ fn matches_words(fields: &[&str], filter: &str) -> bool {
     })
 }
 
-fn count(value: u64) -> String {
-    let digits = value.to_string();
-    let mut text = String::with_capacity(digits.len() + digits.len() / 3);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            text.push(',');
-        }
-        text.push(digit);
-    }
-    text
-}
-
-fn plural(value: u64, one: &str, many: &str) -> String {
-    format!("{} {}", count(value), if value == 1 { one } else { many })
-}
-
 /// Single calls often cost fractions of a cent, so this shows more digits than `money`.
 fn call_money(usd: f64) -> String {
     if usd == 0.0 {
@@ -2506,24 +2490,6 @@ fn saved(theme: Theme, estimate: &Estimate, baseline: bool) -> Vec<Span<'static>
         spans.push(Span::styled(text, theme.muted));
     }
     spans
-}
-
-/// This function explains why `Estimate::savings` has no figure, in the order that
-/// `summary::build` checks the reasons. Call it only when the savings are hidden.
-fn hidden_savings(estimate: &Estimate, baseline: &str) -> String {
-    if estimate.baseline.is_none() {
-        format!("the price table has no rates for {baseline}")
-    } else if estimate.unknown_calls > 0 {
-        format!(
-            "{} no recorded cost",
-            plural(estimate.unknown_calls, "call has", "calls have")
-        )
-    } else {
-        format!(
-            "{} no token counts",
-            plural(estimate.uncounted_answers, "answer has", "answers have")
-        )
-    }
 }
 
 fn age(ts: &str, now: DateTime<Utc>) -> String {
@@ -2843,7 +2809,7 @@ fn period_lines(app: &App, period: Period, baseline: bool) -> Vec<Line<'static>>
         _ => &app.data.metrics.week,
     };
     let mut lines = vec![Line::from(vec![
-        Span::styled(count(counts.requests), Modifier::BOLD),
+        Span::styled(grouped(counts.requests), Modifier::BOLD),
         Span::styled(" calls · ", theme.muted),
         Span::styled(tokens(counts.tokens), Modifier::BOLD),
         Span::styled(" tokens", theme.muted),
@@ -2865,7 +2831,7 @@ fn draw_activity(frame: &mut Frame, app: &App, area: Rect) {
     let data = &app.data.activity;
     let peak = data.iter().copied().max().unwrap_or_default();
     let mut outer = block(theme, "Calls per hour · past 24h")
-        .title_top(Line::styled(format!(" peak {} ", count(peak)), theme.muted).right_aligned())
+        .title_top(Line::styled(format!(" peak {} ", grouped(peak)), theme.muted).right_aligned())
         .title_bottom(Line::styled(" 24h ago ", theme.muted))
         .title_bottom(Line::styled(" now ", theme.muted).right_aligned());
     if app.data.limited {
@@ -2929,7 +2895,7 @@ fn model_row(
         )));
     }
     cells.extend([
-        right(count(usage.requests)),
+        right(grouped(usage.requests)),
         right(tokens(usage.total())),
         right(cost(theme, usage.cost.total_usd, usage.cost.known_usd)),
         Cell::from(Line::from(vec![
@@ -3051,7 +3017,7 @@ fn calls_block(app: &App) -> Block<'static> {
     let mut title = vec![
         Span::styled(" Calls ", Modifier::BOLD),
         Span::styled(
-            format!("[{}] ", count(app.visible.len() as u64)),
+            format!("[{}] ", grouped(app.visible.len() as u64)),
             theme.muted,
         ),
     ];
@@ -3080,7 +3046,7 @@ fn calls_block(app: &App) -> Block<'static> {
                 format!(
                     " {} of {} ",
                     app.selected + 1,
-                    count(app.visible.len() as u64)
+                    grouped(app.visible.len() as u64)
                 ),
                 theme.muted,
             )
@@ -3240,8 +3206,8 @@ fn detail_lines(theme: Theme, entry: &Entry) -> Vec<Line<'static>> {
             "Input",
             format!(
                 "{} uncached · {} cached",
-                count(usage.input),
-                count(usage.cached_input)
+                grouped(usage.input),
+                grouped(usage.cached_input)
             ),
         ),
     ];
@@ -3250,12 +3216,12 @@ fn detail_lines(theme: Theme, entry: &Entry) -> Vec<Line<'static>> {
             "Cache",
             format!(
                 "{} written ({} at the 1-hour rate)",
-                count(usage.cache_write),
-                count(usage.cache_write_1h)
+                grouped(usage.cache_write),
+                grouped(usage.cache_write_1h)
             ),
         ));
     }
-    lines.push(field("Output", count(usage.output)));
+    lines.push(field("Output", grouped(usage.output)));
     lines.push(match entry.cost {
         Some(RecordedCost { usd, source }) => field(
             "Cost",
@@ -3284,7 +3250,7 @@ fn draw_models(frame: &mut Frame, app: &App, area: Rect) {
     }
     let totals = app.period.totals(&app.data.analytics);
     let mut summary = vec![
-        Span::styled(count(totals.requests()), Modifier::BOLD),
+        Span::styled(grouped(totals.requests()), Modifier::BOLD),
         Span::styled(" answer calls · ", theme.muted),
         Span::styled(tokens(totals.tokens()), Modifier::BOLD),
         Span::styled(" tokens", theme.muted),
@@ -3371,7 +3337,7 @@ fn draw_models(frame: &mut Frame, app: &App, area: Rect) {
                     }
                     .to_string(),
                 ),
-                right(count(usage.requests)),
+                right(grouped(usage.requests)),
                 right(tokens(usage.total())),
                 right(cost(theme, usage.cost.total_usd, usage.cost.known_usd)),
             ])
@@ -3458,7 +3424,7 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let mut title = vec![
         Span::styled(" Routes ", Modifier::BOLD),
-        Span::styled(format!("[{}] ", count(visible as u64)), theme.muted),
+        Span::styled(format!("[{}] ", grouped(visible as u64)), theme.muted),
     ];
     if !app.route_filter.is_empty() || app.filtering {
         title.push(Span::styled(format!("/{} ", app.route_filter), theme.key));
@@ -3487,7 +3453,11 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     outer = outer.title_bottom(
         Line::styled(
-            format!(" {} of {} ", app.route_selected + 1, count(visible as u64)),
+            format!(
+                " {} of {} ",
+                app.route_selected + 1,
+                grouped(visible as u64)
+            ),
             theme.muted,
         )
         .right_aligned(),
@@ -3728,7 +3698,7 @@ fn draw_harness_table(frame: &mut Frame, app: &App, area: Rect) {
                 Cell::from(tool.label),
                 Cell::from(state),
                 Cell::from(settings.join(" · ")),
-                right(count(tool.accounts.len() as u64)),
+                right(grouped(tool.accounts.len() as u64)),
             ];
             Row::new(
                 cells

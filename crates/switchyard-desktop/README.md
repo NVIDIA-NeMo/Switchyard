@@ -73,15 +73,21 @@ config files.
 Open the app from Finder or Spotlight. Closing the window removes the running
 app from the Dock and keeps the tray menu. Opening the window from the tray
 restores the Dock icon. A shortcut you pinned to the Dock stays there.
-Left-click the tray icon to open the past 24 hours of recorded usage. Choose a
-model or hour to inspect its tokens and session model changes. Escape, the
-close button, or a click outside the popup dismisses it. Clicking the tray icon
-again also closes it. **Open app**, **Connect tools…**, and **Settings** open
-the corresponding desktop view and close the popup.
+Left-click the tray icon to see whether the server responds, today's and this
+week's requests, tokens, spending, and savings, and each model's share of this
+week's tokens. A note explains missing savings, such as a baseline model without
+rates. On macOS the popup opens like a status item menu: its left edge follows
+the icon, its top sits just below the menu bar, and it uses the system font and
+the system light or dark appearance. The popup rereads the routing log every
+`refresh_seconds` (at least 5) while it is open. **Restart server** and **Open
+server config…** run from the popup and show their result there. **Settings…**,
+**Connect tools…**, and **Open Switchyard** open the corresponding desktop view
+and close the popup. **Quit Switchyard** quits the app. Escape or a click outside
+the popup dismisses it. Clicking the tray icon again also closes it.
 
-**Settings → Appearance** and the popup's theme controls share the saved
-**System**, **Dark**, or **Light** selection. System follows the device's light
-or dark appearance. Existing saved Canary preferences select Dark.
+**Settings → Appearance** chooses **System**, **Dark**, or **Light** for the app
+window. System follows the device's light or dark appearance. Existing saved
+Canary preferences select Dark.
 
 On macOS, the navigation sidebar shows native regular glass where supported,
 with the native sidebar material as a fallback. The popup uses the same glass
@@ -91,10 +97,11 @@ Motion settings every second in both windows. Reduce Transparency covers the
 native material with opaque backgrounds; a failed accessibility check also
 restores opaque backgrounds. Windows uses opaque backgrounds.
 
-Right-click the tray icon for **Connect tools…**, the three models with the
-most recorded tokens, **View model usage…**, and **Settings…**. Model totals cover the
-retained log and include classifier calls. A final row combines any remaining
-models. Clicking a model row opens Overview filtered to that model. Choose
+Right-click the tray icon for the same summary as text rows, followed by
+**Restart server**, **Open server config…**, **Settings…**, **Open
+Switchyard**, **Connect tools…**, and **Quit Switchyard**. The menu rereads the
+routing log every `refresh_seconds` (at least 5), like the earlier menu bar app.
+A failed restart opens the app window with the error. Choose
 **Open Switchyard** to return or **Quit Switchyard** to exit. Quit waits for a
 queued or running operation to finish. The server continues running after the
 app quits.

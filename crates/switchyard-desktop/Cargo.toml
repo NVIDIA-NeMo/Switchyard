@@ -34,7 +34,8 @@ strum = { version = "0.28", features = ["derive"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 dispatch2 = "0.3"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "NSAccessibility", "NSApplication", "NSPanel", "NSColor", "NSWindow", "NSView", "NSScreen", "NSEvent"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "NSAccessibility", "NSApplication", "NSPanel", "NSColor", "NSWindow", "NSView", "NSScreen", "NSEvent", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSResponder", "objc2-quartz-core"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CALayer"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL", "NSProcessInfo"] }
 security-framework = "3"
 

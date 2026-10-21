@@ -6,11 +6,14 @@
 #[cfg(target_os = "macos")]
 mod panel;
 
-use crate::controller::{Action, Availability, Controller, Reply, Snapshot};
+use crate::controller::{Action, Controller, Reply, Snapshot};
+use crate::summary::Overview;
+use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU8, Ordering},
 };
+use std::time::Duration;
 use tauri::{
     Manager, State,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -25,45 +28,169 @@ struct Shared {
     // This lock serializes saved appearance changes from the main window and popup.
     appearance: Mutex<()>,
 }
-struct TrayPreview {
-    menu: Menu<tauri::Wry>,
-    models: Mutex<Vec<String>>,
-    health: MenuItem<tauri::Wry>,
+/// TRAY_ID names the tray icon so refreshes can replace its menu.
+const TRAY_ID: &str = "main";
+
+/// TrayUsage reads the routing log for the tray menu and popup. It loads the settings
+/// and keeps its own log reader, so the tray never waits for an app operation and the
+/// app never waits for the tray.
+struct TrayUsage {
+    settings: PathBuf,
+    reader: Mutex<crate::rollup::Reader>,
+    // The menu is rebuilt only when these rows change, so an open menu does not flicker.
+    rows: Mutex<Vec<String>>,
 }
-impl TrayPreview {
-    fn update(&self, app: &tauri::AppHandle, snapshot: &Snapshot) -> Result<(), String> {
-        let health = &snapshot.data_state.health;
-        self.health
-            .set_text(format!(
-                "Server: {} · checked {}",
-                health["state"].as_str().unwrap_or("unknown"),
-                health["checked_at"].as_str().unwrap_or("not yet")
-            ))
-            .map_err(|e| e.to_string())?;
-        for item in self.menu.items().map_err(|error| error.to_string())? {
-            if item.id().as_ref().starts_with("model:") {
-                self.menu.remove(&item).map_err(|error| error.to_string())?;
+
+/// TrayView holds what the tray shows: the usage overview, or the errors that hide it.
+#[derive(serde::Serialize)]
+struct TrayView {
+    overview: Option<Overview>,
+    errors: Vec<String>,
+    refresh_seconds: u64,
+}
+
+impl TrayUsage {
+    /// This function reads new log entries, probes the server, and builds the overview.
+    fn read(&self) -> TrayView {
+        let config = match switchyard_desktop::config::Config::load(&self.settings) {
+            Ok(config) => config,
+            Err(error) => {
+                return TrayView {
+                    overview: None,
+                    errors: vec![format!("Cannot read app settings: {error}")],
+                    refresh_seconds: MIN_TRAY_REFRESH,
+                };
             }
-        }
-        let models = crate::summary::ranked_models(&snapshot.analytics.all);
-        *self.models.lock().map_err(|e| e.to_string())? = models
-            .iter()
-            .take(3)
-            .map(|(name, _)| name.clone())
-            .collect();
-        let rows = if snapshot.data_state.usage.state == Availability::Unavailable {
-            vec!["Usage unavailable; open Overview…".to_string()]
-        } else {
-            crate::summary::tray_models(&models)
         };
-        for (index, label) in rows.into_iter().enumerate() {
-            let item = MenuItem::with_id(app, format!("model:{index}"), label, true, None::<&str>)
-                .map_err(|error| error.to_string())?;
-            self.menu
-                .insert(&item, 5 + index)
-                .map_err(|error| error.to_string())?;
+        let refresh_seconds = config.refresh_seconds.max(MIN_TRAY_REFRESH);
+        let today = chrono::Local::now().date_naive();
+        let usage = match self.reader.lock() {
+            Ok(mut reader) => reader.read(&config.routing_log, today),
+            Err(_) => Err(std::io::Error::other(
+                "the log reader stopped after an earlier failure",
+            )),
+        };
+        let usage = match usage {
+            Ok(usage) => usage,
+            Err(error) => {
+                return TrayView {
+                    overview: None,
+                    errors: vec![format!("Cannot read routing log: {error}")],
+                    refresh_seconds,
+                };
+            }
+        };
+        let mut errors = Vec::new();
+        // An invalid price file hides savings but keeps traffic and spending visible.
+        let rates = crate::pricing::load(config.prices_file.as_deref()).unwrap_or_else(|error| {
+            errors.push(format!("Could not read model prices: {error}"));
+            Default::default()
+        });
+        let status = switchyard_desktop::health::probe(&config.server_url);
+        TrayView {
+            overview: Some(Overview::new(status, &usage, &config, &rates)),
+            errors,
+            refresh_seconds,
         }
-        Ok(())
+    }
+}
+
+/// MIN_TRAY_REFRESH keeps the tray from probing the server more than once every 5 seconds.
+const MIN_TRAY_REFRESH: u64 = 5;
+
+/// This function reads the tray usage and replaces the tray menu when its rows changed.
+fn refresh_tray(app: &tauri::AppHandle) -> TrayView {
+    let usage = app.state::<TrayUsage>();
+    let view = usage.read();
+    let mut rows = view
+        .overview
+        .as_ref()
+        .map(Overview::rows)
+        .unwrap_or_default();
+    if !view.errors.is_empty() && !rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows.extend(view.errors.iter().cloned());
+    let Ok(mut shown) = usage.rows.lock() else {
+        return view;
+    };
+    if *shown != rows {
+        let result = tray_menu(app, &rows).and_then(|menu| match app.tray_by_id(TRAY_ID) {
+            Some(tray) => tray.set_menu(Some(menu)),
+            None => Ok(()),
+        });
+        match result {
+            Ok(()) => *shown = rows,
+            Err(error) => eprintln!("switchyard-desktop: could not update the tray menu: {error}"),
+        }
+    }
+    view
+}
+
+/// This function builds the tray menu: the usage rows, then the server and app actions.
+fn tray_menu(app: &tauri::AppHandle, rows: &[String]) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    for row in rows {
+        if row.is_empty() {
+            menu.append(&PredefinedMenuItem::separator(app)?)?;
+        } else {
+            // Rows are labels, not commands, so they are disabled.
+            menu.append(&MenuItem::new(app, row, false, None::<&str>)?)?;
+        }
+    }
+    let groups: [&[(&str, &str)]; 3] = [
+        &[
+            ("restart", "Restart server"),
+            ("open-config", "Open server config…"),
+            ("settings", "Settings…"),
+        ],
+        &[("open", "Open Switchyard"), ("install", "Connect tools…")],
+        &[("quit", "Quit Switchyard")],
+    ];
+    for group in groups {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        for (id, text) in group {
+            menu.append(&MenuItem::with_id(app, *id, *text, true, None::<&str>)?)?;
+        }
+    }
+    Ok(menu)
+}
+
+/// This function runs a tray menu action and reports a failure in the app window.
+fn run_tray_action(app: &tauri::AppHandle, action: Action) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = dispatch(app.clone(), action).await;
+        let refresh = app.clone();
+        // The refresh probes the server, so it runs on a worker thread.
+        let _ = tauri::async_runtime::spawn_blocking(move || refresh_tray(&refresh)).await;
+        if let Err(error) = result {
+            eprintln!("switchyard-desktop: {error}");
+            notice(&app, &error);
+        }
+    });
+}
+
+/// This function shows a message in the app window and brings the window forward.
+fn notice(app: &tauri::AppHandle, message: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        let detail = serde_json::json!(message);
+        let _ = window.eval(format!(
+            "window.dispatchEvent(new CustomEvent('switchyard-notice',{{detail:{detail}}}))"
+        ));
+    }
+    show(app);
+}
+
+/// This function quits now, or after the running operation when one is running.
+fn quit(app: &tauri::AppHandle) {
+    if app.state::<Shared>().quit() {
+        app.exit(0);
+    } else {
+        notice(
+            app,
+            "Switchyard will quit when the current operation finishes.",
+        );
     }
 }
 // Operation keeps the app busy from queueing through worker completion.
@@ -110,7 +237,7 @@ async fn snapshot(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<Sna
     let mut operation = state.begin()?;
     operation.1 = Some(app.clone());
     let shared = state.controller.clone();
-    let snapshot = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let _operation = operation;
         shared
             .try_lock()
@@ -118,21 +245,15 @@ async fn snapshot(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<Sna
             .snapshot()
     })
     .await
-    .map_err(|e| e.to_string())??;
-    if let Err(error) = app.state::<TrayPreview>().update(&app, &snapshot) {
-        eprintln!("switchyard-desktop: could not update the tray menu: {error}");
-    }
-    Ok(snapshot)
+    .map_err(|e| e.to_string())?
 }
-#[tauri::command]
-async fn action(
-    app: tauri::AppHandle,
-    state: State<'_, Shared>,
-    action: Action,
-) -> Result<Reply, String> {
-    let mut operation = state.begin()?;
-    operation.1 = Some(app.clone());
-    let shared = state.controller.clone();
+async fn dispatch(app: tauri::AppHandle, action: Action) -> Result<Reply, String> {
+    let (operation, shared) = {
+        let state = app.state::<Shared>();
+        let mut operation = state.begin()?;
+        operation.1 = Some(app.clone());
+        (operation, state.controller.clone())
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = operation;
         shared
@@ -142,6 +263,21 @@ async fn action(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn action(app: tauri::AppHandle, action: Action) -> Result<Reply, String> {
+    dispatch(app, action).await
+}
+#[tauri::command]
+async fn tray_overview(app: tauri::AppHandle) -> Result<TrayView, String> {
+    // The overview probes the server, so it runs on a worker thread.
+    tauri::async_runtime::spawn_blocking(move || refresh_tray(&app))
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    quit(&app);
 }
 #[tauri::command]
 async fn choose_path(directory: bool) -> Result<Option<String>, String> {
@@ -238,11 +374,15 @@ fn appearance(
 }
 
 #[cfg(target_os = "macos")]
-fn material(fallback: tauri::window::Effect) -> tauri::utils::config::WindowEffectsConfig {
+fn material(
+    fallback: tauri::window::Effect,
+    radius: Option<f64>,
+    state: tauri::window::EffectState,
+) -> tauri::utils::config::WindowEffectsConfig {
     tauri::utils::config::WindowEffectsConfig {
         effects: vec![tauri::window::Effect::LiquidGlassRegular, fallback],
-        state: Some(tauri::window::EffectState::FollowsWindowActiveState),
-        radius: None,
+        state: Some(state),
+        radius,
         color: None,
         interactive: false,
     }
@@ -263,12 +403,15 @@ fn accessibility() -> serde_json::Value {
     serde_json::json!({"native_material": false, "reduce_transparency": true, "reduce_motion": false})
 }
 
+/// POPUP_WIDTH matches the width of macOS status item menus such as Wi-Fi and Sound.
+const POPUP_WIDTH: f64 = 320.0;
+
 // The webview measures popup height; invalid sizes must not reach AppKit.
 fn popup_height(height: f64) -> Result<f64, String> {
     if !height.is_finite() || height <= 0.0 {
         return Err("The popup height must be a positive number.".into());
     }
-    Ok(height.clamp(240.0, 620.0))
+    Ok(height.clamp(120.0, 620.0))
 }
 
 #[tauri::command]
@@ -286,7 +429,7 @@ fn tray_size(app: tauri::AppHandle, height: f64) -> Result<(), String> {
             })
             .unwrap_or(height);
         window
-            .set_size(tauri::LogicalSize::new(360.0, height))
+            .set_size(tauri::LogicalSize::new(POPUP_WIDTH, height))
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -320,7 +463,9 @@ fn popup_geometry(
     let origin = rect.position.to_physical::<f64>(scale);
     let icon = rect.size.to_physical::<f64>(scale);
     let size = tauri::PhysicalSize::new(
-        (360.0 * scale).min(f64::from(area.size.width)).round() as u32,
+        (POPUP_WIDTH * scale)
+            .min(f64::from(area.size.width))
+            .round() as u32,
         (620.0 * scale).min(f64::from(area.size.height)).round() as u32,
     );
     let x = (origin.x + icon.width / 2.0 - f64::from(size.width) / 2.0).clamp(
@@ -338,14 +483,19 @@ fn popup_geometry(
 }
 
 fn toggle_tray(
-    app: &tauri::AppHandle,
+    tray: &tauri::tray::TrayIcon,
     position: tauri::PhysicalPosition<f64>,
     rect: tauri::Rect,
 ) -> tauri::Result<()> {
+    let app = tray.app_handle();
     #[cfg(target_os = "macos")]
     {
-        let _ = position;
-        if app.state::<panel::TrayPanel>().toggle(rect)
+        let _ = (position, rect);
+        // AppKit frames avoid converting Tauri's physical, top-left coordinates back to points.
+        let Some((anchor, area)) = panel::status_item_frames(tray) else {
+            return Ok(());
+        };
+        if app.state::<panel::TrayPanel>().toggle(anchor, area)
             && let Some(window) = app.get_webview_window("tray")
         {
             window.eval("window.dispatchEvent(new Event('switchyard-tray-open'))")?;
@@ -418,12 +568,17 @@ fn show(app: &tauri::AppHandle) {
         eprintln!("switchyard-desktop: could not open the window: {e}");
     }
 }
-pub fn run(controller: Controller) -> Result<(), String> {
+pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
     let app = tauri::Builder::default()
         .manage(Shared {
             controller: Arc::new(Mutex::new(controller)),
             operation: Arc::new(AtomicU8::new(0)),
             appearance: Mutex::new(()),
+        })
+        .manage(TrayUsage {
+            settings,
+            reader: Mutex::new(crate::rollup::Reader::default()),
+            rows: Mutex::new(Vec::new()),
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
@@ -433,12 +588,18 @@ pub fn run(controller: Controller) -> Result<(), String> {
             accessibility,
             tray_size,
             tray_page,
-            dismiss_tray
+            tray_overview,
+            dismiss_tray,
+            quit_app
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
-                window.set_effects(material(tauri::window::Effect::Sidebar))?;
+                window.set_effects(material(
+                    tauri::window::Effect::Sidebar,
+                    None,
+                    tauri::window::EffectState::FollowsWindowActiveState,
+                ))?;
             }
             let tray_window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -446,7 +607,7 @@ pub fn run(controller: Controller) -> Result<(), String> {
                 tauri::WebviewUrl::App("tray.html".into()),
             )
             .title("Switchyard usage")
-            .inner_size(360.0, 620.0)
+            .inner_size(POPUP_WIDTH, 620.0)
             .transparent(cfg!(target_os = "macos"))
             .decorations(false)
             .resizable(false)
@@ -457,63 +618,24 @@ pub fn run(controller: Controller) -> Result<(), String> {
             .build()?;
             #[cfg(target_os = "macos")]
             {
-                tray_window.set_effects(material(tauri::window::Effect::Popover))?;
+                // Like a menu, the popup keeps the active material although it never activates
+                // the app.
+                tray_window.set_effects(material(
+                    tauri::window::Effect::Popover,
+                    Some(panel::CORNER_RADIUS),
+                    tauri::window::EffectState::Active,
+                ))?;
                 app.manage(panel::TrayPanel::new(&tray_window).map_err(std::io::Error::other)?);
             }
             #[cfg(windows)]
             let _ = tray_window;
 
-            let open = MenuItem::with_id(app, "open", "Open Switchyard", true, None::<&str>)?;
-            let install = MenuItem::with_id(app, "install", "Connect tools…", true, None::<&str>)?;
-            let health =
-                MenuItem::with_id(app, "health", "Server: checking…", false, None::<&str>)?;
-            let period = MenuItem::with_id(
-                app,
-                "period",
-                "Models · all retained history",
-                false,
-                None::<&str>,
-            )?;
-            let usage = MenuItem::with_id(app, "usage", "View model usage…", true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Switchyard", true, None::<&str>)?;
-            let separator = PredefinedMenuItem::separator(app)?;
-            let bottom_separator = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &open,
-                    &install,
-                    &separator,
-                    &health,
-                    &period,
-                    &usage,
-                    &bottom_separator,
-                    &settings,
-                    &quit,
-                ],
-            )?;
-            app.manage(TrayPreview {
-                menu: menu.clone(),
-                models: Mutex::new(Vec::new()),
-                health,
-            });
-            if let Ok(snapshot) = app
-                .state::<Shared>()
-                .controller
-                .lock()
-                .map_err(|e| e.to_string())?
-                .snapshot()
-                && let Err(error) = app.state::<TrayPreview>().update(app.handle(), &snapshot)
-            {
-                eprintln!("switchyard-desktop: could not update the tray menu: {error}");
-            }
             let tray_pixels = include_bytes!("../icons/tray.rgba");
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tauri::image::Image::new_owned(tray_pixels.to_vec(), 22, 22))
                 .icon_as_template(false)
                 .tooltip("Switchyard — routes and usage")
-                .menu(&menu)
+                .menu(&tray_menu(app.handle(), &["Reading usage…".into()])?)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -523,7 +645,7 @@ pub fn run(controller: Controller) -> Result<(), String> {
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
-                        && let Err(error) = toggle_tray(tray.app_handle(), position, rect)
+                        && let Err(error) = toggle_tray(tray, position, rect)
                     {
                         eprintln!(
                             "switchyard-desktop: could not show or hide the usage preview: {error}"
@@ -531,49 +653,23 @@ pub fn run(controller: Controller) -> Result<(), String> {
                     }
                 })
                 .on_menu_event(|app, event| match event.id.as_ref() {
+                    "restart" => run_tray_action(app, Action::Restart {}),
+                    "open-config" => run_tray_action(app, Action::OpenConfig {}),
+                    "settings" => open_page(app, "settings"),
                     "open" => open_page(app, "overview"),
                     "install" => open_page(app, "install"),
-                    "usage" => open_page(app, "overview"),
-                    id if id.starts_with("model:") => {
-                        let model = id
-                            .strip_prefix("model:")
-                            .and_then(|index| index.parse::<usize>().ok())
-                            .and_then(|index| {
-                                app.state::<TrayPreview>()
-                                    .models
-                                    .lock()
-                                    .ok()?
-                                    .get(index)
-                                    .cloned()
-                            });
-                        if let Some(window) = app.get_webview_window("main") {
-                            let detail = serde_json::json!({"page":"overview","model":model});
-                            let _ = window.eval(
-                                format!(
-                                    "window.dispatchEvent(new CustomEvent('switchyard-page',\
-                                     {{detail:{detail}}}))"
-                                )
-                                .as_str(),
-                            );
-                        }
-                        show(app);
-                    }
-                    "settings" => open_page(app, "settings"),
-                    "quit" => {
-                        if app.state::<Shared>().quit() {
-                            app.exit(0);
-                        } else if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.eval(
-                                "window.dispatchEvent(new CustomEvent('switchyard-notice',\
-                                 {detail:'Switchyard will quit when the current \
-                                 operation finishes.'}))",
-                            );
-                            show(app);
-                        }
-                    }
+                    "quit" => quit(app),
                     _ => {}
                 })
                 .build(app)?;
+            // Like the menu bar app, the tray rereads usage on the settings interval.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    let view = refresh_tray(&handle);
+                    std::thread::sleep(Duration::from_secs(view.refresh_seconds));
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -644,11 +740,11 @@ mod tests {
             size: tauri::PhysicalSize::new(1920, 1040),
         };
         let (position, size) = popup_geometry(rect, &area, 2.0);
-        assert_eq!(position, tauri::PhysicalPosition::new(-720, 0));
-        assert_eq!(size, tauri::PhysicalSize::new(720, 1040));
+        assert_eq!(position, tauri::PhysicalPosition::new(-640, 0));
+        assert_eq!(size, tauri::PhysicalSize::new(640, 1040));
         let (position, size) = popup_geometry(rect, &area, 1.0);
-        assert_eq!(position, tauri::PhysicalPosition::new(-360, 420));
-        assert_eq!(size, tauri::PhysicalSize::new(360, 620));
+        assert_eq!(position, tauri::PhysicalPosition::new(-320, 420));
+        assert_eq!(size, tauri::PhysicalSize::new(320, 620));
     }
 
     #[test]
@@ -657,7 +753,7 @@ mod tests {
         assert!(popup_height(f64::INFINITY).is_err());
         assert!(popup_height(0.0).is_err());
         assert!(popup_height(-1.0).is_err());
-        assert_eq!(popup_height(100.0).unwrap(), 240.0);
+        assert_eq!(popup_height(100.0).unwrap(), 120.0);
         assert_eq!(popup_height(500.0).unwrap(), 500.0);
         assert_eq!(popup_height(900.0).unwrap(), 620.0);
     }

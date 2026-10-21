@@ -7,30 +7,50 @@ use dispatch2::MainThreadBound;
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSColor, NSEvent, NSEventType, NSPanel,
-    NSPopUpMenuWindowLevel, NSScreen, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{MainThreadMarker, NSPoint, NSProcessInfo, NSRect};
+use objc2_foundation::{MainThreadMarker, NSProcessInfo, NSRect};
 use std::cell::Cell;
 
-// AppKit supplies coordinates in points, so this frame needs no display-scale conversion.
+/// MENU_GAP matches the space macOS leaves between the menu bar and a status item's menu.
+const MENU_GAP: f64 = 5.0;
+
+/// CORNER_RADIUS matches the corners of macOS 26 menus; the glass and tray.css use it too.
+pub(super) const CORNER_RADIUS: f64 = 12.0;
+
+// Like a status item's menu, the panel's left edge follows the icon and its top edge sits
+// just below the menu bar. AppKit supplies points, so the frame needs no scale conversion.
 fn popup_frame(anchor: NSRect, area: NSRect, height: f64) -> NSRect {
     let mut frame = area;
-    frame.size.width = frame.size.width.min(360.0);
+    frame.size.width = frame.size.width.min(super::POPUP_WIDTH);
     frame.size.height = frame.size.height.min(height);
-    frame.origin.x = (anchor.origin.x + anchor.size.width / 2.0 - frame.size.width / 2.0).clamp(
+    frame.origin.x = anchor.origin.x.clamp(
         area.origin.x,
         area.origin.x + area.size.width - frame.size.width,
     );
-    frame.origin.y = (anchor.origin.y - 6.0 - frame.size.height).clamp(
+    let top = anchor.origin.y.min(area.origin.y + area.size.height) - MENU_GAP;
+    frame.origin.y = (top - frame.size.height).clamp(
         area.origin.y,
         area.origin.y + area.size.height - frame.size.height,
     );
     frame
 }
 
+/// This function returns the status item's frame and its screen's visible frame in points.
+pub(super) fn status_item_frames(tray: &tauri::tray::TrayIcon) -> Option<(NSRect, NSRect)> {
+    tray.with_inner_tray_icon(|inner| {
+        let mtm = MainThreadMarker::new()?;
+        let window = inner.ns_status_item()?.button(mtm)?.window()?;
+        Some((window.frame(), window.screen()?.visibleFrame()))
+    })
+    .ok()
+    .flatten()
+}
+
 #[derive(Default)]
 struct PopupState {
     anchor: Cell<NSRect>,
+    area: Cell<NSRect>,
     height: Cell<f64>,
 }
 
@@ -83,6 +103,7 @@ impl TrayPanel {
             let responder = source.firstResponder();
             let allocated = Popup::alloc(mtm).set_ivars(PopupState {
                 anchor: Cell::new(NSRect::default()),
+                area: Cell::new(source.frame()),
                 height: Cell::new(620.0),
             });
             let panel: Retained<Popup> = msg_send![super(allocated),
@@ -94,6 +115,7 @@ impl TrayPanel {
             panel.setReleasedWhenClosed(false);
             panel.setOpaque(false);
             panel.setBackgroundColor(Some(&NSColor::clearColor()));
+            panel.setHasShadow(true);
             panel.setTitle(&source.title());
             panel.setHidesOnDeactivate(false);
             panel.setBecomesKeyOnlyIfNeeded(false);
@@ -112,6 +134,12 @@ impl TrayPanel {
             panel.setCollectionBehavior(behavior);
             source.setContentView(None);
             panel.setContentView(Some(&view));
+            // Clipping the glass and the webview to one rounded shape also rounds the shadow.
+            view.setWantsLayer(true);
+            if let Some(layer) = view.layer() {
+                layer.setCornerRadius(CORNER_RADIUS);
+                layer.setMasksToBounds(true);
+            }
             panel.makeFirstResponder(responder.as_deref());
             Ok(Self(MainThreadBound::new(panel, mtm)))
         }
@@ -123,55 +151,32 @@ impl TrayPanel {
 
     pub(super) fn resize(&self, height: f64) {
         self.0.get_on_main(|panel| {
-            panel.ivars().height.set(height);
-            if let Some(screen) = panel.screen() {
-                panel.setFrame_display(
-                    popup_frame(panel.ivars().anchor.get(), screen.visibleFrame(), height),
-                    true,
-                );
-            }
+            let state = panel.ivars();
+            state.height.set(height);
+            panel.setFrame_display(
+                popup_frame(state.anchor.get(), state.area.get(), height),
+                true,
+            );
+            panel.invalidateShadow();
         });
     }
 
-    pub(super) fn toggle(&self, rect: tauri::Rect) -> bool {
+    /// This function shows the panel below `anchor`, the status item's frame, within `area`,
+    /// the visible frame of the status item's screen. It returns false when it hid the panel.
+    pub(super) fn toggle(&self, anchor: NSRect, area: NSRect) -> bool {
         self.0.get_on_main(|panel| {
             // A panel visible on another Space must be shown here rather than hidden by this click.
             if panel.isVisible() && panel.isOnActiveSpace() {
                 panel.orderOut(None);
                 return false;
             }
-            let mtm = panel.mtm();
-            let mouse = NSEvent::mouseLocation();
-            if let Some(screen) = NSScreen::screens(mtm).iter().find(|screen| {
-                let frame = screen.frame();
-                mouse.x >= frame.origin.x
-                    && mouse.x < frame.origin.x + frame.size.width
-                    && mouse.y >= frame.origin.y
-                    && mouse.y < frame.origin.y + frame.size.height
-            }) {
-                let scale = screen.backingScaleFactor();
-                let origin = rect.position.to_logical::<f64>(scale);
-                let size = rect.size.to_logical::<f64>(scale);
-                let primary_top = NSScreen::screens(mtm)
-                    .iter()
-                    .next()
-                    .map(|screen| {
-                        let frame = screen.frame();
-                        frame.origin.y + frame.size.height
-                    })
-                    .unwrap_or(0.0);
-                let anchor = NSRect::new(
-                    NSPoint::new(origin.x, primary_top - origin.y - size.height),
-                    objc2_foundation::NSSize::new(size.width, size.height),
-                );
-                panel.ivars().anchor.set(anchor);
-                panel.setFrame_display(
-                    popup_frame(anchor, screen.visibleFrame(), panel.ivars().height.get()),
-                    true,
-                );
-            }
+            let state = panel.ivars();
+            state.anchor.set(anchor);
+            state.area.set(area);
+            panel.setFrame_display(popup_frame(anchor, area, state.height.get()), true);
             panel.orderFrontRegardless();
             panel.makeKeyWindow();
+            panel.invalidateShadow();
             true
         })
     }
@@ -180,15 +185,23 @@ impl TrayPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use objc2_foundation::NSSize;
+    use objc2_foundation::{NSPoint, NSSize};
 
     #[test]
-    fn native_popup_fits_negative_origins_and_small_work_areas() {
+    fn native_popup_follows_the_icon_and_fits_the_work_area() {
+        let screen = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1512.0, 945.0));
+        let icon = |x| NSRect::new(NSPoint::new(x, 945.0), NSSize::new(30.0, 37.0));
+        assert_eq!(
+            popup_frame(icon(1000.0), screen, 400.0),
+            NSRect::new(NSPoint::new(1000.0, 540.0), NSSize::new(320.0, 400.0))
+        );
+        // An icon near the right edge moves the panel left so it stays on screen.
+        assert_eq!(popup_frame(icon(1400.0), screen, 400.0).origin.x, 1192.0);
         let area = NSRect::new(NSPoint::new(-1920.0, -1080.0), NSSize::new(1920.0, 1055.0));
         let anchor = NSRect::new(NSPoint::new(-20.0, -25.0), NSSize::new(22.0, 22.0));
         assert_eq!(
             popup_frame(anchor, area, 500.0),
-            NSRect::new(NSPoint::new(-360.0, -531.0), NSSize::new(360.0, 500.0))
+            NSRect::new(NSPoint::new(-320.0, -530.0), NSSize::new(320.0, 500.0))
         );
         let small = NSRect::new(NSPoint::new(-300.0, 50.0), NSSize::new(200.0, 400.0));
         assert_eq!(popup_frame(anchor, small, 620.0), small);

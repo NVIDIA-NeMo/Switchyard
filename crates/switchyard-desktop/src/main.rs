@@ -165,7 +165,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let controller = controller::Controller::new(config, settings);
+    let controller = controller::Controller::new(config, settings.clone());
     if terminal {
         #[cfg(windows)]
         windows::allocate_console();
@@ -175,7 +175,7 @@ fn main() -> ExitCode {
         }
     } else {
         #[cfg(any(target_os = "macos", windows))]
-        if let Err(error) = gui::run(controller) {
+        if let Err(error) = gui::run(controller, settings) {
             eprintln!("switchyard-desktop: {error}");
             return ExitCode::FAILURE;
         }
