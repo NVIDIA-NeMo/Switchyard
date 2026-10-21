@@ -265,14 +265,14 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
     }
 }
 
-/// Records one stage-router decision with bounded labels.
+/// Records one stage-router decision with request and routing labels.
 pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str) {
     meter().u64_counter(ROUTING_DECISIONS_METRIC).build().add(
         1,
-        &[
+        &crate::metric_context::attributes(&[
             KeyValue::new("decision_source", source.as_str()),
             KeyValue::new("target_name", target_name.to_string()),
-        ],
+        ]),
     );
 }
 
@@ -312,7 +312,7 @@ fn record_score_metrics(signal: &ToolSignals, outcome: &PickOutcome) {
             .f64_histogram(name)
             .with_boundaries(boundaries.to_vec())
             .build()
-            .record(value, &[]);
+            .record(value, &crate::metric_context::attributes(&[]));
     }
 }
 

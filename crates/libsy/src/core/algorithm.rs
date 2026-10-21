@@ -11,6 +11,8 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{FutureExt, Stream, StreamExt};
+use opentelemetry::Context;
+use opentelemetry::context::FutureExt as _;
 use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -118,6 +120,7 @@ pub struct CallModel {
     started: Instant,
     // Retain the originating span even if the waiting algorithm is cancelled first.
     span: tracing::Span,
+    metric_context: Context,
 }
 
 impl CallModel {
@@ -162,6 +165,7 @@ impl CallModel {
     }
 
     fn record(&self, is_ok: bool) {
+        let _guard = self.metric_context.clone().attach();
         observability::record_llm_call(
             &self.algorithm,
             self.models
@@ -197,6 +201,7 @@ pub struct CallDecision {
     started: Instant,
     // Retain the originating span even if the waiting algorithm is cancelled first.
     span: tracing::Span,
+    metric_context: Context,
 }
 
 impl CallDecision {
@@ -233,6 +238,7 @@ impl CallDecision {
     }
 
     fn record(&self, is_ok: bool) {
+        let _guard = self.metric_context.clone().attach();
         observability::record_decision_call(
             &self.algorithm,
             &self.model,
@@ -428,6 +434,7 @@ impl Driver {
             reply: Some(reply),
             started,
             span: tracing::Span::current(),
+            metric_context: Context::current(),
         };
         self.step_tx
             .send(Ok(Step::CallModel(Box::new(call))))
@@ -471,6 +478,7 @@ impl Driver {
             reply: Some(reply),
             started,
             span: tracing::Span::current(),
+            metric_context: Context::current(),
         };
         self.step_tx
             .send(Ok(Step::CallDecision(Box::new(call))))
@@ -749,7 +757,11 @@ pub trait Algorithm: Send + Sync + 'static {
     ) -> StepStream {
         let (driver, step_rx) = Driver::new(self.name(), models);
         driver.set_state(state);
-        let span = observability::run_span(self.name(), &request);
+        let metric_context = crate::metric_context::for_request(&request);
+        let span = {
+            let _guard = metric_context.clone().attach();
+            observability::run_span(self.name(), &request)
+        };
         let handle = tokio::spawn(
             async move {
                 let algorithm = self.name().to_string();
@@ -769,7 +781,8 @@ pub trait Algorithm: Send + Sync + 'static {
 
                 let _ = driver.finish(result).await;
             }
-            .instrument(span),
+            .instrument(span)
+            .with_context(metric_context),
         );
         // Dropping the stream aborts the algorithm task when its consumer goes away.
         let abort_guard = AbortOnDrop(handle.abort_handle());

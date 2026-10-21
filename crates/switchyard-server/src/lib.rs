@@ -920,10 +920,6 @@ async fn handle_endpoint_inner(
     wire_format: WireFormat,
 ) -> Response {
     let metadata = metadata_from_headers(headers);
-    let routing_log_context = state
-        .routing_log
-        .as_ref()
-        .map(|_| routing_log::RoutingLogContext::from_metadata(&metadata));
     let request_log = RequestLogContext {
         started: started.0,
         wire_format,
@@ -947,7 +943,7 @@ async fn handle_endpoint_inner(
     // response is written, which cancels the run and its upstream calls. The guard
     // keeps that terminal state observable: the `emit` path below never runs for an
     // abandoned buffered request.
-    let mut request_log = RequestLogGuard(Some(request_log));
+    let mut request_log = RequestLogGuard(Some(request_log), None);
 
     let response = match llm_json_body(body) {
         Ok(body) => {
@@ -957,13 +953,14 @@ async fn handle_endpoint_inner(
                 metadata,
                 body,
                 wire_format,
-                routing_log_context,
+                &mut request_log,
             )
             .await
         }
         Err((status, message)) => invalid_body_error(status, message),
     };
     let response = render_error_response(response, wire_format);
+    let _guard = request_log.1.clone().map(opentelemetry::Context::attach);
     metrics::record_client_response(response.status().as_u16());
     request_log.emit(&response);
     response
@@ -1068,97 +1065,110 @@ async fn handle_llm_request(
     metadata: Metadata,
     body: Value,
     wire_format: WireFormat,
-    routing_log_context: Option<routing_log::RoutingLogContext>,
+    request_log: &mut RequestLogGuard,
 ) -> Response {
+    let routing_log_context = state
+        .routing_log
+        .as_ref()
+        .map(|_| routing_log::RoutingLogContext::from_metadata(&metadata));
+
     let cache_probe = state.track_cache_eligibility.then(|| prefix_probe(&body));
     let (route, request) = match resolve_route(&state, metadata, body, wire_format) {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
-    let routing_log_context = routing_log_context.map(|context| {
-        context.with_route(
-            request.llm_request.model.as_deref().unwrap_or_default(),
-            route.algorithm_name(),
-        )
-    });
-    // Only the Codex namespace mapping is needed downstream, not the whole request.
-    let request_extensions = request.llm_request.extensions.clone();
-    let observer = stats_observer(
-        state.stats.clone(),
-        state.routing_log.clone().zip(routing_log_context.clone()),
-    );
+    let metric_context = libsy::metric_context::for_request(&request);
+    request_log.1 = Some(metric_context.clone());
+    opentelemetry::context::FutureExt::with_context(
+        async {
+            let routing_log_context = routing_log_context.map(|context| {
+                context.with_route(
+                    request.llm_request.model.as_deref().unwrap_or_default(),
+                    route.algorithm_name(),
+                )
+            });
+            // Only the Codex namespace mapping is needed downstream, not the whole request.
+            let request_extensions = request.llm_request.extensions.clone();
+            let observer = stats_observer(
+                state.stats.clone(),
+                state.routing_log.clone().zip(routing_log_context.clone()),
+            );
 
-    let output = match route.execute(request, Some(observer)).await {
-        Ok(output) => output,
-        Err(error) => {
-            if let RunnerError::Algorithm(LibsyError::ClientCall {
-                target,
-                source:
-                    LlmClientError::ResponseStateLimitExceeded { .. }
-                    | LlmClientError::ResponseStateConflict,
-            }) = &error
-            {
-                state.stats.record_response_error(target);
+            let output = match route.execute(request, Some(observer)).await {
+                Ok(output) => output,
+                Err(error) => {
+                    if let RunnerError::Algorithm(LibsyError::ClientCall {
+                        target,
+                        source:
+                            LlmClientError::ResponseStateLimitExceeded { .. }
+                            | LlmClientError::ResponseStateConflict,
+                    }) = &error
+                    {
+                        state.stats.record_response_error(target);
+                    }
+                    return runner_error(error);
+                }
+            };
+            let RunOutput {
+                selected_model,
+                response,
+            } = output;
+            // The response carries the candidate that actually served it. Fall back to the routing
+            // selection for algorithms that return a response without an offloaded model call.
+            let served_model = response.served_model().cloned().or(Some(selected_model));
+            let mut response = if let Some(served_model) = served_model.as_ref() {
+                let cache_eligible = cache_probe
+                    .as_ref()
+                    .map(|probe| state.stats.prefix_eligibility(served_model, probe))
+                    .unwrap_or(0.0);
+                usage_metrics::observe(
+                    response,
+                    served_model.as_str(),
+                    started.0,
+                    state.stats.clone(),
+                    cache_eligible,
+                    state.routing_log.clone().zip(routing_log_context),
+                )
+            } else {
+                response
+            };
+
+            let upstream_headers = std::mem::take(&mut response.upstream_headers);
+            let response_model = served_model.as_ref().map(ToString::to_string);
+            let mut response = match into_http_response(
+                response,
+                wire_format,
+                response_model,
+                request_extensions,
+                Arc::clone(&state.redactor),
+            ) {
+                Ok(response) => response,
+                Err(error) => return server_error(error.to_string()),
+            };
+            // Forward upstream headers before Switchyard writes its own so any header
+            // this server emits always overrides an upstream echo of the same name.
+            let response_headers = response.headers_mut();
+            for (name, value) in upstream_headers.iter() {
+                if !should_forward_upstream_header(name) {
+                    continue;
+                }
+                response_headers.append(name.clone(), value.clone());
             }
-            return runner_error(error);
-        }
-    };
-    let RunOutput {
-        selected_model,
-        response,
-    } = output;
-    // The response carries the candidate that actually served it. Fall back to the routing
-    // selection for algorithms that return a response without an offloaded model call.
-    let served_model = response.served_model().cloned().or(Some(selected_model));
-    let mut response = if let Some(served_model) = served_model.as_ref() {
-        let cache_eligible = cache_probe
-            .as_ref()
-            .map(|probe| state.stats.prefix_eligibility(served_model, probe))
-            .unwrap_or(0.0);
-        usage_metrics::observe(
-            response,
-            served_model.as_str(),
-            started.0,
-            state.stats,
-            cache_eligible,
-            state.routing_log.zip(routing_log_context),
-        )
-    } else {
-        response
-    };
-
-    let upstream_headers = std::mem::take(&mut response.upstream_headers);
-    let response_model = served_model.as_ref().map(ToString::to_string);
-    let mut response = match into_http_response(
-        response,
-        wire_format,
-        response_model,
-        request_extensions,
-        Arc::clone(&state.redactor),
-    ) {
-        Ok(response) => response,
-        Err(error) => return server_error(error.to_string()),
-    };
-    // Forward upstream headers before Switchyard writes its own so any header
-    // this server emits always overrides an upstream echo of the same name.
-    let response_headers = response.headers_mut();
-    for (name, value) in upstream_headers.iter() {
-        if !should_forward_upstream_header(name) {
-            continue;
-        }
-        response_headers.append(name.clone(), value.clone());
-    }
-    if let Some(served_model) = served_model.as_ref() {
-        attach_routing_headers(&mut response, served_model.as_str());
-    }
-    response
+            if let Some(served_model) = served_model.as_ref() {
+                attach_routing_headers(&mut response, served_model.as_str());
+            }
+            response
+        },
+        metric_context,
+    )
+    .await
 }
 
 /// Holds the request log context until the request reaches a terminal state.
 /// Dropping the guard with the context still in place means the handler future was
 /// cancelled — the client left before a response existed — so the run is reported
 /// as abandoned rather than silently disappearing.
-struct RequestLogGuard(Option<RequestLogContext>);
+struct RequestLogGuard(Option<RequestLogContext>, Option<opentelemetry::Context>);
 
 impl RequestLogGuard {
     // Emits the normal terminal event and disarms the cancellation path.
@@ -1171,6 +1181,7 @@ impl RequestLogGuard {
 
 impl Drop for RequestLogGuard {
     fn drop(&mut self) {
+        let _guard = self.1.clone().map(opentelemetry::Context::attach);
         if let Some(context) = self.0.take() {
             context.emit_cancelled();
         }
@@ -2090,7 +2101,7 @@ targets = ["only"]
     #[test]
     fn dropping_the_request_log_guard_reports_a_cancelled_request() {
         let events = captured_events(|| {
-            drop(RequestLogGuard(Some(request_log_context())));
+            drop(RequestLogGuard(Some(request_log_context()), None));
         });
 
         assert_eq!(events.len(), 1);
@@ -2103,7 +2114,7 @@ targets = ["only"]
     #[test]
     fn an_answered_request_reports_only_its_response() {
         let events = captured_events(|| {
-            let mut guard = RequestLogGuard(Some(request_log_context()));
+            let mut guard = RequestLogGuard(Some(request_log_context()), None);
             guard.emit(&StatusCode::OK.into_response());
         });
 

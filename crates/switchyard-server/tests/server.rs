@@ -1294,6 +1294,69 @@ async fn stats_reset_returns_confirmation_and_clears_all_stats() -> TestResult {
 }
 
 #[tokio::test]
+async fn metrics_track_turns_across_buffered_and_streamed_requests() -> TestResult {
+    const MODEL: &str = "model/turn-metrics";
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(random_state_with_retries(
+        &upstream.base_url,
+        &[(ROUTE_MODEL, &[MODEL])],
+        0,
+    )?);
+    let headers = [
+        ("x-switchyard-session-id", "server-turn-session"),
+        ("x-switchyard-agent-id", "worker"),
+    ];
+    let mut messages = vec![json!({"role": "user", "content": "hello"})];
+    for (agent_idx, user_idx, streaming) in [("0", "0", false), ("1", "0", true), ("2", "1", false)]
+    {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({"model": ROUTE_MODEL, "messages": messages, "stream": streaming})),
+            &headers,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        let response = send(&app, "GET", "/metrics", None).await?;
+        let metrics = response.text()?;
+        let labels = [
+            ("session_id", "server-turn-session"),
+            ("agent_id", "worker"),
+            ("agent_turn_idx", agent_idx),
+            ("user_turn_idx", user_idx),
+        ];
+        for name in [
+            "switchyard_run_duration_ms_count",
+            "switchyard_routing_overhead_ms_count",
+            "switchyard_llm_call_duration_ms_count",
+            "switchyard_total_latency_ms_count",
+            "switchyard_model_call_latency_ms_count",
+            "switchyard_client_responses_total",
+            "switchyard_upstream_attempts_total",
+        ] {
+            assert_eq!(
+                metric_value(metrics, name, &labels),
+                Some(1.0),
+                "{name} with {labels:?}"
+            );
+        }
+        assert!(
+            metric_value(metrics, "switchyard_prompt_tokens_total", &labels).unwrap_or(0.0) > 0.0
+        );
+        if agent_idx == "0" {
+            messages.push(json!({"role": "assistant", "tool_calls": [{
+                "id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}
+            }]}));
+            messages.push(json!({"role": "tool", "tool_call_id": "call_1", "content": "result"}));
+        } else {
+            messages.push(json!({"role": "user", "content": "next task"}));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
     const MODEL: &str = "model/metrics-buffered";
     let upstream = MockUpstream::start().await?;

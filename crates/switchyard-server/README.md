@@ -347,6 +347,14 @@ system prompts are applied to answer calls, not token-count requests.
 ## Metrics
 
 `GET /metrics` exposes Prometheus text from the server's process-wide OpenTelemetry provider.
+Request-scoped metrics include `session_id`, `agent_id`, `agent_turn_idx`, and
+`user_turn_idx` when session identity is available. Indices start at zero for each
+session and agent. Each inbound inference request advances the agent index; new
+user input or a changed turn ID advances the user index. Tool continuations share
+the user index. Missing agent IDs use `root`; missing session IDs omit indices.
+See [turn tracking](../../docs/reference/opentelemetry.md#metrics) for lifecycle
+and boundary details. The table lists the other labels.
+
 Routed-call compatibility metrics are:
 
 | Metric | Type | Labels | Meaning |
@@ -390,8 +398,7 @@ accept and TLS handshake, which hyper completes before the server sees the reque
 `drive` returns a routing outcome. It includes algorithm execution and any classifier or judge
 calls made while driving the algorithm, and it is recorded before a terminal answer call begins.
 No duration for the request-serving call is subtracted. If routing itself produced the answer,
-that call occurred inside the measured `drive` interval. The metric carries only `algorithm`,
-since the duration describes the router rather than the target it chose; a routing failure before
+that call occurred inside the measured `drive` interval. The metric carries `algorithm` and the request identity labels; a routing failure before
 an outcome records nothing. Its buckets start at 0.1 ms via a view in the server; the SDK defaults
 start at 5 ms.
 

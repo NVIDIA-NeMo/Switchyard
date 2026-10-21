@@ -22,10 +22,9 @@
 //!
 //! Instrument names use the OTel dotted form with the unit baked into the name
 //! (`switchyard.run_duration_ms`), matching the switchyard metric surface; a
-//! Prometheus exporter sanitizes them to `switchyard_run_duration_ms`. Attribute
-//! cardinality is bounded: `algorithm` and `selected_model` are small
-//! configured sets and `outcome` is `ok`/`error`. Nothing per-request becomes a
-//! metric attribute — correlation ids ride on the `libsy.run` span instead.
+//! Prometheus exporter sanitizes them to `switchyard_run_duration_ms`. Request
+//! labels include request session/agent identity and turn indices when available.
+//! Correlation IDs remain on the `libsy.run` span.
 //!
 //! Instruments are resolved from the global provider on every record (an
 //! instrument-cache lookup inside the SDK) so recording follows a meter
@@ -36,7 +35,7 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use opentelemetry::metrics::Meter;
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{Context, KeyValue, global};
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -110,6 +109,9 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
             span.record("session.id", session_id.as_str());
         }
     }
+    for attribute in crate::metric_context::attributes(&[]) {
+        span.set_attribute(attribute.key, attribute.value);
+    }
     span
 }
 
@@ -154,6 +156,7 @@ pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
 /// Holds `switchyard.algorithms_in_flight` up by one for as long as it lives.
 struct InFlightRun {
     algorithm: String,
+    metric_context: Context,
 }
 
 impl InFlightRun {
@@ -161,12 +164,14 @@ impl InFlightRun {
         record_algorithms_in_flight(algorithm, 1);
         Self {
             algorithm: algorithm.to_string(),
+            metric_context: Context::current(),
         }
     }
 }
 
 impl Drop for InFlightRun {
     fn drop(&mut self) {
+        let _guard = self.metric_context.clone().attach();
         record_algorithms_in_flight(&self.algorithm, -1);
     }
 }
@@ -177,7 +182,13 @@ fn record_algorithms_in_flight(algorithm: &str, delta: i64) {
     meter()
         .i64_up_down_counter("switchyard.algorithms_in_flight")
         .build()
-        .add(delta, &[KeyValue::new("algorithm", algorithm.to_string())]);
+        .add(
+            delta,
+            &crate::metric_context::attributes(&[KeyValue::new(
+                "algorithm",
+                algorithm.to_string(),
+            )]),
+        );
 }
 
 /// Runs one algorithm task to completion, recording the run counter, duration
@@ -211,11 +222,14 @@ fn record_run<T>(algorithm: &str, duration: Duration, result: &Result<T>, span: 
     meter
         .u64_counter("switchyard.runs")
         .build()
-        .add(1, &attributes);
+        .add(1, &crate::metric_context::attributes(&attributes));
     meter
         .f64_histogram("switchyard.run_duration_ms")
         .build()
-        .record(duration.as_secs_f64() * 1000.0, &attributes);
+        .record(
+            duration.as_secs_f64() * 1000.0,
+            &crate::metric_context::attributes(&attributes),
+        );
 }
 
 /// Records a judge failure that made the classifier route without a verdict.
@@ -225,10 +239,10 @@ pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static st
         .build()
         .add(
             1,
-            &[
+            &crate::metric_context::attributes(&[
                 KeyValue::new("judge_model", judge_model.to_string()),
                 KeyValue::new("reason", reason),
-            ],
+            ]),
         );
 }
 
@@ -249,11 +263,14 @@ pub(crate) fn record_llm_call(
     meter
         .u64_counter("switchyard.llm_calls")
         .build()
-        .add(1, &call_attributes);
+        .add(1, &crate::metric_context::attributes(&call_attributes));
     meter
         .f64_histogram("switchyard.llm_call_duration_ms")
         .build()
-        .record(duration.as_secs_f64() * 1000.0, &call_attributes);
+        .record(
+            duration.as_secs_f64() * 1000.0,
+            &crate::metric_context::attributes(&call_attributes),
+        );
 }
 
 /// Records buffered token usage on the algorithm's call span.
@@ -279,11 +296,14 @@ pub(crate) fn record_decision_call(
     meter
         .u64_counter("switchyard.decision_calls")
         .build()
-        .add(1, &attributes);
+        .add(1, &crate::metric_context::attributes(&attributes));
     meter
         .f64_histogram("switchyard.decision_call_duration_ms")
         .build()
-        .record(duration.as_secs_f64() * 1000.0, &attributes);
+        .record(
+            duration.as_secs_f64() * 1000.0,
+            &crate::metric_context::attributes(&attributes),
+        );
 }
 
 pub(crate) fn record_decision_response(response: &DecisionResponse, span: &Span) {
@@ -313,9 +333,9 @@ fn record_call_usage(usage: &Usage, span: &Span) {
 pub(crate) fn record_decision(algorithm: &str, selected_model: &ModelId) {
     meter().u64_counter("switchyard.decisions").build().add(
         1,
-        &[
+        &crate::metric_context::attributes(&[
             KeyValue::new("algorithm", algorithm.to_string()),
             KeyValue::new("selected_model", selected_model.to_string()),
-        ],
+        ]),
     );
 }

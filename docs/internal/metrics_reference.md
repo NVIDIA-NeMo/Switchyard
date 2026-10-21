@@ -159,11 +159,16 @@ The ready-to-deploy alert rules implementing these expressions live in
 
 ## Cardinality
 
-All labels are bounded enums. No per-request or per-user values escape
-into label space.
+Request-scoped metrics include `session_id`, `agent_id`, `agent_turn_idx`, and
+`user_turn_idx` when session identity is available. Indices are zero-based per
+session and agent; missing agent IDs use `root`. These labels grow with traffic.
+See [turn tracking](../reference/opentelemetry.md#metrics) for boundary and lifecycle
+rules. The remaining labels describe configured targets and fixed categories.
 
 | Label | Values | Where |
 |---|---|---|
+| `session_id`, `agent_id` | Caller-supplied identity; absent agents use `root`. | Request-scoped metrics |
+| `agent_turn_idx`, `user_turn_idx` | Observed zero-based indices per session and agent. | Request-scoped metrics with session identity |
 | `model` | One per configured endpoint, typically 2–6 per deployment. | All per-endpoint metrics. |
 | `outcome` | `ok`, `retryable_error`, `other_error`; plus `client_disconnected` on `switchyard_client_responses_total`. | Outcome counters |
 | `code` | Bounded: the known-code allowlist (`200`, `400`, `401`, `403`, `404`, `408`, `409`, `422`, `429`, `500`, `502`, `503`, `504`), plus `none` and the per-class buckets `1xx`/`2xx`/`3xx`/`4xx`/`5xx`/`other`. About 20 values max. | `switchyard_upstream_attempts_total` |

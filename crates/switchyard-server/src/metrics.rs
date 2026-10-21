@@ -71,7 +71,13 @@ fn initialize() -> Result<Metrics, String> {
     global::meter("switchyard")
         .u64_gauge("switchyard.build_info")
         .build()
-        .record(1, &[KeyValue::new("version", env!("CARGO_PKG_VERSION"))]);
+        .record(
+            1,
+            &libsy::metric_context::attributes(&[KeyValue::new(
+                "version",
+                env!("CARGO_PKG_VERSION"),
+            )]),
+        );
     seed_outcome_metrics();
     Ok(Metrics { registry, provider })
 }
@@ -122,10 +128,10 @@ fn seed_outcome_metrics() {
     for status in [Some(200), Some(404), Some(429), Some(500), Some(504), None] {
         upstream_attempts.add(
             0,
-            &[
+            &libsy::metric_context::attributes(&[
                 KeyValue::new("outcome", http_outcome_label(status)),
                 KeyValue::new("code", http_status_code_label(status)),
-            ],
+            ]),
         );
     }
 
@@ -136,12 +142,15 @@ fn seed_outcome_metrics() {
         "other_error",
         CLIENT_DISCONNECTED_OUTCOME,
     ] {
-        client_responses.add(0, &[KeyValue::new("outcome", outcome)]);
+        client_responses.add(
+            0,
+            &libsy::metric_context::attributes(&[KeyValue::new("outcome", outcome)]),
+        );
     }
     meter
         .u64_counter("switchyard.router_retry_recovered")
         .build()
-        .add(0, &[]);
+        .add(0, &libsy::metric_context::attributes(&[]));
 }
 
 /// Records a request whose downstream client disconnected before a response was
@@ -150,7 +159,13 @@ pub(crate) fn record_client_disconnect() {
     global::meter("switchyard")
         .u64_counter("switchyard.client_responses")
         .build()
-        .add(1, &[KeyValue::new("outcome", CLIENT_DISCONNECTED_OUTCOME)]);
+        .add(
+            1,
+            &libsy::metric_context::attributes(&[KeyValue::new(
+                "outcome",
+                CLIENT_DISCONNECTED_OUTCOME,
+            )]),
+        );
 }
 
 /// Records the final status returned by an LLM-serving route.
@@ -160,7 +175,10 @@ pub(crate) fn record_client_response(status: u16) {
         .build()
         .add(
             1,
-            &[KeyValue::new("outcome", http_outcome_label(Some(status)))],
+            &libsy::metric_context::attributes(&[KeyValue::new(
+                "outcome",
+                http_outcome_label(Some(status)),
+            )]),
         );
 }
 

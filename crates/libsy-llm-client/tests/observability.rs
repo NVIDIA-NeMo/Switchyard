@@ -1903,6 +1903,122 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
 }
 
 #[tokio::test]
+async fn routing_and_answer_metrics_share_turn_labels() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    let client = Arc::new(ClassifierClient {
+        classifier_model_id: "turn-label-judge".into(),
+        classifier_delay: Duration::ZERO,
+        routed_delay: Duration::ZERO,
+    }) as Arc<dyn RoutedLlmClient>;
+    let mut request = request_with_metadata("turn-label-session", "turn-label-request");
+    request.metadata.as_mut().unwrap().agent_id = Some("worker".into());
+    for (agent_idx, user_idx) in [(0, 0), (1, 0), (2, 1)] {
+        run_classifier(
+            "turn-label-judge",
+            "turn-label-weak",
+            "turn-label-strong",
+            client.clone(),
+            request.clone(),
+        )
+        .await?;
+        let snapshots = flushed_metrics(exporter, provider);
+        let agent_idx = agent_idx.to_string();
+        let user_idx = user_idx.to_string();
+        let labels = [
+            ("session_id", "turn-label-session"),
+            ("agent_id", "worker"),
+            ("agent_turn_idx", agent_idx.as_str()),
+            ("user_turn_idx", user_idx.as_str()),
+        ];
+        for model in ["turn-label-judge", "turn-label-weak"] {
+            let mut labels = labels.to_vec();
+            labels.push(("selected_model", model));
+            assert_eq!(
+                f64_histogram_count(&snapshots, "switchyard.llm_call_duration_ms", &labels),
+                Some(1)
+            );
+        }
+        assert_eq!(
+            f64_histogram_count(&snapshots, "switchyard.run_duration_ms", &labels),
+            Some(1)
+        );
+        assert_eq!(
+            f64_histogram_count(&snapshots, "switchyard.routing_overhead_ms", &labels),
+            Some(1)
+        );
+        assert_eq!(
+            f64_histogram_count(&snapshots, "switchyard.model_call_latency_ms", &labels),
+            Some(1)
+        );
+        if agent_idx == "0" {
+            request
+                .llm_request
+                .messages
+                .push(switchyard_protocol::Message::text(
+                    switchyard_protocol::Role::Tool,
+                    "tool result",
+                ));
+        } else {
+            request
+                .llm_request
+                .messages
+                .push(switchyard_protocol::Message::text(
+                    switchyard_protocol::Role::User,
+                    "next task",
+                ));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn streamed_metrics_keep_their_originating_turn_after_another_request()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    let client = Arc::new(StreamingUsageClient) as Arc<dyn RoutedLlmClient>;
+    let mut request = request_with_metadata("stream-turn-session", "stream-turn-request");
+    request.llm_request.stream = true;
+    let (_, first) = run(
+        algo("stream-turn-algo", "stream-turn-model"),
+        client.clone(),
+        request.clone(),
+    )
+    .await?;
+    let (_, second) = run(
+        algo("stream-turn-algo", "stream-turn-model"),
+        client,
+        request,
+    )
+    .await?;
+    // Drop the newer response before the older stream is consumed, outside either run's context.
+    drop(second);
+    let LlmResponse::Stream(mut stream) = first.llm_response else {
+        return Err(test_error("expected stream"));
+    };
+    while let Some(item) = stream.next().await {
+        item.expect("valid stream");
+    }
+    drop(stream);
+    let snapshots = flushed_metrics(exporter, provider);
+    for (idx, outcome) in [("0", "ok"), ("1", "error")] {
+        let labels = [
+            ("session_id", "stream-turn-session"),
+            ("agent_id", "root"),
+            ("agent_turn_idx", idx),
+            ("user_turn_idx", "0"),
+            ("outcome", outcome),
+        ];
+        assert_eq!(
+            f64_histogram_count(&snapshots, "switchyard.llm_call_duration_ms", &labels),
+            Some(1)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (store, exporter, provider, _, _) = telemetry();

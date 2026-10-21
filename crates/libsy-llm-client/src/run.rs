@@ -24,6 +24,7 @@ use std::time::Instant;
 
 use futures::{StreamExt, TryStreamExt, stream};
 use http::StatusCode;
+use opentelemetry::context::FutureExt as _;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use switchyard_libsy::{
@@ -54,6 +55,19 @@ use crate::{metrics, observability};
 /// Routing calls are buffered; client failures stop the request unless the call enables recovery.
 /// Once routing completes, non-timeout failures may try the outcome's ordered fallback candidates.
 pub async fn run(
+    algorithm: Arc<dyn Algorithm>,
+    clients: ClientRouter,
+    request: Request,
+    models: Arc<RuntimeModels>,
+    observer: Option<RunObserver>,
+) -> Result<(ModelId, Response)> {
+    let metric_context = switchyard_libsy::metric_context::for_request(&request);
+    run_inner(algorithm, clients, request, models, observer)
+        .with_context(metric_context)
+        .await
+}
+
+async fn run_inner(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
     request: Request,
@@ -128,6 +142,18 @@ pub async fn run(
 /// Routing-time calls are served normally. The returned request is prepared only for the selected
 /// target; use [`run`] to execute selected and fallback candidates.
 pub async fn decide(
+    algorithm: Arc<dyn Algorithm>,
+    clients: ClientRouter,
+    request: Request,
+    models: Arc<RuntimeModels>,
+) -> Result<RoutingOutcome> {
+    let metric_context = switchyard_libsy::metric_context::for_request(&request);
+    decide_inner(algorithm, clients, request, models)
+        .with_context(metric_context)
+        .await
+}
+
+async fn decide_inner(
     algorithm: Arc<dyn Algorithm>,
     clients: ClientRouter,
     request: Request,

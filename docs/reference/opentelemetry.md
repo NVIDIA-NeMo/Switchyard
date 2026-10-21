@@ -81,6 +81,33 @@ invented as zero. Available counts are capped at OTel's signed integer maximum.
 
 Metrics use the `switchyard` meter scope. The tables use OTel instrument names.
 
+Request-scoped metrics also carry `session_id`, `agent_id`, `agent_turn_idx`, and
+`user_turn_idx` when a session ID is supplied. The tables below list the other labels.
+Process-wide build and total gauges keep their existing labels.
+
+Indices start at zero and are tracked per `(session_id, agent_id)` in the process:
+
+- `agent_turn_idx` advances for each inbound inference request. Internal judge calls,
+  answer candidates, retries, and stream events share that request's index.
+- `user_turn_idx` advances when the supplied `turn_id` changes or a new trailing user
+  input is observed. Tool-result-only messages keep the current user index. Without
+  a turn ID, repeated identical input with identical history is treated as a retry.
+- An absent agent ID uses `root`. Without a session ID, a supplied agent ID is still
+  labeled, but turn indices are omitted.
+
+Counters persist until process restart or `session_final = true`, which releases
+all agents in the session after assigning the final request's indices. Concurrent
+requests receive indices in the order they enter tracking. These are observed
+request indices; joining an existing conversation starts at zero. Compacted or
+partial histories can make user boundaries ambiguous without a supplied turn ID.
+
+The LLM client driver and server establish the request context automatically.
+Hosts serving `run_stream` directly get algorithm and offloaded-call labels;
+custom host metrics can use `metric_context::for_request` and
+`metric_context::attributes` to share them. Preserve the context while polling
+futures and streams. Identity labels create a series per turn; exporter cardinality
+limits still apply.
+
 ### Routing and client metrics
 
 | Instrument | Type | Labels | Meaning |
@@ -157,7 +184,7 @@ Stage Router instruments use the prefix `switchyard.stage_router.`:
 
 These histograms contain unitless values from 0 to 1. They are recorded when tool
 signals reach the scorer, including when it defers to a classifier. They are not
-one sample per application request and are not split by route or session.
+one sample per application request. They carry the current request identity labels.
 
 Advisor Gate instruments use the prefix `switchyard.advisor_gate.`:
 
@@ -186,8 +213,8 @@ include error descriptions and upstream addresses; algorithm logs may include co
 such as Advisor Gate's `reply_head`. Supplied session/correlation IDs are included.
 Review collected data before exporting it outside your deployment.
 
-Custom algorithms can record OTel instruments directly. Keep metric labels to
-configured names and fixed categories, not request/session IDs or user text.
+Custom algorithms can record OTel instruments directly. Use the shared request identity labels for correlation. Keep other metric labels
+to configured names and fixed categories, and omit user text.
 
 ### Source and stability
 

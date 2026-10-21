@@ -51,3 +51,6 @@ pub use algorithms::util::stage::{
 };
 
 mod observability;
+
+/// Request identity and turn indices shared by Switchyard metrics.
+pub mod metric_context;

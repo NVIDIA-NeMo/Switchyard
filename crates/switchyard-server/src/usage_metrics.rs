@@ -6,6 +6,7 @@
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use opentelemetry::context::FutureExt as _;
 use opentelemetry::{KeyValue, global};
 use switchyard_protocol::{LlmResponse, LlmResponseChunk, Response, Usage};
 
@@ -38,6 +39,7 @@ pub(crate) fn observe(
             LlmResponse::Agg(agg)
         }
         LlmResponse::Stream(mut stream) => {
+            let metric_context = opentelemetry::Context::current();
             let wrapped = async_stream::stream! {
                 let mut latest_usage = None;
                 let mut terminal_seen = false;
@@ -97,7 +99,7 @@ pub(crate) fn observe(
                     }
                 }
             };
-            LlmResponse::Stream(Box::pin(wrapped))
+            LlmResponse::Stream(Box::pin(wrapped.with_context(metric_context)))
         }
     };
 
@@ -163,7 +165,7 @@ fn record_usage(usage: &Usage, model: &str) {
         meter
             .u64_counter("switchyard.prompt_tokens")
             .build()
-            .add(prompt, &attributes);
+            .add(prompt, &libsy::metric_context::attributes(&attributes));
     }
     for (name, value) in [
         ("switchyard.completion_tokens", usage.output_tokens),
@@ -172,7 +174,10 @@ fn record_usage(usage: &Usage, model: &str) {
         ("switchyard.reasoning_tokens", usage.reasoning_tokens),
     ] {
         if let Some(value) = value {
-            meter.u64_counter(name).build().add(value, &attributes);
+            meter
+                .u64_counter(name)
+                .build()
+                .add(value, &libsy::metric_context::attributes(&attributes));
         }
     }
 }
@@ -181,7 +186,10 @@ fn record_latency(model: &str, latency: Duration) {
     global::meter("switchyard")
         .f64_histogram("switchyard.total_latency_ms")
         .build()
-        .record(latency.as_secs_f64() * 1000.0, &attributes(model));
+        .record(
+            latency.as_secs_f64() * 1000.0,
+            &libsy::metric_context::attributes(&attributes(model)),
+        );
 }
 
 #[cfg(test)]

@@ -11,8 +11,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use opentelemetry::context::FutureExt as _;
 use opentelemetry::metrics::ObservableGauge;
-use opentelemetry::{KeyValue, global};
+use opentelemetry::{Context, KeyValue, global};
 use switchyard_libsy::Result;
 use switchyard_protocol::{LlmResponse, LlmResponseChunk, ModelId, Response, WireFormat};
 use switchyard_translation::{DiagnosticSeverity, TranslationDiagnostic};
@@ -92,10 +93,10 @@ pub(crate) fn record_upstream_attempt(status: Option<u16>) {
         .build()
         .add(
             1,
-            &[
+            &switchyard_libsy::metric_context::attributes(&[
                 KeyValue::new("outcome", http_outcome_label(status)),
                 KeyValue::new("code", http_status_code_label(status)),
-            ],
+            ]),
         );
 }
 
@@ -104,7 +105,7 @@ pub(crate) fn record_retry_recovered() {
     global::meter("switchyard")
         .u64_counter("switchyard.router_retry_recovered")
         .build()
-        .add(1, &[]);
+        .add(1, &switchyard_libsy::metric_context::attributes(&[]));
 }
 
 /// Records translation diagnostics as metrics and structured warnings.
@@ -121,12 +122,12 @@ pub fn record_translation_diagnostics(
             .build()
             .add(
                 1,
-                &[
+                &switchyard_libsy::metric_context::attributes(&[
                     KeyValue::new("code", diagnostic.code.clone()),
                     KeyValue::new("format", format.as_str()),
                     KeyValue::new("operation", operation),
                     KeyValue::new("severity", severity),
-                ],
+                ]),
             );
         tracing::warn!(
             target: "libsy",
@@ -157,7 +158,10 @@ pub(crate) fn record_routing_overhead(algorithm: &str, overhead: Duration) {
         .build()
         .record(
             overhead.as_secs_f64() * 1000.0,
-            &[KeyValue::new("algorithm", algorithm.to_string())],
+            &switchyard_libsy::metric_context::attributes(&[KeyValue::new(
+                "algorithm",
+                algorithm.to_string(),
+            )]),
         );
 }
 
@@ -169,6 +173,7 @@ pub(crate) fn observe_routed_request(
     result: Result<Response>,
 ) -> Result<Response> {
     let mut call = RoutedCallMetrics {
+        metric_context: Context::current(),
         algorithm: algorithm.to_owned(),
         model: selected_model.clone(),
         duration: answer_duration,
@@ -178,9 +183,9 @@ pub(crate) fn observe_routed_request(
     result.map(|mut response| {
         if let LlmResponse::Stream(stream) = response.llm_response {
             call.outcome = None;
-            response.llm_response = LlmResponse::Stream(Box::pin(stream::unfold(
-                (stream, call),
-                |(mut stream, mut call)| async move {
+            let metric_context = Context::current();
+            response.llm_response = LlmResponse::Stream(Box::pin(
+                stream::unfold((stream, call), |(mut stream, mut call)| async move {
                     let Some(item) = stream.next().await else {
                         call.outcome.get_or_insert(true);
                         return None;
@@ -203,14 +208,16 @@ pub(crate) fn observe_routed_request(
                         }
                     }
                     Some((item, (stream, call)))
-                },
-            )));
+                })
+                .with_context(metric_context),
+            ));
         }
         response
     })
 }
 
 struct RoutedCallMetrics {
+    metric_context: Context,
     algorithm: String,
     model: ModelId,
     duration: Option<Duration>,
@@ -221,6 +228,7 @@ struct RoutedCallMetrics {
 
 impl Drop for RoutedCallMetrics {
     fn drop(&mut self) {
+        let _guard = self.metric_context.clone().attach();
         let is_success = self.outcome.unwrap_or(false);
         let duration = self
             .duration
@@ -245,14 +253,17 @@ pub(crate) fn record_answer_call(
         KeyValue::new("outcome", if is_success { "ok" } else { "error" }),
     ];
     let meter = global::meter("switchyard");
-    meter
-        .u64_counter("switchyard.llm_calls")
-        .build()
-        .add(1, &attributes);
+    meter.u64_counter("switchyard.llm_calls").build().add(
+        1,
+        &switchyard_libsy::metric_context::attributes(&attributes),
+    );
     meter
         .f64_histogram("switchyard.llm_call_duration_ms")
         .build()
-        .record(duration.as_secs_f64() * 1000.0, &attributes);
+        .record(
+            duration.as_secs_f64() * 1000.0,
+            &switchyard_libsy::metric_context::attributes(&attributes),
+        );
 }
 
 /// Records one terminal routed request after the algorithm has produced an outcome.
@@ -265,22 +276,25 @@ pub(crate) fn record_routed_request(
     let attributes = [KeyValue::new("model", selected_model.to_string())];
     let meter = global::meter("switchyard");
     if is_success {
-        meter
-            .u64_counter("switchyard.requests")
-            .build()
-            .add(1, &attributes);
+        meter.u64_counter("switchyard.requests").build().add(
+            1,
+            &switchyard_libsy::metric_context::attributes(&attributes),
+        );
         if let Some(duration) = answer_duration {
             meter
                 .f64_histogram("switchyard.model_call_latency_ms")
                 .build()
-                .record(duration.as_secs_f64() * 1000.0, &attributes);
+                .record(
+                    duration.as_secs_f64() * 1000.0,
+                    &switchyard_libsy::metric_context::attributes(&attributes),
+                );
         }
     } else {
         TOTAL_ERRORS.fetch_add(1, Ordering::Relaxed);
-        meter
-            .u64_counter("switchyard.errors")
-            .build()
-            .add(1, &attributes);
+        meter.u64_counter("switchyard.errors").build().add(
+            1,
+            &switchyard_libsy::metric_context::attributes(&attributes),
+        );
     }
 }
 

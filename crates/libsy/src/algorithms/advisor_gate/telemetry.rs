@@ -26,10 +26,10 @@ pub(super) fn record_review(verdict: &'static str, trigger: &'static str) {
         .build()
         .add(
             1,
-            &[
+            &crate::metric_context::attributes(&[
                 KeyValue::new("verdict", verdict),
                 KeyValue::new("trigger", trigger),
-            ],
+            ]),
         );
 }
 
@@ -37,7 +37,10 @@ pub(super) fn record_consult_failure(reason: &'static str) {
     observability::meter()
         .u64_counter("switchyard.advisor_gate.consult_failures")
         .build()
-        .add(1, &[KeyValue::new("reason", reason)]);
+        .add(
+            1,
+            &crate::metric_context::attributes(&[KeyValue::new("reason", reason)]),
+        );
 }
 
 /// Counts a REDO-discarded executor turn and its tokens; the client never
@@ -47,7 +50,7 @@ pub(super) fn record_discarded(usage: &Usage) {
     meter
         .u64_counter("switchyard.advisor_gate.discarded_turns")
         .build()
-        .add(1, &[]);
+        .add(1, &crate::metric_context::attributes(&[]));
     let tokens = meter
         .u64_counter("switchyard.advisor_gate.discarded_tokens")
         .build();
@@ -61,7 +64,10 @@ pub(super) fn record_discarded(usage: &Usage) {
         ("output", usage.output_tokens.unwrap_or(0)),
     ] {
         if value > 0 {
-            tokens.add(value, &[KeyValue::new("kind", kind)]);
+            tokens.add(
+                value,
+                &crate::metric_context::attributes(&[KeyValue::new("kind", kind)]),
+            );
         }
     }
 }
