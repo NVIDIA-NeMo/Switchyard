@@ -27,11 +27,17 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
-use switchyard_protocol::ProviderExtensions;
+use switchyard_protocol::{ProviderExtensions, Tool};
 
 pub use switchyard_protocol::codex_namespaces::{
     NAMESPACE_SEPARATOR, TOOL_NAMESPACES_KEY, split_qualified_name, tool_namespaces,
 };
+
+/// Request extension key holding the names of the tools that sit outside any namespace.
+///
+/// Kept apart from [`TOOL_NAMESPACES_KEY`] so readers of that mapping see only
+/// namespaced tools.
+pub const TOP_LEVEL_TOOLS_KEY: &str = "switchyard_codex_top_level_tools";
 
 /// Joins a namespace and a tool name into the name used on the wire.
 pub fn qualified_tool_name(namespace: &str, tool: &str) -> String {
@@ -63,6 +69,26 @@ pub fn attach_tool_namespaces(extensions: &mut ProviderExtensions, namespaces: M
         extensions
             .fields
             .insert(TOOL_NAMESPACES_KEY.to_string(), Value::Object(namespaces));
+    }
+}
+
+/// Records the names of `tools` that no namespace claims, when the request has namespaces.
+///
+/// A fallback spelling of a namespaced tool must not capture a call to one of these.
+pub fn attach_top_level_tools(extensions: &mut ProviderExtensions, tools: &[Tool]) {
+    let Some(namespaces) = tool_namespaces(extensions) else {
+        return;
+    };
+    let names: Vec<Value> = tools
+        .iter()
+        .filter_map(Tool::function)
+        .filter(|tool| !namespaces.contains_key(&tool.name))
+        .map(|tool| Value::String(tool.name.clone()))
+        .collect();
+    if !names.is_empty() {
+        extensions
+            .fields
+            .insert(TOP_LEVEL_TOOLS_KEY.to_string(), Value::Array(names));
     }
 }
 
@@ -102,14 +128,22 @@ pub fn qualified_tool_origins(
         .collect();
 
     // A bare name claimed by more than one namespace cannot be guessed, and a
-    // fallback must never shadow a name that is itself a real qualified tool.
+    // fallback must never shadow the name of a real tool, namespaced or not.
     let mut bare_claims: HashMap<&str, usize> = HashMap::new();
     for (_, tool, _) in &split {
         *bare_claims.entry(tool.as_str()).or_default() += 1;
     }
+    let top_level = extensions
+        .fields
+        .get(TOP_LEVEL_TOOLS_KEY)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str);
     let qualified_names: HashSet<&str> = split
         .iter()
         .map(|(qualified, _, _)| qualified.as_str())
+        .chain(top_level)
         .collect();
 
     let mut origins = HashMap::new();
@@ -170,11 +204,12 @@ pub fn restore_qualified_tool_names(body: &mut Value, origins: &HashMap<String, 
 #[cfg(test)]
 mod tests {
     use serde_json::{Map, json};
-    use switchyard_protocol::ProviderExtensions;
+    use switchyard_protocol::{ProviderExtensions, Tool, ToolDefinition};
 
     use super::{
-        attach_tool_namespaces, qualified_tool_name, qualified_tool_origins, record_tool_namespace,
-        restore_qualified_tool_names, split_qualified_name, tool_namespaces,
+        attach_tool_namespaces, attach_top_level_tools, qualified_tool_name,
+        qualified_tool_origins, record_tool_namespace, restore_qualified_tool_names,
+        split_qualified_name, tool_namespaces,
     };
 
     fn extensions(pairs: &[(&str, &str)]) -> ProviderExtensions {
@@ -219,6 +254,32 @@ mod tests {
         let origins =
             qualified_tool_origins(&extensions(&[("mcp__a", "search"), ("mcp__b", "search")]));
         let mut response = json!({"output": [{"type": "function_call", "name": "search"}]});
+        let before = response.clone();
+
+        restore_qualified_tool_names(&mut response, &origins);
+
+        assert_eq!(response, before);
+    }
+
+    // A call to a top-level tool must not gain the namespace of a namespaced
+    // tool whose bare or `mcp__`-stripped name matches it.
+    #[test]
+    fn leaves_a_top_level_tool_name_alone() {
+        let mut extensions = extensions(&[("mcp__docs", "search"), ("mcp__docs", "fetch")]);
+        let tools = ["search", "docs__fetch"].map(|name| {
+            Tool::from(ToolDefinition {
+                name: name.to_string(),
+                description: None,
+                parameters: json!({}),
+                strict: None,
+            })
+        });
+        attach_top_level_tools(&mut extensions, &tools);
+        let origins = qualified_tool_origins(&extensions);
+        let mut response = json!({"output": [
+            {"type": "function_call", "name": "search"},
+            {"type": "function_call", "name": "docs__fetch"}
+        ]});
         let before = response.clone();
 
         restore_qualified_tool_names(&mut response, &origins);

@@ -162,6 +162,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             ],
         );
         crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
+        crate::codex_namespaces::attach_top_level_tools(&mut request.extensions, &request.tools);
         crate::codex_custom_tools::attach_custom_tools(&mut request.extensions, custom_tools);
         crate::codex_custom_tools::attach_custom_call_outputs(
             &mut request.extensions,
