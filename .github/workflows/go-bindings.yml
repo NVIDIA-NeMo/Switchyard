@@ -33,3 +33,35 @@ jobs:
       - name: go vet (native)
         working-directory: bindings/go
         run: go vet -tags switchyard_native ./...
+
+  wasm:
+    name: WASM
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: bindings/go/go.mod
+          cache-dependency-path: bindings/go/go.sum
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build Go WASM module
+        run: scripts/build-go-wasm.sh
+      - name: go test (WASM, no cgo)
+        working-directory: bindings/go
+        env:
+          CGO_ENABLED: "0"
+        run: go test -count=1 ./...
+      - name: go vet (WASM, no cgo)
+        working-directory: bindings/go
+        env:
+          CGO_ENABLED: "0"
+        run: go vet ./...
+      - name: go test (WASM, race)
+        working-directory: bindings/go
+        env:
+          CGO_ENABLED: "1"
+        run: go test -count=1 -race ./...
