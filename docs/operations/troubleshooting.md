@@ -9,7 +9,7 @@ log field, a log line, or a `--dry-run` message.
 
 | Symptom | Check | Likely causes, most common first | Fix |
 |---|---|---|---|
-| The first request lands on the efficient model | `x-model-router-selected-model` on the response | Auto and Execution decide from tool results, and a request without tool history has none. This is by design. | Send a request with a critical tool error, as in [Verify routing is active](../getting_started.md#verify-routing-is-active). |
+| The first request lands on the efficient model | `x-model-router-selected-model` on the response | Auto and Execution decide from tool results, and a request without tool history has none. This is by design. | Send a request with a critical tool error, as in [Verify routing is active](local_evaluation.md#verify-routing-is-active). |
 | Every request lands on one model | `curl -s localhost:4000/v1/stats | jq -c '.models | map_values(.calls)'` and `.algorithm_stats.stage_router.routing_decisions` | Chat-only traffic (`fall_open` only); both tiers name the same target or the same model ID; `capable_first` with a threshold the signals cannot reach; one tier is down and the other serves its fallbacks. | See the matching rows in [Silent misconfigurations](#silent-misconfigurations) and [When Auto does not route](../routing_algorithms/overview.md#when-auto-does-not-route). |
 | The judge never changes the outcome | `switchyard_classifier_fail_open_total` on `/metrics`, and the log line `judge verdict unavailable; routing without one` with its `reason` | The provider rejects JSON Schema mode (`json_object` needed); the verdict is truncated by `max_output_tokens`; the judge model returns prose instead of JSON. | [Judge model compatibility](../routing_algorithms/llm_classifier_routing.md#judge-model-compatibility). |
 | Escalation never latches | The log line `stateful escalation has no session ID; routing state will not persist` | The client sends no session ID. No escalation state survives a request without one, so the route never latches at any `confirmations`. The warning fires only when `confirmations` is 2 or more. | Send `x-switchyard-session-id`. See [Tuning options](../routing_algorithms/escalation_router_routing.md#tuning-options). |
@@ -22,7 +22,7 @@ log field, a log line, or a `--dry-run` message.
 | The client shows zero input tokens on `/v1/messages` | `prompt_tokens` in the routing log | The streamed `message_start` event reports zero usage when the target is on an OpenAI format. The real counts arrive in `message_delta`. | [Streamed token counts](../routing_algorithms/model_selection.md#pin-the-provider-and-endpoint). |
 | Cost per run is higher than the single capable model | `cached_tokens` in the routing log on the turn after a model change; cost per arm | Each switch loses the prompt cache; the judge adds a call per turn; the efficient model is too weak and most turns escalate. | [Counter-examples](../routing_algorithms/model_selection.md#counter-examples) and the [inverted-pair check](../routing_algorithms/model_selection.md#check-for-an-inverted-pair). |
 | The prompt cache is never read | `cached_tokens` stays `0` on repeated prompts | The gateway does not cache on that endpoint, or the prompt is too short to cache. | [Prompt caching](../integrations/pi.md#prompt-caching). |
-| `/v1/stats` has no `tiers` key | The `/v1/stats` body | The Rust server reports decisions under `algorithm_stats.<algorithm>`. | Read `algorithm_stats.stage_router.routing_decisions`, as in [Verify routing is active](../getting_started.md#verify-routing-is-active). |
+| `/v1/stats` has no `tiers` key | The `/v1/stats` body | The Rust server reports decisions under `algorithm_stats.<algorithm>`. | Read `algorithm_stats.stage_router.routing_decisions`, as in [Verify routing is active](local_evaluation.md#verify-routing-is-active). |
 | The routing log does not say why a model was chosen | A routing-log record | The log records the served model and token counts only. | Use the decision counts in `/v1/stats`. For overrides, the `stage router override` log line also names the reason. See [Decision sources](../routing_algorithms/stage_router_routing.md#decision-sources). |
 | Sub-agent requests ignore the `subagents` policy | The log line `this route has sub-agent routing but the calling harness does not send sub-agent identity`. It fires only for Claude Code versions known to lack child identity. For other harnesses, check whether delegated requests carry a session ID and an agent ID. | The harness sends no sub-agent identity, so delegated requests follow the parent route. | [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
@@ -82,7 +82,7 @@ confidence_threshold = 0.9    # the signals reach 0.8741 at most toward efficien
 
 ## Related
 
-- [Verify routing is active](../getting_started.md#verify-routing-is-active)
+- [Verify routing is active](local_evaluation.md#verify-routing-is-active)
 - [Tuning](../tuning/index.md)
 - [Model Selection](../routing_algorithms/model_selection.md)
 - [TOML Schema](../reference/toml_schema.md)

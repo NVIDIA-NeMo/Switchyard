@@ -15,7 +15,7 @@ Start where your goal is:
 ## The loop
 
 1. **Verify routing is active.** Follow
-   [Verify routing is active](../getting_started.md#verify-routing-is-active).
+   [Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active).
    Produces: the selected-model header from two requests and a `/v1/stats`
    capture. Costs: two requests, no agent run.
 
