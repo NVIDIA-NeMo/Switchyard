@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+        <meta name="description" content="Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness">
       
       
       
@@ -349,6 +349,34 @@
     
   
     Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/local_evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate Locally
   
 
     
@@ -1609,6 +1637,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/host_integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Host Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../cli_reference/" class="md-nav__link">
         
   
@@ -2045,7 +2101,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Optional. Keeps the capable hold.</td>
 <td>Efficient tier</td>
 <td>The preset of the measured <code>stage_router</code> settings, with a shorter window. See <a href="#auto">Auto</a>.</td>
-<td>The <a href="../../getting_started/#server-path">Getting Started</a> route file</td>
+<td>The <a href="../../operations/local_evaluation/#configure-your-model-pool">local evaluation</a> route file</td>
 </tr>
 <tr>
 <td><code>stage_router</code></td>
@@ -2054,7 +2110,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Every request</td>
 <td>Optional. Keeps the capable hold.</td>
 <td>Picker default</td>
-<td><a href="../../benchmarks/">Terminal-Bench 2.1 and DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="../../benchmarks/">Terminal-Bench 2.1 and DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2064,7 +2120,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Per trigger</td>
 <td>Optional. Needed to retain a verdict.</td>
 <td>Strong target</td>
-<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml">smoke-test config</a> is checked in.</td>
+<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml">smoke-test config</a> is checked in.</td>
 <td>That config</td>
 </tr>
 <tr>
@@ -2074,7 +2130,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Latches once. Reversible with de-escalation.</td>
 <td>Required to latch. Without it, <code>confirmations = 1</code> escalates single turns only.</td>
 <td>An unreadable verdict keeps the current tier. A failed judge call stops the request in the server.</td>
-<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">checked-in profile</a>, and a <a href="https://www.langchain.com/blog/switchyard-agent-routing-benchmark">public report</a></td>
+<td><a href="../../benchmarks/#terminal-bench-21">Terminal-Bench 2.1 results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">checked-in profile</a>, and a <a href="https://www.langchain.com/blog/switchyard-agent-routing-benchmark">public report</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2084,7 +2140,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Per trigger</td>
 <td>Optional. Needed to retain a verdict.</td>
 <td><code>default_target</code></td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 profiles</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 profiles</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2104,7 +2160,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Once per session</td>
 <td>Recommended. Latches the handoff.</td>
 <td>Stays on the planner</td>
-<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2114,7 +2170,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>Never. One executor serves.</td>
 <td>Scopes the review budget</td>
 <td>An unreadable verdict or a failed advisor call lets the buffered executor turn through (<code>fail_open</code>, default <code>true</code>). <code>fail_open = false</code> stops the request.</td>
-<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE v1.1 profile</a></td>
+<td><a href="../../benchmarks/#deepswe">DeepSWE results</a> with the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE v1.1 profile</a></td>
 <td>That profile</td>
 </tr>
 <tr>
@@ -2125,7 +2181,7 @@ quality, follow the <a href="../../tuning/">tuning loop</a>.</p>
 <td>See <a href="../vgr_routing/">the page</a></td>
 <td>Cloud tier</td>
 <td>Not benchmarked. Planned for 0.4.0.</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/examples/vgr-local-servers.toml"><code>examples/vgr-local-servers.toml</code></a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/examples/vgr-local-servers.toml"><code>examples/vgr-local-servers.toml</code></a></td>
 </tr>
 <tr>
 <td><code>prefill_router</code></td>
@@ -2226,22 +2282,22 @@ and the one dial to move first.</p>
 <ol>
 <li><strong>A coding agent, and cost comes first.</strong> Start with <code>auto</code>. When you need to
    tune, copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE stage profile</a>
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">DeepSWE stage profile</a>
    and move <code>confidence_threshold</code> as described in
    <a href="../stage_router_routing/#tuning-confidence_threshold">Tuning <code>confidence_threshold</code></a>.</li>
 <li><strong>Long sessions where the cheap model should run until a judge reports that it is failing.</strong>
    Use escalation. Copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a>,
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml">escalation profile</a>,
    send a session ID, and move <code>confirmations</code> as described in
    <a href="../escalation_router_routing/#tuning-options">Tuning options</a>.</li>
 <li><strong>One executor you want to keep, with a stronger model as a quality gate.</strong>
    Use the advisor gate. Copy the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE advisor profile</a>
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">DeepSWE advisor profile</a>
    and move <code>max_reviews</code> together with <code>gate_min_tool_results</code> as described in
    <a href="../advisor_gate_routing/#tuning">Tuning</a>.</li>
 </ol>
 <p>For multi-turn support traffic with few tool results, the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/19f2b7cc4388680c2ba4b1f9112d914c59209e53/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 custom-classifier profiles</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90c2f0a06bfbc7a21923f2eea07a3540e6b5971b/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">tau2 custom-classifier profiles</a>
 are the measured starting point. Their dial is the judge rubric in <code>prompt</code>.</p>
 <h3 id="auto">Auto<a class="headerlink" href="#auto" title="Permanent link">&para;</a></h3>
 <p>Auto is a preset, not a separate routing algorithm. An <code>auto</code> route builds a
@@ -2296,7 +2352,7 @@ to one tier:</p>
   of an agent session, carry no tool history. The signals abstain and the
   efficient tier serves the turn. This is by design. <code>GET /v1/stats</code> counts these
   turns under <code>algorithm_stats.stage_router.routing_decisions.fall_open</code>. See
-  <a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>.</li>
+  <a href="../../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>.</li>
 <li><strong>Both tiers name the same target.</strong> The server accepts a route whose
   <code>capable_target</code> and <code>efficient_target</code> are the same target. Every request then
   goes to that one model, and <code>GET /v1/stats</code> lists a single entry under <code>.models</code>.</li>
@@ -2387,7 +2443,7 @@ example, start a local vLLM server:</p>
 the configured endpoint.</p>
 <h2 id="run-a-deployment">Run a deployment<a class="headerlink" href="#run-a-deployment" title="Permanent link">&para;</a></h2>
 <p>After installing the Rust server, as described in
-<a href="../../getting_started/#install-the-server">Getting Started</a>, export the provider
+<a href="../../operations/local_evaluation/#install-the-server">Local Evaluation</a>, export the provider
 credential, validate the configuration, and start the binary:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
