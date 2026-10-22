@@ -13,7 +13,13 @@ publish = false
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
+futures.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
 switchyard-translation.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
