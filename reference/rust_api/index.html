@@ -1593,6 +1593,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#switchyard-translation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard-translation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#crate-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1681,6 +1692,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#switchyard-translation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard-translation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#crate-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1724,7 +1746,7 @@
 
 <h1 id="rust-api">Rust API<a class="headerlink" href="#rust-api" title="Permanent link">&para;</a></h1>
 <p>Switchyard publishes generated API documentation for its embeddable routing
-library and provider-neutral protocol types.</p>
+library, provider-neutral protocol types, and format translation.</p>
 <h2 id="switchyard-libsy"><code>switchyard-libsy</code><a class="headerlink" href="#switchyard-libsy" title="Permanent link">&para;</a></h2>
 <p>Use libsy to construct targets, run built-in routing algorithms, implement a
 custom algorithm, or drive model calls through the host-facing step stream.</p>
@@ -1733,8 +1755,12 @@ custom algorithm, or drive model calls through the host-facing step stream.</p>
 <p>Use protocol types for normalized conversations, response streams, routed LLM
 clients, decisions, metadata, and wire-format identifiers.</p>
 <p><a href="../../rust/switchyard_protocol/">Open the generated protocol API documentation</a></p>
+<h2 id="switchyard-translation"><code>switchyard-translation</code><a class="headerlink" href="#switchyard-translation" title="Permanent link">&para;</a></h2>
+<p>Use translation to convert requests, responses, and streams between OpenAI Chat
+Completions, OpenAI Responses, and Anthropic Messages formats.</p>
+<p><a href="../../rust/switchyard_translation/">Open the generated translation API documentation</a></p>
 <h2 id="crate-boundary">Crate boundary<a class="headerlink" href="#crate-boundary" title="Permanent link">&para;</a></h2>
-<p>Applications embedding libsy normally depend on both crates:</p>
+<p>Applications embedding libsy normally depend on the libsy and protocol crates:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[dependencies]</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.3.0&quot;</span><span class="w"> </span><span class="p">}</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.3.0&quot;</span><span class="w"> </span><span class="p">}</span>
@@ -1742,6 +1768,9 @@ clients, decisions, metadata, and wire-format identifiers.</p>
 <p>Import algorithms and orchestration types from <code>switchyard_libsy</code>. Import
 requests, responses, metadata, decisions, and LLM client traits from
 <code>switchyard_protocol</code>. Keep both dependencies on compatible versions.</p>
+<p>Add <code>switchyard-translation</code> when your application directly converts requests,
+responses, or streams between provider formats. Use a version compatible with
+your other Switchyard dependencies.</p>
 <h2 id="ci-previews">CI previews<a class="headerlink" href="#ci-previews" title="Permanent link">&para;</a></h2>
 <p>The Documentation workflow publishes a preview for same-repository pull
 requests. Open the workflow's <strong>Deploy PR preview</strong> summary to find its preview
