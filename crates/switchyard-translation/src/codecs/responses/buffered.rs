@@ -1152,6 +1152,8 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
         })
         .transpose()?
         .map(str::to_owned);
+    // Only the array-of-tool-names form of allowed_tools is supported;
+    // Responses filter objects with tool_names or read_only are unsupported.
     let allowed_tools = tool
         .get("allowed_tools")
         .filter(|value| !value.is_null())
@@ -1176,16 +1178,23 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
                 })
         })
         .transpose()?;
+    let mut extensions = ProviderExtensions::default();
     let require_approval = match tool.get("require_approval") {
         // Responses requires approval when the setting is omitted.
-        None | Some(Value::Null) => true,
-        Some(Value::String(value)) if value == "always" => true,
-        Some(Value::String(value)) if value == "never" => false,
+        None | Some(Value::Null) => Some(true),
+        Some(Value::String(value)) if value == "always" => Some(true),
+        Some(Value::String(value)) if value == "never" => Some(false),
+        Some(value @ Value::Object(_)) => {
+            extensions.fields.insert(
+                WireFormat::OpenAiResponses.as_str().into(),
+                json!({"require_approval": value}),
+            );
+            None
+        }
         _ => {
             return Err(TranslationError::InvalidValue {
                 path: "tools.require_approval".into(),
-                message: "MCP approval requires always or never; conditional rules are unsupported"
-                    .into(),
+                message: "MCP approval requires always, never, or a filter object".into(),
             });
         }
     };
@@ -1219,7 +1228,8 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
             defer_loading,
         },
         configs,
-        require_approval: Some(require_approval),
+        require_approval,
+        extensions,
     })
 }
 
@@ -1913,7 +1923,14 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
     if !mcp.headers.is_empty() {
         tool["headers"] = json!(mcp.headers);
     }
-    if let Some(approval) = mcp.require_approval {
+    if let Some(approval) = mcp
+        .extensions
+        .fields
+        .get(WireFormat::OpenAiResponses.as_str())
+        .and_then(|fields| fields.get("require_approval"))
+    {
+        tool["require_approval"] = approval.clone();
+    } else if let Some(approval) = mcp.require_approval {
         tool["require_approval"] = json!(if approval { "always" } else { "never" });
     }
     if mcp.default_config.enabled == Some(false) {

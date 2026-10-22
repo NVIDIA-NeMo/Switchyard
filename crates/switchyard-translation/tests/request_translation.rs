@@ -5151,6 +5151,68 @@ fn responses_mcp_approval_defaults_and_target_limits() -> TestResult {
 }
 
 #[test]
+fn responses_mcp_conditional_approval_survives_reconstruction() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    for approval in [
+        json!({"never": {"tool_names": ["lookup"]}}),
+        json!({"always": {"read_only": false}, "never": {"read_only": true}}),
+    ] {
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..TranslationPolicy::default()
+            };
+            let mut body = responses_mcp_request();
+            body["tools"][0]["require_approval"] = approval.clone();
+            let decoded = engine.decode_request(format, &body, &policy)?;
+            assert!(decoded.diagnostics.is_empty());
+            let mut request = decoded.request;
+            let replayed = engine.encode_request(format, &request, &policy)?;
+            assert_eq!(replayed.body, body);
+            assert!(replayed.diagnostics.is_empty());
+
+            request.preservation.requests.clear();
+            let Tool::Mcp(mcp) = &mut request.tools[0] else {
+                panic!("expected MCP definition")
+            };
+            assert_eq!(mcp.require_approval, None);
+            assert_eq!(
+                mcp.extensions.fields["openai_responses"]["require_approval"],
+                approval
+            );
+            mcp.name = "stock".into();
+            // Preserved rules must not be bypassed by changing only the boolean.
+            mcp.require_approval = Some(false);
+            let rebuilt = engine.encode_request(format, &request, &policy)?;
+            assert_eq!(rebuilt.body["tools"][0]["server_label"], "stock");
+            assert_eq!(rebuilt.body["tools"][0]["require_approval"], approval);
+            assert!(rebuilt.diagnostics.is_empty());
+            for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiChat] {
+                assert!(matches!(
+                    engine.encode_request(target, &request, &policy),
+                    Err(TranslationError::LossyConversion(_))
+                ));
+            }
+            let Tool::Mcp(mcp) = &mut request.tools[0] else {
+                unreachable!()
+            };
+            mcp.extensions.fields.clear();
+            let rebuilt = engine.encode_request(format, &request, &policy)?;
+            assert_eq!(rebuilt.body["tools"][0]["require_approval"], "never");
+            let anthropic =
+                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+            assert!(anthropic.diagnostics.is_empty());
+            assert!(anthropic.body["tools"][0].get("require_approval").is_none());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn responses_mcp_connectors_and_tunnels_replay_and_reconstruct() -> TestResult {
     let engine = TranslationEngine::default();
     let format = WireFormat::OpenAiResponses;
@@ -5221,10 +5283,6 @@ fn responses_mcp_definitions_reject_unsupported_input() {
         ("allowed_tools", Some(json!({"read_only": true}))),
         ("defer_loading", Some(json!("true"))),
         ("require_approval", Some(json!(false))),
-        (
-            "require_approval",
-            Some(json!({"never": {"tool_names": ["lookup"]}})),
-        ),
         ("headers", Some(json!([]))),
         ("headers", Some(json!({"X-Api-Key": 42}))),
     ] {

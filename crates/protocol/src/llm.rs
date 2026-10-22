@@ -240,7 +240,7 @@ pub struct ToolDefinition {
 pub enum Tool {
     /// A remote MCP server and the tools it exposes.
     Mcp(McpToolset),
-    /// A definition without a supported neutral representation.
+    /// Reserved for tools effectively built into a provider, such as Anthropic's `web_search_20250305`.
     Provider {
         /// Source wire format; this definition is only replayed in that format.
         provider: FormatId,
@@ -315,9 +315,7 @@ impl Tool {
 
 /// Configuration for a URL-based remote MCP toolset.
 ///
-/// This type covers the supported neutral settings. Definitions with additional settings,
-/// such as server descriptions or conditional approval rules, belong
-/// in [`Tool::Provider`] with the complete original definition.
+/// This type covers the supported neutral connection and tool settings.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolset {
     /// Server identity used by MCP calls.
@@ -338,10 +336,13 @@ pub struct McpToolset {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub configs: BTreeMap<String, McpToolConfig>,
     /// Whether all calls require approval (`true`) or none do (`false`).
-    /// Absence retains provider defaults. Definitions with conditional approval rules
-    /// are stored in full as [`Tool::Provider`], rather than as this type.
+    /// Absence retains provider defaults unless approval rules are preserved in
+    /// `extensions`. Clear those rules before replacing them with this setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_approval: Option<bool>,
+    /// Provider-specific tool fields grouped by wire format, such as `openai_responses`.
+    #[serde(default, skip_serializing_if = "ProviderExtensions::is_empty")]
+    pub extensions: ProviderExtensions,
 }
 
 impl fmt::Debug for McpToolset {
@@ -354,6 +355,7 @@ impl fmt::Debug for McpToolset {
             default_config,
             configs,
             require_approval,
+            extensions,
         } = self;
         let redacted_headers: BTreeMap<_, _> =
             headers.keys().map(|name| (name, "[REDACTED]")).collect();
@@ -369,6 +371,7 @@ impl fmt::Debug for McpToolset {
             .field("default_config", default_config)
             .field("configs", configs)
             .field("require_approval", require_approval)
+            .field("extensions", extensions)
             .finish()
     }
 }
@@ -486,15 +489,22 @@ pub struct ReasoningParams {
     pub raw: Option<Value>,
 }
 
-/// Provider-specific fields that do not have first-class conversation fields.
+/// Provider-specific fields that do not have normalized equivalents.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderExtensions {
-    /// Provider fields keyed by their original wire names.
+    /// Provider fields and codec metadata. Containing types define any grouping by provider.
     ///
     /// Codecs use these fields when translating to another format. Exact
     /// same-format replay is controlled separately by [`PreservationMetadata`].
     pub fields: Map<String, Value>,
+}
+
+impl ProviderExtensions {
+    /// Whether no provider fields or codec metadata are stored.
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
 }
 
 // Extension values can include credentials or embedded original request bodies.
@@ -778,6 +788,9 @@ mod tests {
             {
                 "type": "mcp", "name": "configured", "url": "https://example.invalid/mcp",
                 "headers": {"X-Tenant-ID": "tenant-123"},
+                "extensions": {"fields": {"openai_responses": {
+                    "require_approval": {"never": {"tool_names": ["lookup"]}}
+                }}},
                 "default_config": {"enabled": false, "defer_loading": true},
                 "configs": {"lookup": {"enabled": true}, "search": {"defer_loading": false}}
             }
@@ -825,12 +838,14 @@ mod tests {
     fn mcp_credentials_are_omitted_from_debug() -> Result<(), serde_json::Error> {
         let token = "synthetic-mcp-debug-secret";
         let header_secret = "synthetic-mcp-header-secret";
+        let extension_secret = "synthetic-mcp-extension-secret";
         let url_secret = "synthetic-mcp-url-secret";
         let url = format!("https://example.invalid/mcp?api_key={url_secret}");
         let mcp: McpToolset = serde_json::from_value(json!({
             "name": "inventory", "url": url,
             "authorization_token": token,
-            "headers": {"X-Api-Key": header_secret}
+            "headers": {"X-Api-Key": header_secret},
+            "extensions": {"fields": {"openai_responses": {"secret": extension_secret}}}
         }))?;
         let raw = json!({"mcp_servers": [{"authorization_token": token}]});
         let mut request = LlmRequest {
@@ -863,6 +878,10 @@ mod tests {
         ] {
             assert!(!debug.contains(token), "Debug exposed an MCP credential");
             assert!(
+                !debug.contains(extension_secret),
+                "Debug exposed an MCP extension value"
+            );
+            assert!(
                 !debug.contains(header_secret),
                 "Debug exposed an MCP header credential"
             );
@@ -879,6 +898,10 @@ mod tests {
             header_secret
         );
         assert_eq!(serialized["tools"][1]["raw"]["authorization"], token);
+        assert_eq!(
+            serialized["tools"][0]["extensions"]["fields"]["openai_responses"]["secret"],
+            extension_secret
+        );
         Ok(())
     }
 }

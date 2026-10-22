@@ -951,6 +951,7 @@ fn decode_mcp(server: &Value, toolset: &Value) -> Result<McpToolset> {
             .collect::<Result<_>>()?,
         // Anthropic's MCP connector executes calls without an approval exchange.
         require_approval: Some(false),
+        extensions: ProviderExtensions::default(),
     })
 }
 
@@ -1370,6 +1371,17 @@ fn encode_anthropic_tools(definitions: &[Tool]) -> Result<(Vec<Value>, Vec<Value
                 tools.push(item);
             }
             Tool::Mcp(mcp) => {
+                if mcp
+                    .extensions
+                    .fields
+                    .get(WireFormat::OpenAiResponses.as_str())
+                    .and_then(|fields| fields.get("require_approval"))
+                    .is_some()
+                {
+                    return Err(TranslationError::LossyConversion(
+                        "Anthropic MCP cannot preserve conditional approval rules".into(),
+                    ));
+                }
                 if !mcp.headers.is_empty() {
                     return Err(TranslationError::LossyConversion(
                         "Anthropic MCP does not support arbitrary headers".into(),
