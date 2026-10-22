@@ -3,7 +3,7 @@
 
 //! Provider-neutral conversation types shared by routing, clients, and translation.
 //!
-//! Debug output redacts MCP URLs and authorization tokens and hides raw provider tool definitions,
+//! Debug output redacts MCP URL queries and authorization tokens and hides raw provider tool definitions,
 //! extensions, and preserved bodies. Conversation content, including unknown provider
 //! blocks, remains visible and may contain secrets. Serialization retains the stored values.
 
@@ -345,16 +345,20 @@ impl fmt::Debug for McpToolset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
             name,
-            url: _,
+            url,
             authorization_token,
             default_config,
             configs,
             require_approval,
         } = self;
+        let mut url = url.clone();
+        let query_end = url.find('#').unwrap_or(url.len());
+        if let Some(query_start) = url[..query_end].find('?') {
+            url.replace_range(query_start + 1..query_end, "[REDACTED]");
+        }
         f.debug_struct("McpToolset")
             .field("name", name)
-            // Credentials can appear in any part of the URL, including its path.
-            .field("url", &"[REDACTED]")
+            .field("url", &url)
             .field(
                 "authorization_token",
                 &authorization_token.as_ref().map(|_| "[REDACTED]"),
@@ -810,6 +814,38 @@ mod tests {
         ]);
         let content: Vec<ContentBlock> = serde_json::from_value(history.clone())?;
         assert_eq!(serde_json::to_value(&content)?, history);
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_debug_preserves_url_except_query() -> Result<(), serde_json::Error> {
+        for (url, expected) in [
+            ("https://example.invalid/mcp", "https://example.invalid/mcp"),
+            (
+                "https://example.invalid/mcp?api_key=secret&version=1",
+                "https://example.invalid/mcp?[REDACTED]",
+            ),
+            (
+                "https://example.invalid/mcp?api_key=secret&version=1#fragment",
+                "https://example.invalid/mcp?[REDACTED]#fragment",
+            ),
+            (
+                "https://example.invalid/mcp#fragment?version=1",
+                "https://example.invalid/mcp#fragment?version=1",
+            ),
+            (
+                "https://example.invalid/mcp?",
+                "https://example.invalid/mcp?[REDACTED]",
+            ),
+        ] {
+            let mcp: McpToolset = serde_json::from_value(json!({
+                "name": "inventory", "url": url
+            }))?;
+            for debug in [format!("{mcp:?}"), format!("{mcp:#?}")] {
+                assert!(debug.contains(&format!("url: {expected:?}")), "{debug}");
+            }
+            assert_eq!(serde_json::to_value(&mcp)?["url"], url);
+        }
         Ok(())
     }
 
