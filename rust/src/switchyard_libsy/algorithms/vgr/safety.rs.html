@@ -141,64 +141,67 @@
 <a href=#141 id=141 data-nosnippet>141</a>        LibsyError::ClientCall { source, .. } <span class="kw">if match </span>source {
 <a href=#142 id=142 data-nosnippet>142</a>            LlmClientError::ContextWindowExceeded { .. }
 <a href=#143 id=143 data-nosnippet>143</a>                | LlmClientError::Transport { .. }
-<a href=#144 id=144 data-nosnippet>144</a>                | LlmClientError::Timeout { .. } =&gt; <span class="bool-val">true</span>,
-<a href=#145 id=145 data-nosnippet>145</a>            LlmClientError::UpstreamHttp { status, .. } =&gt;
-<a href=#146 id=146 data-nosnippet>146</a>                <span class="macro">matches!</span>(
-<a href=#147 id=147 data-nosnippet>147</a>                    <span class="kw-2">*</span>status,
-<a href=#148 id=148 data-nosnippet>148</a>                    StatusCode::FORBIDDEN
-<a href=#149 id=149 data-nosnippet>149</a>                        | StatusCode::REQUEST_TIMEOUT
-<a href=#150 id=150 data-nosnippet>150</a>                        | StatusCode::TOO_MANY_REQUESTS
-<a href=#151 id=151 data-nosnippet>151</a>                ) || status.is_server_error(),
-<a href=#152 id=152 data-nosnippet>152</a>            <span class="kw">_ </span>=&gt; <span class="bool-val">false</span>,
-<a href=#153 id=153 data-nosnippet>153</a>        }
-<a href=#154 id=154 data-nosnippet>154</a>    )
-<a href=#155 id=155 data-nosnippet>155</a>}
-<a href=#156 id=156 data-nosnippet>156</a>
-<a href=#157 id=157 data-nosnippet>157</a><span class="doccomment">/// Only endpoint unavailability contributes to breaker health.
-<a href=#158 id=158 data-nosnippet>158</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>endpoint_failure(error: <span class="kw-2">&amp;</span>LibsyError) -&gt; bool {
-<a href=#159 id=159 data-nosnippet>159</a>    <span class="macro">matches!</span>(
-<a href=#160 id=160 data-nosnippet>160</a>        error,
-<a href=#161 id=161 data-nosnippet>161</a>        LibsyError::ClientCall { source, .. } <span class="kw">if match </span>source {
-<a href=#162 id=162 data-nosnippet>162</a>            LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } =&gt; <span class="bool-val">true</span>,
-<a href=#163 id=163 data-nosnippet>163</a>            LlmClientError::UpstreamHttp { status, .. } =&gt; <span class="macro">matches!</span>(
-<a href=#164 id=164 data-nosnippet>164</a>                <span class="kw-2">*</span>status,
-<a href=#165 id=165 data-nosnippet>165</a>                StatusCode::BAD_GATEWAY
-<a href=#166 id=166 data-nosnippet>166</a>                    | StatusCode::SERVICE_UNAVAILABLE
-<a href=#167 id=167 data-nosnippet>167</a>                    | StatusCode::GATEWAY_TIMEOUT
-<a href=#168 id=168 data-nosnippet>168</a>            ),
-<a href=#169 id=169 data-nosnippet>169</a>            <span class="kw">_ </span>=&gt; <span class="bool-val">false</span>,
-<a href=#170 id=170 data-nosnippet>170</a>        }
-<a href=#171 id=171 data-nosnippet>171</a>    )
-<a href=#172 id=172 data-nosnippet>172</a>}
-<a href=#173 id=173 data-nosnippet>173</a>
-<a href=#174 id=174 data-nosnippet>174</a><span class="attr">#[cfg(test)]
-<a href=#175 id=175 data-nosnippet>175</a></span><span class="kw">mod </span>tests {
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
-<a href=#177 id=177 data-nosnippet>177</a>
-<a href=#178 id=178 data-nosnippet>178</a>    <span class="attr">#[test]
-<a href=#179 id=179 data-nosnippet>179</a>    </span><span class="kw">fn </span>recovery_trials_are_exclusive_and_can_be_retried_after_failure_or_drop() {
-<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>breaker = CircuitBreaker::new(BreakerConfig {
-<a href=#181 id=181 data-nosnippet>181</a>            threshold: <span class="number">1</span>,
-<a href=#182 id=182 data-nosnippet>182</a>            cooldown: Duration::ZERO,
-<a href=#183 id=183 data-nosnippet>183</a>        });
-<a href=#184 id=184 data-nosnippet>184</a>        breaker.failure();
-<a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">let </span>trial = breaker.attempt().expect(<span class="string">"recovery trial"</span>);
-<a href=#186 id=186 data-nosnippet>186</a>        <span class="macro">assert!</span>(breaker.attempt().is_none());
-<a href=#187 id=187 data-nosnippet>187</a>        drop(trial);
-<a href=#188 id=188 data-nosnippet>188</a>        breaker.attempt().expect(<span class="string">"released trial"</span>).failure();
-<a href=#189 id=189 data-nosnippet>189</a>        breaker.attempt().expect(<span class="string">"retry after failure"</span>).success();
-<a href=#190 id=190 data-nosnippet>190</a>        <span class="macro">assert!</span>(breaker.state.lock().opened_at.is_none());
-<a href=#191 id=191 data-nosnippet>191</a>        <span class="macro">assert!</span>(breaker.attempt().is_some());
-<a href=#192 id=192 data-nosnippet>192</a>    }
-<a href=#193 id=193 data-nosnippet>193</a>
-<a href=#194 id=194 data-nosnippet>194</a>    <span class="attr">#[test]
-<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">fn </span>recovery_waits_for_the_cooldown() {
-<a href=#196 id=196 data-nosnippet>196</a>        <span class="kw">let </span>breaker = CircuitBreaker::new(BreakerConfig {
-<a href=#197 id=197 data-nosnippet>197</a>            threshold: <span class="number">1</span>,
-<a href=#198 id=198 data-nosnippet>198</a>            cooldown: Duration::from_secs(<span class="number">30</span>),
-<a href=#199 id=199 data-nosnippet>199</a>        });
-<a href=#200 id=200 data-nosnippet>200</a>        breaker.failure();
-<a href=#201 id=201 data-nosnippet>201</a>        <span class="macro">assert!</span>(breaker.attempt().is_none());
-<a href=#202 id=202 data-nosnippet>202</a>    }
-<a href=#203 id=203 data-nosnippet>203</a>}
+<a href=#144 id=144 data-nosnippet>144</a>                | LlmClientError::Timeout { .. }
+<a href=#145 id=145 data-nosnippet>145</a>                | LlmClientError::TemporarilyUnavailable =&gt; <span class="bool-val">true</span>,
+<a href=#146 id=146 data-nosnippet>146</a>            LlmClientError::UpstreamHttp { status, .. } =&gt;
+<a href=#147 id=147 data-nosnippet>147</a>                <span class="macro">matches!</span>(
+<a href=#148 id=148 data-nosnippet>148</a>                    <span class="kw-2">*</span>status,
+<a href=#149 id=149 data-nosnippet>149</a>                    StatusCode::FORBIDDEN
+<a href=#150 id=150 data-nosnippet>150</a>                        | StatusCode::REQUEST_TIMEOUT
+<a href=#151 id=151 data-nosnippet>151</a>                        | StatusCode::TOO_MANY_REQUESTS
+<a href=#152 id=152 data-nosnippet>152</a>                ) || status.is_server_error(),
+<a href=#153 id=153 data-nosnippet>153</a>            <span class="kw">_ </span>=&gt; <span class="bool-val">false</span>,
+<a href=#154 id=154 data-nosnippet>154</a>        }
+<a href=#155 id=155 data-nosnippet>155</a>    )
+<a href=#156 id=156 data-nosnippet>156</a>}
+<a href=#157 id=157 data-nosnippet>157</a>
+<a href=#158 id=158 data-nosnippet>158</a><span class="doccomment">/// Only endpoint unavailability contributes to breaker health.
+<a href=#159 id=159 data-nosnippet>159</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>endpoint_failure(error: <span class="kw-2">&amp;</span>LibsyError) -&gt; bool {
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="macro">matches!</span>(
+<a href=#161 id=161 data-nosnippet>161</a>        error,
+<a href=#162 id=162 data-nosnippet>162</a>        LibsyError::ClientCall { source, .. } <span class="kw">if match </span>source {
+<a href=#163 id=163 data-nosnippet>163</a>            LlmClientError::Transport { .. }
+<a href=#164 id=164 data-nosnippet>164</a>            | LlmClientError::Timeout { .. }
+<a href=#165 id=165 data-nosnippet>165</a>            | LlmClientError::TemporarilyUnavailable =&gt; <span class="bool-val">true</span>,
+<a href=#166 id=166 data-nosnippet>166</a>            LlmClientError::UpstreamHttp { status, .. } =&gt; <span class="macro">matches!</span>(
+<a href=#167 id=167 data-nosnippet>167</a>                <span class="kw-2">*</span>status,
+<a href=#168 id=168 data-nosnippet>168</a>                StatusCode::BAD_GATEWAY
+<a href=#169 id=169 data-nosnippet>169</a>                    | StatusCode::SERVICE_UNAVAILABLE
+<a href=#170 id=170 data-nosnippet>170</a>                    | StatusCode::GATEWAY_TIMEOUT
+<a href=#171 id=171 data-nosnippet>171</a>            ),
+<a href=#172 id=172 data-nosnippet>172</a>            <span class="kw">_ </span>=&gt; <span class="bool-val">false</span>,
+<a href=#173 id=173 data-nosnippet>173</a>        }
+<a href=#174 id=174 data-nosnippet>174</a>    )
+<a href=#175 id=175 data-nosnippet>175</a>}
+<a href=#176 id=176 data-nosnippet>176</a>
+<a href=#177 id=177 data-nosnippet>177</a><span class="attr">#[cfg(test)]
+<a href=#178 id=178 data-nosnippet>178</a></span><span class="kw">mod </span>tests {
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
+<a href=#180 id=180 data-nosnippet>180</a>
+<a href=#181 id=181 data-nosnippet>181</a>    <span class="attr">#[test]
+<a href=#182 id=182 data-nosnippet>182</a>    </span><span class="kw">fn </span>recovery_trials_are_exclusive_and_can_be_retried_after_failure_or_drop() {
+<a href=#183 id=183 data-nosnippet>183</a>        <span class="kw">let </span>breaker = CircuitBreaker::new(BreakerConfig {
+<a href=#184 id=184 data-nosnippet>184</a>            threshold: <span class="number">1</span>,
+<a href=#185 id=185 data-nosnippet>185</a>            cooldown: Duration::ZERO,
+<a href=#186 id=186 data-nosnippet>186</a>        });
+<a href=#187 id=187 data-nosnippet>187</a>        breaker.failure();
+<a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">let </span>trial = breaker.attempt().expect(<span class="string">"recovery trial"</span>);
+<a href=#189 id=189 data-nosnippet>189</a>        <span class="macro">assert!</span>(breaker.attempt().is_none());
+<a href=#190 id=190 data-nosnippet>190</a>        drop(trial);
+<a href=#191 id=191 data-nosnippet>191</a>        breaker.attempt().expect(<span class="string">"released trial"</span>).failure();
+<a href=#192 id=192 data-nosnippet>192</a>        breaker.attempt().expect(<span class="string">"retry after failure"</span>).success();
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="macro">assert!</span>(breaker.state.lock().opened_at.is_none());
+<a href=#194 id=194 data-nosnippet>194</a>        <span class="macro">assert!</span>(breaker.attempt().is_some());
+<a href=#195 id=195 data-nosnippet>195</a>    }
+<a href=#196 id=196 data-nosnippet>196</a>
+<a href=#197 id=197 data-nosnippet>197</a>    <span class="attr">#[test]
+<a href=#198 id=198 data-nosnippet>198</a>    </span><span class="kw">fn </span>recovery_waits_for_the_cooldown() {
+<a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">let </span>breaker = CircuitBreaker::new(BreakerConfig {
+<a href=#200 id=200 data-nosnippet>200</a>            threshold: <span class="number">1</span>,
+<a href=#201 id=201 data-nosnippet>201</a>            cooldown: Duration::from_secs(<span class="number">30</span>),
+<a href=#202 id=202 data-nosnippet>202</a>        });
+<a href=#203 id=203 data-nosnippet>203</a>        breaker.failure();
+<a href=#204 id=204 data-nosnippet>204</a>        <span class="macro">assert!</span>(breaker.attempt().is_none());
+<a href=#205 id=205 data-nosnippet>205</a>    }
+<a href=#206 id=206 data-nosnippet>206</a>}
 </code></pre></div></section></main></body></html>
