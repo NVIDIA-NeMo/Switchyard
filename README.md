@@ -17,8 +17,6 @@ Switchyard is an open-source library that helps an AI agent choose which model h
 
 Embed its Rust core, **libsy**, in your gateway or agent harness. Your application keeps its model clients, credentials, and service. Switchyard supplies the routing decision.
 
-The standalone server is for local evaluation and personal use. It is not a supported production deployment path.
-
 <p align="center">
   <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
   <a href="https://nvidia-nemo.github.io/Switchyard/">Documentation</a> &emsp;·&emsp;
@@ -29,7 +27,34 @@ The standalone server is for local evaluation and personal use. It is not a supp
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-## Start with libsy
+## How it works
+
+1. Configure the models your application can use and choose a routing algorithm.
+2. The algorithm examines the request or the agent's recent tool activity. Some algorithms call a model to judge the task.
+3. Your gateway or application sends the request to the selected model. Routing can change as the agent continues its work.
+
+Evaluate the complete agent, model pool, and routing configuration against your single-model baseline. A cheaper model call does not guarantee a cheaper successfully completed task. The [tuning loop](docs/tuning/index.md) gives the steps for that evaluation, and [Troubleshooting](docs/operations/troubleshooting.md) lists the settings that disable routing without an error.
+
+## How to use it
+
+### Through an existing gateway
+
+| Gateway | Start here | Deployment and limits |
+| --- | --- | --- |
+| **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
+| **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
+| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
+
+Relay 0.8.x and 0.9.0 can lose upstream error status and details when the plugin
+is enabled, even for models outside its routes. Review the
+[upstream error compatibility note](docs/integrations/nemo_relay.md#upstream-error-compatibility)
+before enabling the plugin.
+
+LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidance for credentials and service operation.
+
+<a id="start-with-libsy"></a>
+
+### Embed libsy in your harness
 
 `Algorithm::run_stream` hands model calls and the final routing outcome back to your application. In this development-API outline, comments mark the work your code supplies:
 
@@ -60,51 +85,18 @@ while let Some(step) = steps.next().await {
 }
 ```
 
-Stage returns a model selection with `outcome.response` set to `None`; your client makes the final LLM call. The response-reuse branch above supports other algorithms that already obtained an answer.
-
-Your application supplies:
-
-- **Routing inputs:** an algorithm, model pool, request, and `State`.
-- **Clients:** serve the model calls requested by the algorithm and reply through `respond`.
-- **Answer handling:** reuse a returned response, make the final LLM call, or leave that call to your gateway.
-
-Use `libsy::drive` for concurrent call handling. **[Follow the Rust quickstart](docs/getting_started.md)** for installation, complete client handlers, and expected output. [Python bindings](docs/reference/host_integration.md#python-bindings) are also available.
-
-## How it works
-
-1. Configure the models your application can use and choose a routing algorithm.
-2. The algorithm examines the request or the agent's recent tool activity. Some algorithms call a model to judge the task.
-3. Your gateway or application sends the request to the selected model. Routing can change as the agent continues its work.
-
-Evaluate the complete agent, model pool, and routing configuration against your single-model baseline. A cheaper model call does not guarantee a cheaper successfully completed task. The [tuning loop](docs/tuning/index.md) gives the steps for that evaluation, and [Troubleshooting](docs/operations/troubleshooting.md) lists the settings that disable routing without an error.
-
-## How to use it
-
-### Through an existing gateway
-
-| Gateway | Start here | Deployment and limits |
-| --- | --- | --- |
-| **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
-| **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
-| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
-
-Relay 0.8.x and 0.9.0 can lose upstream error status and details when the plugin
-is enabled, even for models outside its routes. Review the
-[upstream error compatibility note](docs/integrations/nemo_relay.md#upstream-error-compatibility)
-before enabling the plugin.
-
-LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidance for credentials and service operation.
+- **Inputs:** supply an algorithm, model pool, request, and state.
+- **Calls:** your clients handle model calls. Stage returns a selection; other algorithms may return an answer.
+- **Start here:** [Rust quickstart](docs/getting_started.md) · [Python bindings](docs/reference/host_integration.md#python-bindings).
 
 ### Try routing locally
+
+The standalone server is for local evaluation and personal use. It is not a supported production deployment path.
 
 [Evaluate routing locally](docs/operations/local_evaluation.md) with the standalone proxy and your own model pool, then [verify routing is active](docs/operations/local_evaluation.md#verify-routing-is-active).
 
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).
-
-### Embed libsy in your harness
-
-[Follow the Rust quickstart](docs/getting_started.md) for routing and model calls. See the [host integration guide](docs/reference/host_integration.md) for advanced execution and Python bindings.
 
 ## What’s new
 
