@@ -1152,20 +1152,26 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
         })
         .transpose()?
         .map(str::to_owned);
-    // Only the array-of-tool-names form of allowed_tools is supported;
-    // Responses filter objects with tool_names or read_only are unsupported.
-    let allowed_tools = tool
-        .get("allowed_tools")
-        .filter(|value| !value.is_null())
-        .map(|value| {
-            value
-                .as_array()
-                .ok_or_else(|| TranslationError::InvalidType {
-                    path: "tools.allowed_tools".into(),
-                    expected: "array of tool names",
-                })
-        })
-        .transpose()?;
+    let mut response_extensions = Map::new();
+    for key in ["server_description", "allowed_callers"] {
+        if let Some(value) = tool.get(key) {
+            response_extensions.insert(key.into(), value.clone());
+        }
+    }
+    let allowed_tools = match tool.get("allowed_tools") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(names)) => Some(names),
+        Some(value @ Value::Object(_)) => {
+            response_extensions.insert("allowed_tools".into(), value.clone());
+            None
+        }
+        _ => {
+            return Err(TranslationError::InvalidType {
+                path: "tools.allowed_tools".into(),
+                expected: "array of tool names or a filter object",
+            });
+        }
+    };
     let defer_loading = tool
         .get("defer_loading")
         .filter(|value| !value.is_null())
@@ -1178,17 +1184,13 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
                 })
         })
         .transpose()?;
-    let mut extensions = ProviderExtensions::default();
     let require_approval = match tool.get("require_approval") {
         // Responses requires approval when the setting is omitted.
         None | Some(Value::Null) => Some(true),
         Some(Value::String(value)) if value == "always" => Some(true),
         Some(Value::String(value)) if value == "never" => Some(false),
         Some(value @ Value::Object(_)) => {
-            extensions.fields.insert(
-                WireFormat::OpenAiResponses.as_str().into(),
-                json!({"require_approval": value}),
-            );
+            response_extensions.insert("require_approval".into(), value.clone());
             None
         }
         _ => {
@@ -1198,6 +1200,13 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
             });
         }
     };
+    let mut extensions = ProviderExtensions::default();
+    if !response_extensions.is_empty() {
+        extensions.fields.insert(
+            WireFormat::OpenAiResponses.as_str().into(),
+            Value::Object(response_extensions),
+        );
+    }
     let configs = allowed_tools
         .into_iter()
         .flatten()
@@ -1895,8 +1904,14 @@ fn encode_responses_tools(
 }
 
 fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
+    let extensions = mcp
+        .extensions
+        .fields
+        .get(WireFormat::OpenAiResponses.as_str());
+    let allowed_tools = extensions.and_then(|fields| fields.get("allowed_tools"));
     // An open-ended exclusion cannot be expressed as a finite allow-list.
-    if mcp.default_config.enabled != Some(false)
+    if allowed_tools.is_none()
+        && mcp.default_config.enabled != Some(false)
         && mcp
             .configs
             .values()
@@ -1923,17 +1938,15 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
     if !mcp.headers.is_empty() {
         tool["headers"] = json!(mcp.headers);
     }
-    if let Some(approval) = mcp
-        .extensions
-        .fields
-        .get(WireFormat::OpenAiResponses.as_str())
-        .and_then(|fields| fields.get("require_approval"))
-    {
+    if let Some(approval) = extensions.and_then(|fields| fields.get("require_approval")) {
         tool["require_approval"] = approval.clone();
     } else if let Some(approval) = mcp.require_approval {
         tool["require_approval"] = json!(if approval { "always" } else { "never" });
     }
-    if mcp.default_config.enabled == Some(false) {
+    // Clear a preserved filter before replacing it with normalized tool settings.
+    if let Some(filter) = allowed_tools {
+        tool["allowed_tools"] = filter.clone();
+    } else if mcp.default_config.enabled == Some(false) {
         let allowed: Vec<_> = mcp
             .configs
             .iter()
@@ -1944,6 +1957,11 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
     }
     if let Some(defer_loading) = mcp.default_config.defer_loading {
         tool["defer_loading"] = json!(defer_loading);
+    }
+    for key in ["server_description", "allowed_callers"] {
+        if let Some(value) = extensions.and_then(|fields| fields.get(key)) {
+            tool[key] = value.clone();
+        }
     }
     Ok(tool)
 }

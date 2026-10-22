@@ -4917,9 +4917,10 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         "X-Tenant-ID": "tenant-123"
     });
     body["tools"][0]["headers"] = headers.clone();
+    body["tools"][0]["server_description"] = json!("Look up inventory stock");
+    body["tools"][0]["allowed_callers"] = json!(["programmatic"]);
     let expected_tools = body["tools"].clone();
     body["tools"][0]["extra"] = json!("native-only");
-    body["tools"][0]["allowed_callers"] = json!(["programmatic"]);
     for preservation in [
         PreservationPolicy::Disabled,
         PreservationPolicy::InMemory,
@@ -4975,7 +4976,14 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         assert_eq!(output.body["tools"][0]["headers"], headers);
         assert!(output.body["tools"][0].get("authorization").is_none());
         assert!(output.body["tools"][0].get("extra").is_none());
-        assert!(output.body["tools"][0].get("allowed_callers").is_none());
+        assert_eq!(
+            output.body["tools"][0]["allowed_callers"],
+            json!(["programmatic"])
+        );
+        assert_eq!(
+            output.body["tools"][0]["server_description"],
+            body["tools"][0]["server_description"]
+        );
         assert_eq!(
             engine
                 .decode_request(format, &output.body, &policy)?
@@ -4989,10 +4997,45 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         mcp.headers.clear();
         let output = engine.encode_request(format, &request, &policy)?;
         assert!(output.body["tools"][0].get("headers").is_none());
+        let permissive = TranslationPolicy {
+            lossy_conversion_policy: LossyConversionPolicy::AllowWithDiagnostics,
+            ..policy.clone()
+        };
+        for (index, key) in ["server_description", "allowed_callers"].iter().enumerate() {
+            assert!(matches!(
+                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy),
+                Err(TranslationError::LossyConversion(message)) if message.contains(key)
+            ));
+            let anthropic =
+                engine.encode_request(WireFormat::AnthropicMessages, &request, &permissive)?;
+            assert_eq!(anthropic.diagnostics.len(), 2 - index);
+            assert!(anthropic.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "lossy_conversion" && diagnostic.message.contains(key)
+            }));
+            assert_eq!(anthropic.body["tools"][0]["type"], "mcp_toolset");
+            assert!(
+                anthropic.body["tools"][0]
+                    .get("server_description")
+                    .is_none()
+            );
+            assert!(anthropic.body["tools"][0].get("allowed_callers").is_none());
+            let Tool::Mcp(mcp) = &mut request.tools[0] else {
+                unreachable!()
+            };
+            mcp.extensions.fields["openai_responses"]
+                .as_object_mut()
+                .ok_or("expected Responses extensions")?
+                .remove(*key);
+        }
         let anthropic = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
         assert!(anthropic.diagnostics.is_empty());
         assert_eq!(anthropic.body["tools"][0]["type"], "mcp_toolset");
         assert!(anthropic.body["tools"][0].get("allowed_callers").is_none());
+        assert!(
+            anthropic.body["tools"][0]
+                .get("server_description")
+                .is_none()
+        );
     }
     Ok(())
 }
@@ -5151,12 +5194,24 @@ fn responses_mcp_approval_defaults_and_target_limits() -> TestResult {
 }
 
 #[test]
-fn responses_mcp_conditional_approval_survives_reconstruction() -> TestResult {
+fn responses_mcp_filters_survive_reconstruction() -> TestResult {
     let engine = TranslationEngine::default();
     let format = WireFormat::OpenAiResponses;
-    for approval in [
-        json!({"never": {"tool_names": ["lookup"]}}),
-        json!({"always": {"read_only": false}, "never": {"read_only": true}}),
+    for (field, filter) in [
+        (
+            "require_approval",
+            json!({"never": {"tool_names": ["lookup"]}}),
+        ),
+        (
+            "require_approval",
+            json!({"always": {"read_only": false}, "never": {"read_only": true}}),
+        ),
+        ("allowed_tools", json!({"read_only": true})),
+        ("allowed_tools", json!({"tool_names": ["lookup"]})),
+        (
+            "allowed_tools",
+            json!({"read_only": false, "tool_names": ["delete_order"]}),
+        ),
     ] {
         for lossy_conversion_policy in [
             LossyConversionPolicy::AllowWithDiagnostics,
@@ -5167,7 +5222,9 @@ fn responses_mcp_conditional_approval_survives_reconstruction() -> TestResult {
                 ..TranslationPolicy::default()
             };
             let mut body = responses_mcp_request();
-            body["tools"][0]["require_approval"] = approval.clone();
+            body["tools"][0][field] = filter.clone();
+            body["tools"][0]["server_description"] = json!("Look up inventory stock");
+            body["tools"][0]["allowed_callers"] = json!(["direct", "programmatic"]);
             let decoded = engine.decode_request(format, &body, &policy)?;
             assert!(decoded.diagnostics.is_empty());
             let mut request = decoded.request;
@@ -5179,17 +5236,23 @@ fn responses_mcp_conditional_approval_survives_reconstruction() -> TestResult {
             let Tool::Mcp(mcp) = &mut request.tools[0] else {
                 panic!("expected MCP definition")
             };
-            assert_eq!(mcp.require_approval, None);
-            assert_eq!(
-                mcp.extensions.fields["openai_responses"]["require_approval"],
-                approval
-            );
+            if field == "require_approval" {
+                assert_eq!(mcp.require_approval, None);
+            } else {
+                assert_eq!(mcp.default_config.enabled, None);
+                assert!(mcp.configs.is_empty());
+            }
+            assert_eq!(mcp.extensions.fields["openai_responses"][field], filter);
             mcp.name = "stock".into();
-            // Preserved rules must not be bypassed by changing only the boolean.
+            // Preserved filters take precedence over normalized settings.
             mcp.require_approval = Some(false);
+            mcp.default_config.enabled = Some(false);
             let rebuilt = engine.encode_request(format, &request, &policy)?;
             assert_eq!(rebuilt.body["tools"][0]["server_label"], "stock");
-            assert_eq!(rebuilt.body["tools"][0]["require_approval"], approval);
+            assert_eq!(rebuilt.body["tools"][0][field], filter);
+            for key in ["server_description", "allowed_callers"] {
+                assert_eq!(rebuilt.body["tools"][0][key], body["tools"][0][key]);
+            }
             assert!(rebuilt.diagnostics.is_empty());
             for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiChat] {
                 assert!(matches!(
@@ -5203,6 +5266,9 @@ fn responses_mcp_conditional_approval_survives_reconstruction() -> TestResult {
             mcp.extensions.fields.clear();
             let rebuilt = engine.encode_request(format, &request, &policy)?;
             assert_eq!(rebuilt.body["tools"][0]["require_approval"], "never");
+            assert!(rebuilt.body["tools"][0]["allowed_tools"].is_array());
+            assert!(rebuilt.body["tools"][0].get("server_description").is_none());
+            assert!(rebuilt.body["tools"][0].get("allowed_callers").is_none());
             let anthropic =
                 engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
             assert!(anthropic.diagnostics.is_empty());
@@ -5280,7 +5346,7 @@ fn responses_mcp_definitions_reject_unsupported_input() {
         ("server_url", Some(json!(""))),
         ("authorization", Some(json!(42))),
         ("allowed_tools", Some(json!([42]))),
-        ("allowed_tools", Some(json!({"read_only": true}))),
+        ("allowed_tools", Some(json!(true))),
         ("defer_loading", Some(json!("true"))),
         ("require_approval", Some(json!(false))),
         ("headers", Some(json!([]))),

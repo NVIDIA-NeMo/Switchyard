@@ -248,7 +248,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             )?),
         );
 
-        let (tools, servers) = encode_anthropic_tools(tools)?;
+        let (tools, servers) = encode_anthropic_tools(tools, &mut diagnostics, policy)?;
         let has_tools = !tools.is_empty();
         if !servers.is_empty() {
             body.insert("mcp_servers".into(), Value::Array(servers));
@@ -1354,7 +1354,11 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
 }
 
 // Encodes normalized tool definitions into Anthropic tool and server JSON.
-fn encode_anthropic_tools(definitions: &[Tool]) -> Result<(Vec<Value>, Vec<Value>)> {
+fn encode_anthropic_tools(
+    definitions: &[Tool],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<(Vec<Value>, Vec<Value>)> {
     let mut tools = Vec::new();
     let mut mcp_servers = Vec::new();
     for tool in definitions {
@@ -1371,10 +1375,19 @@ fn encode_anthropic_tools(definitions: &[Tool]) -> Result<(Vec<Value>, Vec<Value
                 tools.push(item);
             }
             Tool::Mcp(mcp) => {
-                if mcp
+                let extensions = mcp
                     .extensions
                     .fields
-                    .get(WireFormat::OpenAiResponses.as_str())
+                    .get(WireFormat::OpenAiResponses.as_str());
+                if extensions
+                    .and_then(|fields| fields.get("allowed_tools"))
+                    .is_some()
+                {
+                    return Err(TranslationError::LossyConversion(
+                        "Anthropic MCP cannot preserve tool filter objects".into(),
+                    ));
+                }
+                if extensions
                     .and_then(|fields| fields.get("require_approval"))
                     .is_some()
                 {
@@ -1396,6 +1409,15 @@ fn encode_anthropic_tools(definitions: &[Tool]) -> Result<(Vec<Value>, Vec<Value
                     return Err(TranslationError::LossyConversion(
                         "Anthropic MCP encoding requires require_approval = false".into(),
                     ));
+                }
+                for key in ["server_description", "allowed_callers"] {
+                    if extensions.and_then(|fields| fields.get(key)).is_some() {
+                        push_lossy(
+                            diagnostics,
+                            policy,
+                            format!("Anthropic MCP cannot preserve {key}; the field was dropped"),
+                        )?;
+                    }
                 }
                 let mut mcp_server = json!({"type": "url", "name": mcp.name, "url": mcp.url});
                 if let Some(token) = &mcp.authorization_token {
