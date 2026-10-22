@@ -4,17 +4,16 @@ NVIDIA NeMo Switchyard is a library for routing LLM requests between models.
 These Go bindings run Switchyard algorithms inside your application. Your
 application owns model eligibility, credentials, provider calls, and retries.
 
-A private WebAssembly runtime exercises translation codecs through wazero.
-Routing and public translation functions still use the native library.
+The default backend runs libsy in WebAssembly through wazero, with no cgo
+dependency. Native builds can use the C ABI instead.
 
 ## Installation
 
-Requires Go 1.25+, cgo, a C compiler, and the repository's Rust toolchain. This is
-a source-only module. From a checkout of this repository, build the native
-library for the same platform as your Go application, then build the WASM guest:
+Requires Go 1.25+ and the repository's Rust toolchain to build the WASM guest.
+This is a source-only module. From a checkout of this repository, build the guest
+before compiling the Go package:
 
 ```sh
-cargo build -p switchyard-ffi --release --locked
 rustup target add wasm32-wasip1
 cargo build -p switchyard-ffi --target wasm32-wasip1 --release --locked --lib
 mkdir -p bindings/go/internal/wasm
@@ -32,13 +31,19 @@ go mod edit -replace=github.com/NVIDIA-NeMo/Switchyard/bindings/go=/absolute/pat
 go get github.com/NVIDIA-NeMo/Switchyard/bindings/go
 ```
 
+For the native backend, build the Rust library for the same platform as your Go
+application. This path also requires cgo and a C compiler:
+
+```sh
+cargo build -p switchyard-ffi --release --locked
+```
+
 Native builds link `target/release/libswitchyard_ffi.a` into the Go host artifact.
 The native path still requires cgo and platform system libraries.
 Native artifacts are not downloaded or published by this package.
 
-The `switchyard_native` build tag excludes the private WASM runtime and its
-tests, so that build needs only the native library. The package still requires
-cgo; the private runtime is not a complete WASM routing backend.
+The native backend uses the `switchyard_native` build tag and does not need the
+WASM binary. These commands build locally; they do not publish artifacts.
 
 ## Use
 
@@ -62,6 +67,9 @@ outcome, err := router.Route(ctx, switchyard.Input{
 
 Import `encoding/json` and
 `github.com/NVIDIA-NeMo/Switchyard/bindings/go`.
+
+The backend is selected at build time: `cgo` with `switchyard_native` uses the
+native library; other builds use WASM. Both use `New(config)` and the same routing API.
 
 Supply the model groups needed by the configured algorithm. Composite needs
 `any` for eligible answer targets, plus `capable`, `efficient`, and `judge`.
@@ -87,11 +95,24 @@ the final selected provider response separately.
 
 `Route` waits in its calling goroutine. A host that needs immediate return can
 call it in a goroutine; waiting for routing steps does not occupy a blocked
-native-reader thread. Concurrent routes share one router.
+native-reader thread. Each WASM router uses a pool of `GOMAXPROCS` guest instances.
+A session ID keeps the parent and all its child agents on the same instance.
+Without a session ID, the first user message is used, or requests are assigned round-robin.
+Guest calls are serialized within each instance; host callbacks can overlap.
+A trap fails runs sharing that instance. It is replaced and its retained state is lost.
+
+Each instance has its own algorithm state. Router-wide budgets and counters are
+not shared.
+Message-based assignment does not give requests without session IDs persistent
+session state.
+
+While a WASM run is idle, Go re-enters it every 5 ms to advance Rust timers and
+session waiters. Deadline handling can be delayed by that interval and scheduling load.
 
 Host callbacks may run concurrently and must honor their context. Cancellation
-stops the native run and cancels the host context, but cannot forcibly stop Go
-code that ignores it. Late host results cannot access the freed native run.
+stops routing and cancels the host context, but cannot forcibly stop Go code that
+ignores it. WASM checks cancellation between guest calls. Late host results cannot
+access a freed run.
 Host errors cross the boundary as messages, not concrete Go error types.
 
 `Close` prevents new runs; existing runs retain their algorithm and finish under
@@ -100,22 +121,23 @@ share closed state, and repeated `Close` calls are safe. Native callback handles
 are released only after native cleanup has waited for callbacks to return.
 Call `Close` when finished; Go garbage collection does not release the router.
 
-`New` checks ABI generation 1 against the linked library. Scope session and agent
+`New` checks ABI generation 1 against the native library or WASM module. Scope session and agent
 IDs to the host's tenant and conversation. `Input.Metadata` and
 `Input.SubagentModels` carry routing context separately from provider requests.
 
 ## Test
 
-From the repository root, after building the native library and WASM guest:
+From the repository root, after building the WASM guest:
 
 ```sh
 cd bindings/go
+CGO_ENABLED=0 go test ./...
+CGO_ENABLED=0 go vet ./...
 CGO_ENABLED=1 go test -race ./...
-CGO_ENABLED=1 GOEXPERIMENT=cgocheck2 go test -race ./...
-CGO_ENABLED=1 go vet ./...
 ```
 
-For a native-only build, skip the guest build and use the build tag:
+For a native build, build the native library above instead of the guest and use
+the build tag:
 
 ```sh
 cd bindings/go
