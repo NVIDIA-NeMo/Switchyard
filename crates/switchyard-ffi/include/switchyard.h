@@ -17,8 +17,8 @@ typedef void (*SyNextCallback)(uintptr_t user_data, char *error, char *step_json
 #if defined(__wasm32__)
 uint8_t *sy_alloc(uint32_t len);
 void sy_free(uint8_t *ptr, uint32_t len);
-// Blocks for the next step. While host calls are unanswered it returns NULL with
-// *out_json NULL once the run needs a reply to progress.
+// Writes the next step to *out_json, or NULL when the runtime is idle.
+// Retry idle reads to advance timers and work waiting on other runs.
 char *sy_run_next(const SyRun *run, char **out_json);
 #endif
 
