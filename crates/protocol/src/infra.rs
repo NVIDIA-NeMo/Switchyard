@@ -1,35 +1,32 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Request-specific serving observations supplied by trusted hosts.
+//! Serving observations supplied by the host for infrastructure-aware routing.
 
+use crate::ModelId;
 use std::{collections::BTreeMap, time::Instant};
 
-use crate::{ModelId, Request};
-use async_trait::async_trait;
-
-/// Candidate observations keyed by concrete model ID. Missing entries mean unknown.
+/// Model observations. Missing models or workers mean unknown, never idle.
 pub type InfraSignals = BTreeMap<ModelId, ModelInfraSignals>;
 
-/// Observations for the serving system's candidate worker for one model.
-#[derive(Clone, Debug)]
+/// Backend worker gauges and requests still in flight through this host.
+#[derive(Clone, Debug, Default)]
 pub struct ModelInfraSignals {
-    /// Conservative local sampling time, such as the start of a probe call.
-    pub sampled_at: Instant,
-    /// Remaining prefill work after cache credits, using this model's tokenization.
-    pub effective_prefill_tokens: Option<u64>,
-    /// Tracked prefill work already assigned to the candidate worker.
-    pub active_prefill_tokens: Option<u64>,
-    /// In-flight requests on the candidate, not an engine queue length.
-    pub active_requests: Option<u64>,
+    /// One entry per independently scheduled worker, keyed by configured worker ID.
+    pub workers: BTreeMap<String, WorkerLoad>,
+    /// All requests sent to this model that have not completed at this host.
+    pub local_inflight: u64,
+    /// Subset of local requests moved from the efficient tier.
+    pub local_spillovers: u64,
 }
 
-/// Host-owned infrastructure lookups. Implementations omit failed or unavailable observations.
-///
-/// Use the supplied request and each model's own preprocessing. Calls must be read-only;
-/// the final serving path owns worker selection and admission.
-#[async_trait]
-pub trait InfraProvider: Send + Sync {
-    /// Collect fresh observations for the supplied candidates. An empty map means unavailable.
-    async fn probe(&self, request: &Request, candidates: &[ModelId]) -> InfraSignals;
+/// Running and waiting gauges from one worker scrape.
+#[derive(Clone, Debug)]
+pub struct WorkerLoad {
+    /// Local monotonic time at the start of collection.
+    pub sampled_at: Instant,
+    /// Backend requests currently executing.
+    pub running: u64,
+    /// Backend requests waiting for execution capacity.
+    pub waiting: u64,
 }

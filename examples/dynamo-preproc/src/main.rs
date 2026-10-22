@@ -13,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod metrics;
 mod preprocessor;
-mod probe;
 mod request;
 mod router;
 mod server;

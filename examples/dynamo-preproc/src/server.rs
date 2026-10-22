@@ -72,6 +72,7 @@ struct Prepared {
     body: Vec<u8>,
     headers: ext::HeaderMutation,
     has_trailers: bool,
+    inflight: Option<crate::metrics::InFlight>,
 }
 
 impl Server {
@@ -137,7 +138,7 @@ impl Server {
                 _ => anyhow::bail!("expected request body"),
             }
         }
-        let (body, model) = router.decide(&body, &headers).await?;
+        let (body, model, inflight) = router.decide(&body, &headers).await?;
         if body.len() > MAX_BODY {
             return Err(Error::new(413, "rewritten request body exceeds 2 MiB").into());
         }
@@ -149,6 +150,7 @@ impl Server {
                 remove_headers,
             },
             has_trailers,
+            inflight,
         })
     }
 }
@@ -196,6 +198,7 @@ impl ExternalProcessor for Server {
                     return;
                 }
             };
+            let _inflight = prepared.inflight;
             let mut response_deadline = Instant::now() + RESPONSE_TIMEOUT;
             // v1.0 selects the route when this header reply arrives, before reading the body.
             yield Ok(reply(Output::RequestHeaders(ext::HeadersResponse {
@@ -357,11 +360,14 @@ mod tests {
     type Client =
         ext::external_processor_client::ExternalProcessorClient<tonic::transport::Channel>;
 
-    async fn start(max_active_streams: usize) -> (Client, Arc<Semaphore>) {
+    async fn start(max_active_streams: usize) -> (Client, Arc<Semaphore>, Arc<Router>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let runner = switchyard_runner::Runner::from_toml(include_str!("../config/routes.toml"));
-        let server = Server::new(Arc::new(Router::new(runner.unwrap())), max_active_streams);
+        let mut router = Router::new(runner.unwrap());
+        router.metrics = Some(crate::metrics::Metrics::empty_for_test());
+        let router = Arc::new(router);
+        let server = Server::new(router.clone(), max_active_streams);
         let requests = server.requests.clone();
         tokio::spawn(async move {
             tonic::transport::Server::builder()
@@ -379,6 +385,7 @@ mod tests {
                     .unwrap(),
             ),
             requests,
+            router,
         )
     }
 
@@ -432,7 +439,7 @@ mod tests {
 
     #[tokio::test]
     async fn routes_upload_and_passes_response_through_trailers_to_eos() {
-        let (mut client, requests) = start(16).await;
+        let (mut client, requests, router) = start(16).await;
         let (tx, receive) = mpsc::channel(8);
         send(&tx, headers()).await;
         let receive = ReceiverStream::new(receive);
@@ -464,6 +471,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&b.body).unwrap();
         assert_eq!(value["model"], "Qwen/Qwen3-0.6B");
         assert_eq!(requests.available_permits(), 8);
+        assert_eq!(router.metrics.as_ref().unwrap().inflight_for_test(), 1);
         send(&tx, Input::ResponseHeaders(ext::HttpHeaders::default())).await;
         assert!(matches!(next(&mut rx).await, Output::ResponseHeaders(_)));
         for (bytes, is_done) in [
@@ -482,6 +490,28 @@ mod tests {
             }
         }
         assert!(rx.message().await.unwrap().is_none());
+        assert_eq!(router.metrics.as_ref().unwrap().inflight_for_test(), 0);
+
+        let (tx, receive) = mpsc::channel(8);
+        send(&tx, headers()).await;
+        send(&tx, Input::RequestBody(body(json, true))).await;
+        let mut rx = client
+            .process(ReceiverStream::new(receive))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(matches!(next(&mut rx).await, Output::RequestHeaders(_)));
+        assert!(matches!(next(&mut rx).await, Output::RequestBody(_)));
+        assert_eq!(router.metrics.as_ref().unwrap().inflight_for_test(), 1);
+        drop(rx);
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while router.metrics.as_ref().unwrap().inflight_for_test() != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -493,7 +523,7 @@ mod tests {
             tokio::time::resume();
         }
 
-        let (mut client, _) = start(1).await;
+        let (mut client, _, router) = start(1).await;
         let (tx, receive) = mpsc::channel(8);
         send(&tx, headers()).await;
         let mut rx = client
@@ -532,16 +562,18 @@ mod tests {
             };
             assert_eq!(streamed(b).body, b"data: hello\n\n");
         }
+        assert_eq!(router.metrics.as_ref().unwrap().inflight_for_test(), 1);
         elapse(RESPONSE_TIMEOUT + Duration::from_secs(1)).await;
         assert_eq!(
             rx.message().await.unwrap_err().code(),
             tonic::Code::DeadlineExceeded
         );
+        assert_eq!(router.metrics.as_ref().unwrap().inflight_for_test(), 0);
     }
 
     #[tokio::test]
     async fn rejects_cumulative_body_limit_before_routing_headers() {
-        let (mut client, _) = start(16).await;
+        let (mut client, _, _) = start(16).await;
         let messages = tokio_stream::iter([
             input(headers()),
             input(Input::RequestBody(body(&vec![b' '; MAX_BODY], false))),

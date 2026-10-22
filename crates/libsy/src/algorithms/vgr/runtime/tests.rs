@@ -386,7 +386,6 @@ async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Resu
                         call.respond(std::future::ready(Ok(response))).await
                     }
                     Call::Decision(call) => serve_decision(*call).await,
-                    Call::Infra(_) => panic!("unexpected infrastructure call"),
                 }
             },
         )

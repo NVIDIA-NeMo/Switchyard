@@ -84,7 +84,6 @@ async fn selected(route: Arc<dyn Algorithm>, request: Request) -> libsy::Result<
             let call = match call {
                 Call::Model(call) => *call,
                 Call::Decision(call) => return serve_decision(*call).await,
-                Call::Infra(_) => panic!("unexpected infrastructure call"),
             };
             call.respond(std::future::ready(Ok(switchyard_protocol::Response {
                 llm_response: switchyard_protocol::LlmResponse::Agg(

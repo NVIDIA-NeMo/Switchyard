@@ -191,28 +191,35 @@ Every route takes the common keys below, plus the keys for its type.
 ### Optional infrastructure check
 
 A `stage_router`, `auto`, or capability `llm_classifier` route without escalation may
-include `[routes.<name>.infra]`. It checks fresh serving observations after the task
-router selects the efficient model. Both tiers must have one model. The host supplies
-observations through `Route::decide_with_infra`; without a provider, the task decision
-is retained. Delegated sub-agent routing is unchanged.
+include `[routes.<name>.infra]`. Both tiers must have one model; each model may have
+multiple workers. A host applies the policy explicitly with `Route::apply_infra`
+after `Route::decide`, using periodically collected worker metrics and local in-flight
+counts. Plain `decide` and `execute` retain task routing. Sub-agent routing is unchanged.
 
 ```toml
 [routes.example.infra]
-probe_timeout_ms = 300
 max_signal_age_ms = 1000
-min_active_requests = 8
-max_spillover_active_requests = 1
-prefill_costs = [1.0, 4.0]
-request_penalty_tokens = 4096.0
-min_improvement = 0.2
+min_waiting_requests = 4
+max_capable_inflight = 2
+max_spillovers = 2
+min_saving_ms = 500.0
+
+[routes.example.infra.efficient_workers.small-a]
+batch_size = 4
+batch_time_ms = 2000.0
+request_time_ms = 1000.0
+
+[routes.example.infra.capable_workers]
+large = 4000.0
 ```
 
-All keys are required when the table is present. Values above are illustrative, not
-measured defaults. The timeout, age, source-load threshold, costs and request penalty
-must be positive; `min_improvement` must be in `[0, 1)`. The policy compares relative
-work scores, not response-time estimates. See the
-[Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-infrastructure-signals)
-for the score definition, host setup and limitations.
+All keys are required. Worker IDs must match the complete metrics inventory for each
+model. Limits and service times must be positive; `min_saving_ms` must be finite and
+nonnegative. The example times are illustrative, not measured defaults. Add one
+calibration entry per worker. Missing, stale or incomplete observations retain the
+task decision. See the
+[Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
+for the estimate, atomic local accounting and calibration limitations.
 
 ### `noop`
 

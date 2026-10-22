@@ -25,7 +25,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 | [`Random`] | Select among any number of targets using uniform or weighted routing. |
 | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
 | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
-| [`InfraRouter`] | Wrap a tier router and optionally move an efficient choice to the capable model using host-supplied observations. |
+
 
 [`Noop`] is a test helper, not a production routing algorithm.
 
@@ -42,28 +42,27 @@ drives the stream and performs the terminal answer call, retries, and fallback o
 The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
 contracts come from `switchyard-protocol`.
 
-## Infrastructure observations
+## Queue-based infrastructure policy
 
-`InfraRouter` requests fresh signals after the inner algorithm chooses the efficient
-model. The host receives `Call::Infra` (or `Step::CallInfra` when consuming the stream
-directly) and fulfills it with `call.respond(work).await`. Return an empty map when
-signals are unavailable. The policy keeps the task decision on missing or stale data
-and on lookup timeout. It never selects a worker or reserves serving capacity.
+`InfraPolicy` applies after a tier router finishes. It can move an efficient-model
+choice to the capable model when every efficient worker has a queue and calibrated
+service times predict a saving. Missing or stale worker observations keep the task
+choice. The policy does not change task affinity or choose a worker.
 
-`switchyard-llm-client::ClientRouter::with_infra_provider` accepts a
-`switchyard_protocol::InfraProvider`. Runner hosts can pass a provider per request
-with `Route::decide_with_infra`. The provider owns transport and preprocessing;
-libsy only sees candidate observations keyed by model ID. These APIs are workspace
-additions and are not available in the v0.3.0 release shown above.
+The host periodically collects `switchyard_protocol::InfraSignals`, then calls
+`Route::apply_infra` on the result of `Route::decide`. Hold the host's in-flight
+accounting lock through the policy check and increment for the selected model.
+Decrement when the response finishes or is cancelled. These are process-local routing
+limits; they do not reserve backend capacity. Plain `decide` and `execute` keep their
+task-routing behavior. No new `Call` or `Step` variant is required.
 
-Hosts matching all `Call` or `Step` variants must handle the new infrastructure
-variant. The standard client returns unavailable observations if no provider is set.
-Python and Node do not expose infrastructure-provider bindings yet.
+See the [Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
+for collection, configuration and response-lifetime tracking. This policy is a
+workspace addition and is not in the v0.3.0 release shown above.
 
 ## Concurrent calls and cancellation
 
-An algorithm can poll several `Driver::call_model`, `Driver::call_decision`, or
-`Driver::call_infra` futures
+An algorithm can poll several `Driver::call_model` or `Driver::call_decision` futures
 with `tokio::join!`, `tokio::select!`, or `FuturesUnordered`. Each call has its own
 reply channel. Dropping a waiting future cancels only that call; the algorithm can
 continue making other calls.

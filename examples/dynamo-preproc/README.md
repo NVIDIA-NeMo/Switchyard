@@ -62,54 +62,67 @@ Policies must select a model without generating a response or rewriting the requ
 This example supports text and tool history with one PreProc replica. Routing state resets
 on restart. The default StageRouter configuration does not use infrastructure signals.
 
-## Task classification and infrastructure signals
+## Task classification and queue-based routing
 
 [task-classifier.toml](config/task-classifier.toml) asks a judge whether the smaller
-model can handle the task. It keeps that classification for the session. Configure the
-judge endpoint to bypass PreProc so its requests cannot enter the same routing loop.
-The URLs and Qwen model IDs are examples; replace them with your deployed services.
+model can handle the task and retains that classification for the session. The judge
+endpoint must bypass PreProc to avoid a routing loop. Replace the example URLs and
+model IDs with your deployed services.
 
-The optional `[routes.task.infra]` table adds a check after classification. For a
-small-model decision, PreProc probes both models through the SDK's `InfraProvider`.
-Libsy can send this request to the larger model if the small-model candidate is busy,
-the larger-model candidate has spare capacity, and its estimated work score is lower.
-The next request checks again; moving one request does not change its task classification.
-Requests already assigned to the larger model and delegated sub-agent requests skip this check.
+The optional `infra` table lets the larger model help when **all small-model workers
+have queues**. It uses backend `/metrics`; no EPP probe endpoint or per-request
+preprocessing is needed. EPP still selects the worker.
 
-This needs EPP's `POST /v1/routing/probe` endpoint from the
-[Dynamo probe implementation](https://github.com/ai-dynamo/dynamo/pull/16053).
-Verify that your EPP image includes it. Mount the two config files and set:
+Mount the routing file and [metrics.toml](config/metrics.toml), then set:
 
 ```bash
 ROUTES_CONFIG=/etc/switchyard/task-classifier.toml
-PROBE_CONFIG=/etc/switchyard/probes.toml
+METRICS_CONFIG=/etc/switchyard/metrics.toml
 ```
 
-Edit [probes.toml](config/probes.toml) with each model's EPP URL. The map keys must
-match the target model IDs in the routing config. Each probe receives the original
-request body with that model ID and uses that model's own preprocessing. EPP still
-makes the final worker selection when the gateway forwards the request.
+Configure one direct metrics endpoint per independently scheduled worker. Use labels
+to select exactly one series for that worker/rank. Do not use a load-balanced Service
+URL that returns an arbitrary replica. Include every worker for each model and keep
+these IDs consistent with the routing file's calibration tables. This version uses
+an explicit worker list; scaling or replacing workers requires updating that list.
 
-The work score is:
+The example scrapes every 500 ms with a 250 ms timeout and bounded concurrency.
+`backend = "vllm"` reads `vllm:num_requests_running` and `vllm:num_requests_waiting`;
+`backend = "sglang"` reads `sglang:num_running_reqs` and `sglang:num_queue_reqs`.
+Enable the backend's metrics export and inspect its labels before configuring them.
+See [Dynamo's engine metrics documentation](https://docs.nvidia.com/dynamo/reference/observability/metrics-comparison).
+
+For each efficient worker, libsy estimates:
 
 ```text
-(effective_prefill_tokens + active_prefill_tokens
- + active_requests * request_penalty_tokens) * prefill_cost
+small-model time = ceil(waiting_requests / batch_size) * batch_time_ms + request_time_ms
 ```
 
-`prefill_costs` lists relative costs for the small and large models, in that order.
-`min_active_requests` gates moves from the small model; `max_spillover_active_requests`
-protects the large model. `min_improvement = 0.2` requires more than a 20% score reduction.
-The supplied values are illustrative. Calibrate them before using them for real traffic;
-this score does not predict latency. Active requests are tracked on EPP's candidate
-worker, not a model pool's engine queue. Probe snapshots do not reserve capacity, so
-concurrent requests can act on the same observation.
+It moves the request only when every small worker has at least `min_waiting_requests`
+queued and even the fastest small-worker estimate exceeds the capable model's measured
+service time by more than `min_saving_ms`. With multiple capable workers, it uses the
+slowest configured service time. Any capable-worker queue blocks the move.
 
-Missing, incomplete, stale or timed-out signals keep the task decision. Without
-`PROBE_CONFIG`, the SDK reports signals as unavailable. Remove the `infra` table for
-classification alone, or add it to a `stage_router` or `auto` route to use StageRouter
-with the same infrastructure check. Logs include the task choice, final adjustment,
-reason and scores; request and session IDs stay in logs, not metric labels.
+`max_capable_inflight` limits moves using the larger of observed running requests and
+all locally tracked capable-model requests. `max_spillovers` separately limits moved
+requests. PreProc checks and increments these counts atomically, then holds each count
+until the response finishes, times out or is cancelled. Requests whose tasks require
+the capable model still go there. A temporary move does not change task classification.
+
+All service times in the example are illustrative. Measure foreground latency and
+background batch time under the expected contention before enabling this policy.
+The estimate assumes a representative background request length; mixed or changing
+workloads need new calibration. It does not account for this prompt's cache reuse.
+
+Missing, ambiguous, invalid or stale metrics keep the task decision. Collection runs
+in the background, so routing never waits for a scrape. Without `METRICS_CONFIG`, or
+without the `infra` table, routing stays task-only. The same table also works with
+`stage_router` and `auto`; delegated sub-agent requests skip the adjustment.
+
+Run one PreProc replica for the local limits and session state. These limits only
+coordinate requests passing through that process. Metrics can lag external traffic,
+and the policy does not reserve worker capacity. Logs record the original task model,
+the adjustment reason and estimated times. No request/session IDs are metric labels.
 
 ## Concurrency and timeouts
 
@@ -119,8 +132,8 @@ the default of 16 per replica. Preprocessing also has a separate limit of eight 
 requests; reaching either limit returns HTTP 503. Raising the stream limit increases memory
 and response-forwarding work.
 
-Preprocessing has a five-second total deadline, including the judge and probe calls.
-The classifier example gives the judge two seconds and the probe check 300 milliseconds.
+Preprocessing has a five-second total deadline, including the classifier call.
+The example gives the judge two seconds. Metrics collection is outside this deadline.
 
 PreProc allows 120 seconds of response inactivity, resetting the deadline on each message.
 It also releases stream slots if output forwarding stalls for 120 seconds.

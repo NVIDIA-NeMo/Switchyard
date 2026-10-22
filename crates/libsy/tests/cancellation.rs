@@ -12,7 +12,7 @@ use switchyard_protocol::{
 use tokio::sync::Notify;
 
 struct Abandon {
-    kind: &'static str,
+    decision: bool,
     started: Arc<Notify>,
     dropped: Arc<Notify>,
 }
@@ -26,7 +26,7 @@ impl Algorithm for Abandon {
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         {
             let call = async {
-                if self.kind == "decision" {
+                if self.decision {
                     driver
                         .call_decision(
                             DecisionRequest {
@@ -36,11 +36,6 @@ impl Algorithm for Abandon {
                             },
                             "abandoned".into(),
                         )
-                        .await
-                        .map(|_| ())
-                } else if self.kind == "infra" {
-                    driver
-                        .call_infra(request.clone(), vec!["abandoned".into()])
                         .await
                         .map(|_| ())
                 } else {
@@ -99,12 +94,12 @@ fn response() -> Response {
 }
 
 #[tokio::test]
-async fn abandoning_host_work_cancels_only_that_call() {
-    for kind in ["model", "decision", "infra"] {
+async fn abandoning_model_or_decision_work_cancels_only_that_call() {
+    for decision in [false, true] {
         let started = Arc::new(Notify::new());
         let dropped = Arc::new(Notify::new());
         let algorithm = Arc::new(Abandon {
-            kind,
+            decision,
             started: started.clone(),
             dropped: dropped.clone(),
         });
@@ -124,10 +119,6 @@ async fn abandoning_host_work_cancels_only_that_call() {
                             }
                             Call::Model(call) => call.respond(pending(started, dropped)).await,
                             Call::Decision(call) => call.respond(pending(started, dropped)).await,
-                            Call::Infra(call) => {
-                                call.respond(async { pending(started, dropped).await.unwrap() })
-                                    .await
-                            }
                         }
                     }
                 },

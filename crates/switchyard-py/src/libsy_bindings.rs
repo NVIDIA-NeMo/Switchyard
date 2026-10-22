@@ -925,9 +925,6 @@ impl PyAlgorithm {
 
 fn step_to_python(step: RustStep) -> PyResult<PyStep> {
     match step {
-        RustStep::CallInfra(_) => Err(PyValueError::new_err(
-            "Infrastructure calls require a Rust host",
-        )),
         RustStep::CallDecision(call) => Python::attach(|py| {
             Ok(PyStep::CallDecision {
                 call: Py::new(py, PyDecisionCall::new(py, *call)?)?,

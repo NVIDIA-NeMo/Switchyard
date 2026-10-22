@@ -130,7 +130,6 @@ async fn fulfill(serve: Arc<impl Serve>, call: Call) -> Result<()> {
     let mut call = match call {
         Call::Model(call) => *call,
         Call::Decision(call) => return serve_decision(*call).await,
-        Call::Infra(_) => panic!("unexpected infrastructure call"),
     };
     let request = call.request.clone();
     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;

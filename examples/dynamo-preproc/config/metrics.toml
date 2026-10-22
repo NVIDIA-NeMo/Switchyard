@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+poll_interval_ms = 500
+timeout_ms = 250
+max_concurrent = 4
+
+# Use a direct endpoint per worker, not a load-balanced Service address.
+# Inspect /metrics and set labels to select exactly one independently scheduled engine.
+[[workers]]
+id = "small-a"
+model = "Qwen/Qwen3-0.6B"
+url = "http://small-a:8081/metrics"
+backend = "vllm"
+labels = { model_name = "Qwen/Qwen3-0.6B", engine = "0" }
+
+[[workers]]
+id = "small-b"
+model = "Qwen/Qwen3-0.6B"
+url = "http://small-b:8081/metrics"
+backend = "vllm"
+labels = { model_name = "Qwen/Qwen3-0.6B", engine = "0" }
+
+[[workers]]
+id = "large"
+model = "Qwen/Qwen3-1.7B"
+url = "http://large:8081/metrics"
+backend = "vllm"
+labels = { model_name = "Qwen/Qwen3-1.7B", engine = "0" }
