@@ -737,6 +737,30 @@ async fn a_held_follow_up_records_the_latch_as_its_reason() -> Result<()> {
 }
 
 #[tokio::test]
+async fn shadow_rechecks_new_user_turns_with_session_latching_enabled() -> Result<()> {
+    let route = route(|config| {
+        config.mode = ServingMode::Shadow;
+        config.latch_escalation = true;
+    })?;
+    let calls = Arc::new(Calls::default());
+    for messages in [
+        vec![Message::text(Role::User, "fix the build")],
+        vec![
+            Message::text(Role::User, "fix the build"),
+            Message::text(Role::Assistant, "fixed"),
+            Message::text(Role::User, "now add a test"),
+        ],
+    ] {
+        assert_eq!(
+            drive(&route, session(messages), calls.clone(), complete_call, 0.0).await?,
+            "cloud"
+        );
+    }
+    assert_eq!(calls.0.load(Ordering::Relaxed), 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_escalation_latch_holds_the_session_past_new_questions() -> Result<()> {
     let route = route(|config| config.latch_escalation = true)?;
     let calls = Arc::new(Calls::default());
@@ -812,9 +836,7 @@ async fn an_initiator_header_decides_when_the_turn_latch_releases() -> Result<()
 #[tokio::test]
 async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
     let route = route(|config| config.agentic_handoff = true)?;
-    let sent = Arc::new(std::sync::Mutex::new(String::new()));
-    let recorded = Arc::clone(&sent);
-    test_drive_with_models(
+    let (selected, _) = test_drive_with_models(
         route,
         session(vec![
             Message::text(Role::User, "fix the build"),
@@ -824,25 +846,21 @@ async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
             Message::text(Role::User, "What is 41 plus 42?"),
         ]),
         category_models(Category::Any, &["local", "cloud"]),
-        move |target: ModelId, request: Request| {
-            let recorded = Arc::clone(&recorded);
-            async move {
-                Ok(match target.as_str() {
-                    "local" => reply("83"),
-                    "cloud" => {
-                        let text = serde_json::to_string(&request.llm_request.messages)
-                            .unwrap_or_default();
-                        recorded.lock().map(|mut sent| *sent = text).ok();
-                        reply("83")
-                    }
-                    _ => scored(0.0),
-                })
-            }
+        |target: ModelId, request: Request| async move {
+            Ok(match target.as_str() {
+                "local" => reply("83"),
+                "cloud" => {
+                    let text =
+                        serde_json::to_string(&request.llm_request.messages).unwrap_or_default();
+                    assert!(text.contains("41 plus 42"));
+                    assert!(!text.contains("Routing notice"));
+                    reply("83")
+                }
+                _ => scored(0.0),
+            })
         },
     )
     .await?;
-    let sent = sent.lock().map(|sent| sent.clone()).unwrap_or_default();
-    assert!(sent.contains("41 plus 42"), "escalated to the cloud");
-    assert!(!sent.contains("Routing notice"));
+    assert_eq!(selected, "cloud");
     Ok(())
 }

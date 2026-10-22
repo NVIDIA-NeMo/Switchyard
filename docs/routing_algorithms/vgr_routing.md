@@ -77,6 +77,7 @@ work, inspect its effects, and repeat or undo steps only when needed.
 
 Escalations release when a new user turn is decided locally. Set
 `latch_escalation = true` to retain the cloud tier across later user turns instead.
+Shadow mode always releases the hold at the next user turn.
 All configured VGR durations must be positive.
 
 ## Hermes session headers

@@ -68,6 +68,7 @@ pub struct VgrConfig {
     /// client's tool execution.
     pub local_turn_budget: Option<Duration>,
     /// Holds an escalated session on the capable tier past later user turns.
+    /// Shadow mode retains only the current turn's hold.
     pub latch_escalation: bool,
 }
 

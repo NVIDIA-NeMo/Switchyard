@@ -31,8 +31,7 @@ use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 
-/// Consecutive escalation votes. Reaching [`TURN_CONFIRMATIONS`] latches the session to the
-/// capable tier; once latched, verification is skipped, so the count never resets.
+/// Whether turn verification latched the capable tier; cleared when the user responds.
 const TURN_LATCHED_KEY: &str = "vgr_turn_latched";
 pub(super) const TURN_STREAK_KEY: &str = "vgr_turn_streak";
 /// Unix seconds at the first request of the current user turn.

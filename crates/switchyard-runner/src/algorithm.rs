@@ -1804,18 +1804,18 @@ fn build_vgr(
             approval: config.active_approval.clone().unwrap_or_default(),
         },
     };
-    runtime.deadline = duration(route_name, "deadline_seconds", config.deadline_seconds)?;
+    runtime.deadline = vgr_duration(route_name, "deadline_seconds", config.deadline_seconds)?;
     runtime.task_typing = config.task_typing;
     runtime.confirmed_recovery_min_clean_tail = config.confirmed_recovery_min_clean_tail;
     runtime.agentic_handoff = config.agentic_handoff;
     runtime.latch_escalation = config.latch_escalation;
     runtime.local_turn_budget = config
         .local_turn_budget_seconds
-        .map(|seconds| duration(route_name, "local_turn_budget_seconds", seconds))
+        .map(|seconds| vgr_duration(route_name, "local_turn_budget_seconds", seconds))
         .transpose()?;
     runtime.breaker = BreakerConfig {
         threshold: config.breaker_threshold,
-        cooldown: duration(
+        cooldown: vgr_duration(
             route_name,
             "breaker_cooldown_seconds",
             config.breaker_cooldown_seconds,
@@ -1828,7 +1828,7 @@ fn build_vgr(
         })
 }
 
-fn duration(route: &str, field: &str, seconds: f64) -> AlgorithmResult<std::time::Duration> {
+fn vgr_duration(route: &str, field: &str, seconds: f64) -> AlgorithmResult<std::time::Duration> {
     let message = || format!("vgr route {route}: {field} must be a positive number");
     let duration = std::time::Duration::try_from_secs_f64(seconds)
         .map_err(|error| AlgorithmConfigError::with_source(message(), error))?;
