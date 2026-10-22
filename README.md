@@ -15,7 +15,7 @@
 
 Switchyard is an open-source library that helps an AI agent choose which model handles each request. It combines efficient models with more capable models so you can balance task success, cost, and latency on your workload.
 
-Embed its Rust core, **libsy**, in your gateway or agent harness. Your application keeps its model clients, credentials, and service. Switchyard supplies the routing decision.
+Adopt Switchyard by embedding its Rust core, **libsy**, in your gateway or agent harness. You own the model clients, credentials, and service. Switchyard supplies the routing decision.
 
 <p align="center">
   <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
@@ -29,13 +29,17 @@ Embed its Rust core, **libsy**, in your gateway or agent harness. Your applicati
 
 ## How it works
 
-1. Configure the models your application can use and choose a routing algorithm.
+1. Configure the models an agent can use and choose a routing algorithm.
 2. The algorithm examines the request or the agent's recent tool activity. Some algorithms call a model to judge the task.
-3. Your gateway or application sends the request to the selected model. Routing can change as the agent continues its work.
+3. A gateway or agent sends the request to the selected model. Routing can change as the agent continues its work.
 
 Evaluate the complete agent, model pool, and routing configuration against your single-model baseline. A cheaper model call does not guarantee a cheaper successfully completed task. The [tuning loop](docs/tuning/index.md) gives the steps for that evaluation, and [Troubleshooting](docs/operations/troubleshooting.md) lists the settings that disable routing without an error.
 
 ## How to use it
+
+- **[Through an existing gateway](#through-an-existing-gateway):** Use an available gateway integration.
+- **[Embed libsy in your harness](#embed-libsy-in-your-harness):** Add libsy to a service you operate.
+- **[Evaluate Switchyard locally](#evaluate-switchyard-locally):** Compare routing configurations with your own model pool using the demo server.
 
 ### Through an existing gateway
 
@@ -89,33 +93,14 @@ while let Some(step) = steps.next().await {
 - **Calls:** your clients handle model calls. Stage returns a selection; other algorithms may return an answer.
 - **Start here:** [Rust quickstart](docs/getting_started.md) · [Python bindings](docs/reference/host_integration.md#python-bindings).
 
-### Try routing locally
+### Evaluate Switchyard locally
 
-The standalone server is for local evaluation and personal use. It is not a supported production deployment path.
+The standalone server is provided only for demos and local evaluation. It is not a supported production deployment path.
 
-[Evaluate routing locally](docs/operations/local_evaluation.md) with the standalone proxy and your own model pool, then [verify routing is active](docs/operations/local_evaluation.md#verify-routing-is-active).
+[Evaluate routing locally](docs/operations/local_evaluation.md) with the standalone server and your own model pool, then [verify routing is active](docs/operations/local_evaluation.md#verify-routing-is-active).
 
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).
-
-## What’s new
-
-Features and integrations recently merged into `main`.
-
-- **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
-  Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)
-
-- **2026-10-15 · Use decision models in composite routing**\
-  Use Mercury Decide to judge tasks and Stage routing to adjust model selection as tools run. [Example configuration →](dev-server/config.toml)
-
-- **2026-10-13 · Use Jev to choose between models**\
-  Configure Jev as a task judge with candidate descriptions and a probability cutoff. [Configuration guide →](docs/routing_algorithms/composite_routing.md#decision-model-classifier)
-
-- **2026-10-12 · Bring Switchyard to TypeScript and Pi**\
-  Select models in Node.js or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
-
-- **2026-10-08 · Run Codex with Switchyard on macOS**\
-  Install a background router and Codex profile, then track usage and estimated savings from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
 
 ## Routing algorithms
 
@@ -157,9 +142,28 @@ releases. Pin the version you integrate.
 | `switchyard-libsy` | **Beta** | Routing embedded in your own gateway or harness. You own model calls, credentials, and retries. | Trial integrations. API will change before v1.0. |
 | `switchyard-llm-client` | **Alpha** | HTTP model calls and protocol translation alongside libsy. | Experiments and pilots. |
 | `switchyard-runner` | **Alpha** | Running configured routes inside another runtime, such as NeMo Relay. | Integration work and supervised pilots. |
-| `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy, including a local Codex service. | Demos, evaluation, and personal use on single-user machines. Not for production. |
+| `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy. | Demos and local evaluation only; not a supported production path. |
 
 ![Switchyard Components](docs/assets/switchyard-components.png)
+
+## What’s new
+
+Features and integrations recently merged into `main`.
+
+- **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
+  Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)
+
+- **2026-10-15 · Use decision models in composite routing**\
+  Use Mercury Decide to judge tasks and Stage routing to adjust model selection as tools run. [Example configuration →](dev-server/config.toml)
+
+- **2026-10-13 · Use Jev to choose between models**\
+  Configure Jev as a task judge with candidate descriptions and a probability cutoff. [Configuration guide →](docs/routing_algorithms/composite_routing.md#decision-model-classifier)
+
+- **2026-10-12 · Bring Switchyard to TypeScript and Pi**\
+  Select models in Node.js or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
+
+- **2026-10-08 · Run Codex with Switchyard on macOS**\
+  Install a background router and Codex profile, then track usage and estimated savings from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
 
 ## Community and license
 
