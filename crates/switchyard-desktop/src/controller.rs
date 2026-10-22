@@ -20,6 +20,7 @@ pub enum Action {
     Update {
         preview_token: Option<String>,
     },
+    OpenLogs {},
     OpenUpdateLog {},
     OpenConfig {},
     OpenPrices {},
@@ -293,6 +294,7 @@ impl Controller {
                 Ok(self.config.prices_file.clone())
             }
             Action::OpenUpdateLog {} => self.update_log().map(Some),
+            Action::OpenLogs {} => logs_dir().map(Some),
             _ => Ok(None),
         }
     }
@@ -308,6 +310,10 @@ impl Controller {
         }
         self.reload()?;
         match action {
+            Action::OpenLogs {} => {
+                server::command("open", &[&logs_dir()?.display().to_string()])?;
+                Ok(Reply::message("Opened Switchyard logs.".into()))
+            }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
@@ -409,6 +415,9 @@ impl Controller {
             }
         }
     }
+}
+fn logs_dir() -> Result<PathBuf, String> {
+    crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
 }
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;

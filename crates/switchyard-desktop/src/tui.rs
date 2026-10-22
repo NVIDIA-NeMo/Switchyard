@@ -195,6 +195,12 @@ const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
         "Opens the log of the last source update in $VISUAL or $EDITOR.",
         ActionKind::OpenUpdateLog,
     ),
+    (
+        'v',
+        "Open server logs",
+        "Opens the Switchyard server logs folder in $VISUAL or $EDITOR.",
+        ActionKind::OpenLogs,
+    ),
 ];
 
 /// Column is a table heading, its width, and whether its values are right-aligned.
@@ -969,6 +975,7 @@ impl App {
             ActionKind::OpenUpdateLog => {
                 request(Action::OpenUpdateLog {}, "Opening the update log")
             }
+            ActionKind::OpenLogs => request(Action::OpenLogs {}, "Opening the server logs"),
         }
     }
 
