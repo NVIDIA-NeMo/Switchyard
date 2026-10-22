@@ -4,15 +4,22 @@ NVIDIA NeMo Switchyard is a library for routing LLM requests between models.
 These Go bindings run Switchyard algorithms inside your application. Your
 application owns model eligibility, credentials, provider calls, and retries.
 
+A private WebAssembly runtime exercises translation codecs through wazero.
+Routing and public translation functions still use the native library.
+
 ## Installation
 
-Requires Go 1.22+, cgo, a C compiler, and the repository's Rust toolchain. This is
+Requires Go 1.25+, cgo, a C compiler, and the repository's Rust toolchain. This is
 a source-only module. From a checkout of this repository, build the native
-library for the same platform as your Go application:
+library for the same platform as your Go application, then build the WASM guest:
 
 ```sh
 cargo build -p switchyard-ffi --release --locked
+scripts/build-go-wasm.sh
 ```
+
+The script installs the Rust toolchain's `wasm32-wasip1` target. The generated
+binary is not checked in. Rebuild it after changing Rust code.
 
 From your application's Go module, point Go at that checkout. Replace the path
 below with its absolute location:
@@ -25,6 +32,10 @@ go get github.com/NVIDIA-NeMo/Switchyard/bindings/go
 Native builds link `target/release/libswitchyard_ffi.a` into the Go host artifact.
 The native path still requires cgo and platform system libraries.
 Native artifacts are not downloaded or published by this package.
+
+The `switchyard_native` build tag excludes the private WASM runtime and its
+tests, so that build needs only the native library. The package still requires
+cgo; the private runtime is not a complete WASM routing backend.
 
 ## Use
 
@@ -92,13 +103,22 @@ IDs to the host's tenant and conversation. `Input.Metadata` and
 
 ## Test
 
-From the repository root, after building the native library:
+From the repository root, after building the native library and WASM guest:
 
 ```sh
 cd bindings/go
-go test -race ./...
-GOEXPERIMENT=cgocheck2 go test -race ./...
-go vet ./...
+CGO_ENABLED=1 go test -race ./...
+CGO_ENABLED=1 GOEXPERIMENT=cgocheck2 go test -race ./...
+CGO_ENABLED=1 go vet ./...
+```
+
+For a native-only build, skip the guest build and use the build tag:
+
+```sh
+cd bindings/go
+CGO_ENABLED=1 go test -tags switchyard_native -race ./...
+CGO_ENABLED=1 GOEXPERIMENT=cgocheck2 go test -tags switchyard_native -race ./...
+CGO_ENABLED=1 go vet -tags switchyard_native ./...
 ```
 
 Rebuild Go with `go test -a` after changing the C header or native library; Go's
@@ -106,8 +126,8 @@ cache does not track headers outside the package directory.
 
 ### Go versions
 
-`go 1.22` in `go.mod` is the compatibility minimum, not a compiler pin. Use the
-latest patch of a [supported Go release](https://go.dev/doc/devel/release#policy)
+`go 1.25.0` in `go.mod` is the compatibility minimum required by wazero, not a
+compiler pin. Use the latest patch of a [supported Go release](https://go.dev/doc/devel/release#policy)
 for development and production; compatibility with an older release does not
 make it a recommended production toolchain.
 
