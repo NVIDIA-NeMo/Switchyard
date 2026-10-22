@@ -31,6 +31,8 @@ pub struct ModelInfo<'a> {
 pub struct DecisionDescription {
     pub selected: DecisionTarget,
     pub fallbacks: Vec<DecisionTarget>,
+    /// Metadata the algorithm attached to the routing outcome, if any.
+    pub metadata: Option<libsy::OutcomeMetadata>,
 }
 
 /// Non-secret configured target details returned by the decision endpoint.
@@ -134,6 +136,7 @@ impl Runner {
         Some(DecisionDescription {
             selected: resolve(model_ids.next()?)?,
             fallbacks: model_ids.map(resolve).collect::<Option<Vec<_>>>()?,
+            metadata: outcome.metadata.clone(),
         })
     }
 }

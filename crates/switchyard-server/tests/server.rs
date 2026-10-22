@@ -1894,8 +1894,13 @@ escalation = {{ confirmations = 1 }}
     .await?;
 
     assert_eq!(response.status, StatusCode::OK);
+    let mut body = response.json()?;
+    let outcome_id = body["metadata"]
+        .as_object_mut()
+        .and_then(|metadata| metadata.remove("outcome_id"));
+    assert!(outcome_id.is_some_and(|id| id.as_str().is_some_and(|id| !id.is_empty())));
     assert_eq!(
-        response.json()?,
+        body,
         json!({
             "selected": {
                 "target": "economy",
@@ -1915,6 +1920,10 @@ escalation = {{ confirmations = 1 }}
                 },
                 "extra_body": {},
             }],
+            "metadata": {
+                "algorithm": "llm_task_classifier",
+                "evidence": {"source": "llm-classifier", "score": 0.9, "threshold": 0.5},
+            },
         })
     );
     assert_eq!(
