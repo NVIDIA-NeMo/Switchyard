@@ -4,7 +4,7 @@ Use this guide when embedding libsy algorithms that ask the host to serve model 
 
 ## Development API
 
-This page follows `main`, including its asynchronous `respond` API. The released `v0.3.0` callback API is synchronous. Use matching source-built [Python bindings](../../INSTALLATION.md#development) for this page's Python callback example.
+This page uses the development API, including its asynchronous `respond` method. The Rust examples pin the same revision as the [quickstart](../getting_started.md). The released `v0.3.0` callback API is synchronous. Use matching source-built [Python bindings](../../INSTALLATION.md#development) for this page's Python callback example.
 
 ## Route in Rust
 
@@ -15,14 +15,14 @@ cargo new switchyard-rust-demo
 cd switchyard-rust-demo
 ```
 
-Add these dependencies to `Cargo.toml`. Both Switchyard crates track development on the same branch; pin a shared revision for an integration:
+Add these dependencies to `Cargo.toml`. Both Switchyard crates use the same pinned revision:
 
 ```toml
 [dependencies]
 async-trait = "0.1"
 futures = "0.3"
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", branch = "main" }
+switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", rev = "5415db205c1f4db7e079731e7bf33a6609c67c8e" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", rev = "5415db205c1f4db7e079731e7bf33a6609c67c8e" }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Run `cargo run`. It prints `Selected: Efficient` without making a network call. This example follows `main`, including its `State` argument. For a complete routing and client example, follow the [Rust quickstart](../getting_started.md#use-libsy-with-your-client). Use [switchyard-translation](../../crates/switchyard-translation/README.md) to convert provider requests and libsy's protocol types, or [switchyard-llm-client](../../crates/libsy-llm-client/README.md) to drive an algorithm over HTTP.
+Run `cargo run`. It prints `Selected: Efficient` without making a network call. This example uses the pinned development API, including its `State` argument. For a complete routing and client example, follow the [Rust quickstart](../getting_started.md#use-libsy-with-your-client). Use [switchyard-translation](../../crates/switchyard-translation/README.md) to convert provider requests and libsy's protocol types, or [switchyard-llm-client](../../crates/libsy-llm-client/README.md) to drive an algorithm over HTTP.
 
 ## Serve routing-time calls
 
@@ -106,7 +106,9 @@ await call.respond(client.call(call.request, call.models[0]))
 
 ## Concurrent calls and cancellation
 
-When an algorithm stops waiting for a call, `respond` cancels that work and returns normally. Python waits for task cleanup before returning. For concurrent algorithms, schedule each Python handler with `asyncio.create_task` and cancel and await remaining handlers when the run ends; see the complete [Python example](../../examples/libsy.py). Awaiting handlers one at a time inside the step loop serializes their execution. Rust hosts can use `libsy::drive` to manage concurrent handlers and their lifetime.
+In Rust, `respond` drops the supplied work and returns `Ok(())` when the algorithm stops waiting for that call. Dropping a pending `respond` or `libsy::drive` future also drops its host work. Use `libsy::drive` to manage concurrent handlers and their lifetime.
+
+Python `respond` cancels and awaits the supplied provider work before returning. For concurrent algorithms, the host creates handler tasks with `asyncio.create_task` and must cancel and await remaining handlers when the run ends; see the complete [Python example](../../examples/libsy.py). Awaiting handlers one at a time inside the step loop serializes their execution.
 
 After a response stream is delivered, its consumer controls its lifetime. Cancellation cannot guarantee that an upstream provider stops generating or billing.
 

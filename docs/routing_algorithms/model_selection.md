@@ -44,7 +44,7 @@ efficient model to the file from
 [routes.efficient_only]
 id = "efficient-only"
 type = "passthrough"
-target = "weak"
+target = "efficient"
 ```
 
 ### 1. Tool calling
