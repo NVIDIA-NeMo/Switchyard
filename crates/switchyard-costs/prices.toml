@@ -245,3 +245,132 @@ output = 5
 cache_read = 0.1
 cache_write = 1.25
 cache_write_1h = 2
+
+# These direct Claude IDs use Anthropic standard rates, checked on 2026-10-21.
+# https://platform.claude.com/docs/en/about-claude/pricing
+# Haiku 5.5 rates apply up to 100,000 prompt tokens. Longer prompts cost five times more.
+
+["claude-opus-5"]
+input = 5
+output = 25
+cache_read = 0.5
+cache_write = 6.25
+cache_write_1h = 10
+
+["claude-fable-5"]
+input = 10
+output = 50
+cache_read = 1
+cache_write = 12.5
+cache_write_1h = 20
+
+["claude-fable-5-1"]
+input = 10
+output = 50
+cache_read = 0.25
+cache_write = 12.5
+cache_write_1h = 20
+
+["claude-haiku-5-5"]
+input = 0.1
+output = 0.5
+cache_read = 0.01
+cache_write = 0.125
+cache_write_1h = 0.2
+
+["claude-opus-4-6"]
+input = 5
+output = 25
+cache_read = 0.5
+cache_write = 6.25
+cache_write_1h = 10
+
+["claude-sonnet-4-6"]
+input = 3
+output = 15
+cache_read = 0.3
+cache_write = 3.75
+cache_write_1h = 6
+
+["claude-sonnet-4-5"]
+input = 3
+output = 15
+cache_read = 0.3
+cache_write = 3.75
+cache_write_1h = 6
+
+# Direct Gemini IDs use Google paid standard text rates, checked on 2026-10-21.
+# https://ai.google.dev/gemini-api/docs/pricing
+# The Argon promotion ends 2026-11-30. Its input, output, and cache-read rates then double.
+# The Flash 3.6, 3.7, and 3.8 promotions end 2026-12-31. Their rates then double.
+# Google bills cache storage by time, and this table excludes it.
+# Separately counted cache writes, including one-hour writes, use the input rate.
+
+["gemini-4-argon"]
+input = 2
+output = 10
+cache_read = 0.1
+cache_write = 2
+cache_write_1h = 2
+
+["gemini-3.8-flash"]
+input = 0.75
+output = 3.75
+cache_read = 0.075
+cache_write = 0.75
+cache_write_1h = 0.75
+
+["gemini-3.7-flash"]
+input = 0.75
+output = 3.75
+cache_read = 0.075
+cache_write = 0.75
+cache_write_1h = 0.75
+
+["gemini-3.6-flash"]
+input = 0.75
+output = 3.75
+cache_read = 0.075
+cache_write = 0.75
+cache_write_1h = 0.75
+
+["gemini-3.5-flash-lite"]
+input = 0.3
+output = 2.5
+cache_read = 0.03
+cache_write = 0.3
+cache_write_1h = 0.3
+
+# Direct DeepSeek IDs use peak rates, checked on 2026-10-21. Off-peak rates are half as much.
+# https://api-docs.deepseek.com/quick_start/pricing/
+# DeepSeek bills the older Flash IDs as deepseek-flash. This table uses one rate at all times.
+# Separately counted cache writes, including one-hour writes, use the input rate.
+
+["deepseek-flash"]
+input = 0.3
+output = 1.2
+cache_read = 0.006
+cache_write = 0.3
+cache_write_1h = 0.3
+
+["deepseek-v4-flash"]
+input = 0.3
+output = 1.2
+cache_read = 0.006
+cache_write = 0.3
+cache_write_1h = 0.3
+
+["deepseek-v4-flash-vision-exp"]
+input = 0.3
+output = 1.2
+cache_read = 0.006
+cache_write = 0.3
+cache_write_1h = 0.3
+
+["deepseek-v4-pro"]
+input = 1.32
+output = 3.96
+cache_read = 0.044
+cache_write = 1.32
+cache_write_1h = 1.32
+
