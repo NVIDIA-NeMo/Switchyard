@@ -760,7 +760,9 @@ impl Form {
     /// This function reads the choices from fields that alternate endpoint and model.
     fn choices(&self) -> Vec<Choice> {
         self.fields
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| Choice {
                 client: pair[0].1.trim().into(),
                 model: pair[1].1.trim().into(),
