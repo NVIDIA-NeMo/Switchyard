@@ -1051,7 +1051,18 @@ fn decode_responses_tools(
                 }
             }
         } else if tool.get("type").and_then(Value::as_str) == Some("mcp") {
-            out.push(Tool::Mcp(decode_mcp_tool(tool)?));
+            if tool.contains_key("connector_id") || tool.contains_key("tunnel_id") {
+                // These IDs refer to OpenAI-managed connections and cannot currently be
+                // realistically translated to other wire formats. Keep the full definition.
+                // https://developers.openai.com/api/docs/guides/tools-connectors-mcp#connectors
+                // https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
+                out.push(Tool::Provider {
+                    provider: WireFormat::OpenAiResponses.into(),
+                    raw: Value::Object(tool.clone()),
+                });
+            } else {
+                out.push(Tool::Mcp(decode_mcp_tool(tool)?));
+            }
         } else if tool.get("type").and_then(Value::as_str) == Some("custom") {
             // A freeform tool takes a raw string, not JSON arguments. The IR sees it as a
             // function with a single `input` argument; the verbatim definition is kept so a
@@ -1108,12 +1119,10 @@ fn decode_responses_tools(
 }
 
 fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
-    for key in ["connector_id", "tunnel_id", "allowed_callers"] {
-        if tool.contains_key(key) {
-            return Err(TranslationError::LossyConversion(format!(
-                "Responses MCP {key} is not supported"
-            )));
-        }
+    if tool.contains_key("allowed_callers") {
+        return Err(TranslationError::LossyConversion(
+            "Responses MCP allowed_callers is not supported".into(),
+        ));
     }
     let required = |key: &str| {
         tool.get(key)
@@ -1822,6 +1831,12 @@ fn encode_responses_tools(
     for tool in tools {
         if let Tool::Mcp(mcp) = tool {
             out.push(encode_mcp_tool(mcp)?);
+            continue;
+        }
+        if let Tool::Provider { provider, raw } = tool
+            && provider.as_str() == WireFormat::OpenAiResponses.as_str()
+        {
+            out.push(raw.clone());
             continue;
         }
         let tool = tool.function().ok_or_else(|| {

@@ -5145,6 +5145,65 @@ fn responses_mcp_approval_defaults_and_target_limits() -> TestResult {
 }
 
 #[test]
+fn responses_mcp_connectors_and_tunnels_replay_and_reconstruct() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    for (key, id) in [
+        ("connector_id", "connector_dropbox"),
+        ("tunnel_id", "tunnel_fixture"),
+    ] {
+        let mut body = responses_mcp_request();
+        body["tools"][0] = json!({
+            "type": "mcp", "server_label": "inventory",
+            "authorization": "synthetic-token", "require_approval": "never",
+            "headers": {"X-Api-Key": "synthetic-header-token"},
+            "extra": "native-only"
+        });
+        body["tools"][0][key] = json!(id);
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..TranslationPolicy::default()
+            };
+            let decoded = engine.decode_request(format, &body, &policy)?;
+            assert!(decoded.diagnostics.is_empty());
+            let mut request = decoded.request;
+            assert!(matches!(&request.tools[0], Tool::Provider { provider, raw }
+                if provider.as_str() == format.as_str() && raw == &body["tools"][0]));
+            let replayed = engine.encode_request(format, &request, &policy)?;
+            assert_eq!(replayed.body, body);
+            assert!(replayed.diagnostics.is_empty());
+
+            prepare_request_for_target(&mut request, &"target/model".into(), None);
+            request.preservation.requests.clear();
+            let rebuilt = engine.encode_request(format, &request, &policy)?;
+            assert_eq!(rebuilt.body["model"], "target/model");
+            assert_eq!(rebuilt.body["tools"], body["tools"]);
+            assert!(rebuilt.diagnostics.is_empty());
+            for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiChat] {
+                assert!(matches!(
+                    engine.encode_request(target, &request, &policy),
+                    Err(TranslationError::LossyConversion(_))
+                ));
+            }
+
+            let Tool::Provider { provider, .. } = &mut request.tools[0] else {
+                unreachable!()
+            };
+            *provider = WireFormat::AnthropicMessages.into();
+            assert!(matches!(
+                engine.encode_request(format, &request, &policy),
+                Err(TranslationError::LossyConversion(_))
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn responses_mcp_definitions_reject_unsupported_input() {
     let engine = TranslationEngine::default();
     for (key, value) in [
@@ -5162,8 +5221,6 @@ fn responses_mcp_definitions_reject_unsupported_input() {
         ),
         ("headers", Some(json!([]))),
         ("headers", Some(json!({"X-Api-Key": 42}))),
-        ("connector_id", Some(json!("connector_drive"))),
-        ("tunnel_id", Some(json!("tunnel_fixture"))),
         ("allowed_callers", Some(json!(["code_interpreter"]))),
     ] {
         let mut body = responses_mcp_request();
