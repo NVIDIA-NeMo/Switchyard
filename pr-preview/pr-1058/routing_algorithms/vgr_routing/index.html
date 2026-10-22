@@ -1222,6 +1222,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hermes-session-headers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hermes session headers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#serving-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1728,6 +1739,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#hermes-session-headers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hermes session headers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#serving-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1794,7 +1816,7 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ed614acc9a33f7d6b60553cc79416141cf17c711/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5507b2cf10660acbc76830719c8786dc6dc0c06d/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -1815,6 +1837,30 @@ unchecked final message. It is sent at most once per user turn, and only after
 new local work has been served since the previous handoff. The handoff preserves
 the conversation's existing messages and content. <code>local_turn_budget_seconds</code>
 escalates a user turn once the local tier has spent that much wall-clock time on it.</p>
+<p>The notice covers the current request and asks the cloud tier to preserve earlier
+work, inspect its effects, and repeat or undo steps only when needed.</p>
+<p>Escalations release when a new user turn is decided locally. Set
+<code>latch_escalation = true</code> to retain the cloud tier across later user turns instead.
+Shadow mode always releases the hold at the next user turn.
+All configured VGR durations must be positive.</p>
+<h2 id="hermes-session-headers">Hermes session headers<a class="headerlink" href="#hermes-session-headers" title="Permanent link">&para;</a></h2>
+<p>Use a Hermes build that supports both provider options below. The session header
+must stay the same throughout a conversation; each conversation needs its own ID.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">model</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assistant</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">provider</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">custom</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="nt">base_url</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:4000/v1</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nt">providers</span><span class="p">:</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">switchyard</span><span class="p">:</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">api</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http://localhost:4000/v1</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">session_affinity_header</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">x-switchyard-session-id</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">initiator_header</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span></code></pre></div>
+<p><code>x-initiator: user</code> releases the turn hold for a person's new request or steer.
+<code>x-initiator: agent</code> keeps the hold through tool calls, recovery nudges, and
+automatic continuations. Retries retain the original call's tag. Without a
+recognized tag, Switchyard uses the message shape to identify a user turn.
+<code>x-session-id</code> is also accepted as a session-header alias.</p>
 <h2 id="serving-modes">Serving modes<a class="headerlink" href="#serving-modes" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>off</code> skips candidate generation and serves cloud. This is the default.</li>

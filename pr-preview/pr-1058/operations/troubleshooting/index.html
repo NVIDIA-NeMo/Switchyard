@@ -1857,10 +1857,10 @@ log field, a log line, or a <code>--dry-run</code> message.</p>
 <td>Remove it, or declare <code>true</code> only when every target accepts images. See the <a href="../../reference/toml_schema/#routesname">route keys</a>.</td>
 </tr>
 <tr>
-<td>The server does not start: <code>unknown field</code></td>
+<td>The server does not start: <code>unknown field</code>, or <code>have no effect on the stage fallback judge</code></td>
 <td>The <code>--dry-run</code> message</td>
-<td>An <code>auto</code> route with a tuning key; a typo; a key from another route type.</td>
-<td><a href="../../reference/toml_schema/#auto">Auto</a> and the <a href="../../reference/toml_schema/#validation-errors">validation errors</a>.</td>
+<td>An <code>auto</code> route with a tuning key; a typo; a key from another route type; <code>classifier.classify_trigger</code> other than the default, or <code>classifier.message_hash_fallback</code>, on a <code>stage_router</code> route.</td>
+<td><a href="../../reference/toml_schema/#auto">Auto</a>, the <a href="../../reference/toml_schema/#stage_router">stage_router keys</a>, and the <a href="../../reference/toml_schema/#validation-errors">validation errors</a>.</td>
 </tr>
 <tr>
 <td>The server does not start: two targets <code>both name model</code></td>
@@ -1978,12 +1978,6 @@ rows that return an error or hold a request open say so.</p>
 <td>No tool results, so the signals abstain and every turn falls open to the efficient tier.</td>
 <td>None.</td>
 <td>Use Task or Composite. See <a href="../../routing_algorithms/overview/#when-routing-will-not-help">When routing will not help</a>.</td>
-</tr>
-<tr>
-<td><code>classifier.classify_trigger = "user_turn"</code> or <code>"new_session"</code>, with or without <code>classifier.message_hash_fallback</code>, on a <code>stage_router</code> route</td>
-<td>The stage fallback judge runs on every ambiguous turn and retains nothing, so the trigger changes nothing. The keys are accepted for compatibility. <code>message_hash_fallback</code> with the default trigger is a load error instead.</td>
-<td>None.</td>
-<td>Use a <a href="../../routing_algorithms/composite_routing/">composite</a> route for a judge that runs once per user turn.</td>
 </tr>
 <tr>
 <td><code>capable_first_threshold</code> on a standalone <code>stage_router</code> route</td>

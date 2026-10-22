@@ -3125,13 +3125,13 @@ so it is consulted on every ambiguous turn and never retains a verdict.</p>
 <td><code>classifier.classify_trigger</code></td>
 <td style="text-align: center;">No</td>
 <td><code>every_request</code></td>
-<td>Accepted for compatibility with <code>llm_classifier</code>. No effect on the stage fallback judge: it runs on every ambiguous turn and retains no verdict, so <code>user_turn</code> and <code>new_session</code> change nothing here. Use a <a href="#composite">composite</a> route to judge once per user turn.</td>
+<td>Only the default is accepted here. The stage fallback judge runs on every ambiguous turn and retains no verdict, so <code>user_turn</code> and <code>new_session</code> are rejected at load. Use a <a href="#composite">composite</a> route to judge once per user turn.</td>
 </tr>
 <tr>
 <td><code>classifier.message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Accepted for compatibility. No effect on the stage fallback judge. Setting it with the default trigger is a load error.</td>
+<td>Rejected at load on a <code>stage_router</code> route. The fallback judge retains nothing to key on.</td>
 </tr>
 <tr>
 <td><code>classifier.recent_turn_window</code></td>
