@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ModelInfraSignals"],"trait":["InfraProvider"],"type":["InfraSignals"]};
+window.SIDEBAR_ITEMS = {"struct":["ModelInfraSignals","WorkerLoad"],"type":["InfraSignals"]};
