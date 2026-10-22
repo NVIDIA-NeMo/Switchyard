@@ -1,11 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pure Rust translation engine for Switchyard.
-//!
-//! The crate translates provider wire formats through a neutral Switchyard
-//! conversation IR. It intentionally has no dependency on provider SDKs, HTTP
-//! servers, Python objects, or FFI bindings.
+#![doc = include_str!("../README.md")]
 
 pub mod codecs;
 pub(crate) mod codex_custom_tools;
@@ -19,6 +15,7 @@ mod sse;
 pub mod stream;
 pub mod util;
 
+pub use codecs::responses::is_anthropic_thinking_envelope;
 pub use switchyard_protocol::stream::{
     LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, LlmStreamError,
     ProviderStreamEvent,

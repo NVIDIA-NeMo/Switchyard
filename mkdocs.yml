@@ -20,6 +20,7 @@ nav:
   - Get Started:
       - Getting Started: getting_started.md
       - Known Issues: known_issues.md
+  - Benchmarks: benchmarks.md
   - Concepts:
       - Core Concepts: core_concepts.md
       - Architecture: architecture.md
@@ -41,7 +42,10 @@ nav:
       - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
       - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
       - Verification-Gated Routing: routing_algorithms/vgr_routing.md
+  - Tuning:
+      - Tuning Loop: tuning/index.md
   - Operations:
+      - Troubleshooting: operations/troubleshooting.md
       - Context-Window Handling: operations/context_window.md
       - Soak Testing: operations/soak_test.md
   - Reference:

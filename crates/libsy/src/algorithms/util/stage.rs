@@ -820,6 +820,59 @@ mod tests {
     }
 
     #[test]
+    fn scorer_ceilings_match_the_documented_values() {
+        // The stage-router guide's "How the score is built" quotes these four
+        // scores. A constant change that moves them must update the guide too.
+        let base = signal_from(json!([{"role": "user", "content": "hi"}]));
+        let cases = [
+            (
+                "hard error alone",
+                ToolSignals {
+                    severity: HARD_SEVERITY as f32,
+                    turn_depth: 1,
+                    ..base.clone()
+                },
+                0.4621,
+            ),
+            (
+                "hard error plus stall",
+                ToolSignals {
+                    severity: HARD_SEVERITY as f32,
+                    turn_depth: STALL_MIN_TURN_DEPTH,
+                    ..base.clone()
+                },
+                0.7616,
+            ),
+            (
+                "one write among three operations, no error",
+                ToolSignals {
+                    recent_write_count: 1,
+                    recent_read_count: 2,
+                    turn_depth: 1,
+                    ..base.clone()
+                },
+                -0.6911,
+            ),
+            (
+                "full clean production",
+                ToolSignals {
+                    recent_write_count: 3,
+                    turn_depth: 1,
+                    ..base.clone()
+                },
+                -0.8741,
+            ),
+        ];
+        for (name, signal, expected) in cases {
+            let scored = score_signal(&signal);
+            assert!(
+                (scored.score - expected).abs() < 0.0005,
+                "{name}: {scored:?}, documented {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn pick_tier_treats_the_exact_threshold_score_as_ambiguous() {
         // score == threshold maps to p == 0.5 + t/2 exactly, the closed
         // ambiguous-band endpoint — a deliberate boundary reclassification

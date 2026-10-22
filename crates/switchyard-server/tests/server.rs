@@ -4769,10 +4769,16 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .lines()
         .map(serde_json::from_str::<Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(records.len(), 3);
-    assert!(records.iter().all(|record| {
-        record["model"] == "model/strong" && record.get("fallback_reason").is_none()
-    }));
+    assert_eq!(records.len(), 6);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| {
+                record["model"] == "model/strong" && record.get("fallback_reason").is_none()
+            })
+            .count(),
+        3
+    );
 
     let previous_call_count = upstream.calls.lock().await.len();
     let response = send(

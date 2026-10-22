@@ -12,8 +12,7 @@
     "test": "node --experimental-strip-types --test test/*.test.mjs"
   },
   "dependencies": {
-    "@switchyard/runner": "file:../../bindings/typescript",
-    "smol-toml": "1.9.0"
+    "@switchyard/libsy": "file:../../bindings/typescript"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

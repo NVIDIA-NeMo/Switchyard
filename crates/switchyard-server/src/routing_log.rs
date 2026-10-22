@@ -16,6 +16,7 @@ use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
+use switchyard_costs::{CostTotals, Pricing, RecordedCost};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const ORIGIN_HEADER: &str = "x-switchyard-origin";
@@ -23,7 +24,10 @@ const TASK_HEADER: &str = "x-switchyard-intake-task";
 const TRIAL_ID_HEADER: &str = "x-switchyard-trial-id";
 
 /// Append-only writer for one routing JSONL file.
-pub(crate) struct RoutingLog(fs::File);
+pub(crate) struct RoutingLog {
+    file: fs::File,
+    pub(crate) pricing: Pricing,
+}
 
 impl RoutingLog {
     pub(crate) fn new(path: impl Into<PathBuf>) -> ServerResult<Self> {
@@ -39,7 +43,10 @@ impl RoutingLog {
             .append(true)
             .open(&path)
             .map_err(|error| routing_log_error(&path, error))?;
-        Ok(Self(file))
+        Ok(Self {
+            file,
+            pricing: Pricing::bundled().map_err(ServerError::new)?,
+        })
     }
 
     pub(crate) fn append(
@@ -49,8 +56,15 @@ impl RoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) -> std::io::Result<()> {
+        let cost = self.pricing.cost(model, usage);
+        let cache_creation_1h_tokens = usage
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.cache_creation_1h_input_tokens)
+            .unwrap_or(0);
         let usage = token_usage(usage);
         let record = RoutingRecord {
+            cost,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
             algorithm: context.algorithm.into(),
@@ -64,6 +78,7 @@ impl RoutingLog {
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
+            cache_creation_1h_tokens,
             completion_tokens: usage.completion_tokens,
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
@@ -71,7 +86,7 @@ impl RoutingLog {
         let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         line.push(b'\n');
 
-        self.0.write_all(&line)
+        self.file.write_all(&line)
     }
 }
 
@@ -82,7 +97,10 @@ pub(crate) fn snapshot(
 ) -> std::io::Result<Option<SessionStatsSnapshot>> {
     let mut reader = BufReader::with_capacity(64 * 1024, fs::File::open(path)?);
     let mut line = Vec::new();
-    let mut snapshot = SessionStatsSnapshot::new(session_id);
+    let mut snapshot = SessionStatsSnapshot {
+        session_id: session_id.to_string(),
+        ..Default::default()
+    };
     loop {
         line.clear();
         if reader.read_until(b'\n', &mut line)? == 0 {
@@ -151,6 +169,8 @@ impl RoutingLogContext {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct RoutingRecord<'a> {
+    #[serde(default)]
+    cost: Option<RecordedCost>,
     ts: Cow<'a, str>,
     route_id: Cow<'a, str>,
     algorithm: Cow<'a, str>,
@@ -169,15 +189,25 @@ struct RoutingRecord<'a> {
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
+    /// The part of `cache_creation_tokens` written at the one-hour rate, when reported.
+    #[serde(skip_serializing_if = "is_zero")]
+    cache_creation_1h_tokens: u64,
     completion_tokens: u64,
     reasoning_tokens: u64,
     total_tokens: u64,
 }
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// Session totals returned by the routing stats endpoint.
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
+    cost: CostTotals,
+    answer_cost: CostTotals,
+    routing_cost: CostTotals,
     total_calls: u64,
     total_prompt_tokens: u64,
     total_cached_tokens: u64,
@@ -188,6 +218,7 @@ pub(crate) struct SessionStatsSnapshot {
 
 #[derive(Default, Serialize)]
 struct SessionModelStats {
+    cost: CostTotals,
     calls: u64,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -196,18 +227,6 @@ struct SessionModelStats {
 }
 
 impl SessionStatsSnapshot {
-    fn new(session_id: &str) -> Self {
-        Self {
-            session_id: session_id.to_string(),
-            total_calls: 0,
-            total_prompt_tokens: 0,
-            total_cached_tokens: 0,
-            total_cache_creation_tokens: 0,
-            total_completion_tokens: 0,
-            models: BTreeMap::new(),
-        }
-    }
-
     fn add_record(&mut self, record: &RoutingRecord<'_>, session_id: &str) {
         if record.session_id.as_deref() != Some(session_id) {
             return;
@@ -217,6 +236,13 @@ impl SessionStatsSnapshot {
             model => model,
         };
         let stats = self.models.entry(ModelId::from(model)).or_default();
+        stats.cost.add(record.cost);
+        self.cost.add(record.cost);
+        if record.tier == "classifier" {
+            self.routing_cost.add(record.cost);
+        } else {
+            self.answer_cost.add(record.cost);
+        }
         stats.calls = stats.calls.saturating_add(1);
         stats.prompt_tokens = stats.prompt_tokens.saturating_add(record.prompt_tokens);
         stats.cached_tokens = stats.cached_tokens.saturating_add(record.cached_tokens);

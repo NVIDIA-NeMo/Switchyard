@@ -18,18 +18,21 @@ The Server Path builds and runs the standalone `switchyard-server` binary.
 
 ## Explore
 
+- [Benchmarks](benchmarks.md): compare Terminal-Bench 2.1 and DeepSWE results and open their routing configs
 - [Core Concepts](core_concepts.md): learn the LLM client, target, and route layers
 - [Routing Algorithms](routing_algorithms/overview.md): choose how requests select a model
 - [Architecture](architecture.md): understand the proxy and library components
 - [Server CLI Reference](cli_reference.md): inspect `switchyard-server` commands and options
-- [Rust API](reference/rust_api.md): browse libsy and protocol crate documentation
+- [Rust API](reference/rust_api.md): browse libsy, protocol, and translation crate documentation
 - [Context-Window Handling](operations/context_window.md): configure eviction and retry behavior
+- [Tuning](tuning/index.md): the loop from verifying routing to recording a result
+- [Troubleshooting](operations/troubleshooting.md): symptoms, silent misconfigurations, and fixes
 
 ## Reference
 
 - [`switchyard-server`](../crates/switchyard-server/README.md): server configuration, endpoints, and metrics
 - [`switchyard-libsy`](reference/rust_api.md#switchyard-libsy): embeddable routing algorithms
 - [`switchyard-protocol`](reference/rust_api.md#switchyard-protocol): provider-neutral API types
-- [`switchyard-translation`](../crates/switchyard-translation/README.md): protocol translation
+- [`switchyard-translation`](reference/rust_api.md#switchyard-translation): protocol translation
 - [`switchyard-nemo-relay-plugin`](../crates/switchyard-nemo-relay-plugin/README.md): native plugin build and configuration
 - [Dynamo / agentgateway](../examples/dynamo-preproc/README.md): Switchyard PreProc integration example

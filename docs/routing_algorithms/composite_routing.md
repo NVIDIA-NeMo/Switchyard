@@ -111,6 +111,9 @@ evidence = { description = "Add task-relevant evidence comparing a and b." }
 ```
 
 Both candidates must be completion targets. The judge must be a decision target.
+See the [decision client reference](../reference/toml_schema.md#decision_clientsname)
+for OpenAI Decisions configuration.
+
 The classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 `base_threshold`, `threshold_step` and `prompt` when using a decision model.

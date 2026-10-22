@@ -69,3 +69,10 @@ fn encode_anthropic_thinking(text: &str, signature: &str) -> String {
 fn decode_anthropic_thinking(payload: &str) -> Option<(String, String)> {
     serde_json::from_str(payload.strip_prefix(ANTHROPIC_THINKING_PREFIX)?).ok()
 }
+
+/// Returns true when a Responses `encrypted_content` value holds Anthropic thinking that
+/// Switchyard packed for a Responses client, rather than ciphertext from an OpenAI provider.
+/// Only Switchyard can read this value, so an OpenAI provider cannot decrypt it.
+pub fn is_anthropic_thinking_envelope(encrypted_content: &str) -> bool {
+    encrypted_content.starts_with(ANTHROPIC_THINKING_PREFIX)
+}

@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    SystemOneClient, TranslatingLlmClient,
+    OpenAiDecisionClient, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -46,8 +46,7 @@ pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> 
         .filter_map(|client| client.api_key_env.clone())
         .collect();
     for client in config.decision_clients.values() {
-        let DecisionClientConfig::SystemOne { api_key_env, .. } = client;
-        variables.insert(api_key_env.clone());
+        variables.insert(client.api_key_env.clone());
     }
     if variables
         .iter()
@@ -82,27 +81,6 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
-    config.build()
-}
-
-pub(crate) fn model_selection_from_toml(source: &str) -> RunnerResult<Runner> {
-    let config: DeploymentConfig = toml::from_str(source).map_err(|error: toml::de::Error| {
-        // Report the location while keeping document excerpts in the source error.
-        let mut message = "failed to parse TOML".to_string();
-        if let Some(prefix) = error.span().and_then(|span| source.get(..span.start)) {
-            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-            let column = prefix
-                .rsplit('\n')
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .count()
-                + 1;
-            message = format!("{message} at line {line}, column {column}");
-        }
-        RunnerError::configuration_source(message, error)
-    })?;
-    config.validate_model_selection()?;
     config.build()
 }
 
@@ -200,36 +178,6 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
-    fn validate_model_selection(&self) -> RunnerResult<()> {
-        for (name, client) in &self.llm_clients {
-            if client.forward_auth {
-                return Err(RunnerError::configuration(format!(
-                    "llm client {name}: model selection requires configured classifier credentials"
-                )));
-            }
-        }
-        for (name, route) in &self.routes {
-            if !route.algorithm.supports_model_selection() {
-                return Err(RunnerError::configuration(format!(
-                    "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
-                )));
-            }
-            for target_name in route.routing_target_names() {
-                if let Some(target) = self.targets.get(target_name)
-                    && (target.system_prompt.is_some()
-                        || target.reasoning_effort.is_some()
-                        || !target.extra_body.is_empty()
-                        || !target.omit_body_fields.is_empty())
-                {
-                    return Err(RunnerError::configuration(format!(
-                        "target {target_name}: model selection requires completion settings to be owned by the caller"
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn decision_target(&self, name: &str) -> Option<DecisionTarget> {
         let target = self.targets.get(name)?;
         let client = self.llm_clients.get(&target.llm_client)?;
@@ -472,7 +420,8 @@ impl DeploymentConfig {
             .iter()
             .map(|(name, config)| {
                 validate_value("decision client name", name)?;
-                let DecisionClientConfig::SystemOne {
+                let DecisionClientConfig {
+                    format,
                     endpoint,
                     api_key_env,
                     timeout_ms,
@@ -483,17 +432,20 @@ impl DeploymentConfig {
                     )));
                 }
                 let api_key = read_api_key(&format!("decision client {name}"), api_key_env)?;
-                let client = SystemOneClient::new(
-                    endpoint.0.clone(),
-                    api_key.clone(),
-                    Duration::from_millis(*timeout_ms),
-                )
+                let timeout = Duration::from_millis(*timeout_ms);
+                let client = match format {
+                    DecisionFormat::SystemOne => {
+                        SystemOneClient::new(endpoint.0.clone(), api_key.clone(), timeout)
+                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                    }
+                    DecisionFormat::OpenaiDecisions => {
+                        OpenAiDecisionClient::new(endpoint.0.clone(), api_key.clone(), timeout)
+                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                    }
+                }
                 .map_err(|error| RunnerError::configuration(error.to_string()))?;
                 provider_api_keys.push(api_key);
-                Ok((
-                    name.clone(),
-                    Arc::new(client) as Arc<dyn RoutedDecisionClient>,
-                ))
+                Ok((name.clone(), client))
             })
             .collect()
     }
@@ -817,13 +769,19 @@ enum ContextDiscovery {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
-enum DecisionClientConfig {
-    SystemOne {
-        endpoint: HttpBaseUrl,
-        api_key_env: String,
-        timeout_ms: u64,
-    },
+#[serde(deny_unknown_fields)]
+struct DecisionClientConfig {
+    format: DecisionFormat,
+    endpoint: HttpBaseUrl,
+    api_key_env: String,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DecisionFormat {
+    SystemOne,
+    OpenaiDecisions,
 }
 
 #[derive(Debug, Deserialize)]

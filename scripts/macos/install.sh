@@ -55,9 +55,21 @@ step "Writing server config"
 write_once "$SY_HOME/composite.toml" < "$REPO_ROOT/scripts/config/composite.toml"
 
 step "Writing menu bar settings"
-# Rates are list prices per million tokens and are only used to estimate
-# savings. Edit them to match what you actually pay.
+# Existing price files override the bundled table for both applications.
 TOML_SY_HOME="$(toml_escape_basic_string "$SY_HOME")"
+XML_SY_HOME="$(xml_escape_text "$SY_HOME")"
+PRICING_SETTING=""
+PRICING_XML=""
+SERVER_ARGS=(
+  --config "$SY_HOME/composite.toml"
+  --routing-log-file "$SY_HOME/routing.jsonl"
+)
+if [[ -e "$SY_HOME/prices.json" ]]; then
+  SERVER_ARGS+=(--pricing-file "$SY_HOME/prices.json")
+  PRICING_SETTING="pricing_file = \"$TOML_SY_HOME/prices.json\""
+  PRICING_XML="<string>--pricing-file</string>
+    <string>$XML_SY_HOME/prices.json</string>"
+fi
 write_once "$SY_HOME/menubar.toml" <<EOF
 server_url = "http://127.0.0.1:$SY_PORT"
 routing_log = "$TOML_SY_HOME/routing.jsonl"
@@ -70,41 +82,13 @@ refresh_seconds = 30
 # Switchyard's own classifier calls counted against it.
 baseline_model = "gpt-5.6-sol"
 
-[prices."gpt-5.6-sol"]
-input_per_mtok = 1.25
-cached_input_per_mtok = 0.125
-output_per_mtok = 10.0
-
-[prices."gpt-5.6-luna"]
-input_per_mtok = 0.25
-cached_input_per_mtok = 0.025
-output_per_mtok = 2.0
-
-[prices."gpt-5.6-terra"]
-input_per_mtok = 0.05
-cached_input_per_mtok = 0.005
-output_per_mtok = 0.4
-
-# With a ChatGPT login, Codex sends "Approve for me" reviews to
-# codex-auto-review even without Switchyard, so this price copies the
-# baseline_model rates. Reviews then add the same amount to the actual cost and
-# the baseline. The dollars saved stay the same, but the percentage drops a
-# little. Update this price if you change baseline_model.
-[prices."codex-auto-review"]
-input_per_mtok = 1.25
-cached_input_per_mtok = 0.125
-output_per_mtok = 10.0
+$PRICING_SETTING
 EOF
 
 step "Validating the server config"
-if (( DRY_RUN )); then
-  say "  would run: $SY_HOME/bin/switchyard-server --config $SY_HOME/composite.toml --dry-run"
-else
-  "$SY_HOME/bin/switchyard-server" --config "$SY_HOME/composite.toml" --dry-run
-fi
+run "$SY_HOME/bin/switchyard-server" "${SERVER_ARGS[@]}" --dry-run
 
 step "Writing LaunchAgents"
-XML_SY_HOME="$(xml_escape_text "$SY_HOME")"
 write_always "$LAUNCH_AGENTS/$SERVER_LABEL.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -123,6 +107,7 @@ write_always "$LAUNCH_AGENTS/$SERVER_LABEL.plist" <<EOF
     <string>$SY_PORT</string>
     <string>--routing-log-file</string>
     <string>$XML_SY_HOME/routing.jsonl</string>
+    $PRICING_XML
   </array>
   <key>RunAtLoad</key>
   <true/>

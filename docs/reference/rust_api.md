@@ -1,7 +1,7 @@
 # Rust API
 
 Switchyard publishes generated API documentation for its embeddable routing
-library and provider-neutral protocol types.
+library, provider-neutral protocol types, and format translation.
 
 ## `switchyard-libsy`
 
@@ -17,9 +17,16 @@ clients, decisions, metadata, and wire-format identifiers.
 
 <a href="../../rust/switchyard_protocol/">Open the generated protocol API documentation</a>
 
+## `switchyard-translation`
+
+Use translation to convert requests, responses, and streams between OpenAI Chat
+Completions, OpenAI Responses, and Anthropic Messages formats.
+
+<a href="../../rust/switchyard_translation/">Open the generated translation API documentation</a>
+
 ## Crate boundary
 
-Applications embedding libsy normally depend on both crates:
+Applications embedding libsy normally depend on the libsy and protocol crates:
 
 ```toml
 [dependencies]
@@ -30,6 +37,10 @@ switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", t
 Import algorithms and orchestration types from `switchyard_libsy`. Import
 requests, responses, metadata, decisions, and LLM client traits from
 `switchyard_protocol`. Keep both dependencies on compatible versions.
+
+Add `switchyard-translation` when your application directly converts requests,
+responses, or streams between provider formats. Use a version compatible with
+your other Switchyard dependencies.
 
 ## CI previews
 

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "switchyard-costs"
+version.workspace = true
+description = "Shared token pricing and recorded cost totals for Switchyard"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+switchyard-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.9"
