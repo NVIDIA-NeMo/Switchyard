@@ -11,6 +11,7 @@ members = [
     "crates/prefill-router",
     "crates/switchyard-py",
     "crates/switchyard-node",
+    "crates/switchyard-ffi",
     "crates/protocol",
     "crates/switchyard-nemo-relay-plugin",
     "crates/switchyard-runner",
