@@ -19,15 +19,17 @@ prefill-router = ["dep:prefill-router"]
 [dependencies]
 libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.3.0" }
 prefill-router = { workspace = true, optional = true }
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-switchyard-llm-client.workspace = true
 switchyard-protocol.workspace = true
 strum_macros.workspace = true
 thiserror.workspace = true
 toml = "1.1"
 tracing.workspace = true
+
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+reqwest.workspace = true
+switchyard-llm-client.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
