@@ -4,6 +4,7 @@
 //! Shared configured routing for Switchyard serving surfaces.
 
 mod algorithm;
+mod algorithm_factory;
 mod config;
 mod failure;
 mod provider_key_redactor;
@@ -17,6 +18,7 @@ pub use algorithm::{
     ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig,
     StageClassifierConfig, SubagentRouteConfig, VgrModeConfig, VgrRouteConfig,
 };
+pub use algorithm_factory::{AlgorithmFactory, ConfiguredAlgorithm};
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.
 pub use libsy::RuntimeModels;
