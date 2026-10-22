@@ -4693,7 +4693,7 @@ fn anthropic_mcp_definitions_replay_and_reconstruct() -> TestResult {
             panic!("expected MCP definition")
         };
         assert_eq!(mcp.name, "inventory");
-        assert_eq!(mcp.url, "https://example.invalid/mcp");
+        assert_eq!(mcp.url.as_deref(), Some("https://example.invalid/mcp"));
         assert_eq!(
             mcp.authorization_token.as_deref(),
             Some("synthetic-inventory-token")
@@ -4939,7 +4939,7 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
             panic!("expected MCP definition")
         };
         assert_eq!(mcp.name, "inventory");
-        assert_eq!(mcp.url, "https://example.invalid/mcp");
+        assert_eq!(mcp.url.as_deref(), Some("https://example.invalid/mcp"));
         assert_eq!(json!(mcp.headers), headers);
         assert_eq!(
             mcp.authorization_token.as_deref(),
@@ -5289,9 +5289,7 @@ fn responses_mcp_connectors_and_tunnels_replay_and_reconstruct() -> TestResult {
         let mut body = responses_mcp_request();
         body["tools"][0] = json!({
             "type": "mcp", "server_label": "inventory",
-            "authorization": "synthetic-token", "require_approval": "never",
-            "headers": {"X-Api-Key": "synthetic-header-token"},
-            "extra": "native-only"
+            "authorization": "synthetic-token", "require_approval": "never"
         });
         body["tools"][0][key] = json!(id);
         for lossy_conversion_policy in [
@@ -5305,8 +5303,11 @@ fn responses_mcp_connectors_and_tunnels_replay_and_reconstruct() -> TestResult {
             let decoded = engine.decode_request(format, &body, &policy)?;
             assert!(decoded.diagnostics.is_empty());
             let mut request = decoded.request;
-            assert!(matches!(&request.tools[0], Tool::Provider { provider, raw }
-                if provider.as_str() == format.as_str() && raw == &body["tools"][0]));
+            let Tool::Mcp(mcp) = &request.tools[0] else {
+                panic!("expected MCP definition")
+            };
+            assert_eq!(mcp.extensions.fields["openai_responses"][key], id);
+            assert_eq!(mcp.url, None);
             let replayed = engine.encode_request(format, &request, &policy)?;
             assert_eq!(replayed.body, body);
             assert!(replayed.diagnostics.is_empty());
@@ -5316,18 +5317,48 @@ fn responses_mcp_connectors_and_tunnels_replay_and_reconstruct() -> TestResult {
             let rebuilt = engine.encode_request(format, &request, &policy)?;
             assert_eq!(rebuilt.body["model"], "target/model");
             assert_eq!(rebuilt.body["tools"], body["tools"]);
+            assert!(rebuilt.body["tools"][0].get("server_url").is_none());
             assert!(rebuilt.diagnostics.is_empty());
-            for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiChat] {
-                assert!(matches!(
-                    engine.encode_request(target, &request, &policy),
-                    Err(TranslationError::LossyConversion(_))
-                ));
-            }
+            assert!(matches!(
+                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy),
+                Err(TranslationError::LossyConversion(message)) if message.contains("URL")
+            ));
+            assert!(matches!(
+                engine.encode_request(WireFormat::OpenAiChat, &request, &policy),
+                Err(TranslationError::LossyConversion(_))
+            ));
 
-            let Tool::Provider { provider, .. } = &mut request.tools[0] else {
+            let Tool::Mcp(mcp) = &mut request.tools[0] else {
                 unreachable!()
             };
-            *provider = WireFormat::AnthropicMessages.into();
+            mcp.name = "stock".into();
+            mcp.authorization_token = None;
+            let rebuilt = engine.encode_request(format, &request, &policy)?;
+            assert_eq!(rebuilt.body["tools"][0]["server_label"], "stock");
+            assert_eq!(rebuilt.body["tools"][0][key], id);
+            assert!(rebuilt.body["tools"][0].get("authorization").is_none());
+            let Tool::Mcp(mcp) = &mut request.tools[0] else {
+                unreachable!()
+            };
+            mcp.url = Some("https://example.invalid/mcp".into());
+            let anthropic = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy);
+            if lossy_conversion_policy == LossyConversionPolicy::Reject {
+                assert!(matches!(anthropic,
+                    Err(TranslationError::LossyConversion(message)) if message.contains(key)));
+            } else {
+                let anthropic = anthropic?;
+                assert_eq!(
+                    anthropic.body["mcp_servers"][0]["url"],
+                    "https://example.invalid/mcp"
+                );
+                assert_eq!(anthropic.diagnostics.len(), 1);
+                assert!(anthropic.diagnostics[0].message.contains(key));
+            }
+            let Tool::Mcp(mcp) = &mut request.tools[0] else {
+                unreachable!()
+            };
+            mcp.url = None;
+            mcp.extensions.fields.clear();
             assert!(matches!(
                 engine.encode_request(format, &request, &policy),
                 Err(TranslationError::LossyConversion(_))
@@ -5343,7 +5374,10 @@ fn responses_mcp_definitions_reject_unsupported_input() {
     for (key, value) in [
         ("server_label", None),
         ("server_label", Some(json!(42))),
+        ("server_url", None),
         ("server_url", Some(json!(""))),
+        ("connector_id", Some(json!(""))),
+        ("tunnel_id", Some(json!(42))),
         ("authorization", Some(json!(42))),
         ("allowed_tools", Some(json!([42]))),
         ("allowed_tools", Some(json!(true))),

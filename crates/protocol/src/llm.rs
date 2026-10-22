@@ -313,15 +313,16 @@ impl Tool {
     }
 }
 
-/// Configuration for a URL-based remote MCP toolset.
+/// Configuration for a remote MCP toolset.
 ///
 /// This type covers the supported neutral connection and tool settings.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolset {
     /// Server identity used by MCP calls.
     pub name: String,
-    /// Remote MCP endpoint.
-    pub url: String,
+    /// Remote MCP endpoint, absent when the connection is specified in `extensions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// Credential sent to the MCP server, when supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_token: Option<String>,
@@ -349,7 +350,7 @@ impl fmt::Debug for McpToolset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {
             name,
-            url: _,
+            url,
             authorization_token,
             headers,
             default_config,
@@ -362,7 +363,7 @@ impl fmt::Debug for McpToolset {
         f.debug_struct("McpToolset")
             .field("name", name)
             // Credentials can appear in any part of the URL, including its path.
-            .field("url", &"[REDACTED]")
+            .field("url", &url.as_ref().map(|_| "[REDACTED]"))
             .field(
                 "authorization_token",
                 &authorization_token.as_ref().map(|_| "[REDACTED]"),
@@ -762,7 +763,7 @@ mod tests {
     #[test]
     fn tool_deserialization_rejects_invalid_tagged_definitions() {
         for definition in [
-            json!({"type": "mcp", "name": "inv", "parameters": {}}),
+            json!({"type": "mcp", "url": "https://example.invalid/mcp", "parameters": {}}),
             json!({"type": "provider", "provider": "x", "name": "n", "parameters": {}}),
             json!({"type": "unknown", "name": "n", "parameters": {}}),
             json!({"type": null, "name": "n", "parameters": {}}),
@@ -784,7 +785,10 @@ mod tests {
         let definitions = json!([
             function,
             {"type": "mcp", "name": "inventory", "url": "https://example.invalid/mcp", "require_approval": false},
-            {"type": "provider", "provider": "openai_responses", "raw": {"type": "mcp", "connector_id": "connector_example", "server_label": "example"}},
+            {"type": "provider", "provider": "openai_responses", "raw": {"type": "web_search"}},
+            {"type": "mcp", "name": "connected", "extensions": {"fields": {
+                "openai_responses": {"connector_id": "connector_dropbox"}
+            }}},
             {
                 "type": "mcp", "name": "configured", "url": "https://example.invalid/mcp",
                 "headers": {"X-Tenant-ID": "tenant-123"},

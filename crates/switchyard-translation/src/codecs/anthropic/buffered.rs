@@ -926,7 +926,7 @@ fn decode_mcp(server: &Value, toolset: &Value) -> Result<McpToolset> {
     };
     Ok(McpToolset {
         name: name.to_owned(),
-        url: url.to_owned(),
+        url: Some(url.to_owned()),
         authorization_token,
         headers: Default::default(), // Anthropic does not support arbitrary MCP headers.
         default_config: toolset
@@ -1375,6 +1375,9 @@ fn encode_anthropic_tools(
                 tools.push(item);
             }
             Tool::Mcp(mcp) => {
+                let url = mcp.url.as_deref().ok_or_else(|| {
+                    TranslationError::LossyConversion("Anthropic MCP requires a URL".into())
+                })?;
                 let extensions = mcp
                     .extensions
                     .fields
@@ -1400,7 +1403,7 @@ fn encode_anthropic_tools(
                         "Anthropic MCP does not support arbitrary headers".into(),
                     ));
                 }
-                if !mcp.url.starts_with("https://") {
+                if !url.starts_with("https://") {
                     return Err(TranslationError::LossyConversion(
                         "Anthropic MCP servers require an HTTPS URL".into(),
                     ));
@@ -1410,7 +1413,12 @@ fn encode_anthropic_tools(
                         "Anthropic MCP encoding requires require_approval = false".into(),
                     ));
                 }
-                for key in ["server_description", "allowed_callers"] {
+                for key in [
+                    "server_description",
+                    "allowed_callers",
+                    "connector_id",
+                    "tunnel_id",
+                ] {
                     if extensions.and_then(|fields| fields.get(key)).is_some() {
                         push_lossy(
                             diagnostics,
@@ -1419,7 +1427,7 @@ fn encode_anthropic_tools(
                         )?;
                     }
                 }
-                let mut mcp_server = json!({"type": "url", "name": mcp.name, "url": mcp.url});
+                let mut mcp_server = json!({"type": "url", "name": mcp.name, "url": url});
                 if let Some(token) = &mcp.authorization_token {
                     mcp_server["authorization_token"] = json!(token);
                 }

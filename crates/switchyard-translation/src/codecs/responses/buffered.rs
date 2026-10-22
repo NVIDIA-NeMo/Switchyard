@@ -1051,18 +1051,7 @@ fn decode_responses_tools(
                 }
             }
         } else if tool.get("type").and_then(Value::as_str) == Some("mcp") {
-            if tool.contains_key("connector_id") || tool.contains_key("tunnel_id") {
-                // These IDs refer to OpenAI-managed connections and cannot currently be
-                // realistically translated to other wire formats. Keep the full definition.
-                // https://developers.openai.com/api/docs/guides/tools-connectors-mcp#connectors
-                // https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
-                out.push(Tool::Provider {
-                    provider: WireFormat::OpenAiResponses.into(),
-                    raw: Value::Object(tool.clone()),
-                });
-            } else {
-                out.push(Tool::Mcp(decode_mcp_tool(tool)?));
-            }
+            out.push(Tool::Mcp(decode_mcp_tool(tool)?));
         } else if tool.get("type").and_then(Value::as_str) == Some("custom") {
             // A freeform tool takes a raw string, not JSON arguments. The IR sees it as a
             // function with a single `input` argument; the verbatim definition is kept so a
@@ -1129,7 +1118,29 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
             })
     };
     let name = required("server_label")?;
-    let url = required("server_url")?;
+    let url = tool
+        .get("server_url")
+        .filter(|value| !value.is_null())
+        .map(|_| required("server_url").map(str::to_owned))
+        .transpose()?;
+    let mut response_extensions = Map::new();
+    // These IDs refer to OpenAI-managed connections rather than portable endpoints.
+    // https://developers.openai.com/api/docs/guides/tools-connectors-mcp#connectors
+    // https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
+    for key in ["connector_id", "tunnel_id"] {
+        if tool.get(key).is_some_and(|value| !value.is_null()) {
+            response_extensions.insert(key.into(), json!(required(key)?));
+        }
+    }
+    if url.is_none()
+        && !response_extensions.contains_key("connector_id")
+        && !response_extensions.contains_key("tunnel_id")
+    {
+        return Err(TranslationError::InvalidValue {
+            path: "tools.server_url".into(),
+            message: "MCP definition requires server_url, connector_id, or tunnel_id".into(),
+        });
+    }
     let headers = tool
         .get("headers")
         .filter(|value| !value.is_null())
@@ -1152,7 +1163,6 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
         })
         .transpose()?
         .map(str::to_owned);
-    let mut response_extensions = Map::new();
     for key in ["server_description", "allowed_callers"] {
         if let Some(value) = tool.get(key) {
             response_extensions.insert(key.into(), value.clone());
@@ -1229,7 +1239,7 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
         .collect::<Result<_>>()?;
     Ok(McpToolset {
         name: name.to_owned(),
-        url: url.to_owned(),
+        url,
         authorization_token,
         headers,
         default_config: McpToolConfig {
@@ -1908,6 +1918,18 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
         .extensions
         .fields
         .get(WireFormat::OpenAiResponses.as_str());
+    if mcp.url.is_none()
+        && !["connector_id", "tunnel_id"].iter().any(|key| {
+            extensions
+                .and_then(|fields| fields.get(key))
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
+    {
+        return Err(TranslationError::LossyConversion(
+            "Responses MCP requires a URL, connector ID, or tunnel ID".into(),
+        ));
+    }
     let allowed_tools = extensions.and_then(|fields| fields.get("allowed_tools"));
     // An open-ended exclusion cannot be expressed as a finite allow-list.
     if allowed_tools.is_none()
@@ -1931,7 +1953,10 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
             "Responses MCP cannot represent conflicting per-tool loading settings".into(),
         ));
     }
-    let mut tool = json!({"type": "mcp", "server_label": mcp.name, "server_url": mcp.url});
+    let mut tool = json!({"type": "mcp", "server_label": mcp.name});
+    if let Some(url) = &mcp.url {
+        tool["server_url"] = json!(url);
+    }
     if let Some(token) = &mcp.authorization_token {
         tool["authorization"] = json!(token);
     }
@@ -1958,7 +1983,12 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
     if let Some(defer_loading) = mcp.default_config.defer_loading {
         tool["defer_loading"] = json!(defer_loading);
     }
-    for key in ["server_description", "allowed_callers"] {
+    for key in [
+        "server_description",
+        "allowed_callers",
+        "connector_id",
+        "tunnel_id",
+    ] {
         if let Some(value) = extensions.and_then(|fields| fields.get(key)) {
             tool[key] = value.clone();
         }
