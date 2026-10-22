@@ -242,6 +242,80 @@ pub fn cleanup(id: &str, reviewed: &serde_json::Value) -> Result<String, String>
         .into())
 }
 
+/// A harness opened in a directory that already exists.
+///
+/// `launch` creates a worktree and then opens the harness in it. A hand-off later opens
+/// another harness in the same directory, so the two steps stay separate.
+pub struct OpenRequest<'a> {
+    pub tool: Harness,
+    pub binary: std::path::PathBuf,
+    /// The directory the harness starts in.
+    pub directory: std::path::PathBuf,
+    /// The public route ID the harness uses as its model.
+    pub model: &'a str,
+    /// The validated server URL.
+    pub root: &'a str,
+    pub login: bool,
+    /// The login directory the script exports, when the harness must select one.
+    pub account: Option<&'a Path>,
+    /// The value of the `x-switchyard-session-id` header.
+    pub session_id: &'a str,
+    /// The private settings files written for Claude and Pi.
+    pub files: &'a [std::path::PathBuf],
+    /// Pi's private agent directory.
+    pub private: &'a Path,
+    /// Claude's session UUID. Choosing it here makes the transcript path known before the
+    /// session starts.
+    pub native_session_id: Option<&'a str>,
+}
+
+/// Claude Code accepts a UUID for `--session-id`. Its own session IDs are version 4, so the
+/// bytes of a time-ordered UUID are relabeled as version 4 rather than enabling another
+/// `uuid` feature.
+pub fn claude_session_id() -> String {
+    uuid::Builder::from_random_bytes(*uuid::Uuid::now_v7().as_bytes())
+        .into_uuid()
+        .to_string()
+}
+
+fn create_worktree(
+    project: &Path,
+    id: &str,
+    revision: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, PendingSession), String> {
+    let worktree = session_root()?.join(id);
+    let parent = worktree
+        .parent()
+        .ok_or("Worktree needs a parent directory")?
+        .to_path_buf();
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["worktree", "add", "-b"])
+        .arg(id)
+        .arg(&worktree)
+        .arg(revision)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not create worktree: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let private = parent.join(format!("{id}-settings"));
+    let pending = PendingSession {
+        project: project.to_path_buf(),
+        worktree: worktree.clone(),
+        private: private.clone(),
+        branch: id.to_string(),
+        revision: revision.into(),
+        opened: false,
+    };
+    Ok((worktree, private, pending))
+}
+
 pub fn launch(
     tool: Harness,
     project: &Path,
@@ -289,40 +363,7 @@ pub fn launch(
     let id = format!("sy-{}", uuid::Uuid::now_v7());
     // Path resolution must succeed before launch creates directories or a worktree.
     let default_files = harness::paths(tool)?;
-    let worktree = session_root()?.join(&id);
-    std::fs::create_dir_all(
-        worktree
-            .parent()
-            .ok_or("Worktree needs a parent directory")?,
-    )
-    .map_err(|e| e.to_string())?;
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&project)
-        .args(["worktree", "add", "-b"])
-        .arg(&id)
-        .arg(&worktree)
-        .arg(revision)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "Could not create worktree: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let private = worktree
-        .parent()
-        .ok_or("Worktree needs a parent directory")?
-        .join(format!("{id}-settings"));
-    let mut pending = PendingSession {
-        project,
-        worktree: worktree.clone(),
-        private: private.clone(),
-        branch: id.clone(),
-        revision: revision.into(),
-        opened: false,
-    };
+    let (worktree, private, mut pending) = create_worktree(&project, &id, revision)?;
     let files = match tool {
         Harness::Pi => vec![private.join("models.json"), private.join("settings.json")],
         _ => vec![private.join("settings.json")],
@@ -331,7 +372,32 @@ pub fn launch(
     if matches!(tool, Harness::Claude | Harness::Pi) {
         harness::install(tool, &files, &root, model, None, login)?;
     }
-    let receipt = serde_json::json!({"id":id,"tool":tool,"route":model,"repository":repository,"revision":preview(&worktree)?["revision"],"worktree":worktree,"branch":id,"created_at":chrono::Utc::now().to_rfc3339(),"settings_directory":private,"account_directory":account});
+    let native_session_id = (tool == Harness::Claude).then(claude_session_id);
+    let created_at = chrono::Utc::now().to_rfc3339();
+    // `launches` records every harness opened in this worktree. The top-level `tool`,
+    // `route`, `account_directory`, and `settings_directory` mirror the latest launch.
+    let launched = serde_json::json!({
+        "tool": tool,
+        "route": model,
+        "account_directory": account,
+        "settings_directory": private,
+        "started_at": created_at,
+        "native_session_id": native_session_id,
+    });
+    let receipt = serde_json::json!({
+        "id": id,
+        "tool": tool,
+        "route": model,
+        "repository": repository,
+        "revision": preview(&worktree)?["revision"],
+        "worktree": worktree,
+        "branch": id,
+        "relative_directory": relative,
+        "created_at": created_at,
+        "settings_directory": private,
+        "account_directory": account,
+        "launches": [launched],
+    });
     std::fs::write(
         private.join("session.json"),
         serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
@@ -341,6 +407,46 @@ pub fn launch(
         Harness::Claude if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() => None,
         _ => default_files[0].parent(),
     });
+    open_harness(&OpenRequest {
+        tool,
+        binary,
+        directory: worktree.join(&relative),
+        model,
+        root: &root,
+        login,
+        account,
+        session_id: &id,
+        files: &files,
+        private: &private,
+        native_session_id: native_session_id.as_deref(),
+    })?;
+    pending.opened = true;
+    Ok(format!(
+        "Opened Terminal to start the session.\n\
+         Worktree: {}\n\
+         Branch: {id}\n\
+         Model route: {model}\n\
+         Remove the worktree with git worktree remove after saving or discarding its changes.",
+        worktree.display()
+    ))
+}
+
+/// This opens the harness in `request.directory` through the user's terminal.
+pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
+    let OpenRequest {
+        tool,
+        binary,
+        directory,
+        model,
+        root,
+        login,
+        account,
+        session_id,
+        files,
+        private,
+        native_session_id,
+    } = request;
+    let (tool, model, login, session_id) = (*tool, *model, *login, *session_id);
     let codex_args = [
         "-c".to_string(),
         format!("model={}", toml_edit::Value::from(model)),
@@ -352,9 +458,18 @@ pub fn launch(
              requires_openai_auth={login},http_headers={{\"x-switchyard-session-id\"={},\
              \"x-switchyard-origin\"=\"codex\"}}}}",
             toml_edit::Value::from(format!("{}/v1", root.trim_end_matches('/'))),
-            toml_edit::Value::from(id.as_str())
+            toml_edit::Value::from(session_id)
         ),
     ];
+    let mut claude_args = vec![
+        "--settings".to_string(),
+        files[0].display().to_string(),
+        "--model".into(),
+        model.into(),
+    ];
+    if let Some(native) = native_session_id {
+        claude_args.extend(["--session-id".to_string(), (*native).to_string()]);
+    }
     #[cfg(windows)]
     {
         let mut environment = Vec::new();
@@ -364,7 +479,7 @@ pub fn launch(
             Harness::Claude => {
                 environment.push((
                     "ANTHROPIC_CUSTOM_HEADERS".into(),
-                    format!("x-switchyard-session-id: {id}\nx-switchyard-origin: claude"),
+                    format!("x-switchyard-session-id: {session_id}\nx-switchyard-origin: claude"),
                 ));
                 if login {
                     remove_environment.extend(
@@ -376,12 +491,7 @@ pub fn launch(
                         .map(String::from),
                     );
                 }
-                vec![
-                    "--settings".into(),
-                    files[0].display().to_string(),
-                    "--model".into(),
-                    model.into(),
-                ]
+                claude_args
             }
             Harness::Pi => {
                 environment.push(("PI_CODING_AGENT_DIR".into(), private.display().to_string()));
@@ -406,9 +516,9 @@ pub fn launch(
             }
         }
         crate::windows::open_terminal(crate::windows::TerminalJob {
-            binary,
+            binary: binary.clone(),
             args,
-            directory: Some(worktree.join(&relative)),
+            directory: Some(directory.clone()),
             environment,
             remove_environment,
         })?;
@@ -426,12 +536,15 @@ pub fn launch(
                     .join(" ")
             ),
             Harness::Claude => format!(
-                "env ANTHROPIC_CUSTOM_HEADERS={} {program} --settings {} --model {}",
+                "env ANTHROPIC_CUSTOM_HEADERS={} {program} {}",
                 quote(&format!(
-                    "x-switchyard-session-id: {id}\nx-switchyard-origin: claude"
+                    "x-switchyard-session-id: {session_id}\nx-switchyard-origin: claude"
                 )),
-                quote(&files[0].display().to_string()),
-                quote(model)
+                claude_args
+                    .iter()
+                    .map(|arg| quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             Harness::Pi => format!(
                 "env PI_CODING_AGENT_DIR={} {program} --provider switchyard --model {}",
@@ -461,19 +574,11 @@ pub fn launch(
              rm -- \"$0\"\n\
              cd {} || exit 1\n\
              {account_env}{subscription_env}{command}",
-            quote(&worktree.join(relative).display().to_string())
+            quote(&directory.display().to_string())
         );
         crate::server::open_terminal_script("switchyard-session-", &script)?;
     }
-    pending.opened = true;
-    Ok(format!(
-        "Opened Terminal to start the session.\n\
-         Worktree: {}\n\
-         Branch: {id}\n\
-         Model route: {model}\n\
-         Remove the worktree with git worktree remove after saving or discarding its changes.",
-        worktree.display()
-    ))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -610,6 +715,13 @@ mod tests {
                 let records = inventory().expect("inventory");
                 assert_eq!(records.len(), 1);
                 assert_eq!(records[0]["revision"], revision);
+                assert_eq!(records[0]["relative_directory"], "");
+                let launches = records[0]["launches"].as_array().expect("launches");
+                assert_eq!(launches.len(), 1);
+                assert_eq!(launches[0]["tool"], "codex_cli");
+                assert_eq!(launches[0]["route"], records[0]["route"]);
+                assert_eq!(launches[0]["started_at"], records[0]["created_at"]);
+                assert!(launches[0]["native_session_id"].is_null());
                 assert_ne!(
                     preview(&fixture.join("project")).expect("advanced project")["revision"],
                     revision
@@ -819,6 +931,39 @@ mod tests {
             assert!(arguments.contains("route'$(literal)"));
             let script = std::fs::read_to_string(captured).expect("script");
             assert!(script.contains("x-switchyard-session-id"));
+            // The receipt names the Claude session UUID that the launch passed on the command
+            // line, so the transcript path is known without reading any transcript.
+            let receipts: Vec<_> = std::fs::read_dir(home.join(".switchyard/worktrees"))
+                .expect("worktrees")
+                .filter_map(|entry| {
+                    let path = entry.expect("entry").path().join("session.json");
+                    std::fs::read(&path).ok().map(|bytes| {
+                        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+                    })
+                })
+                .collect();
+            if name == "claude" {
+                assert_eq!(receipts.len(), 1);
+                let native = receipts[0]["launches"][0]["native_session_id"]
+                    .as_str()
+                    .expect("claude session id");
+                assert_eq!(
+                    uuid::Uuid::parse_str(native)
+                        .expect("uuid")
+                        .get_version_num(),
+                    4
+                );
+                assert!(arguments.contains(&format!("--session-id\n{native}\n")));
+            } else {
+                // The Codex case without an account cleans its session up in the child.
+                assert_eq!(receipts.len(), usize::from(named));
+                assert!(
+                    receipts
+                        .iter()
+                        .all(|receipt| { receipt["launches"][0]["native_session_id"].is_null() })
+                );
+                assert!(!arguments.contains("--session-id"));
+            }
             if name == "claude" && !named && !inherited_dir {
                 assert!(!script.contains("export CLAUDE_CONFIG_DIR="));
             }

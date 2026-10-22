@@ -393,8 +393,12 @@ has its own model settings; launching another session does not change user
 defaults. Codex app uses its own workspace controls; choose Codex CLI for
 worktree sessions.
 
-Codex and Claude launches send a session ID for usage correlation. Pi stores its
-session under the private agent directory beside the worktree. Its requests
+Codex and Claude launches send a session ID for usage correlation. Claude launches
+also pass their own session UUID with `--session-id`. Each session's receipt
+(`session.json` beside its private settings) lists the harnesses opened in that
+worktree under `launches`, with that UUID, so a later tool can find the session's
+transcript. Pi stores its session under the private agent directory beside the
+worktree. Its requests
 need an integration that sends session and turn IDs to appear as a correlated
 session. Otherwise, Usage lists its calls under **All sessions**.
 

@@ -19,6 +19,9 @@ pub struct Entry {
     pub session_id: Option<String>,
     #[serde(default)]
     pub turn_id: Option<String>,
+    /// The caller-set origin header, such as `codex` or `claude`, when the harness sent one.
+    #[serde(default)]
+    pub origin: Option<String>,
     #[serde(default)]
     pub route_id: String,
     #[serde(default)]
@@ -138,7 +141,7 @@ mod tests {
     #[test]
     fn groups_recorded_ids_and_never_displays_content() {
         let bytes = b"{\"ts\":\"2026-10-08T12:00:00Z\",\"model\":\"actual\",\"session_id\":\"s\",\
-                      \"turn_id\":\"t\",\"prompt_tokens\":12,\"completion_tokens\":3,\
+                      \"turn_id\":\"t\",\"origin\":\"claude\",\"prompt_tokens\":12,\"completion_tokens\":3,\
                       \"messages\":\"SECRET\"}\n\
                       {\"ts\":\"2026-10-08T12:00:01Z\",\"model\":\"judge\",\
                       \"tier\":\"classifier\"}\n\
@@ -149,6 +152,8 @@ mod tests {
         assert_eq!(history.entries.len(), 2);
         assert_eq!(history.skipped, 1);
         assert_eq!(history.entries[0].turn_id.as_deref(), Some("t"));
+        assert_eq!(history.entries[0].origin.as_deref(), Some("claude"));
+        assert!(history.entries[1].origin.is_none());
         assert_eq!(history.entries[0].prompt_tokens, 12);
         assert!(
             !serde_json::to_string(&history.entries)
