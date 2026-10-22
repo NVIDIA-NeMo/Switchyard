@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !cgo || !switchyard_native
+
 package switchyard
 
 import (
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type wasmBackend struct {
@@ -63,7 +66,7 @@ type wasmRun struct {
 	cancel context.CancelFunc
 }
 
-func newWasmBackend(config json.RawMessage) (engineBackend, error) {
+func newBackend(config json.RawMessage) (engineBackend, error) {
 	return newWasmBackendWithPoolSize(config, runtime.GOMAXPROCS(0))
 }
 
@@ -187,7 +190,7 @@ func (generation *wasmGeneration) next(ctx context.Context, run uint32) ([]byte,
 		return nil, errors.New("Switchyard wasm next step is outside guest memory")
 	}
 	if ptr == 0 {
-		// The run is waiting on host replies.
+		// The runtime is idle.
 		return nil, nil
 	}
 	output, err := generation.guest.readCString(ptr)
@@ -296,8 +299,7 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 	if err != nil {
 		return Outcome{}, err
 	}
-	slot := backend.slotFor(input)
-	run, err := slot.startRun(ctx, data)
+	run, err := backend.slotFor(input).startRun(ctx, data)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -305,7 +307,7 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 	// Host calls run concurrently, as on the native backend; replies are delivered
 	// whenever the guest reports that it needs one to progress.
 	replies := make(chan wasmHostReply)
-	pending := 0
+	var wake <-chan time.Time
 	for {
 		if err := ctx.Err(); err != nil {
 			return Outcome{}, err
@@ -318,16 +320,25 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 			return Outcome{}, err
 		}
 		if stepData == nil {
-			if pending == 0 {
-				return Outcome{}, errors.New("Switchyard wasm run is waiting without a host call")
+			if wake == nil {
+				// Re-enter the guest so Rust timers and shared session state can progress.
+				timer := time.NewTicker(5 * time.Millisecond)
+				defer timer.Stop()
+				wake = timer.C
 			}
-			reply, err := run.awaitReply(replies)
-			if err != nil {
-				return Outcome{}, err
-			}
-			pending--
-			if err := run.deliver(ctx, reply); err != nil {
-				return Outcome{}, err
+			select {
+			case reply := <-replies:
+				if err := run.deliver(ctx, reply); err != nil {
+					return Outcome{}, err
+				}
+			case <-wake:
+			case <-run.ctx.Done():
+				if err := run.gen.error(); err != nil {
+					return Outcome{}, err
+				}
+				return Outcome{}, run.ctx.Err()
+			case <-run.gen.done:
+				return Outcome{}, run.gen.error()
 			}
 			continue
 		}
@@ -354,7 +365,6 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 			}
 			work := Work{Type: step.Type, ID: step.ID, Models: step.Models, Model: step.Model, Request: step.Request}
 			go run.hostCall(call, work, replies)
-			pending++
 		default:
 			return Outcome{}, errors.New("unknown Switchyard step: " + step.Type)
 		}
@@ -363,24 +373,11 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 
 func (backend *wasmBackend) slotFor(input Input) *wasmSlot {
 	if metadata := input.Metadata; metadata != nil && metadata.SessionID != "" {
-		key := "session\x00" + metadata.SessionID
-		if metadata.IsSubagent {
-			if metadata.AgentID == "" {
-				key = ""
-			} else {
-				key = "subagent\x00" + metadata.SessionID + "\x00" + metadata.AgentID
-			}
-		}
-		if key != "" {
-			return backend.slotForKey(key)
-		}
+		return backend.slotForKey("session\x00" + metadata.SessionID)
 	}
-	// Mirrors libsy's message-hash fallback in retention_key so requests that libsy keys
-	// together share one instance, and with it the state retained under that key.
-	if input.Metadata == nil || !input.Metadata.IsSubagent {
-		if text, ok := firstUserText(input.Request); ok {
-			return backend.slotForKey("message\x00" + text)
-		}
+	// Without a session ID, keep message-keyed retention on one instance.
+	if text, ok := firstUserText(input.Request); ok {
+		return backend.slotForKey("message\x00" + text)
 	}
 	index := backend.next.Add(1) - 1
 	return backend.slots[index%uint64(len(backend.slots))]
@@ -512,20 +509,6 @@ func (run *wasmRun) hostCall(call HostCall, work Work, replies chan<- wasmHostRe
 	select {
 	case replies <- wasmHostReply{work.ID, reply, err}:
 	case <-run.ctx.Done():
-	}
-}
-
-func (run *wasmRun) awaitReply(replies <-chan wasmHostReply) (wasmHostReply, error) {
-	select {
-	case reply := <-replies:
-		return reply, nil
-	case <-run.ctx.Done():
-		if err := run.gen.error(); err != nil {
-			return wasmHostReply{}, err
-		}
-		return wasmHostReply{}, run.ctx.Err()
-	case <-run.gen.done:
-		return wasmHostReply{}, run.gen.error()
 	}
 }
 
