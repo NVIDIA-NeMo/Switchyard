@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+        <meta name="description" content="Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness">
       
       
       
@@ -14,7 +14,7 @@
         <link rel="prev" href="..">
       
       
-        <link rel="next" href="../known_issues/">
+        <link rel="next" href="../operations/local_evaluation/">
       
       
         
@@ -405,180 +405,35 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#server-path" class="md-nav__link">
+  <a href="#install" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Server Path
+        Install
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Server Path">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Prerequisites
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#install-the-server" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Install the server
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Install the server">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#build-from-source" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Build from source
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#configure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configure
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#run-the-server" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Run the server
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verify-routing-is-active" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verify routing is active
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#routing-algorithms" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Routing algorithms
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Routing algorithms">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#choose-a-route-type" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Choose a route type
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#library-path" class="md-nav__link">
+  <a href="#route-a-request" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Library Path
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Library Path">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#add-the-dependencies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Add the dependencies
+        Route a request
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#choose-an-algorithm" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#use-libsy-with-your-client" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Choose an algorithm
+        Use libsy with your client
       
     </span>
   </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#drive-the-algorithm" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Drive the algorithm
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -597,6 +452,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/local_evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate Locally
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1665,6 +1548,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/host_integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Host Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../cli_reference/" class="md-nav__link">
         
   
@@ -1806,180 +1717,35 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#server-path" class="md-nav__link">
+  <a href="#install" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Server Path
+        Install
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Server Path">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Prerequisites
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#install-the-server" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Install the server
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Install the server">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#build-from-source" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Build from source
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#configure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Configure
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#run-the-server" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Run the server
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#verify-routing-is-active" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Verify routing is active
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#routing-algorithms" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Routing algorithms
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Routing algorithms">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#choose-a-route-type" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Choose a route type
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#troubleshooting" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#library-path" class="md-nav__link">
+  <a href="#route-a-request" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Library Path
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Library Path">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#add-the-dependencies" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Add the dependencies
+        Route a request
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#choose-an-algorithm" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#use-libsy-with-your-client" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Choose an algorithm
+        Use libsy with your client
       
     </span>
   </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#drive-the-algorithm" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Drive the algorithm
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -2015,346 +1781,217 @@
 
 
 <h1 id="getting-started-with-switchyard">Getting Started with Switchyard<a class="headerlink" href="#getting-started-with-switchyard" title="Permanent link">&para;</a></h1>
-<p>Switchyard has two native Rust execution paths:</p>
-<ul>
-<li><strong>Server path:</strong> build and run the standalone Rust server for API clients and
-  custom deployments.</li>
-<li><strong>Library path:</strong> embed the routing algorithms directly in your own Rust
-  application with <code>switchyard-libsy</code>.</li>
-</ul>
-<h2 id="server-path">Server Path<a class="headerlink" href="#server-path" title="Permanent link">&para;</a></h2>
-<p>Use this path when you want a standalone proxy for API clients or need to
-operate the Rust server directly.</p>
-<h3 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Git, a native build toolchain, and Rust with Cargo</li>
-<li>An API key for OpenRouter, OpenAI, Anthropic, or another OpenAI-compatible endpoint.
-  To use OpenRouter, create an account at <a href="https://openrouter.ai/">openrouter.ai</a>
-  and generate a key from the <a href="https://openrouter.ai/keys">OpenRouter keys page</a>.</li>
-</ul>
-<p>On Ubuntu or WSL, install the build prerequisites and Rust with <code>rustup</code>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sudo<span class="w"> </span>apt-get<span class="w"> </span>update
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>build-essential<span class="w"> </span>curl<span class="w"> </span>git
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>curl<span class="w"> </span>--proto<span class="w"> </span><span class="s1">&#39;=https&#39;</span><span class="w"> </span>--tlsv1.2<span class="w"> </span>-sSf<span class="w"> </span>https://sh.rustup.rs<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="nb">source</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$HOME</span><span class="s2">/.cargo/env&quot;</span>
+<p>Add routing to your existing Rust gateway or agent harness with <strong>libsy</strong>, Switchyard's core library. Your application keeps its model clients, credentials, and service.</p>
+<p>Start with a local routing decision. Then add tool history or send the selected request through your own model client. Python bindings are covered <a href="../reference/host_integration/#python-bindings">separately</a>.</p>
+<h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
+<p>You need Rust 1.96.1+ with Cargo and a native build toolchain. See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3ebec63d9b29b7c250e97e6f663f5c1720d5c804/INSTALLATION.md#requirements">installation requirements</a>. These examples use the development API, pinned to one Git revision. The released <code>0.3.0</code> crates do not include <code>Step::CallDecision</code> and use a different <code>respond</code> API.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cargo<span class="w"> </span>new<span class="w"> </span>switchyard-demo
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nb">cd</span><span class="w"> </span>switchyard-demo
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># Keep libsy and its protocol types on the same API revision.</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>cargo<span class="w"> </span>add<span class="w"> </span>switchyard-libsy<span class="w"> </span>switchyard-protocol<span class="w"> </span>--git<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git<span class="w"> </span>--rev<span class="w"> </span>5415db205c1f4db7e079731e7bf33a6609c67c8e
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># futures reads the step stream; Tokio runs the asynchronous routing tasks.</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>cargo<span class="w"> </span>add<span class="w"> </span>futures@0.3
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>cargo<span class="w"> </span>add<span class="w"> </span>tokio@1<span class="w"> </span>--features<span class="w"> </span>macros,rt
 </span></code></pre></div>
-<p>For v0.3.0, the standalone server is release-validated on Ubuntu 24.04,
-Linux x86_64. Other platforms are outside the release-validation scope.</p>
-<p>If you try a source build on macOS or native Windows, follow the
-<a href="https://rust-lang.org/tools/install/">official Rust installation instructions</a>.</p>
-<p>Install <code>uv</code> for the repository's Python-based tooling and CI checks. It is not
-required to build or run the Rust server:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>curl<span class="w"> </span>-LsSf<span class="w"> </span>https://astral.sh/uv/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
+<h2 id="route-a-request">Route a request<a class="headerlink" href="#route-a-request" title="Permanent link">&para;</a></h2>
+<p>Replace <code>src/main.rs</code> with this complete example. It selects a model locally, without an API key:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::{</span><span class="n">collections</span><span class="p">::</span><span class="n">HashMap</span><span class="p">,</span><span class="w"> </span><span class="n">sync</span><span class="p">::</span><span class="n">Arc</span><span class="p">};</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">use</span><span class="w"> </span><span class="n">futures</span><span class="p">::</span><span class="n">StreamExt</span><span class="p">;</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_libsy</span><span class="p">::{</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="n">Algorithm</span><span class="p">,</span><span class="w"> </span><span class="n">PickerMode</span><span class="p">,</span><span class="w"> </span><span class="n">RuntimeModels</span><span class="p">,</span><span class="w"> </span><span class="n">StageRouter</span><span class="p">,</span><span class="w"> </span><span class="n">StageRouterConfig</span><span class="p">,</span><span class="w"> </span><span class="n">State</span><span class="p">,</span><span class="w"> </span><span class="n">Step</span><span class="p">,</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">};</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::{</span><span class="n">Category</span><span class="p">,</span><span class="w"> </span><span class="n">Request</span><span class="p">,</span><span class="w"> </span><span class="n">text_request</span><span class="p">};</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="cp">#[tokio::main(flavor = </span><span class="s">&quot;current_thread&quot;</span><span class="cp">)]</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">main</span><span class="p">()</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">(),</span><span class="w"> </span><span class="nb">Box</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">error</span><span class="p">::</span><span class="n">Error</span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="c1">// Start with Efficient when tool history gives no reason to change models.</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">router</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">StageRouter</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">StageRouterConfig</span><span class="p">::</span><span class="n">new</span><span class="p">(</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">        </span><span class="n">PickerMode</span><span class="p">::</span><span class="n">EfficientFirst</span><span class="p">,</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="p">))</span><span class="o">?</span><span class="p">);</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">efficient</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;Efficient&quot;</span><span class="p">;</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">capable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;Capable&quot;</span><span class="p">;</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="c1">// Assign model roles; Any lists the full pool. These are local demo IDs.</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">RuntimeModels</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">HashMap</span><span class="p">::</span><span class="n">from</span><span class="p">([</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Efficient</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">efficient</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Capable</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">capable</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">        </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Any</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="n">efficient</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span><span class="w"> </span><span class="n">capable</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">    </span><span class="p">])));</span>
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">    </span><span class="c1">// Leave the model unset so Stage can select it.</span>
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Request</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">        </span><span class="n">llm_request</span><span class="p">:</span><span class="w"> </span><span class="nc">text_request</span><span class="p">(</span><span class="nb">None</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Run the tests.&quot;</span><span class="p">),</span>
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
+</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">    </span><span class="p">};</span>
+</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>
+</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">    </span><span class="c1">// State holds routing state; next() reads each result from the step stream.</span>
+</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">steps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">router</span><span class="p">.</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">models</span><span class="p">,</span><span class="w"> </span><span class="n">State</span><span class="p">::</span><span class="n">default</span><span class="p">());</span>
+</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">step</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">steps</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="w">        </span><span class="k">match</span><span class="w"> </span><span class="n">step</span><span class="o">?</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="w">            </span><span class="n">Step</span><span class="p">::</span><span class="n">CallModel</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a><span class="w">                </span><span class="c1">// Other presets may ask your LLM client to serve a routing-time call.</span>
+</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a><span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="s">&quot;An LLM client is required for this algorithm.&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">());</span>
+</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a><span class="w">            </span><span class="n">Step</span><span class="p">::</span><span class="n">CallDecision</span><span class="p">(</span><span class="n">_</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a><span class="w">                </span><span class="c1">// Typed decision questions need a decision-model client.</span>
+</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a><span class="w">                </span><span class="k">return</span><span class="w"> </span><span class="nb">Err</span><span class="p">(</span><span class="s">&quot;A decision client is required for this algorithm.&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">());</span>
+</span><span id="__span-1-39"><a id="__codelineno-1-39" name="__codelineno-1-39" href="#__codelineno-1-39"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-1-40"><a id="__codelineno-1-40" name="__codelineno-1-40" href="#__codelineno-1-40"></a><span class="w">            </span><span class="n">Step</span><span class="p">::</span><span class="n">Done</span><span class="p">(</span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-41"><a id="__codelineno-1-41" name="__codelineno-1-41" href="#__codelineno-1-41"></a><span class="w">                </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;Selected: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">selected_model_id</span><span class="p">()</span><span class="o">?</span><span class="p">);</span>
+</span><span id="__span-1-42"><a id="__codelineno-1-42" name="__codelineno-1-42" href="#__codelineno-1-42"></a><span class="w">                </span><span class="c1">// Stage selects the model; your client or gateway can send</span>
+</span><span id="__span-1-43"><a id="__codelineno-1-43" name="__codelineno-1-43" href="#__codelineno-1-43"></a><span class="w">                </span><span class="c1">// outcome.request for the final answer, now or later.</span>
+</span><span id="__span-1-44"><a id="__codelineno-1-44" name="__codelineno-1-44" href="#__codelineno-1-44"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-1-45"><a id="__codelineno-1-45" name="__codelineno-1-45" href="#__codelineno-1-45"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-1-46"><a id="__codelineno-1-46" name="__codelineno-1-46" href="#__codelineno-1-46"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-47"><a id="__codelineno-1-47" name="__codelineno-1-47" href="#__codelineno-1-47"></a><span class="w">    </span><span class="nb">Ok</span><span class="p">(())</span>
+</span><span id="__span-1-48"><a id="__codelineno-1-48" name="__codelineno-1-48" href="#__codelineno-1-48"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>If either installer updates your shell configuration, restart the shell before
-continuing. Verify the tools:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>git<span class="w"> </span>--version
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>rustc<span class="w"> </span>--version
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>cargo<span class="w"> </span>--version
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>uv<span class="w"> </span>--version
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Model selection is local; this makes no provider requests.</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cargo<span class="w"> </span>run
 </span></code></pre></div>
-<h3 id="install-the-server">Install the server<a class="headerlink" href="#install-the-server" title="Permanent link">&para;</a></h3>
-<p>Install the Rust server from crates.io:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span>switchyard-server
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>switchyard-server<span class="w"> </span>--help
+<p>Expected output, after Cargo's build messages:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Selected: Efficient
 </span></code></pre></div>
-<p>Cargo builds the release binary and installs it into <code>~/.cargo/bin</code> by default.</p>
-<h4 id="build-from-source">Build from source<a class="headerlink" href="#build-from-source" title="Permanent link">&para;</a></h4>
-<p>Install the server from <code>main</code> to use unreleased features:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cargo<span class="w"> </span>install<span class="w"> </span>--locked<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--git<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--branch<span class="w"> </span>main<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>switchyard-server
+<p>This Stage preset yields only <code>Done</code>, with <code>outcome.response</code> set to <code>None</code>. Your application owns the final model call. The loop also shows where other algorithms can ask for intermediate model calls.</p>
+<p><code>0.5</code> is a signal-confidence threshold, not a measured probability of task success. This preset is <strong>Auto</strong> in TOML. See the <a href="../routing_algorithms/stage_router_routing/">Stage router guide</a> for signal rules, and evaluate your workload before relying on savings.</p>
+<details>
+<summary>Try the same prompt after a tool failure</summary>
+<p>Keep the same program. Insert this block immediately before <code>let mut steps = ...</code>, then run <code>cargo run</code> again:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::{</span><span class="n">ContentBlock</span><span class="p">,</span><span class="w"> </span><span class="n">Message</span><span class="p">,</span><span class="w"> </span><span class="n">Role</span><span class="p">,</span><span class="w"> </span><span class="n">ToolCall</span><span class="p">,</span><span class="w"> </span><span class="n">ToolResult</span><span class="p">};</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">request</span><span class="p">;</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1">// Describe the agent&#39;s past activity; this example does not execute bash.</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">request</span><span class="p">.</span><span class="n">llm_request</span><span class="p">.</span><span class="n">messages</span><span class="p">.</span><span class="n">extend</span><span class="p">([</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="n">Message</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">        </span><span class="n">role</span><span class="p">:</span><span class="w"> </span><span class="nc">Role</span><span class="p">::</span><span class="n">Assistant</span><span class="p">,</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">        </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">ToolCall</span><span class="p">(</span><span class="n">ToolCall</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">            </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;c1&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">            </span><span class="n">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;bash&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">            </span><span class="n">arguments</span><span class="p">:</span><span class="w"> </span><span class="nc">r</span><span class="p">#</span><span class="s">&quot;{&quot;</span><span class="n">command</span><span class="s">&quot;:&quot;</span><span class="n">cargo</span><span class="w"> </span><span class="n">test</span><span class="s">&quot;}&quot;</span><span class="p">#.</span><span class="n">parse</span><span class="p">()</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">        </span><span class="p">})],</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">    </span><span class="p">},</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="n">Message</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">        </span><span class="n">role</span><span class="p">:</span><span class="w"> </span><span class="nc">Role</span><span class="p">::</span><span class="n">User</span><span class="p">,</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">        </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">ToolResult</span><span class="p">(</span><span class="n">ToolResult</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">            </span><span class="c1">// The result refers to the tool call above by its ID.</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">            </span><span class="n">tool_call_id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;c1&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="w">            </span><span class="n">is_error</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="kc">true</span><span class="p">),</span>
+</span><span id="__span-4-20"><a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a><span class="w">            </span><span class="n">content</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">ContentBlock</span><span class="p">::</span><span class="n">Text</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-21"><a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a><span class="w">                </span><span class="n">text</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;MemoryError: cannot allocate memory</span><span class="se">\n</span><span class="s">Killed&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-4-22"><a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a><span class="w">            </span><span class="p">}],</span>
+</span><span id="__span-4-23"><a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a><span class="w">        </span><span class="p">})],</span>
+</span><span id="__span-4-24"><a id="__codelineno-4-24" name="__codelineno-4-24" href="#__codelineno-4-24"></a><span class="w">    </span><span class="p">},</span>
+</span><span id="__span-4-25"><a id="__codelineno-4-25" name="__codelineno-4-25" href="#__codelineno-4-25"></a><span class="p">]);</span>
 </span></code></pre></div>
-<h3 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h3>
-<p>The Rust server reads an explicit TOML file.</p>
-<p>Create <code>routes.toml</code> with an auto route:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">[llm_clients.openrouter]</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_chat&quot;</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://openrouter.ai/api/v1&quot;</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENROUTER_API_KEY&quot;</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="k">[targets.weak]</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o-mini&quot;</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="k">[targets.strong]</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o&quot;</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="k">[routes.smart]</span>
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span>
-</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
-</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+<p>The critical failure makes Stage select <strong>Capable</strong> for the same user prompt:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Selected: Capable
 </span></code></pre></div>
-<p>The two targets are placeholders. See <a href="../routing_algorithms/model_selection/">Model Selection</a>
-to choose models for the capable and efficient tiers.</p>
-<p><code>format</code> selects the upstream protocol and must be <code>openai_chat</code>,
-<code>openai_responses</code>, or <code>anthropic_messages</code>. <code>api_key_env</code> names the environment
-variable the server reads; the secret does not belong in the TOML file.
-A client can set <code>forward_auth = true</code> instead of <code>api_key_env</code> to send each
-caller's credential to that upstream. OpenAI clients forward <code>authorization</code>,
-<code>chatgpt-account-id</code>, and <code>x-openai-fedramp</code>. Anthropic clients forward
-<code>authorization</code> or <code>x-api-key</code>. Enable this only for an upstream that should
-receive the caller's login. Other application headers are preserved, so they
-may contain provider-specific credentials. The forwarding clients in a route,
-including efficient and capable targets, must use one credential family: all
-OpenAI formats or all <code>anthropic_messages</code>. The exception is one host that
-serves both formats, such as an LLM gateway that accepts each caller's gateway
-key on every endpoint: a route may mix the two families when all of its
-forwarding clients use the same scheme, host, and port. Such a route serves
-Chat Completions and Responses callers and forwards the caller's bearer token
-to every forwarding client. The server returns 400 to a caller whose API the
-route does not serve. Clients that use <code>api_key_env</code> send the server's own key,
-so these limits do not apply to them.</p>
-<h3 id="run-the-server">Run the server<a class="headerlink" href="#run-the-server" title="Permanent link">&para;</a></h3>
-<p>Export the provider credential, validate the configuration without binding a
-socket, then start the release binary:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+<p>Both runs are local and need no API key. Remove the inserted block to return to the fresh request.</p>
+</details>
+<h2 id="use-libsy-with-your-client">Use libsy with your client<a class="headerlink" href="#use-libsy-with-your-client" title="Permanent link">&para;</a></h2>
+<p><strong>You do not have to use Switchyard's HTTP client.</strong> Keep your existing SDK, or create your own client. The same program can send Stage's selected request through <a href="https://openrouter.ai/docs/quickstart">OpenRouter</a>.</p>
+<p>Add the dependencies:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Translation converts neutral protocol types to and from provider JSON.</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>cargo<span class="w"> </span>add<span class="w"> </span>switchyard-translation<span class="w"> </span>--git<span class="w"> </span>https://github.com/NVIDIA-NeMo/Switchyard.git<span class="w"> </span>--rev<span class="w"> </span>5415db205c1f4db7e079731e7bf33a6609c67c8e
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="c1"># reqwest handles HTTPS and JSON; serde_json represents the provider&#39;s reply.</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>cargo<span class="w"> </span>add<span class="w"> </span>reqwest@0.13<span class="w"> </span>--no-default-features<span class="w"> </span>--features<span class="w"> </span>json,rustls
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>cargo<span class="w"> </span>add<span class="w"> </span>serde_json@1
 </span></code></pre></div>
-<p>Any client that speaks OpenAI Chat Completions, Anthropic Messages, or OpenAI
-Responses API can connect. The route <code>id</code> is the model name clients use.</p>
-<p>In another terminal:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>curl<span class="w"> </span>http://localhost:4000/health
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>curl<span class="w"> </span>http://localhost:4000/v1/models
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;switchyard&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span>
+<p>For the complete program, replace <code>src/main.rs</code> with the <a href="../assets/quickstart/openrouter.rs">OpenRouter example</a>. It includes the router above and the adapter below. To extend your existing file instead, apply the edits shown here.</p>
+<p>Create an <a href="https://openrouter.ai/settings/keys">OpenRouter key</a> with access to your chosen models:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
 </span></code></pre></div>
-<h3 id="verify-routing-is-active">Verify routing is active<a class="headerlink" href="#verify-routing-is-active" title="Permanent link">&para;</a></h3>
-<p>The first request usually lands on the efficient model. That does not mean
-routing is off. Auto decides from tool results, and a request without tool
-history has none, so the efficient tier serves it by design. Use these checks
-to see routing work. Your model IDs and token counts will differ from the
-examples.</p>
-<ol>
-<li>
-<p><strong>Confirm the configuration loads.</strong> The dry run prints the route IDs the
-   server will serve:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+<p>In <code>main</code>, replace the two demo model-ID assignments with:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1">// Use provider model IDs for the same Efficient and Capable roles.</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">efficient</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;z-ai/glm-5.2&quot;</span><span class="p">;</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">capable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;anthropic/claude-opus-4.8&quot;</span><span class="p">;</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1">// Reuse one HTTP client, with a 60-second timeout for each call.</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="kd">let</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">OpenRouterClient</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="n">http</span><span class="p">:</span><span class="w"> </span><span class="nc">reqwest</span><span class="p">::</span><span class="n">Client</span><span class="p">::</span><span class="n">builder</span><span class="p">()</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">        </span><span class="p">.</span><span class="n">timeout</span><span class="p">(</span><span class="n">std</span><span class="p">::</span><span class="n">time</span><span class="p">::</span><span class="n">Duration</span><span class="p">::</span><span class="n">from_secs</span><span class="p">(</span><span class="mi">60</span><span class="p">)).</span><span class="n">build</span><span class="p">()</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">    </span><span class="n">api_key</span><span class="p">:</span><span class="w"> </span><span class="nc">std</span><span class="p">::</span><span class="n">env</span><span class="p">::</span><span class="n">var</span><span class="p">(</span><span class="s">&quot;OPENROUTER_API_KEY&quot;</span><span class="p">)</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="p">};</span>
 </span></code></pre></div>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>server OK: switchyard
+<p>Inside <code>match step?</code>, replace the <code>CallModel</code> and <code>Done</code> arms with these. Keep <code>CallDecision</code> unchanged; it needs a separate <a href="../reference/host_integration/#serve-routing-time-calls">decision client</a>.</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">Step</span><span class="p">::</span><span class="n">CallModel</span><span class="p">(</span><span class="n">call</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span><span class="c1">// Pass the future to respond so libsy can cancel pending routing calls.</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">}</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="n">Step</span><span class="p">::</span><span class="n">Done</span><span class="p">(</span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;Selected: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">selected_model_id</span><span class="p">()</span><span class="o">?</span><span class="p">);</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">    </span><span class="c1">// Stage has selected the model. Your application now makes the final call.</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">outcome</span><span class="p">.</span><span class="n">request</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">        </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;Answer: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">));</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="p">}</span>
 </span></code></pre></div>
-</li>
-<li>
-<p><strong>Read the served model from the response header.</strong> Every response carries
-   <code>x-model-router-selected-model</code>. A chat-only request is served by the
-   efficient model:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>curl<span class="w"> </span>-si<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;switchyard&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;hello&quot;}]}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>x-model-router-selected-model
+<p>Append the adapter to the same file:</p>
+<details>
+<summary>OpenRouter adapter: append to src/main.rs</summary>
+<p>This reuses <code>Request</code> from the imports above. It uses <code>reqwest</code> for HTTP and <code>switchyard-translation</code> for provider JSON. It returns a buffered response and requires no client trait implementation.</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_libsy</span><span class="p">::</span><span class="n">LibsyError</span><span class="p">;</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::{</span><span class="n">LlmResponse</span><span class="p">,</span><span class="w"> </span><span class="n">Response</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">};</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_translation</span><span class="p">::{</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="n">WireFormat</span><span class="p">,</span><span class="w"> </span><span class="n">decode_aggregated_response</span><span class="p">,</span><span class="w"> </span><span class="n">encode_request</span><span class="p">,</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="p">};</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="k">struct</span><span class="w"> </span><span class="nc">OpenRouterClient</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">    </span><span class="c1">// Reuse one HTTP client for connection pooling across model calls.</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">    </span><span class="n">http</span><span class="p">:</span><span class="w"> </span><span class="nc">reqwest</span><span class="p">::</span><span class="n">Client</span><span class="p">,</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">    </span><span class="c1">// The application loads this from the environment instead of source code.</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">    </span><span class="n">api_key</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="p">}</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="k">impl</span><span class="w"> </span><span class="n">OpenRouterClient</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-15"><a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="w">    </span><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">call</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">,</span><span class="w"> </span><span class="n">request</span><span class="p">:</span><span class="w"> </span><span class="nc">Request</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">switchyard_libsy</span><span class="p">::</span><span class="nb">Result</span><span class="o">&lt;</span><span class="n">Response</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-16"><a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="w">        </span><span class="c1">// Encode the neutral request as OpenRouter Chat Completions JSON.</span>
+</span><span id="__span-10-17"><a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a><span class="w">        </span><span class="c1">// libsy has already set its model to the selected target.</span>
+</span><span id="__span-10-18"><a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">body</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">encode_request</span><span class="p">(</span><span class="o">&amp;</span><span class="n">request</span><span class="p">.</span><span class="n">llm_request</span><span class="p">,</span><span class="w"> </span><span class="n">WireFormat</span><span class="p">::</span><span class="n">OpenAiChat</span><span class="p">)</span>
+</span><span id="__span-10-19"><a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a><span class="w">            </span><span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="n">error</span><span class="o">|</span><span class="w"> </span><span class="n">LibsyError</span><span class="p">::</span><span class="n">external</span><span class="p">(</span><span class="s">&quot;encoding OpenRouter request&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-10-20"><a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a><span class="w">        </span><span class="c1">// Your client performs the provider call and supplies the API key.</span>
+</span><span id="__span-10-21"><a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="bp">self</span><span class="p">.</span><span class="n">http</span>
+</span><span id="__span-10-22"><a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a><span class="w">            </span><span class="p">.</span><span class="n">post</span><span class="p">(</span><span class="s">&quot;https://openrouter.ai/api/v1/chat/completions&quot;</span><span class="p">)</span>
+</span><span id="__span-10-23"><a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a><span class="w">            </span><span class="p">.</span><span class="n">bearer_auth</span><span class="p">(</span><span class="o">&amp;</span><span class="bp">self</span><span class="p">.</span><span class="n">api_key</span><span class="p">)</span>
+</span><span id="__span-10-24"><a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a><span class="w">            </span><span class="p">.</span><span class="n">json</span><span class="p">(</span><span class="o">&amp;</span><span class="n">body</span><span class="p">)</span>
+</span><span id="__span-10-25"><a id="__codelineno-10-25" name="__codelineno-10-25" href="#__codelineno-10-25"></a><span class="w">            </span><span class="p">.</span><span class="n">send</span><span class="p">().</span><span class="k">await</span>
+</span><span id="__span-10-26"><a id="__codelineno-10-26" name="__codelineno-10-26" href="#__codelineno-10-26"></a><span class="w">            </span><span class="c1">// Return HTTP failures before trying to decode an answer.</span>
+</span><span id="__span-10-27"><a id="__codelineno-10-27" name="__codelineno-10-27" href="#__codelineno-10-27"></a><span class="w">            </span><span class="p">.</span><span class="n">and_then</span><span class="p">(</span><span class="n">reqwest</span><span class="p">::</span><span class="n">Response</span><span class="p">::</span><span class="n">error_for_status</span><span class="p">)</span>
+</span><span id="__span-10-28"><a id="__codelineno-10-28" name="__codelineno-10-28" href="#__codelineno-10-28"></a><span class="w">            </span><span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="n">error</span><span class="o">|</span><span class="w"> </span><span class="n">LibsyError</span><span class="p">::</span><span class="n">external</span><span class="p">(</span><span class="s">&quot;OpenRouter request&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-10-29"><a id="__codelineno-10-29" name="__codelineno-10-29" href="#__codelineno-10-29"></a><span class="w">        </span><span class="c1">// Save headers before consuming the body, then read the full JSON reply.</span>
+</span><span id="__span-10-30"><a id="__codelineno-10-30" name="__codelineno-10-30" href="#__codelineno-10-30"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">upstream_headers</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">headers</span><span class="p">().</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-10-31"><a id="__codelineno-10-31" name="__codelineno-10-31" href="#__codelineno-10-31"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">body</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">json</span><span class="p">::</span><span class="o">&lt;</span><span class="n">serde_json</span><span class="p">::</span><span class="n">Value</span><span class="o">&gt;</span><span class="p">().</span><span class="k">await</span>
+</span><span id="__span-10-32"><a id="__codelineno-10-32" name="__codelineno-10-32" href="#__codelineno-10-32"></a><span class="w">            </span><span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="n">error</span><span class="o">|</span><span class="w"> </span><span class="n">LibsyError</span><span class="p">::</span><span class="n">external</span><span class="p">(</span><span class="s">&quot;reading OpenRouter response&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-10-33"><a id="__codelineno-10-33" name="__codelineno-10-33" href="#__codelineno-10-33"></a><span class="w">        </span><span class="c1">// Convert the provider&#39;s reply back to libsy&#39;s neutral response type.</span>
+</span><span id="__span-10-34"><a id="__codelineno-10-34" name="__codelineno-10-34" href="#__codelineno-10-34"></a><span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">answer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">decode_aggregated_response</span><span class="p">(</span><span class="o">&amp;</span><span class="n">body</span><span class="p">,</span><span class="w"> </span><span class="n">WireFormat</span><span class="p">::</span><span class="n">OpenAiChat</span><span class="p">)</span>
+</span><span id="__span-10-35"><a id="__codelineno-10-35" name="__codelineno-10-35" href="#__codelineno-10-35"></a><span class="w">            </span><span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="n">error</span><span class="o">|</span><span class="w"> </span><span class="n">LibsyError</span><span class="p">::</span><span class="n">external</span><span class="p">(</span><span class="s">&quot;decoding OpenRouter response&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">))</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-10-36"><a id="__codelineno-10-36" name="__codelineno-10-36" href="#__codelineno-10-36"></a><span class="w">        </span><span class="nb">Ok</span><span class="p">(</span><span class="n">Response</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-37"><a id="__codelineno-10-37" name="__codelineno-10-37" href="#__codelineno-10-37"></a><span class="w">            </span><span class="c1">// Agg holds a complete answer; a streaming client would return Stream.</span>
+</span><span id="__span-10-38"><a id="__codelineno-10-38" name="__codelineno-10-38" href="#__codelineno-10-38"></a><span class="w">            </span><span class="n">llm_response</span><span class="p">:</span><span class="w"> </span><span class="nc">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">),</span>
+</span><span id="__span-10-39"><a id="__codelineno-10-39" name="__codelineno-10-39" href="#__codelineno-10-39"></a><span class="w">            </span><span class="c1">// Keep any correlation metadata attached to the routed request.</span>
+</span><span id="__span-10-40"><a id="__codelineno-10-40" name="__codelineno-10-40" href="#__codelineno-10-40"></a><span class="w">            </span><span class="n">metadata</span><span class="p">:</span><span class="w"> </span><span class="nc">request</span><span class="p">.</span><span class="n">metadata</span><span class="p">,</span>
+</span><span id="__span-10-41"><a id="__codelineno-10-41" name="__codelineno-10-41" href="#__codelineno-10-41"></a><span class="w">            </span><span class="n">upstream_headers</span><span class="p">,</span>
+</span><span id="__span-10-42"><a id="__codelineno-10-42" name="__codelineno-10-42" href="#__codelineno-10-42"></a><span class="w">        </span><span class="p">})</span>
+</span><span id="__span-10-43"><a id="__codelineno-10-43" name="__codelineno-10-43" href="#__codelineno-10-43"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-10-44"><a id="__codelineno-10-44" name="__codelineno-10-44" href="#__codelineno-10-44"></a><span class="p">}</span>
 </span></code></pre></div>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>x-model-router-selected-model: openai/gpt-4o-mini
+</details>
+<p>Run the program again. <strong>This makes one billable model call</strong>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>cargo<span class="w"> </span>run
 </span></code></pre></div>
-</li>
-<li>
-<p><strong>Send a request that escalates.</strong> A tool result that reports a critical
-   error forces the capable tier. Save this request as <code>escalate.json</code>:</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="p">{</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span><span class="p">,</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Run the test suite.&quot;</span><span class="p">},</span>
-</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tool_calls&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">      </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;call_1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;function&quot;</span><span class="p">,</span>
-</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">       </span><span class="nt">&quot;function&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bash&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;arguments&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;{\&quot;command\&quot;:\&quot;pytest -q\&quot;}&quot;</span><span class="p">}}</span>
-</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="w">    </span><span class="p">]},</span>
-</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;tool&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tool_call_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;call_1&quot;</span><span class="p">,</span>
-</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="w">     </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;MemoryError: cannot allocate memory\nKilled&quot;</span><span class="p">},</span>
-</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;content&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Fix it.&quot;</span><span class="p">}</span>
-</span><span id="__span-12-12"><a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="w">  </span><span class="p">]</span>
-</span><span id="__span-12-13"><a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="p">}</span>
+<p>For the fresh request, expect this shape; the answer text depends on the model:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>Selected: z-ai/glm-5.2
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>Answer: &lt;model reply&gt;
 </span></code></pre></div>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>curl<span class="w"> </span>-si<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span>-d<span class="w"> </span>@escalate.json<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span>x-model-router-selected-model
-</span></code></pre></div>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>x-model-router-selected-model: openai/gpt-4o
-</span></code></pre></div>
-<p>The same hard failure appearing twice in recent tool results, or a
-context-compaction marker, also forces the capable tier. See
-<a href="../routing_algorithms/stage_router_routing/#decision-sources">decision sources</a>.</p>
-</li>
-<li>
-<p><strong>Count decisions by source.</strong> <code>GET /v1/stats</code> reports calls per model and
-   routing decisions by source:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;.models | map_values(.calls)&#39;</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:4000/v1/stats<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;.algorithm_stats.stage_router.routing_decisions&#39;</span>
-</span></code></pre></div>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="p">{</span><span class="nt">&quot;openai/gpt-4o&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span><span class="nt">&quot;openai/gpt-4o-mini&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">}</span>
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="p">{</span><span class="nt">&quot;fall_open&quot;</span><span class="p">:{</span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span><span class="nt">&quot;targets&quot;</span><span class="p">:{</span><span class="nt">&quot;openai/gpt-4o-mini&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">}},</span><span class="nt">&quot;override&quot;</span><span class="p">:{</span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">,</span><span class="nt">&quot;targets&quot;</span><span class="p">:{</span><span class="nt">&quot;openai/gpt-4o&quot;</span><span class="p">:</span><span class="mi">1</span><span class="p">}}}</span>
-</span></code></pre></div>
-<p><code>fall_open</code> counts turns with no usable signals that landed on the picker's
-default tier. <code>override</code> counts turns a hard error forced to the capable
-tier. Counts reset when the server restarts or on <code>POST /v1/stats/reset</code>.</p>
-</li>
-<li>
-<p><strong>Keep a record of every request.</strong> Start the server with
-   <code>--routing-log-file routing.jsonl</code> to append one JSON line per served request:</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="p">{</span><span class="nt">&quot;ts&quot;</span><span class="p">:</span><span class="s2">&quot;2026-10-15T06:16:22.643Z&quot;</span><span class="p">,</span><span class="nt">&quot;route_id&quot;</span><span class="p">:</span><span class="s2">&quot;switchyard&quot;</span><span class="p">,</span><span class="nt">&quot;algorithm&quot;</span><span class="p">:</span><span class="s2">&quot;stage_router&quot;</span><span class="p">,</span><span class="nt">&quot;origin&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;task&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;trial_id&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;session_id&quot;</span><span class="p">:</span><span class="kc">null</span><span class="p">,</span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="s2">&quot;openai/gpt-4o&quot;</span><span class="p">,</span><span class="nt">&quot;tier&quot;</span><span class="p">:</span><span class="s2">&quot;&quot;</span><span class="p">,</span><span class="nt">&quot;prompt_tokens&quot;</span><span class="p">:</span><span class="mi">42</span><span class="p">,</span><span class="nt">&quot;cached_tokens&quot;</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span><span class="nt">&quot;cache_creation_tokens&quot;</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span><span class="nt">&quot;completion_tokens&quot;</span><span class="p">:</span><span class="mi">5</span><span class="p">,</span><span class="nt">&quot;reasoning_tokens&quot;</span><span class="p">:</span><span class="mi">0</span><span class="p">,</span><span class="nt">&quot;total_tokens&quot;</span><span class="p">:</span><span class="mi">47</span><span class="p">}</span>
-</span></code></pre></div>
-<p>The record names the served model and its token counts. It does not record
-why that model was chosen; use <code>GET /v1/stats</code> for the decision counts.</p>
-</li>
-</ol>
-<h3 id="routing-algorithms">Routing algorithms<a class="headerlink" href="#routing-algorithms" title="Permanent link">&para;</a></h3>
-<h4 id="choose-a-route-type">Choose a route type<a class="headerlink" href="#choose-a-route-type" title="Permanent link">&para;</a></h4>
-<p>Start with <strong>Auto</strong>, as shown above. Choose Task or Execution when you want
-more control over how requests are routed.</p>
-<table>
-<thead>
-<tr>
-<th>Choice</th>
-<th>Use it when</th>
-<th>Route <code>type</code></th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong><a href="../routing_algorithms/overview/#auto">Auto</a></strong></td>
-<td>You want Switchyard's recommended preset.</td>
-<td><code>auto</code></td>
-</tr>
-<tr>
-<td><strong><a href="../routing_algorithms/llm_classifier_routing/">Task</a></strong></td>
-<td>You want an LLM to judge which model can handle the task.</td>
-<td><code>llm_classifier</code></td>
-</tr>
-<tr>
-<td><strong><a href="../routing_algorithms/stage_router_routing/">Execution</a></strong></td>
-<td>You want tool results and agent progress to guide each request.</td>
-<td><code>stage_router</code></td>
-</tr>
-</tbody>
-</table>
-<p>A single TOML file can declare multiple routes. The table key, such as
-<code>routes.smart</code>, is a local configuration name; each route's <code>id</code> is exposed as a
-model on <code>GET /v1/models</code>.</p>
-<p>See <a href="../routing_algorithms/overview/">Routing Overview</a> to compare strategies,
-and the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6240543cdeaa1da41970560885b05d500d08382/crates/switchyard-server/README.md"><code>switchyard-server</code> guide</a> for
-the complete TOML schema, route options, TLS, and metrics.</p>
-<h3 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h3>
-<p><strong>No API key / auth error</strong></p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-18-1"><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="nb">test</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$OPENROUTER_API_KEY</span><span class="s2">&quot;</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;key is set&quot;</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;key is missing&quot;</span>
-</span><span id="__span-18-2"><a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
-</span></code></pre></div>
-<p>Confirm that <code>api_key_env</code> in <code>routes.toml</code> names the environment variable you
-exported. The dry run validates the schema, environment lookup, target
-references, and route construction without starting the server.</p>
-<p><strong>Connection refused</strong></p>
-<p>Check health: <code>curl http://localhost:4000/health</code></p>
-<p><strong>Telemetry header</strong></p>
-<p>Switchyard documents an <code>X-Switchyard-Version</code> header for release attribution
-on outbound LLM calls. No request or response content is included. The 0.2.0
-native server does not currently send this header upstream (see
-<a href="../known_issues/">Known Issues</a>), so no opt-out is required at the moment.</p>
-<hr />
-<h2 id="library-path">Library Path<a class="headerlink" href="#library-path" title="Permanent link">&para;</a></h2>
-<p>Use this path when you want routing inside your own Rust application rather than
-behind a proxy. <code>switchyard-libsy</code> never calls a model itself: an algorithm
-picks a target and hands the model call back to you.</p>
-<p>For plan/execute, supply conversation history, including tool calls and results,
-before routing. Responses API continuation IDs alone are not enough. See the
-<a href="../routing_algorithms/plan_execute_routing/#responses-api-history-requirement">Responses API history requirement</a>.</p>
-<h3 id="add-the-dependencies">Add the dependencies<a class="headerlink" href="#add-the-dependencies" title="Permanent link">&para;</a></h3>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-19-1"><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="k">[dependencies]</span>
-</span><span id="__span-19-2"><a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="n">async-trait</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.1&quot;</span>
-</span><span id="__span-19-3"><a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="n">futures</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;0.3&quot;</span>
-</span><span id="__span-19-4"><a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.3.0&quot;</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-19-5"><a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.3.0&quot;</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-19-6"><a id="__codelineno-19-6" name="__codelineno-19-6" href="#__codelineno-19-6"></a><span class="n">tokio</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">version</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">features</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;macros&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;rt&quot;</span><span class="p">]</span><span class="w"> </span><span class="p">}</span>
-</span></code></pre></div>
-<h3 id="choose-an-algorithm">Choose an algorithm<a class="headerlink" href="#choose-an-algorithm" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Type</th>
-<th>Purpose</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>LlmTaskClassifier</code></td>
-<td>Ask a judge model to choose an efficient or capable target.</td>
-</tr>
-<tr>
-<td><code>StageRouter</code></td>
-<td>Route from signals already in the conversation, such as tool results and errors, with an optional judge fallback.</td>
-</tr>
-<tr>
-<td><code>LlmTaskClassifier</code> with escalation</td>
-<td>Every turn runs on the efficient target first, and a judge reads that answer to decide whether to send the same request to the capable target.</td>
-</tr>
-<tr>
-<td><code>Random</code></td>
-<td>Select among any number of targets, uniform or weighted.</td>
-</tr>
-</tbody>
-</table>
-<p>These are the same strategies the server exposes as route types, so a deployment
-can move between the server and library paths without changing routing
-behaviour.</p>
-<h3 id="drive-the-algorithm">Drive the algorithm<a class="headerlink" href="#drive-the-algorithm" title="Permanent link">&para;</a></h3>
-<p>An algorithm yields a stream of steps. Each <code>Step::CallModel</code> is a routing-time classifier or
-judge call your host performs over its own transport. The run ends with <code>Step::Done</code> carrying a
-<code>RoutingOutcome</code>: the selected model, ordered fallbacks, rewritten request, and an optional
-response when routing already produced the answer. Otherwise the host makes the terminal answer
-call from that outcome. Serving these calls yourself is what lets libsy embed in a host that
-already owns its HTTP stack, retries, and credentials.</p>
-<p>Pass each call's work to <code>respond</code> before awaiting it. In Rust:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-20-1"><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_libsy</span><span class="p">::{</span><span class="n">CallModel</span><span class="p">,</span><span class="w"> </span><span class="n">LibsyError</span><span class="p">,</span><span class="w"> </span><span class="nb">Result</span><span class="p">};</span>
-</span><span id="__span-20-2"><a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::</span><span class="n">RoutedLlmClient</span><span class="p">;</span>
-</span><span id="__span-20-3"><a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>
-</span><span id="__span-20-4"><a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="k">async</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">serve</span><span class="p">(</span><span class="n">call</span><span class="p">:</span><span class="w"> </span><span class="nc">CallModel</span><span class="p">,</span><span class="w"> </span><span class="n">client</span><span class="p">:</span><span class="w"> </span><span class="kp">&amp;</span><span class="nc">dyn</span><span class="w"> </span><span class="n">RoutedLlmClient</span><span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nb">Result</span><span class="o">&lt;</span><span class="p">()</span><span class="o">&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-20-5"><a id="__codelineno-20-5" name="__codelineno-20-5" href="#__codelineno-20-5"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-20-6"><a id="__codelineno-20-6" name="__codelineno-20-6" href="#__codelineno-20-6"></a><span class="w">    </span><span class="kd">let</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">models</span><span class="p">[</span><span class="mi">0</span><span class="p">].</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-20-7"><a id="__codelineno-20-7" name="__codelineno-20-7" href="#__codelineno-20-7"></a><span class="w">    </span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="k">async</span><span class="w"> </span><span class="k">move</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-20-8"><a id="__codelineno-20-8" name="__codelineno-20-8" href="#__codelineno-20-8"></a><span class="w">        </span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">).</span><span class="k">await</span><span class="p">.</span><span class="n">map_err</span><span class="p">(</span><span class="o">|</span><span class="n">error</span><span class="o">|</span><span class="w"> </span><span class="n">LibsyError</span><span class="p">::</span><span class="n">client_call</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">error</span><span class="p">))</span>
-</span><span id="__span-20-9"><a id="__codelineno-20-9" name="__codelineno-20-9" href="#__codelineno-20-9"></a><span class="w">    </span><span class="p">}).</span><span class="k">await</span>
-</span><span id="__span-20-10"><a id="__codelineno-20-10" name="__codelineno-20-10" href="#__codelineno-20-10"></a><span class="p">}</span>
-</span></code></pre></div>
-<p>In Python, the client coroutine returns <code>LlmResponse.Agg</code> or <code>LlmResponse.Stream</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-21-1"><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="k">await</span> <span class="n">call</span><span class="o">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">call</span><span class="o">.</span><span class="n">request</span><span class="p">,</span> <span class="n">call</span><span class="o">.</span><span class="n">models</span><span class="p">[</span><span class="mi">0</span><span class="p">]))</span>
-</span></code></pre></div>
-<p><code>respond</code> now accepts a future or awaitable instead of a completed response. Move
-the provider await into this method. Python <code>call.fail(error)</code> is also awaitable.
-Decision calls use the same pattern with their existing decision response type.</p>
-<p>When an algorithm stops waiting for a call, <code>respond</code> cancels that work and
-returns normally. Python waits for task cleanup before returning. For concurrent
-algorithms, schedule each Python handler with <code>asyncio.create_task</code> and cancel and
-await remaining handlers when the run ends; see the complete
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6240543cdeaa1da41970560885b05d500d08382/examples/libsy.py">Python example</a>. Awaiting handlers one at a time inside the
-step loop serializes their execution. Rust hosts can use <code>libsy::drive</code> to manage
-concurrent handlers and their lifetime.</p>
-<p>After a response stream is delivered, its consumer controls its lifetime.
-Cancellation cannot guarantee that an upstream provider stops generating or billing.</p>
-<p>Successful runs also include <code>OutcomeMetadata</code>: a unique <code>outcome_id</code>, the algorithm
-name, and optional JSON evidence. In Python, read <code>outcome.metadata.outcome_id</code>,
-<code>outcome.metadata.algorithm</code>, and <code>outcome.metadata.evidence</code> after checking that
-<code>outcome.metadata</code> is present. Evidence is a normal Python value, usually a dictionary;
-algorithms without evidence return <code>None</code>.</p>
-<p>With a host-installed OpenTelemetry subscriber, the existing <code>libsy.run</code> span records
-the same identity, selected models, and supported evidence fields. See
-the <a href="../reference/opentelemetry/">OpenTelemetry reference</a> for field names, metrics,
-and export setup. libsy does not install an exporter or send telemetry itself.</p>
-<p>For the request, response, and streaming types the steps carry, see
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6240543cdeaa1da41970560885b05d500d08382/crates/protocol/README.md"><code>switchyard-protocol</code></a>.</p>
-<hr />
+<p>With the optional tool-failure history, the selected model is <code>anthropic/claude-opus-4.8</code>. For routing only, keep the original <code>Done</code> arm. Other algorithms may supply an answer in <code>outcome.response</code>; the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3ebec63d9b29b7c250e97e6f663f5c1720d5c804/README.md#start-with-libsy">general integration pattern</a> shows how to reuse it.</p>
+<p>Your client returns <code>switchyard_protocol::Response</code> and adapts errors to <code>libsy::Result</code>. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3ebec63d9b29b7c250e97e6f663f5c1720d5c804/crates/libsy-llm-client/README.md">optional Switchyard HTTP client</a> provides translation, streaming, retries, and fallback. Use <a href="../reference/host_integration/#concurrent-calls-and-cancellation"><code>libsy::drive</code></a> for concurrent algorithms; this loop serves calls sequentially.</p>
 <h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../core_concepts/">Core Concepts</a>: LLM clients, targets, and routes</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6240543cdeaa1da41970560885b05d500d08382/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration,
-  routing algorithms, TLS, and metrics</li>
-<li><a href="../reference/rust_api/">Rust API reference</a>: generated libsy, protocol, and translation
-  documentation, crate setup, and API boundaries</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6240543cdeaa1da41970560885b05d500d08382/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a>:
-  request, response, and stream translation</li>
+<li><strong>Explore the Rust API:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3ebec63d9b29b7c250e97e6f663f5c1720d5c804/crates/libsy/README.md">libsy crate</a> and <a href="../reference/rust_api/">generated API reference</a>.</li>
+<li><strong>Use a gateway integration:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3ebec63d9b29b7c250e97e6f663f5c1720d5c804/examples/litellm/README.md">LiteLLM</a> or <a href="../integrations/nemo_relay/">NeMo Relay</a>. Check each guide's supported algorithms and versions.</li>
+<li><strong>Choose another algorithm:</strong> <a href="../routing_algorithms/overview/">routing overview</a>.</li>
+<li><strong>Try the standalone proxy:</strong> <a href="../operations/local_evaluation/">local evaluation guide</a>. The server is for demos, evaluation, and personal use, not a supported production path.</li>
+<li><strong>Use Python:</strong> <a href="../reference/host_integration/#python-bindings">Python bindings</a>.</li>
+<li><strong>Use an agent directly:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3ebec63d9b29b7c250e97e6f663f5c1720d5c804/examples/claude/README.md">Claude Code example</a>, <a href="../integrations/pi/">pi</a>, or <a href="../integrations/oh_my_pi/">Oh My Pi</a>.</li>
 </ul>
 
 
