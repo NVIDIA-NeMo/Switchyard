@@ -12,6 +12,7 @@ use switchyard_llm_client::{
     Backend, HttpBackendConfig, ModelConfig, RawResponse, TranslatingLlmClient,
 };
 use switchyard_protocol::WireFormat;
+use switchyard_translation::{PreservationPolicy, TranslationEngine, TranslationPolicy};
 use tracing_subscriber::fmt::format::FmtSpan;
 use wiremock::matchers::{body_partial_json, header, headers, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -19,6 +20,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 const MCP_TOKEN: &str = "synthetic-mcp-secret-canary-8f651ed7";
+const MCP_HEADER_TOKEN: &str = "synthetic-mcp-header-canary-58a40c92";
+const MCP_BEARER_TOKEN: &str = "synthetic-mcp-bearer-canary-1d9ef430";
 const FALLBACK_CREDIT_TOKEN: &str = "fallback-credit-secret-canary-8f651ed7";
 const CREDIT_BETA: &str = "fallback-credit-2026-07-01";
 const INITIAL_BETAS: &str = "fallback-credit-2026-07-01,server-side-fallback-2026-07-01";
@@ -46,7 +49,12 @@ async fn credentials_do_not_leak() -> TestResult {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Never print captured output on failure: it could contain credentials.
-    for credential in [FALLBACK_CREDIT_TOKEN, MCP_TOKEN] {
+    for credential in [
+        FALLBACK_CREDIT_TOKEN,
+        MCP_TOKEN,
+        MCP_HEADER_TOKEN,
+        MCP_BEARER_TOKEN,
+    ] {
         assert!(!stdout.contains(credential), "credential leaked to stdout");
         assert!(
             !stderr.contains(credential),
@@ -203,6 +211,11 @@ async fn fallback_credit_retry() -> TestResult {
 async fn mcp_errors() -> TestResult {
     let server = MockServer::start().await;
     for format in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
+        let message = if format == WireFormat::OpenAiResponses {
+            format!("Rejected {MCP_TOKEN} {MCP_HEADER_TOKEN} {MCP_BEARER_TOKEN}")
+        } else {
+            format!("Rejected {MCP_TOKEN}")
+        };
         let (fields, request, start, failure, stream_failure) = match format {
             WireFormat::AnthropicMessages => {
                 let failure = json!({"type": "error", "error": {
@@ -219,10 +232,12 @@ async fn mcp_errors() -> TestResult {
             }
             WireFormat::OpenAiResponses => {
                 let failure = json!({"id": "resp_1", "status": "failed", "output": [],
-                    "error": {"code": "mcp_error", "message": format!("Rejected {MCP_TOKEN}")}});
+                    "error": {"code": "mcp_error", "message": message}});
                 (
                     json!({"tools": [{"type": "mcp", "server_label": "inventory",
-                        "server_url": "https://example.invalid/mcp", "authorization": MCP_TOKEN}]}),
+                        "server_url": "https://example.invalid/mcp", "authorization": MCP_TOKEN,
+                        "headers": {"X-Workspace-Context": MCP_HEADER_TOKEN,
+                            "Authorization": format!("Bearer {MCP_BEARER_TOKEN}")}}]}),
                     json!({"model": "route", "input": "Check stock"}),
                     json!({"type": "response.created", "response": {"id": "resp_1", "model": "route", "output": []}}),
                     failure.clone(),
@@ -236,8 +251,11 @@ async fn mcp_errors() -> TestResult {
             api_key: None,
             forward_auth: false,
             extra_headers: BTreeMap::new(),
-            // Inject wire fields after encoding so this test needs no MCP translation.
-            extra_body: serde_json::from_value(fields.clone())?,
+            extra_body: if format == WireFormat::AnthropicMessages {
+                serde_json::from_value(fields.clone())?
+            } else {
+                BTreeMap::new()
+            },
             omit_body_fields: BTreeSet::new(),
             reasoning_effort: None,
             max_retries: 0,
@@ -251,7 +269,7 @@ async fn mcp_errors() -> TestResult {
         };
         let client = TranslatingLlmClient::new(&[ModelConfig::new("route", backend, None)])?;
         let echoed = json!({"error": {"message": fields.to_string()}});
-        let plain = json!(format!("Rejected {MCP_TOKEN}"));
+        let plain = json!(message);
         for (status, streaming, error) in [
             (400, false, &echoed),
             (401, false, &plain),
@@ -277,6 +295,20 @@ async fn mcp_errors() -> TestResult {
                 .await;
             let mut request = request.clone();
             request["stream"] = json!(streaming);
+            if format == WireFormat::OpenAiResponses {
+                request["tools"] = fields["tools"].clone();
+                // Force headers through McpToolset rather than replaying the original JSON.
+                let engine = TranslationEngine::default();
+                let policy = TranslationPolicy {
+                    preservation: PreservationPolicy::Disabled,
+                    ..TranslationPolicy::default()
+                };
+                let decoded = engine.decode_request(format, &request, &policy)?;
+                tracing::debug!(request = ?decoded.request, "normalized MCP header request");
+                request = engine
+                    .encode_request(format, &decoded.request, &policy)?
+                    .body;
+            }
             let mut saw_redaction = false;
             match client
                 .call_rewrite_model_raw(request, None, None, format)

@@ -316,7 +316,7 @@ impl Tool {
 /// Configuration for a URL-based remote MCP toolset.
 ///
 /// This type covers the supported neutral settings. Definitions with additional settings,
-/// such as Responses headers, server descriptions, or conditional approval rules, belong
+/// such as server descriptions or conditional approval rules, belong
 /// in [`Tool::Provider`] with the complete original definition.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct McpToolset {
@@ -327,6 +327,9 @@ pub struct McpToolset {
     /// Credential sent to the MCP server, when supplied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authorization_token: Option<String>,
+    /// HTTP headers sent to the MCP server, kept separately from the authorization token.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
     /// Defaults for tools without a per-tool setting in `configs`.
     #[serde(default, skip_serializing_if = "McpToolConfig::is_empty")]
     pub default_config: McpToolConfig,
@@ -347,10 +350,13 @@ impl fmt::Debug for McpToolset {
             name,
             url: _,
             authorization_token,
+            headers,
             default_config,
             configs,
             require_approval,
         } = self;
+        let redacted_headers: BTreeMap<_, _> =
+            headers.keys().map(|name| (name, "[REDACTED]")).collect();
         f.debug_struct("McpToolset")
             .field("name", name)
             // Credentials can appear in any part of the URL, including its path.
@@ -359,6 +365,7 @@ impl fmt::Debug for McpToolset {
                 "authorization_token",
                 &authorization_token.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("headers", &redacted_headers)
             .field("default_config", default_config)
             .field("configs", configs)
             .field("require_approval", require_approval)
@@ -770,6 +777,7 @@ mod tests {
             {"type": "provider", "provider": "openai_responses", "raw": {"type": "mcp", "connector_id": "connector_example", "server_label": "example"}},
             {
                 "type": "mcp", "name": "configured", "url": "https://example.invalid/mcp",
+                "headers": {"X-Tenant-ID": "tenant-123"},
                 "default_config": {"enabled": false, "defer_loading": true},
                 "configs": {"lookup": {"enabled": true}, "search": {"defer_loading": false}}
             }
@@ -816,11 +824,13 @@ mod tests {
     #[test]
     fn mcp_credentials_are_omitted_from_debug() -> Result<(), serde_json::Error> {
         let token = "synthetic-mcp-debug-secret";
+        let header_secret = "synthetic-mcp-header-secret";
         let url_secret = "synthetic-mcp-url-secret";
         let url = format!("https://example.invalid/mcp?api_key={url_secret}");
         let mcp: McpToolset = serde_json::from_value(json!({
             "name": "inventory", "url": url,
-            "authorization_token": token
+            "authorization_token": token,
+            "headers": {"X-Api-Key": header_secret}
         }))?;
         let raw = json!({"mcp_servers": [{"authorization_token": token}]});
         let mut request = LlmRequest {
@@ -839,6 +849,9 @@ mod tests {
             .insert("anthropic_messages".into(), raw.clone());
         request.extensions.fields.insert("metadata".into(), raw);
         let serialized = serde_json::to_value(&request)?;
+        for debug in [format!("{mcp:?}"), format!("{mcp:#?}")] {
+            assert!(debug.contains("\"X-Api-Key\": \"[REDACTED]\""));
+        }
         for debug in [
             format!("{mcp:?}"),
             format!("{mcp:#?}"),
@@ -850,6 +863,10 @@ mod tests {
         ] {
             assert!(!debug.contains(token), "Debug exposed an MCP credential");
             assert!(
+                !debug.contains(header_secret),
+                "Debug exposed an MCP header credential"
+            );
+            assert!(
                 !debug.contains(url_secret),
                 "Debug exposed an MCP URL secret"
             );
@@ -857,6 +874,10 @@ mod tests {
         assert_eq!(serde_json::to_value(&request)?, serialized);
         assert_eq!(serialized["tools"][0]["url"], url);
         assert_eq!(serialized["tools"][0]["authorization_token"], token);
+        assert_eq!(
+            serialized["tools"][0]["headers"]["X-Api-Key"],
+            header_secret
+        );
         assert_eq!(serialized["tools"][1]["raw"]["authorization"], token);
         Ok(())
     }

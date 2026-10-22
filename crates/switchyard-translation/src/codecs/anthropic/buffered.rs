@@ -928,6 +928,7 @@ fn decode_mcp(server: &Value, toolset: &Value) -> Result<McpToolset> {
         name: name.to_owned(),
         url: url.to_owned(),
         authorization_token,
+        headers: Default::default(), // Anthropic does not support arbitrary MCP headers.
         default_config: toolset
             .get("default_config")
             .map(config)
@@ -1369,6 +1370,11 @@ fn encode_anthropic_tools(definitions: &[Tool]) -> Result<(Vec<Value>, Vec<Value
                 tools.push(item);
             }
             Tool::Mcp(mcp) => {
+                if !mcp.headers.is_empty() {
+                    return Err(TranslationError::LossyConversion(
+                        "Anthropic MCP does not support arbitrary headers".into(),
+                    ));
+                }
                 if !mcp.url.starts_with("https://") {
                     return Err(TranslationError::LossyConversion(
                         "Anthropic MCP servers require an HTTPS URL".into(),

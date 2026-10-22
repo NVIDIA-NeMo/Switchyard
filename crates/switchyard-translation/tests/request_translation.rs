@@ -4911,6 +4911,13 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
     let engine = TranslationEngine::default();
     let format = WireFormat::OpenAiResponses;
     let mut body = responses_mcp_request();
+    let headers = json!({
+        "Authorization": "Bearer synthetic-inventory-token",
+        "X-Api-Key": "synthetic-header-token",
+        "X-Tenant-ID": "tenant-123"
+    });
+    body["tools"][0]["headers"] = headers.clone();
+    let expected_tools = body["tools"].clone();
     body["tools"][0]["extra"] = json!("native-only");
     for preservation in [
         PreservationPolicy::Disabled,
@@ -4931,6 +4938,7 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         };
         assert_eq!(mcp.name, "inventory");
         assert_eq!(mcp.url, "https://example.invalid/mcp");
+        assert_eq!(json!(mcp.headers), headers);
         assert_eq!(
             mcp.authorization_token.as_deref(),
             Some("synthetic-inventory-token")
@@ -4945,7 +4953,7 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         if preservation != PreservationPolicy::Disabled {
             assert_eq!(output.body, body);
         } else {
-            assert_eq!(output.body["tools"], responses_mcp_request()["tools"]);
+            assert_eq!(output.body["tools"], expected_tools);
         }
         prepare_request_for_target(
             &mut request,
@@ -4963,6 +4971,7 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         assert_eq!(output.body["model"], "target/model");
         assert_eq!(output.body["instructions"], "Target instruction");
         assert_eq!(output.body["tools"][0]["server_label"], "stock");
+        assert_eq!(output.body["tools"][0]["headers"], headers);
         assert!(output.body["tools"][0].get("authorization").is_none());
         assert!(output.body["tools"][0].get("extra").is_none());
         assert_eq!(
@@ -4972,6 +4981,54 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
                 .tools,
             request.tools
         );
+        let Tool::Mcp(mcp) = &mut request.tools[0] else {
+            unreachable!()
+        };
+        mcp.headers.clear();
+        let output = engine.encode_request(format, &request, &policy)?;
+        assert!(output.body["tools"][0].get("headers").is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_mcp_headers_normalization_and_target_limits() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    for headers in [
+        Value::Null,
+        json!({}),
+        json!({"X-Api-Key": "synthetic-header-token"}),
+    ] {
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..normalized_policy()
+            };
+            let mut body = responses_mcp_request();
+            body["tools"][0]["headers"] = headers.clone();
+            let decoded = engine.decode_request(format, &body, &policy)?;
+            assert!(decoded.diagnostics.is_empty());
+            let request = decoded.request;
+            let Tool::Mcp(mcp) = &request.tools[0] else {
+                panic!("expected MCP definition")
+            };
+            if headers.is_null() || headers == json!({}) {
+                assert!(mcp.headers.is_empty());
+                let rebuilt = engine.encode_request(format, &request, &policy)?;
+                assert!(rebuilt.body["tools"][0].get("headers").is_none());
+                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+            } else {
+                let error = engine
+                    .encode_request(WireFormat::AnthropicMessages, &request, &policy)
+                    .expect_err("Anthropic cannot retain arbitrary MCP headers");
+                assert!(matches!(error, TranslationError::LossyConversion(_)));
+                assert!(error.to_string().contains("headers"));
+            }
+        }
     }
     Ok(())
 }
@@ -5103,7 +5160,8 @@ fn responses_mcp_definitions_reject_unsupported_input() {
             "require_approval",
             Some(json!({"never": {"tool_names": ["lookup"]}})),
         ),
-        ("headers", Some(json!({"X-Api-Key": "synthetic-token"}))),
+        ("headers", Some(json!([]))),
+        ("headers", Some(json!({"X-Api-Key": 42}))),
         ("connector_id", Some(json!("connector_drive"))),
         ("tunnel_id", Some(json!("tunnel_fixture"))),
         ("allowed_callers", Some(json!(["code_interpreter"]))),

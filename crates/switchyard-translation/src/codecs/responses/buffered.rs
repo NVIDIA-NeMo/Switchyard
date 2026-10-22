@@ -1108,7 +1108,7 @@ fn decode_responses_tools(
 }
 
 fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
-    for key in ["headers", "connector_id", "tunnel_id", "allowed_callers"] {
+    for key in ["connector_id", "tunnel_id", "allowed_callers"] {
         if tool.contains_key(key) {
             return Err(TranslationError::LossyConversion(format!(
                 "Responses MCP {key} is not supported"
@@ -1126,6 +1126,17 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
     };
     let name = required("server_label")?;
     let url = required("server_url")?;
+    let headers = tool
+        .get("headers")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|_| TranslationError::InvalidType {
+                path: "tools.headers".into(),
+                expected: "object with string values",
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
     let authorization_token = tool
         .get("authorization")
         .filter(|value| !value.is_null())
@@ -1198,6 +1209,7 @@ fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
         name: name.to_owned(),
         url: url.to_owned(),
         authorization_token,
+        headers,
         default_config: McpToolConfig {
             enabled: allowed_tools.map(|_| false),
             defer_loading,
@@ -1887,6 +1899,9 @@ fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
     let mut tool = json!({"type": "mcp", "server_label": mcp.name, "server_url": mcp.url});
     if let Some(token) = &mcp.authorization_token {
         tool["authorization"] = json!(token);
+    }
+    if !mcp.headers.is_empty() {
+        tool["headers"] = json!(mcp.headers);
     }
     if let Some(approval) = mcp.require_approval {
         tool["require_approval"] = json!(if approval { "always" } else { "never" });
