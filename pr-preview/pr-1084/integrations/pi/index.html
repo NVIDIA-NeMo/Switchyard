@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+        <meta name="description" content="Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness">
       
       
       
@@ -349,6 +349,34 @@
     
   
     Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/local_evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate Locally
   
 
     
@@ -1587,6 +1615,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/host_integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Host Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../cli_reference/" class="md-nav__link">
         
   
@@ -1864,7 +1920,7 @@
 <code>switchyard-server</code>, which picks the target model for each call. pi does not read
 <code>OPENAI_BASE_URL</code>, so a provider entry is how you point pi at a proxy. This
 page was tested with pi 0.84.3 against the
-<a href="../../getting_started/#server-path">Getting Started</a> server on <code>http://localhost:4000</code>
+<a href="../../operations/local_evaluation/">local evaluation</a> server on <code>http://localhost:4000</code>
 with route id <code>switchyard</code>.</p>
 <h2 id="configure">Configure<a class="headerlink" href="#configure" title="Permanent link">&para;</a></h2>
 <p><code>~/.pi/agent/models.json</code>:</p>
@@ -1920,7 +1976,7 @@ with route id <code>switchyard</code>.</p>
 <p>The command <code>curl -s localhost:4000/v1/stats | jq '.models | map_values({calls, prompt_tokens})'</code>
 lists each target model with its call count. For a step-by-step check with an
 escalating request, see
-<a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>. Every response carries the header
+<a href="../../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>. Every response carries the header
 <code>x-model-router-selected-model</code>. With <code>--routing-log-file PATH</code>, the server writes one
 record per call. In the record below, <code>session_id</code> is the value of pi's <code>x-session-id</code>
 header:</p>
@@ -1962,7 +2018,7 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/929fd31b5e2923370d1769396dff0bdb7c67221b/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8c1347adbbad3eebc3dd47bfbe9142b13681dd5f/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
 <p>An LLM gateway, such as a LiteLLM proxy, can serve Claude on three endpoints:

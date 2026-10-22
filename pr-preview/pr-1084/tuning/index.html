@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+        <meta name="description" content="Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness">
       
       
       
@@ -349,6 +349,34 @@
     
   
     Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/local_evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate Locally
   
 
     
@@ -1498,6 +1526,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/host_integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Host Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../cli_reference/" class="md-nav__link">
         
   
@@ -1711,7 +1767,7 @@ explains it, names what it produces, and says what it costs to run.</p>
 <ol>
 <li>
 <p><strong>Verify routing is active.</strong> Follow
-   <a href="../getting_started/#verify-routing-is-active">Verify routing is active</a>.
+   <a href="../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>.
    Produces: the selected-model header from two requests and a <code>/v1/stats</code>
    capture. Costs: two requests, no agent run.</p>
 </li>
@@ -1734,14 +1790,14 @@ explains it, names what it produces, and says what it costs to run.</p>
 </li>
 <li>
 <p><strong>Run the routed arm against the fixed arms.</strong> Use the same tasks, agent,
-   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/929fd31b5e2923370d1769396dff0bdb7c67221b/benchmark/README.md">benchmark guide</a>
+   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8c1347adbbad3eebc3dd47bfbe9142b13681dd5f/benchmark/README.md">benchmark guide</a>
    shows the harness the checked-in results used, and the
    <a href="../benchmarks/">Benchmarks</a> page lists the published results with their
    configs. Produces: solved tasks and
    cost per run for each arm. Costs: <code>k</code> runs per arm. The plan/execute and
    advisor profiles use three runs and report the mean with the sample standard
    deviation, as in the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/929fd31b5e2923370d1769396dff0bdb7c67221b/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8c1347adbbad3eebc3dd47bfbe9142b13681dd5f/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
    The stage profile records a single run. A single run cannot separate a small
    change from noise.</p>
 </li>
@@ -1810,7 +1866,7 @@ Costs: <code>k</code> runs per setting you try.</p>
 <li>the cost per run.</li>
 </ul>
 <p>The
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/929fd31b5e2923370d1769396dff0bdb7c67221b/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8c1347adbbad3eebc3dd47bfbe9142b13681dd5f/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>
 records all of these. Produces: the header. Costs: none.</p>
 </li>
 <li>

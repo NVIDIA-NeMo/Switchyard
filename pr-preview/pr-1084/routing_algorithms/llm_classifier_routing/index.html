@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+        <meta name="description" content="Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness">
       
       
       
@@ -349,6 +349,34 @@
     
   
     Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/local_evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate Locally
   
 
     
@@ -1604,6 +1632,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/host_integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Host Integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../cli_reference/" class="md-nav__link">
         
   
@@ -1899,7 +1955,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <p>The same classifier also supports <a href="../escalation_router_routing/">escalation</a>
 and <a href="#custom-multi-target-routing">custom routing</a> across two or more targets.</p>
 <p>For a task-level decision-model example with structured instructions, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/929fd31b5e2923370d1769396dff0bdb7c67221b/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8c1347adbbad3eebc3dd47bfbe9142b13681dd5f/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
@@ -1988,7 +2044,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/929fd31b5e2923370d1769396dff0bdb7c67221b/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8c1347adbbad3eebc3dd47bfbe9142b13681dd5f/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -2195,7 +2251,7 @@ state. Unknown IDs use normal routing and can still fail at the selected provide
 Send the full history instead of an ID to avoid relying on local continuation
 state and to keep dynamic routing across turns.</p>
 <h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
-<p>After <a href="../../getting_started/#install-the-server">installing the Rust server</a>, export
+<p>After <a href="../../operations/local_evaluation/#install-the-server">installing the Rust server</a>, export
 the provider credential, validate the configuration, and start the release
 binary:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
