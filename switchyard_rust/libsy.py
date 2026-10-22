@@ -13,6 +13,8 @@ from switchyard_rust._native import load_native
 _EXPORTS = frozenset(
     {
         "Algorithm",
+        "AlgorithmFactory",
+        "ConfiguredAlgorithm",
         "ContextWindowExceededError",
         "CustomClassifierConfig",
         "DecisionCall",
@@ -279,6 +281,32 @@ if TYPE_CHECKING:
             subagent_models: Mapping[str, Sequence[str]] | None = None,
             headers: Mapping[str, str] | None = None,
         ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]: ...
+
+    @final
+    class AlgorithmFactory:
+        """Build deployment algorithms without provider clients or credential access."""
+
+        @staticmethod
+        def from_toml(source: str) -> AlgorithmFactory:
+            """Parse a full deployment, raising ValueError for invalid configuration."""
+            ...
+
+        def build(self) -> dict[str, ConfiguredAlgorithm]:
+            """Build independent handles keyed by the public route IDs."""
+            ...
+
+    @final
+    class ConfiguredAlgorithm:
+        """An algorithm and model groups; the host applies target prompts and provider settings."""
+
+        def run_stream(
+            self,
+            request: Mapping[str, object],
+            *,
+            headers: Mapping[str, str] | None = None,
+        ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]:
+            """Yield host calls and an outcome without carrying libsy's per-run State forward."""
+            ...
 
     def noop() -> Algorithm: ...
 
