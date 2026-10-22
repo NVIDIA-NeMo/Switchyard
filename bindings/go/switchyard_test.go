@@ -18,11 +18,12 @@ import (
 
 const stage = `"capable_target":"strong","efficient_target":"weak","confidence_threshold":0.5`
 const composite = `{"type":"composite","classifier":{"target":"judge","base_threshold":0.5,"classify_trigger":"user_turn","fail_open":false},"stage":{` + stage + `}}`
+const decision = `{"type":"composite","classifier":{"target":"judge","classify_trigger":"user_turn","fail_open":false,"decision":{"cutoff":0.5,"candidates":{"a":"strong","b":"weak"},"evidence":{}}},"stage":{` + stage + `}}`
 const judgeAnswer = `{"model":"provider-model","outputs":[{"role":"assistant","content":[{"type":"text","text":"{\"crux\":\"bounded task\",\"primary_rule\":\"SUP-1\",\"capability_boundary\":\"supported\",\"p_solve\":0.9}"}],"stop_reason":"end_turn"}]}`
 
 func newRouter(t *testing.T, algorithm string) *Router {
 	t.Helper()
-	router, err := New(json.RawMessage(`{"algorithm":` + algorithm + `,"targets":{"weak":"weak-model","strong":"strong-model","judge":"judge-model"}}`))
+	router, err := New(testConfig(algorithm))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,6 @@ func TestSelectionAndTranslation(t *testing.T) {
 
 // Both judge protocols use Go's client; missing clients and host failures remain errors.
 func TestCompositeHostCalls(t *testing.T) {
-	decision := `{"type":"composite","classifier":{"target":"judge","classify_trigger":"user_turn","fail_open":false,"decision":{"cutoff":0.5,"candidates":{"a":"strong","b":"weak"},"evidence":{}}},"stage":{` + stage + `}}`
 	for _, tc := range []struct {
 		name, algorithm, kind, selected, response, invalidResponse string
 	}{
@@ -160,19 +160,20 @@ func TestCompositeHostCalls(t *testing.T) {
 
 // Host failures remain subject to the algorithm's configured recovery policy.
 func TestHostFailureUsesAlgorithmPolicy(t *testing.T) {
-	algorithm := strings.Replace(composite, `"fail_open":false`, `"fail_open":true`, 1)
-	router := newRouter(t, algorithm)
-	calls := 0
-	outcome, err := router.Route(context.Background(), input(), func(context.Context, Work) (Reply, error) {
-		calls++
-		return Reply{}, errors.New("judge unavailable")
-	})
-	if err != nil || calls != 1 || !slices.Equal(outcome.SelectedModelIDs, []string{"weak-model", "strong-model"}) {
-		t.Fatalf("calls=%d outcome=%+v err=%v", calls, outcome, err)
+	for _, algorithm := range []string{composite, decision} {
+		router := newRouter(t, strings.Replace(algorithm, `"fail_open":false`, `"fail_open":true`, 1))
+		calls := 0
+		outcome, err := router.Route(context.Background(), input(), func(context.Context, Work) (Reply, error) {
+			calls++
+			return Reply{}, errors.New("judge unavailable")
+		})
+		if err != nil || calls != 1 || !slices.Equal(outcome.SelectedModelIDs, []string{"weak-model", "strong-model"}) {
+			t.Fatalf("calls=%d outcome=%+v err=%v", calls, outcome, err)
+		}
 	}
 }
 
-// Cancellation releases native work even if a host ignores its context and replies later.
+// Cancellation releases routing work even if a host ignores its context and replies later.
 func TestCancellationAndLateHostReply(t *testing.T) {
 	router := newRouter(t, composite)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -207,7 +208,7 @@ func TestCancellationAndLateHostReply(t *testing.T) {
 		t.Fatal("cancellation waited for host code")
 	}
 	runtime.GC()
-	// Release after Route has freed its native run, then let the late Go reply drain.
+	// Release after Route has freed its run, then let the late Go reply drain.
 	releaseHost()
 	select {
 	case <-returned:
