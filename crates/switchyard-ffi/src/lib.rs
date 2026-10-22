@@ -562,7 +562,7 @@ fn new_runtime() -> std::io::Result<Runtime> {
         .build()
 }
 
-/// Detects when a wasm read can make no progress until the host answers a call.
+/// Detects when a wasm read cannot make immediate progress.
 /// Parking a thread is impossible on wasip1, so the read returns instead of parking.
 #[cfg(target_arch = "wasm32")]
 mod idle {
@@ -692,10 +692,9 @@ pub unsafe extern "C" fn sy_run_next_async(
     })
 }
 
-/// Synchronously advances a run to its next host call or outcome.
-/// While host calls are unanswered, returns NULL with `*out_json` NULL once the run
-/// cannot progress without a reply. Dropping the read there is safe: the step stream
-/// is cancel-safe and call IDs are assigned only after a step arrives.
+/// Advances a run to its next step or returns NULL output when the runtime goes idle.
+/// Retry idle reads to advance timers and work waiting on other runs.
+/// Dropping an idle read preserves the stream and assigns no call ID.
 /// # Safety
 /// `run` must be live and `out_json` writable. Free output with `sy_string_free`.
 #[cfg(target_arch = "wasm32")]
@@ -706,9 +705,7 @@ pub unsafe extern "C" fn sy_run_next(run: *const SyRun, out_json: *mut *mut c_ch
         let out = unsafe { out_json.as_mut() }.ok_or("missing step output")?;
         *out = std::ptr::null_mut();
         let read = run.state.begin_read()?;
-        if run.state.lifecycle.lock().pending.is_empty() {
-            *out = run.engine.runtime.block_on(read.next())?.into_raw();
-        } else if let Some(output) = run.engine.runtime.block_on(idle::until_idle(read.next())) {
+        if let Some(output) = run.engine.runtime.block_on(idle::until_idle(read.next())) {
             *out = output?.into_raw();
         }
         Ok(())
