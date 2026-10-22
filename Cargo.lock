@@ -5415,10 +5415,16 @@ dependencies = [
 name = "switchyard-ffi"
 version = "0.3.0"
 dependencies = [
+ "futures",
+ "parking_lot",
  "serde",
  "serde_json",
+ "switchyard-libsy",
  "switchyard-protocol",
+ "switchyard-runner",
  "switchyard-translation",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
