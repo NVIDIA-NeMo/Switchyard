@@ -314,10 +314,19 @@ impl FormatCodec for AnthropicMessagesCodec {
         {
             body.insert("thinking".to_string(), thinking.clone());
         }
-        if let Some(effort) = &request.reasoning.effort {
-            body.entry("thinking".to_string())
-                .or_insert_with(|| json!({"type": "adaptive"}));
-            body.insert("output_config".to_string(), json!({"effort": effort}));
+        // OpenAI also accepts "none" and "minimal", which Anthropic rejects as efforts.
+        match request.reasoning.effort.as_deref() {
+            Some("none") => {
+                body.entry("thinking".to_string())
+                    .or_insert_with(|| json!({"type": "disabled"}));
+            }
+            Some(effort) => {
+                let effort = if effort == "minimal" { "low" } else { effort };
+                body.entry("thinking".to_string())
+                    .or_insert_with(|| json!({"type": "adaptive"}));
+                body.insert("output_config".to_string(), json!({"effort": effort}));
+            }
+            None => {}
         }
         if let Some(response_format) = &request.output.response_format
             && let Some(format) = encode_anthropic_output_format(

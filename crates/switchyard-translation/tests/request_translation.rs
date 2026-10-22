@@ -2882,6 +2882,58 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
     Ok(())
 }
 
+// OpenAI accepts "none" and "minimal" reasoning effort, which Anthropic does not.
+#[test]
+fn openai_reasoning_effort_maps_to_anthropic_effort() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (effort, thinking, output_config) in [
+        ("none", json!({"type": "disabled"}), None),
+        (
+            "minimal",
+            json!({"type": "adaptive"}),
+            Some(json!({"effort": "low"})),
+        ),
+        (
+            "low",
+            json!({"type": "adaptive"}),
+            Some(json!({"effort": "low"})),
+        ),
+        (
+            "high",
+            json!({"type": "adaptive"}),
+            Some(json!({"effort": "high"})),
+        ),
+    ] {
+        let messages = json!([{"role": "user", "content": "hi"}]);
+        for (format, body) in [
+            (
+                WireFormat::OpenAiChat,
+                json!({"model": "gpt-5", "messages": messages, "reasoning_effort": effort}),
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                json!({"model": "gpt-5", "input": messages, "reasoning": {"effort": effort}}),
+            ),
+        ] {
+            let output = engine
+                .translate_request(
+                    format,
+                    WireFormat::AnthropicMessages,
+                    &body,
+                    &TranslationPolicy::default(),
+                )?
+                .body;
+            assert_eq!(output["thinking"], thinking, "{format:?} {effort}");
+            assert_eq!(
+                output.get("output_config"),
+                output_config.as_ref(),
+                "{format:?} {effort}"
+            );
+        }
+    }
+    Ok(())
+}
+
 // Builds an Anthropic request whose structured output uses the given field shape.
 fn anthropic_structured_output_request(output: Value) -> Value {
     let mut body = json!({
