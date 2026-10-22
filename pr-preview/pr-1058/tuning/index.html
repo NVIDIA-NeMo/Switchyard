@@ -1767,7 +1767,7 @@ explains it, names what it produces, and says what it costs to run.</p>
 <ol>
 <li>
 <p><strong>Verify routing is active.</strong> Follow
-   <a href="../getting_started/#verify-routing-is-active">Verify routing is active</a>.
+   <a href="../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>.
    Produces: the selected-model header from two requests and a <code>/v1/stats</code>
    capture. Costs: two requests, no agent run.</p>
 </li>
@@ -1790,14 +1790,14 @@ explains it, names what it produces, and says what it costs to run.</p>
 </li>
 <li>
 <p><strong>Run the routed arm against the fixed arms.</strong> Use the same tasks, agent,
-   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a2c141edfb9619edf92c95f9e0829ee1b31d429e/benchmark/README.md">benchmark guide</a>
+   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ed614acc9a33f7d6b60553cc79416141cf17c711/benchmark/README.md">benchmark guide</a>
    shows the harness the checked-in results used, and the
    <a href="../benchmarks/">Benchmarks</a> page lists the published results with their
    configs. Produces: solved tasks and
    cost per run for each arm. Costs: <code>k</code> runs per arm. The plan/execute and
    advisor profiles use three runs and report the mean with the sample standard
    deviation, as in the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a2c141edfb9619edf92c95f9e0829ee1b31d429e/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ed614acc9a33f7d6b60553cc79416141cf17c711/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
    The stage profile records a single run. A single run cannot separate a small
    change from noise.</p>
 </li>
@@ -1866,7 +1866,7 @@ Costs: <code>k</code> runs per setting you try.</p>
 <li>the cost per run.</li>
 </ul>
 <p>The
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a2c141edfb9619edf92c95f9e0829ee1b31d429e/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ed614acc9a33f7d6b60553cc79416141cf17c711/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>
 records all of these. Produces: the header. Costs: none.</p>
 </li>
 <li>

@@ -1606,6 +1606,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#decision_clientsname" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [decision_clients.&lt;name&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#routesname" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1909,6 +1920,17 @@
     <span class="md-ellipsis">
       
         [targets.&lt;name&gt;]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision_clientsname" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [decision_clients.&lt;name&gt;]
       
     </span>
   </a>
@@ -2354,6 +2376,52 @@ their target prompt is applied to that call. A prompted target in either role ca
 model ID as that route's judge or reviewer because those calls would otherwise be indistinguishable
 at the client boundary; Switchyard rejects that configuration when it loads.
 Token-count requests do not apply target system prompts.</p>
+<h2 id="decision_clientsname"><code>[decision_clients.&lt;name&gt;]</code><a class="headerlink" href="#decision_clientsname" title="Permanent link">&para;</a></h2>
+<p>Decision clients serve typed judgments for routing classifiers.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>format</code></td>
+<td style="text-align: center;">Yes</td>
+<td><code>system_one</code> or <code>openai_decisions</code>.</td>
+</tr>
+<tr>
+<td><code>endpoint</code></td>
+<td style="text-align: center;">Yes</td>
+<td>Full API URL, including the endpoint path.</td>
+</tr>
+<tr>
+<td><code>api_key_env</code></td>
+<td style="text-align: center;">Yes</td>
+<td>Environment variable holding a non-empty API key.</td>
+</tr>
+<tr>
+<td><code>timeout_ms</code></td>
+<td style="text-align: center;">Yes</td>
+<td>Request and response deadline in milliseconds; must be at least <code>1</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>For <a href="https://developers.openai.com/api/docs/guides/decisions">OpenAI Decisions</a>:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[decision_clients.decisions]</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai_decisions&quot;</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.openai.com/v1/decisions&quot;</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">api_key_env</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;OPENAI_API_KEY&quot;</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">timeout_ms</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5000</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="k">[decision_targets.judge]</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gpt-6-luna&quot;</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">decision_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;decisions&quot;</span>
+</span></code></pre></div>
+<p>Each <code>decision_targets</code> entry pairs an upstream model <code>id</code> with a <code>decision_client</code>.
+OpenAI receives structured context, instructions, and descriptions as JSON text.</p>
 <h2 id="routesname"><code>[routes.&lt;name&gt;]</code><a class="headerlink" href="#routesname" title="Permanent link">&para;</a></h2>
 <p>Every route takes the common keys below, plus the keys for its type.</p>
 <table>
@@ -2409,13 +2477,13 @@ Token-count requests do not apply target system prompts.</p>
 upstream model. Use it for local smoke tests.</p>
 <p>A noop-only deployment reaches no upstream but still needs the <code>[targets]</code>
 table, which can be empty:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="k">[targets]</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="k">[routes.smoke]</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop-route&quot;</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">[targets]</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">[routes.smoke]</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop-route&quot;</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
 </span></code></pre></div>
 <h3 id="passthrough"><code>passthrough</code><a class="headerlink" href="#passthrough" title="Permanent link">&para;</a></h3>
 <p>Sends parent requests to one target. It can also route delegated sub-agent work;
@@ -2585,11 +2653,11 @@ dependencies available in the active virtual environment.</p>
 </tr>
 </tbody>
 </table>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[routes.prefill]</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard/prefill&quot;</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;prefill_router&quot;</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">]</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">checkpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/models/router.pt&quot;</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">[routes.prefill]</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard/prefill&quot;</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;prefill_router&quot;</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;fast&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">]</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">checkpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;/models/router.pt&quot;</span>
 </span></code></pre></div>
 <h3 id="llm_classifier"><code>llm_classifier</code><a class="headerlink" href="#llm_classifier" title="Permanent link">&para;</a></h3>
 <p>Runs one of three judge-backed modes: <code>capability</code>, <code>escalation</code>, or <code>custom</code>.
@@ -3127,19 +3195,19 @@ when it does not route.</p>
 </table>
 <p><code>auto</code> accepts no other keys. Adding one is a configuration error. For example,
 adding <code>confidence_threshold = 0.5</code> to an <code>auto</code> route fails <code>--dry-run</code> with:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>unknown field `confidence_threshold`, expected `capable_target` or `efficient_target`
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>unknown field `confidence_threshold`, expected `capable_target` or `efficient_target`
 </span></code></pre></div>
 <p>An <code>auto</code> route behaves the same as this <code>stage_router</code> route. It has no
 classifier, no handoff notes, and no per-tier system prompts:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">[routes.smart]</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;stage_router&quot;</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">picker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient_first&quot;</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="n">recent_turn_window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">capable_hold_turns</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">[routes.smart]</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard&quot;</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;stage_router&quot;</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="n">picker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient_first&quot;</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="n">recent_turn_window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="n">capable_hold_turns</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
 </span></code></pre></div>
 <p>To tune the preset, replace the <code>auto</code> route with this block and edit the keys.
 The <a href="#stage_router">stage_router</a> table lists every key. See

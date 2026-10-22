@@ -1812,7 +1812,7 @@ log field, a log line, or a <code>--dry-run</code> message.</p>
 <td>The first request lands on the efficient model</td>
 <td><code>x-model-router-selected-model</code> on the response</td>
 <td>Auto and Execution decide from tool results, and a request without tool history has none. This is by design.</td>
-<td>Send a request with a critical tool error, as in <a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>.</td>
+<td>Send a request with a critical tool error, as in <a href="../local_evaluation/#verify-routing-is-active">Verify routing is active</a>.</td>
 </tr>
 <tr>
 <td>Every request lands on one model</td>
@@ -1890,7 +1890,7 @@ log field, a log line, or a <code>--dry-run</code> message.</p>
 <td><code>/v1/stats</code> has no <code>tiers</code> key</td>
 <td>The <code>/v1/stats</code> body</td>
 <td>The Rust server reports decisions under <code>algorithm_stats.&lt;algorithm&gt;</code>.</td>
-<td>Read <code>algorithm_stats.stage_router.routing_decisions</code>, as in <a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a>.</td>
+<td>Read <code>algorithm_stats.stage_router.routing_decisions</code>, as in <a href="../local_evaluation/#verify-routing-is-active">Verify routing is active</a>.</td>
 </tr>
 <tr>
 <td>The routing log does not say why a model was chosen</td>
@@ -2026,7 +2026,7 @@ the capable tier for every ordinary turn:</p>
 </span></code></pre></div>
 <h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../../getting_started/#verify-routing-is-active">Verify routing is active</a></li>
+<li><a href="../local_evaluation/#verify-routing-is-active">Verify routing is active</a></li>
 <li><a href="../../tuning/">Tuning</a></li>
 <li><a href="../../routing_algorithms/model_selection/">Model Selection</a></li>
 <li><a href="../../reference/toml_schema/">TOML Schema</a></li>
