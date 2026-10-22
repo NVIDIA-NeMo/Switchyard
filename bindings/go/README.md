@@ -2,19 +2,34 @@
 
 Run Switchyard algorithms in a Go host that owns model eligibility, credentials,
 provider calls, and retries. These bindings call libsy through the C ABI; they do
-not start a server.
+not start a server. A private WebAssembly runtime exercises translation codecs
+through wazero. Routing and public translation functions still use the native library.
 
 ## Build and test
 
-Requires Go 1.22+, cgo, a C compiler, and the repository's Rust toolchain. Build
-the native library for the same platform as the Go host:
+Requires Go 1.25+, cgo, a C compiler, and the repository's Rust toolchain. Build
+the native library for the same platform as the Go host, then build the WASM
+guest before compiling the default package or its private runtime tests.
+The script installs the Rust toolchain's
+`wasm32-wasip1` target. The generated binary is not checked in.
 
 ```sh
 cargo build -p switchyard-ffi --release --locked
+scripts/build-go-wasm.sh
 cd bindings/go
-go test -race ./...
-GOEXPERIMENT=cgocheck2 go test -race ./...
-go vet ./...
+CGO_ENABLED=1 go test -race ./...
+CGO_ENABLED=1 GOEXPERIMENT=cgocheck2 go test -race ./...
+CGO_ENABLED=1 go vet ./...
+```
+
+The `switchyard_native` build tag excludes the private WASM runtime and its
+tests. This build needs only the native library:
+
+```sh
+cd bindings/go
+CGO_ENABLED=1 go test -tags switchyard_native -race ./...
+CGO_ENABLED=1 GOEXPERIMENT=cgocheck2 go test -tags switchyard_native -race ./...
+CGO_ENABLED=1 go vet -tags switchyard_native ./...
 ```
 
 Native builds link `target/release/libswitchyard_ffi.a` into the Go host artifact.
@@ -23,10 +38,14 @@ Rebuild Go with `go test -a` after changing the C header or native library; Go's
 cache does not track headers outside the package directory. Native artifacts
 are not downloaded or published by this package.
 
+Rebuild the WASM guest after changing Rust code. These commands build and test
+locally; they do not publish artifacts. The package still requires cgo; the
+private runtime is not a complete WASM routing backend.
+
 ### Go versions
 
-`go 1.22` in `go.mod` is the compatibility minimum, not a compiler pin. Use the
-latest patch of a [supported Go release](https://go.dev/doc/devel/release#policy)
+`go 1.25.0` in `go.mod` is the compatibility minimum required by wazero, not a
+compiler pin. Use the latest patch of a [supported Go release](https://go.dev/doc/devel/release#policy)
 for development and production; compatibility with an older release does not
 make it a recommended production toolchain.
 
