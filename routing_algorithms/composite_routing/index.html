@@ -1862,7 +1862,9 @@ and replace its LLM classifier settings with:</p>
 </span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">evidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">description</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Add task-relevant evidence comparing a and b.&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
 <p>Both candidates must be completion targets. The judge must be a decision target.
-The classifier selects capable when <code>probabilities.advantage</code> exceeds <code>cutoff</code>.
+See the <a href="../../reference/toml_schema/#decision_clientsname">decision client reference</a>
+for OpenAI Decisions configuration.</p>
+<p>The classifier selects capable when <code>probabilities.advantage</code> exceeds <code>cutoff</code>.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 <code>base_threshold</code>, <code>threshold_step</code> and <code>prompt</code> when using a decision model.
 On judge failure, the default is to retain the last classified tier or use
