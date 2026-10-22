@@ -4919,6 +4919,7 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
     body["tools"][0]["headers"] = headers.clone();
     let expected_tools = body["tools"].clone();
     body["tools"][0]["extra"] = json!("native-only");
+    body["tools"][0]["allowed_callers"] = json!(["programmatic"]);
     for preservation in [
         PreservationPolicy::Disabled,
         PreservationPolicy::InMemory,
@@ -4974,6 +4975,7 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         assert_eq!(output.body["tools"][0]["headers"], headers);
         assert!(output.body["tools"][0].get("authorization").is_none());
         assert!(output.body["tools"][0].get("extra").is_none());
+        assert!(output.body["tools"][0].get("allowed_callers").is_none());
         assert_eq!(
             engine
                 .decode_request(format, &output.body, &policy)?
@@ -4987,6 +4989,10 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         mcp.headers.clear();
         let output = engine.encode_request(format, &request, &policy)?;
         assert!(output.body["tools"][0].get("headers").is_none());
+        let anthropic = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+        assert!(anthropic.diagnostics.is_empty());
+        assert_eq!(anthropic.body["tools"][0]["type"], "mcp_toolset");
+        assert!(anthropic.body["tools"][0].get("allowed_callers").is_none());
     }
     Ok(())
 }
@@ -5221,7 +5227,6 @@ fn responses_mcp_definitions_reject_unsupported_input() {
         ),
         ("headers", Some(json!([]))),
         ("headers", Some(json!({"X-Api-Key": 42}))),
-        ("allowed_callers", Some(json!(["code_interpreter"]))),
     ] {
         let mut body = responses_mcp_request();
         let tool = body["tools"][0].as_object_mut().unwrap();

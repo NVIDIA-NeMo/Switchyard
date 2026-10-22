@@ -1119,11 +1119,6 @@ fn decode_responses_tools(
 }
 
 fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
-    if tool.contains_key("allowed_callers") {
-        return Err(TranslationError::LossyConversion(
-            "Responses MCP allowed_callers is not supported".into(),
-        ));
-    }
     let required = |key: &str| {
         tool.get(key)
             .and_then(Value::as_str)
