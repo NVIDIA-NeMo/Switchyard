@@ -178,20 +178,12 @@ assert_eq!(request.model_id().as_ref(), Some(first_candidate));
 the attempts and must update the request's model before trying a later candidate.
 `call.algorithm` names the requesting algorithm for your own telemetry.
 
-Your application returns the result through
-<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html#method.respond"><code>call.respond</code></a>.
-Inside the `Step::CallModel(call)` arm, the exchange looks like this:
-
-```rust
-let request = call.request.clone();
-// Pass the work future to respond; it returns the result to the algorithm.
-call.respond(client.call(request)).await?;
-```
-
-Here, `client.call` is your async adapter, returning
-`switchyard_libsy::Result<Response>`. It owns the provider call and any format
-conversion, as in the [OpenRouter adapter](getting_started.md#use-libsy-with-your-client).
-`respond` consumes the call, allowing the algorithm to continue with its result.
+In the [Step loop](#read-the-next-step), `client.call` is your async adapter,
+returning `switchyard_libsy::Result<Response>`. It owns the provider call and any
+format conversion, as in the
+[OpenRouter adapter](getting_started.md#use-libsy-with-your-client).
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html#method.respond"><code>call.respond</code></a>
+consumes the call and runs that work future, returning its result to the algorithm.
 
 The returned
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/envelope/struct.Response.html"><code>Response</code></a>
@@ -229,13 +221,8 @@ It has one `model` and a
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/decision/struct.DecisionRequest.html"><code>DecisionRequest</code></a>
 in `request`.
 
-The algorithm creates the question. Your application sends the supplied request
-through its decision client and returns the typed answer:
-
-```rust
-let request = call.request.clone();
-call.respond(decision_client.call(request)).await?;
-```
+The algorithm creates the question. The [Step loop](#read-the-next-step) sends
+the supplied request through `decision_client.call` and returns the typed answer.
 
 The adapter returns `switchyard_libsy::Result<DecisionResponse>`. The optional
 shared interface is
@@ -397,9 +384,9 @@ unanswered call gives the waiting algorithm `DriverError::ResponseDropped`.
 
 Once a response stream has been delivered, its consumer owns its lifetime.
 Cancelling local work cannot guarantee that a provider stops generation or billing,
-or undo side effects that have already occurred. The [host integration
-guide](reference/host_integration.md#concurrent-calls-and-cancellation) covers host
-cleanup in Rust and Python.
+or undo side effects that have already occurred. See the [host integration
+guide](reference/host_integration.md#concurrent-calls-and-cancellation) for
+Python task cleanup.
 
 The [Rust API reference](reference/rust_api.md) links the complete crate
 documentation for these types.

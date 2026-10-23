@@ -26,13 +26,9 @@ Completions, OpenAI Responses, and Anthropic Messages formats.
 
 ## Crate boundary
 
-Applications embedding libsy normally depend on the libsy and protocol crates:
-
-```toml
-[dependencies]
-switchyard-libsy = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.3.0" }
-```
+Use the [Rust quickstart](../getting_started.md#install) for compatible dependency
+versions. [Mechanics of Libsy](../mechanics_of_libsy.md) explains how these crates
+work together during a run.
 
 Import algorithms and orchestration types from `switchyard_libsy`. Import
 requests, responses, metadata, decisions, and LLM client traits from
