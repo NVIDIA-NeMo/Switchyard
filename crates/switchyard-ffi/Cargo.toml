@@ -21,5 +21,10 @@ switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
 switchyard-runner.workspace = true
 switchyard-translation.workspace = true
-tokio.workspace = true
 tokio-util = { version = "0.7", features = ["rt"] }
+
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+tokio.workspace = true
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
