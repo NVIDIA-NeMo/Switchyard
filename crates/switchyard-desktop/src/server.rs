@@ -464,3 +464,123 @@ pub fn command(program: &str, args: &[&str]) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    const OLD: &str = "schema_version=1\n[targets]\n[routes]\n#old\n";
+    const NEW: &str = "schema_version=1\n[targets]\n[routes]\n#new\n";
+    const NEWER: &str = "schema_version=1\n[targets]\n[routes]\n#newer\n";
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The fixture forwards the helper's validation command to a stand-in server that runs `body`.
+    fn fake_server(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("switchyard-server");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("make script executable");
+        let helper = dir.join("switchyard-desktop-install");
+        std::fs::write(&helper, r#"#!/bin/sh
+test "$#" -eq 5 && test "$1" = validate && test "$2" = --server && test "$4" = --config && test -f "$5" || exit 1
+exec "$3" --config "$5" --dry-run
+"#).expect("write helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("make helper executable");
+        path
+    }
+
+    fn backups(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| path.display().to_string().contains(".switchyard-backup."))
+            .collect()
+    }
+
+    #[test]
+    fn a_config_that_fails_the_check_is_not_saved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("composite.toml");
+        std::fs::write(&config, OLD).expect("write config");
+        // The real server names the file it was given; the error must name
+        // the user's file instead of the temporary copy.
+        let binary = fake_server(
+            dir.path(),
+            r#"echo "invalid server config $2: route gateway cannot forward both" >&2; exit 1"#,
+        );
+
+        let error = save_checked(&binary, &config, OLD, NEW).expect_err("check fails");
+
+        assert_eq!(
+            error,
+            format!(
+                "invalid server config {}: route gateway cannot forward both",
+                config.display()
+            )
+        );
+        assert_eq!(std::fs::read_to_string(&config).expect("read"), OLD);
+        assert!(backups(dir.path()).is_empty());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("read dir").count(),
+            3,
+            "the temporary file is removed"
+        );
+    }
+
+    #[test]
+    fn a_config_that_passes_the_check_replaces_the_file_and_keeps_a_backup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("composite.toml");
+        std::fs::write(&config, OLD).expect("write config");
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o640))
+            .expect("set permissions");
+        let binary = fake_server(
+            dir.path(),
+            r#"grep -q new "$2" && echo "server OK: gateway""#,
+        );
+
+        let backup = save_checked(&binary, &config, OLD, NEW).expect("saved");
+
+        assert_eq!(std::fs::read_to_string(&config).expect("read"), NEW);
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&config), 0o640, "the file keeps its permissions");
+        assert_eq!(backups(dir.path()).len(), 1);
+        assert_eq!(std::fs::read_to_string(&backup).expect("read"), OLD);
+        assert_eq!(mode(&backup), 0o640, "the backup gets the same permissions");
+        save_checked(&binary, &config, NEW, NEWER).expect("saved again");
+        let mut kept: Vec<_> = backups(dir.path())
+            .iter()
+            .map(|path| std::fs::read_to_string(path).expect("backup"))
+            .collect();
+        kept.sort();
+        assert_eq!(kept, [NEW, OLD]);
+        assert_eq!(std::fs::read_to_string(&config).expect("read"), NEWER);
+    }
+
+    #[test]
+    fn a_file_that_changes_during_the_check_is_not_replaced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = dir.path().join("composite.toml");
+        std::fs::write(&config, OLD).expect("write config");
+        // Another program saves the file while the check runs.
+        let binary = fake_server(
+            dir.path(),
+            &format!("echo edited-elsewhere > '{}'", config.display()),
+        );
+
+        let error = save_checked(&binary, &config, OLD, NEW).expect_err("file changed");
+
+        assert!(error.contains(&config.display().to_string()), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&config).expect("read"),
+            "edited-elsewhere\n"
+        );
+        assert!(backups(dir.path()).is_empty());
+    }
+}
