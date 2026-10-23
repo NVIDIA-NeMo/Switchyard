@@ -75,6 +75,25 @@ pub enum Action {
         id: String,
         settings_file: Option<String>,
     },
+    Install {
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+        settings_file: Option<String>,
+        preview_token: Option<String>,
+    },
+    PreviewRestore {
+        tool: Harness,
+        account: Option<String>,
+        settings_file: Option<String>,
+    },
+    Restore {
+        tool: Harness,
+        account: Option<String>,
+        settings_file: Option<String>,
+        preview_token: Option<String>,
+    },
     Restart {},
     PreviewUpdate {},
     Update {
@@ -168,6 +187,18 @@ pub struct RouteInfo {
     /// This field maps each harness to the reason it cannot use the route, or to `None`
     /// when it can.
     pub compatibility: BTreeMap<Harness, Option<String>>,
+    /// This field lists the harness settings files that select the route's public model ID.
+    pub dependents: Vec<Dependent>,
+}
+
+/// Dependent names harness settings that select a route, so deleting the route breaks them.
+#[derive(Clone, Serialize)]
+pub struct Dependent {
+    pub tool: Harness,
+    pub label: &'static str,
+    /// This field is `None` for the harness's own settings and names a saved account otherwise.
+    pub account: Option<String>,
+    pub files: Vec<PathBuf>,
 }
 
 /// ToolInfo describes one harness whose settings the apps can change.
@@ -504,7 +535,7 @@ impl Controller {
                             .iter()
                             .map(|&(tool, _)| (tool, login_mode(tool, &config, &route).err()))
                             .collect(),
-
+                        dependents: known_dependents(&route.id),
                         editable: algorithm.is_some(),
                         generated: config
                             .generated_by("routes", &route.key)
@@ -921,6 +952,76 @@ impl Controller {
                     data,
                 })
             }
+            Action::Install {
+                tool,
+                account,
+                route,
+                id,
+                settings_file,
+                preview_token,
+            } => {
+                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
+                let inputs = json!({"tool":tool,"account":account,"route":route,"id":id,"settings_file":settings_file,"server_url":self.config.server_url});
+                self.tool_review
+                    .as_ref()
+                    .ok_or("Preview these settings before applying them.")?
+                    .check(preview_token.as_deref(), &inputs)?;
+                let config = self.routes()?;
+                let route = current_route(&config, &route, Some(&id))?;
+                harness::install_reviewed(
+                    tool,
+                    &files,
+                    &self.config.server_url,
+                    &route.id,
+                    config.context_window(&route.key),
+                    login_mode(tool, &config, &route)?,
+                    self.tool_review
+                        .as_ref()
+                        .map(|review| review.files.as_slice()),
+                )
+                .map(Reply::message)
+            }
+            Action::PreviewRestore {
+                tool,
+                account,
+                settings_file,
+            } => {
+                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
+                let review = Review::capture(
+                    json!({"restore":true,"tool":tool,"account":account,"settings_file":settings_file}),
+                    harness::review_files(&files),
+                )?;
+                let mut data = harness::preview_restore(tool, &files)?;
+                review.check(Some(&review.token), &review.inputs)?;
+                data["preview_token"] = json!(review.token);
+                self.tool_review = Some(review);
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
+            Action::Restore {
+                tool,
+                account,
+                settings_file,
+                preview_token,
+            } => {
+                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
+                self.tool_review.as_ref().ok_or("Preview the restore before applying it.")?.check(preview_token.as_deref(),&json!({"restore":true,"tool":tool,"account":account,"settings_file":settings_file}))?;
+                match harness::restore_reviewed(
+                    &files,
+                    self.tool_review
+                        .as_ref()
+                        .map(|review| review.files.as_slice()),
+                ) {
+                    Ok(message) => Ok(Reply::message(message)),
+                    Err(error) if error.starts_with("Restored settings, but") => Ok(Reply {
+                        message: error,
+                        data: json!({"warning":true}),
+                    }),
+                    Err(error) => Err(error),
+                }
+            }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
@@ -1027,6 +1128,33 @@ impl Controller {
 }
 fn logs_dir() -> Result<PathBuf, String> {
     crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
+}
+fn known_dependents(id: &str) -> Vec<Dependent> {
+    let mut dependents = Vec::new();
+    for &(tool, label) in harness::HARNESSES {
+        let mut destinations = vec![(None, harness::paths(tool))];
+        destinations.extend(
+            accounts::list(tool)
+                .into_iter()
+                .map(|(name, path)| (Some(name), accounts::config_paths(tool, Some(&path)))),
+        );
+        for (account, files) in destinations {
+            let Ok(files) = files else {
+                continue;
+            };
+            if harness::inspect(tool, &files)
+                .is_ok_and(|status| status.lines().next() == Some(format!("Model: {id}").as_str()))
+            {
+                dependents.push(Dependent {
+                    tool,
+                    label,
+                    account,
+                    files,
+                });
+            }
+        }
+    }
+    dependents
 }
 
 fn role_info(role: &crate::server_config::Role) -> RoleInfo {
