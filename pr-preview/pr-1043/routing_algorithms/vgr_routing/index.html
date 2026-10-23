@@ -369,6 +369,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../mechanics_of_libsy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mechanics of Libsy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../operations/local_evaluation/" class="md-nav__link">
         
   
@@ -1838,7 +1866,7 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/febe84b22d6ea93d439ac399e62ce31235057946/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/18dee0a8ef7fc32928116fdb781c5e718d0135ec/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -1870,9 +1898,10 @@ Omitting it or setting it to <code>false</code> preserves the full history. Late
 reuse a digest only when their original history prefix matches; a new user turn
 clears it. An <code>x-initiator: agent</code> message keeps the digest, while
 <code>x-initiator: user</code> clears it.</p>
-<p>The digest is lossy: user updates and tool output are clipped, and non-text
-content is replaced with a marker. Cache savings and task-success effects have
-not been measured in a matched evaluation.</p>
+<p>The digest is lossy: user updates and tool output are clipped. Non-text tool
+results become <code>[non-text content]</code>; non-text user updates, including images,
+are omitted without a marker. Cache savings and task-success effects have not
+been measured in a matched evaluation.</p>
 <p>The notice covers the current request and asks the cloud tier to preserve earlier
 work, inspect its effects, and repeat or undo steps only when needed.</p>
 <p>Escalations release when a new user turn is decided locally. Set
