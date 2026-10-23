@@ -14,6 +14,14 @@ typedef struct SyRouter SyRouter;
 typedef struct SyRun SyRun;
 typedef void (*SyNextCallback)(uintptr_t user_data, char *error, char *step_json);
 
+#if defined(__wasm32__)
+uint8_t *sy_alloc(uint32_t len);
+void sy_free(uint8_t *ptr, uint32_t len);
+// Writes the next step to *out_json, or NULL when the runtime is idle.
+// Retry idle reads to advance timers and work waiting on other runs.
+char *sy_run_next(const SyRun *run, char **out_json);
+#endif
+
 // Fallible calls return NULL on success or an owned error string.
 // JSON inputs are borrowed for the call and must be NUL-terminated.
 // Free all output strings, including callback strings, with sy_string_free.
