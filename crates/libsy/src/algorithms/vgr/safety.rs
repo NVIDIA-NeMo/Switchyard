@@ -11,7 +11,7 @@ use switchyard_protocol::LlmClientError;
 
 use crate::LibsyError;
 
-/// Operator-controlled stop for local attempts.
+/// Operator-controlled stop for efficient attempts.
 #[derive(Clone, Debug, Default)]
 pub struct KillSwitch(Arc<AtomicBool>);
 
@@ -21,17 +21,17 @@ impl KillSwitch {
         Self::default()
     }
 
-    /// Stops local attempts for subsequent requests.
+    /// Stops efficient attempts for subsequent requests.
     pub fn engage(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
 
-    /// Allows local attempts again.
+    /// Allows efficient attempts again.
     pub fn release(&self) {
         self.0.store(false, Ordering::Relaxed);
     }
 
-    /// Reports whether local attempts are stopped.
+    /// Reports whether efficient attempts are stopped.
     pub fn is_engaged(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
@@ -112,7 +112,7 @@ impl CircuitBreaker {
     }
 }
 
-/// Releases a recovery trial if its local call is cancelled or abandoned.
+/// Releases a recovery trial if its efficient call is cancelled or abandoned.
 pub(super) struct Attempt<'a> {
     breaker: &'a CircuitBreaker,
     recovery: bool,

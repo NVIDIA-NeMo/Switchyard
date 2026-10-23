@@ -110,7 +110,7 @@ fn router_typing_selects_the_verification_regime() {
 }
 
 #[test]
-// Missing text and unsupported content cannot license a local answer.
+// Missing text and unsupported content cannot license an efficient answer.
 fn missing_or_unrepresentable_evidence_fails_closed() {
     let task = request(vec![Message::text(Role::User, "task")]);
     assert_eq!(branch(&task, " ", None), Branch::Unknown);
@@ -321,25 +321,28 @@ mod decide {
 
     #[test]
     fn agentic_runs_commit_only_on_a_clean_or_recovered_record() {
-        assert_eq!(decide(&agentic(0, 3, 3), &readout(0.2), None), Route::Local);
+        assert_eq!(
+            decide(&agentic(0, 3, 3), &readout(0.2), None),
+            Route::Efficient
+        );
         assert_eq!(
             decide(&agentic(0, 3, 3), &readout(0.19), None),
-            Route::Cloud
+            Route::Capable
         );
 
         let short = agentic(2, 100, 1);
         assert_eq!(agentic_run(&short, None), AgenticRun::ShortRecovered);
-        assert_eq!(decide(&short, &readout(0.9), None), Route::Local);
+        assert_eq!(decide(&short, &readout(0.9), None), Route::Efficient);
         let unrecovered = agentic(2, 100, 0);
-        assert_eq!(decide(&unrecovered, &readout(1.0), Some(1)), Route::Cloud);
+        assert_eq!(decide(&unrecovered, &readout(1.0), Some(1)), Route::Capable);
 
         let long = agentic(2, 101, 1);
         assert_eq!(agentic_run(&long, None), AgenticRun::Vetoed);
         assert_eq!(agentic_run(&long, Some(1)), AgenticRun::ConfirmedRecovery);
         let mut confirmed = readout(0.9);
-        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Cloud);
-        confirmed.cloud_judge = Some(Tri::Yes);
-        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Local);
+        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Capable);
+        confirmed.capable_judge = Some(Tri::Yes);
+        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Efficient);
     }
 
     #[test]
@@ -347,22 +350,22 @@ mod decide {
         let mut chat = agentic(0, 0, 0);
         chat.branch = Branch::Chat;
         let mut signals = Signals {
-            cloud_judge: Some(Tri::Yes),
+            capable_judge: Some(Tri::Yes),
             ..Signals::default()
         };
-        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        assert_eq!(decide(&chat, &signals, None), Route::Capable);
         signals.evidence_confirm = Some(Tri::Unknown);
-        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        assert_eq!(decide(&chat, &signals, None), Route::Capable);
         signals.evidence_confirm = Some(Tri::Yes);
-        assert_eq!(decide(&chat, &signals, None), Route::Local);
+        assert_eq!(decide(&chat, &signals, None), Route::Efficient);
 
         chat.tools = Some(ToolRecord {
             errors: 1,
             ..ToolRecord::default()
         });
-        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        assert_eq!(decide(&chat, &signals, None), Route::Capable);
         chat.branch = Branch::Coding;
-        assert_eq!(decide(&chat, &readout(1.0), None), Route::Cloud);
+        assert_eq!(decide(&chat, &readout(1.0), None), Route::Capable);
     }
 
     #[test]
@@ -371,9 +374,9 @@ mod decide {
             let mut caps = agentic(0, 1, 1);
             caps.branch = branch;
             for (verdict, expected) in [
-                (Some(0.5), Route::Local),
-                (Some(0.49), Route::Cloud),
-                (None, Route::Cloud),
+                (Some(0.5), Route::Efficient),
+                (Some(0.49), Route::Capable),
+                (None, Route::Capable),
             ] {
                 let signals = Signals {
                     deliberation: verdict,
@@ -393,14 +396,14 @@ mod decide {
         let mut coding = agentic(0, 0, 0);
         coding.branch = Branch::Coding;
         let mut signals = readout(0.2);
-        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
-        signals.cloud_judge = Some(Tri::Unknown);
-        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
-        signals.cloud_judge = Some(Tri::Yes);
-        assert_eq!(decide(&coding, &signals, None), Route::Local);
+        assert_eq!(decide(&coding, &signals, None), Route::Capable);
+        signals.capable_judge = Some(Tri::Unknown);
+        assert_eq!(decide(&coding, &signals, None), Route::Capable);
+        signals.capable_judge = Some(Tri::Yes);
+        assert_eq!(decide(&coding, &signals, None), Route::Efficient);
         signals.readout = Some(0.19);
-        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
-        assert_eq!(decide(&coding, &readout(0.6), None), Route::Local);
-        assert_eq!(decide(&coding, &readout(0.59), None), Route::Cloud);
+        assert_eq!(decide(&coding, &signals, None), Route::Capable);
+        assert_eq!(decide(&coding, &readout(0.6), None), Route::Efficient);
+        assert_eq!(decide(&coding, &readout(0.59), None), Route::Capable);
     }
 }

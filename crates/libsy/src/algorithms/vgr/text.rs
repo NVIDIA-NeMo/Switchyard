@@ -216,14 +216,14 @@ pub(super) fn clip_mid(text: &str, budget: usize, head_frac: f64) -> String {
     format!("{head_text}\n...[{omitted} chars omitted]...\n{tail_text}")
 }
 
-/// Detects heuristic code/test markers in the local attempt.
+/// Detects heuristic code/test markers in the efficient attempt.
 pub(super) fn observed_hardening(attempt: &str) -> bool {
     CODE_ACTIVITY
         .as_ref()
         .is_some_and(|pattern| pattern.is_match(attempt))
 }
 
-/// Detects tool transcript labels and JSON tool-call fields in the local attempt.
+/// Detects tool transcript labels and JSON tool-call fields in the efficient attempt.
 pub(super) fn observed_tool_activity(attempt: &str) -> bool {
     TOOL_ACTIVITY
         .as_ref()
