@@ -377,6 +377,20 @@ const ACTIONS: &[ActionRow] = &[
     ),
     (
         Tab::Settings,
+        'f',
+        "Change configuration",
+        "Selects the server config, address, log, and price file. Existing files are preserved.",
+        &[ActionKind::SaveConfiguration],
+    ),
+    (
+        Tab::Settings,
+        'd',
+        "Remove app preferences",
+        "Reviews removal of app preferences and keeps a recovery copy. Server configs and history are preserved.",
+        &[ActionKind::PreviewResetSettings, ActionKind::ResetSettings],
+    ),
+    (
+        Tab::Settings,
         'p',
         "Open model prices",
         "Opens the custom price file in $VISUAL or $EDITOR. With bundled prices, this explains \
@@ -602,6 +616,7 @@ impl Period {
 }
 
 enum FormKind {
+    Configuration,
     Preferences,
     SaveKey,
     ImportKey,
@@ -809,6 +824,32 @@ impl Form {
             }
         };
         Ok(Submit::Run(match &self.kind {
+            FormKind::Configuration => {
+                let saved = data
+                    .settings
+                    .as_ref()
+                    .ok_or("App settings are unavailable.")?;
+                let create_server = match self.value(6).as_str() {
+                    "yes" => true,
+                    "no" => false,
+                    _ => return Err("Enter yes or no for creating a server config.".into()),
+                };
+                Action::SaveConfiguration {
+                    config: crate::config::Config {
+                        server_url: self.value(0),
+                        config_file: self.value(1).into(),
+                        routing_log: self.value(2).into(),
+                        prices_file: (!self.value(3).is_empty()).then(|| self.value(3).into()),
+                        launchd_label: saved.launchd_label.clone(),
+                        baseline_model: self.value(4),
+                        refresh_seconds: self
+                            .value(5)
+                            .parse()
+                            .map_err(|_| "Enter a whole refresh interval in seconds.")?,
+                    },
+                    create_server,
+                }
+            }
             FormKind::Preferences => Action::SavePreferences {
                 baseline_model: self.value(0),
                 refresh_seconds: self.value(1).parse().map_err(|_| {
@@ -964,6 +1005,7 @@ impl Form {
     }
     fn label(&self) -> &'static str {
         match &self.kind {
+            FormKind::Configuration => "Saving the configuration",
             FormKind::Preferences => "Saving the preferences",
             FormKind::SaveKey => "Saving the server key",
             FormKind::ImportKey => "Importing the server key",
@@ -1063,6 +1105,7 @@ fn route_models_form(
 fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
     let preview_token = preview["preview_token"].as_str().map(str::to_owned);
     Some(match previewed {
+        Action::PreviewResetSettings {} => Action::ResetSettings { preview_token },
         Action::PreviewRoute {
             generation,
             route,
@@ -1713,6 +1756,25 @@ impl App {
                     ));
                 }
             }
+            (Some(ActionKind::PreviewResetSettings), Ok(reply)) => {
+                if let Some(remove) = action.and_then(|action| reviewed(action, &reply.data)) {
+                    self.popup = Some(Popup::review(
+                        vec![
+                            Line::from(
+                                reply.data["message"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            ),
+                            Line::from(reply.data["file"].as_str().unwrap_or_default().to_string()),
+                        ],
+                        "Remove",
+                        FormKind::Confirm("REMOVE".into(), Box::new(remove)),
+                        "Remove app preferences?",
+                        "Type REMOVE to keep a recovery copy and remove preferences",
+                    ));
+                }
+            }
             (Some(ActionKind::PreviewSessionCleanup), Ok(reply)) => {
                 if let Some(remove) = action.and_then(|action| reviewed(action, &reply.data)) {
                     self.popup = Some(Popup::review(
@@ -2285,6 +2347,46 @@ impl App {
             ActionKind::OpenSettings => {
                 request(Action::OpenSettings {}, "Opening the app settings")
             }
+            ActionKind::SaveConfiguration => {
+                let saved = self
+                    .data
+                    .settings
+                    .as_ref()
+                    .ok_or("App settings are unavailable.")?;
+                self.open(Form::new(
+                    FormKind::Configuration,
+                    "Switchyard configuration",
+                    vec![
+                        ("Server address", saved.server_url.clone()),
+                        (
+                            "Server config file",
+                            saved.config_file.display().to_string(),
+                        ),
+                        ("Routing log file", saved.routing_log.display().to_string()),
+                        (
+                            "Price override (optional)",
+                            saved
+                                .prices_file
+                                .as_ref()
+                                .map(|file| file.display().to_string())
+                                .unwrap_or_default(),
+                        ),
+                        ("Baseline model ID", saved.baseline_model.clone()),
+                        (
+                            "Refresh interval in seconds",
+                            saved.refresh_seconds.to_string(),
+                        ),
+                        (
+                            "Create server config? yes/no",
+                            if self.data.needs_setup { "yes" } else { "no" }.into(),
+                        ),
+                    ],
+                ))
+            }
+            ActionKind::PreviewResetSettings | ActionKind::ResetSettings => request(
+                Action::PreviewResetSettings {},
+                "Reviewing app preference removal",
+            ),
             ActionKind::SavePreferences => {
                 let (baseline, refresh) = self
                     .data
@@ -2581,27 +2683,29 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // This destructuring has no `..`, so adding a snapshot field breaks the build until a page
     // shows it. Each comment names the place that shows the field.
     let Snapshot {
-        update_status: _,   // draw_settings
-        settings: _,        // draw_settings
-        data_state: _,      // every page checks availability; draw_overview shows health
-        generation: _,      // every route form sends it back with its action
-        routes: _,          // draw_routes and the route details
-        clients: _,         // draw_endpoints, the endpoint fields, and the endpoint forms
-        tools: _,           // draw_harnesses and harness_lines
-        algorithms: _,      // draw_routes, the route details, and the algorithm fields
-        summary: _,         // --print shows these rows; draw_top_models builds the same notes
-        metrics: _,         // draw_header and the Overview cards
-        today: _,           // the Overview "Today" card title
-        analytics: _,       // draw_top_models and draw_models
-        estimates: _,       // the Overview cards and draw_models
-        baseline_model: _,  // draw_top_models; draw_settings shows the saved setting
-        activity: _,        // draw_activity
-        sessions: _,        // the calls table title and the `s` key
-        entries: _,         // draw_call_table and the call details
-        limited: _,         // calls_block and draw_activity
-        skipped: _,         // calls_block
-        errors: _,          // draw_errors and draw_settings
-        refresh_seconds: _, // App::refresh_due
+        needs_setup: _,         // draw_settings and the initial form show setup.
+        configuration_error: _, // draw_settings shows the error through errors
+        update_status: _,       // draw_settings
+        settings: _,            // draw_settings
+        data_state: _,          // every page checks availability; draw_overview shows health
+        generation: _,          // every route form sends it back with its action
+        routes: _,              // draw_routes and the route details
+        clients: _,             // draw_endpoints, the endpoint fields, and the endpoint forms
+        tools: _,               // draw_harnesses and harness_lines
+        algorithms: _,          // draw_routes, the route details, and the algorithm fields
+        summary: _,             // --print shows these rows; draw_top_models builds the same notes
+        metrics: _,             // draw_header and the Overview cards
+        today: _,               // the Overview "Today" card title
+        analytics: _,           // draw_top_models and draw_models
+        estimates: _,           // the Overview cards and draw_models
+        baseline_model: _,      // draw_top_models; draw_settings shows the saved setting
+        activity: _,            // draw_activity
+        sessions: _,            // the calls table title and the `s` key
+        entries: _,             // draw_call_table and the call details
+        limited: _,             // calls_block and draw_activity
+        skipped: _,             // calls_block
+        errors: _,              // draw_errors and draw_settings
+        refresh_seconds: _,     // App::refresh_due
         // draw_session_table lists the inventory or shows the error that stopped reading it,
         // and session_lines shows the selected session.
         session_inventory: _,
@@ -4116,6 +4220,10 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     let heading = |text: &'static str| Line::styled(text, theme.muted.bold());
     let (_, _, name, about, _) = rows(Tab::Settings).nth(app.action).unwrap_or(&ACTIONS[0]);
     let mut lines = vec![Line::from(*about), Line::default()];
+    if app.data.needs_setup {
+        lines.push(Line::from("Choose Change configuration to save setup. Existing config files skip setup on later installs."));
+    }
+
     if !app.data.errors.is_empty() {
         lines.extend(
             app.data
@@ -4545,7 +4653,8 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             ),
             Line::default(),
         ],
-        FormKind::Preferences
+        FormKind::Configuration
+        | FormKind::Preferences
         | FormKind::Update(_)
         | FormKind::Confirm(..)
         | FormKind::Remove { .. } => Vec::new(),
@@ -4954,7 +5063,14 @@ fn edit_in_foreground(
 
 pub fn run(mut controller: Controller) -> Result<(), String> {
     let (snapshot, tab) = match controller.snapshot() {
-        Ok(snapshot) => (snapshot, Tab::Overview),
+        Ok(snapshot) => {
+            let tab = if snapshot.needs_setup || snapshot.configuration_error.is_some() {
+                Tab::Settings
+            } else {
+                Tab::Overview
+            };
+            (snapshot, tab)
+        }
         // Settings shows the error and the actions that can fix the app settings.
         Err(error) => (
             Snapshot {
@@ -4966,6 +5082,9 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
     };
     let mut app = App::new(Theme::new(color_enabled()), snapshot);
     app.tab = tab;
+    if app.data.needs_setup {
+        let _ = app.start_action(ActionKind::SaveConfiguration, 'f');
+    }
     ratatui::crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)
         .map_err(|e| e.to_string())?;
     let _paste_mode = PasteMode;

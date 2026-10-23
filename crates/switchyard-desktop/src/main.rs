@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app manages a local Switchyard server.
+//! The desktop and terminal apps manage a local Switchyard server.
 //!
-//! It shows recorded traffic and compares list-price estimates with the
-//! configured baseline model. Its Routes view edits the server config and
-//! restarts the server.
+//! Both apps show recorded traffic and the cost that the server recorded for each
+//! call, and compare it with the configured baseline model. Their Routes views edit
+//! the server config and restart the server.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -112,27 +112,15 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !terminal && !print_only {
-        #[cfg(any(target_os = "macos", windows))]
-        return match gui::run(settings) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("switchyard-desktop: {error}");
-                ExitCode::FAILURE
-            }
-        };
-        #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            eprintln!("The desktop window supports macOS and Windows. Use --print or --tui.");
-            return ExitCode::FAILURE;
-        }
+    if !terminal && !print_only && !cfg!(any(target_os = "macos", windows)) {
+        eprintln!("The desktop window supports macOS and Windows. Use --print or --tui.");
+        return ExitCode::FAILURE;
     }
-
     let config = match Config::load(&settings) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("switchyard-desktop: {error}");
-            if !terminal {
+            if print_only || (!terminal && !cfg!(any(target_os = "macos", windows))) {
                 return ExitCode::FAILURE;
             }
             match Config::defaults_for(&settings) {
@@ -171,12 +159,26 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let controller = controller::Controller::new(config, settings);
-    #[cfg(windows)]
-    windows::allocate_console();
-    if let Err(error) = tui::run(controller) {
+    if !settings.try_exists().unwrap_or(true)
+        && matches!(config::needs_setup(&settings), Ok(false))
+        && let Err(error) = config::save_configuration(&settings, &config, false)
+    {
         eprintln!("switchyard-desktop: {error}");
-        return ExitCode::FAILURE;
+    }
+    let controller = controller::Controller::new(config, settings.clone());
+    if terminal {
+        #[cfg(windows)]
+        windows::allocate_console();
+        if let Err(error) = tui::run(controller) {
+            eprintln!("switchyard-desktop: {error}");
+            return ExitCode::FAILURE;
+        }
+    } else {
+        #[cfg(any(target_os = "macos", windows))]
+        if let Err(error) = gui::run(controller, settings) {
+            eprintln!("switchyard-desktop: {error}");
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }
