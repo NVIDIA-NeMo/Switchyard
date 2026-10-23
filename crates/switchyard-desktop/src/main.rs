@@ -11,9 +11,9 @@
 
 use switchyard_desktop::{config, health, history, rollup};
 mod controller;
-
 #[cfg(any(target_os = "macos", windows))]
 mod gui;
+mod models;
 mod pricing;
 mod server;
 mod server_config;
