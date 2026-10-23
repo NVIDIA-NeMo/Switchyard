@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switchyard usage</title><link rel="stylesheet" href="tray.css">
+<script defer src="appearance.js"></script>
+<script defer src="tray.js"></script>
+</head>
+<body>
+<div id="popup">
+<header><strong>Switchyard</strong><span id="connection" class="connection">Checking…</span></header>
+<main>
+<p id="server-url" class="detail"></p>
+<p id="error" role="status" aria-live="polite" hidden></p>
+<p id="empty" class="detail" hidden></p>
+<div id="periods"></div>
+<section id="models" hidden><h2>This week by model</h2><ol id="model-list"></ol></section>
+<p id="note" class="detail" hidden></p>
+</main>
+<footer>
+<nav aria-label="Server actions">
+<button data-action="restart">Restart server</button>
+<button data-action="open_config">Open server config…</button>
+<button data-page="settings">Settings…</button>
+<button data-page="install">Connect tools…</button>
+<p id="status" role="status" aria-live="polite"></p>
+</nav>
+<nav aria-label="App actions">
+<button data-page="overview">Open Switchyard</button>
+<button id="quit">Quit Switchyard</button>
+</nav>
+</footer>
+</div>
+</body></html>

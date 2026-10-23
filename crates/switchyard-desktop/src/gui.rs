@@ -3,6 +3,9 @@
 
 //! Tauri manages the window and tray, and runs blocking operations on worker threads.
 
+#[cfg(target_os = "macos")]
+mod panel;
+
 use crate::controller::{Action, Controller, Reply, Snapshot};
 use crate::summary::Overview;
 use std::path::PathBuf;
@@ -14,7 +17,7 @@ use std::time::Duration;
 use tauri::{
     Manager, State,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
 struct Shared {
@@ -267,6 +270,13 @@ async fn action(app: tauri::AppHandle, action: Action) -> Result<Reply, String> 
     dispatch(app, action).await
 }
 #[tauri::command]
+async fn tray_overview(app: tauri::AppHandle) -> Result<TrayView, String> {
+    // The overview probes the server, so it runs on a worker thread.
+    tauri::async_runtime::spawn_blocking(move || refresh_tray(&app))
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     quit(&app);
 }
@@ -394,6 +404,132 @@ fn accessibility() -> serde_json::Value {
     serde_json::json!({"native_material": false, "reduce_transparency": true, "reduce_motion": false})
 }
 
+/// POPUP_WIDTH matches the width of macOS status item menus such as Wi-Fi and Sound.
+const POPUP_WIDTH: f64 = 320.0;
+
+// The webview measures popup height; invalid sizes must not reach AppKit.
+fn popup_height(height: f64) -> Result<f64, String> {
+    if !height.is_finite() || height <= 0.0 {
+        return Err("The popup height must be a positive number.".into());
+    }
+    Ok(height.clamp(120.0, 620.0))
+}
+
+#[tauri::command]
+fn tray_size(app: tauri::AppHandle, height: f64) -> Result<(), String> {
+    let height = popup_height(height)?;
+    #[cfg(target_os = "macos")]
+    app.state::<panel::TrayPanel>().resize(height);
+    #[cfg(windows)]
+    if let Some(window) = app.get_webview_window("tray") {
+        let height = window
+            .current_monitor()
+            .map_err(|e| e.to_string())?
+            .map(|monitor| {
+                height.min(f64::from(monitor.work_area().size.height) / monitor.scale_factor())
+            })
+            .unwrap_or(height);
+        window
+            .set_size(tauri::LogicalSize::new(POPUP_WIDTH, height))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn tray_page(app: tauri::AppHandle, page: String) -> Result<(), String> {
+    if !matches!(page.as_str(), "overview" | "install" | "settings" | "setup") {
+        return Err("Choose Overview, Connect tools, or Settings.".into());
+    }
+    open_page(&app, &page);
+    dismiss_tray(app)
+}
+#[tauri::command]
+fn dismiss_tray(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    app.state::<panel::TrayPanel>().dismiss();
+    #[cfg(windows)]
+    if let Some(window) = app.get_webview_window("tray") {
+        window.hide().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+// Windows uses physical coordinates to keep the popup within the target monitor's work area.
+#[cfg(windows)]
+fn popup_geometry(
+    rect: tauri::Rect,
+    area: &tauri::PhysicalRect<i32, u32>,
+    scale: f64,
+) -> (tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
+    let origin = rect.position.to_physical::<f64>(scale);
+    let icon = rect.size.to_physical::<f64>(scale);
+    let size = tauri::PhysicalSize::new(
+        (POPUP_WIDTH * scale)
+            .min(f64::from(area.size.width))
+            .round() as u32,
+        (620.0 * scale).min(f64::from(area.size.height)).round() as u32,
+    );
+    let x = (origin.x + icon.width / 2.0 - f64::from(size.width) / 2.0).clamp(
+        f64::from(area.position.x),
+        f64::from(area.position.x) + f64::from(area.size.width - size.width),
+    );
+    let y = (origin.y + icon.height + 6.0 * scale).clamp(
+        f64::from(area.position.y),
+        f64::from(area.position.y) + f64::from(area.size.height - size.height),
+    );
+    (
+        tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32),
+        size,
+    )
+}
+
+fn toggle_tray(
+    tray: &tauri::tray::TrayIcon,
+    position: tauri::PhysicalPosition<f64>,
+    rect: tauri::Rect,
+) -> tauri::Result<()> {
+    let app = tray.app_handle();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (position, rect);
+        // AppKit frames avoid converting Tauri's physical, top-left coordinates back to points.
+        let Some((anchor, area)) = panel::status_item_frames(tray) else {
+            return Ok(());
+        };
+        if app.state::<panel::TrayPanel>().toggle(anchor, area)
+            && let Some(window) = app.get_webview_window("tray")
+        {
+            window.eval("window.dispatchEvent(new Event('switchyard-tray-open'))")?;
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        let Some(window) = app.get_webview_window("tray") else {
+            return Ok(());
+        };
+        if window.is_visible()? {
+            return window.hide();
+        }
+        if let Some(monitor) = window.available_monitors()?.into_iter().find(|monitor| {
+            let origin = monitor.position();
+            let size = monitor.size();
+            position.x >= f64::from(origin.x)
+                && position.x < f64::from(origin.x) + f64::from(size.width)
+                && position.y >= f64::from(origin.y)
+                && position.y < f64::from(origin.y) + f64::from(size.height)
+        }) {
+            let (position, size) =
+                popup_geometry(rect, monitor.work_area(), monitor.scale_factor());
+            window.set_position(position)?;
+            window.set_size(size)?;
+        }
+        window.show()?;
+        window.set_focus()?;
+        window.eval("window.dispatchEvent(new Event('switchyard-tray-open'))")?;
+        Ok(())
+    }
+}
 fn open_page(app: &tauri::AppHandle, page: &str) {
     if let Some(window) = app.get_webview_window("main") {
         // Only the fixed page names from the tray menu reach this script.
@@ -422,6 +558,9 @@ fn activation(app: &tauri::AppHandle, visible: bool) -> tauri::Result<()> {
     }
 }
 fn show(app: &tauri::AppHandle) {
+    if let Err(error) = dismiss_tray(app.clone()) {
+        eprintln!("switchyard-desktop: could not hide the preview: {error}");
+    }
     if let Some(window) = app.get_webview_window("main")
         && let Err(e) = activation(app, true)
             .and_then(|()| window.show())
@@ -449,6 +588,10 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
             choose_path,
             appearance,
             accessibility,
+            tray_size,
+            tray_page,
+            tray_overview,
+            dismiss_tray,
             quit_app
         ])
         .setup(|app| {
@@ -460,6 +603,34 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
                     tauri::window::EffectState::FollowsWindowActiveState,
                 ))?;
             }
+            let tray_window = tauri::WebviewWindowBuilder::new(
+                app,
+                "tray",
+                tauri::WebviewUrl::App("tray.html".into()),
+            )
+            .title("Switchyard usage")
+            .inner_size(POPUP_WIDTH, 620.0)
+            .transparent(cfg!(target_os = "macos"))
+            .decorations(false)
+            .resizable(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .focused(false)
+            .build()?;
+            #[cfg(target_os = "macos")]
+            {
+                // Like a menu, the popup keeps the active material although it never activates
+                // the app.
+                tray_window.set_effects(material(
+                    tauri::window::Effect::Popover,
+                    Some(panel::CORNER_RADIUS),
+                    tauri::window::EffectState::Active,
+                ))?;
+                app.manage(panel::TrayPanel::new(&tray_window).map_err(std::io::Error::other)?);
+            }
+            #[cfg(windows)]
+            let _ = tray_window;
 
             let tray_pixels = include_bytes!("../icons/tray.rgba");
             TrayIconBuilder::with_id(TRAY_ID)
@@ -467,6 +638,22 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
                 .icon_as_template(false)
                 .tooltip("Switchyard — routes and usage")
                 .menu(&tray_menu(app.handle(), &["Reading usage…".into()])?)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        position,
+                        rect,
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                        && let Err(error) = toggle_tray(tray, position, rect)
+                    {
+                        eprintln!(
+                            "switchyard-desktop: could not show or hide the usage preview: {error}"
+                        );
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "restart" => run_tray_action(app, Action::Restart {}),
                     "open-config" => run_tray_action(app, Action::OpenConfig {}),
@@ -499,10 +686,22 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
                     }
                 }
             }
+            #[cfg(windows)]
+            if window.label() == "tray"
+                && matches!(event, tauri::WindowEvent::Focused(false))
+                && let Err(error) = window.hide()
+            {
+                eprintln!("switchyard-desktop: could not hide the usage preview: {error}");
+            }
 
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-
+                if window.label() == "tray" {
+                    if let Err(error) = dismiss_tray(window.app_handle().clone()) {
+                        eprintln!("switchyard-desktop: could not hide the usage preview: {error}");
+                    }
+                    return;
+                }
                 // Accessory removes the running Dock entry while keeping the tray menu.
                 if let Err(e) = window.hide().and_then(|()| {
                     if window.label() == "main" {
