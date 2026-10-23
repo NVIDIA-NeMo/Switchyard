@@ -26,6 +26,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
 | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
 
+
 [`Noop`] is a test helper, not a production routing algorithm.
 
 ## How it fits together
@@ -40,6 +41,24 @@ drives the stream and performs the terminal answer call, retries, and fallback o
 
 The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
 contracts come from `switchyard-protocol`.
+
+## Queue-based infrastructure policy
+
+`InfraPolicy` applies after a tier router finishes. It can move an efficient-model
+choice to the capable model when every efficient worker has a queue and calibrated
+service times predict a saving. Missing or stale worker observations keep the task
+choice. The policy does not change task affinity or choose a worker.
+
+The host periodically collects `switchyard_protocol::InfraSignals`, then calls
+`Route::apply_infra` on the result of `Route::decide`. Hold the host's in-flight
+accounting lock through the policy check and increment for the selected model.
+Decrement when the response finishes or is cancelled. These are process-local routing
+limits; they do not reserve backend capacity. Plain `decide` and `execute` keep their
+task-routing behavior. No new `Call` or `Step` variant is required.
+
+See the [Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
+for collection, configuration and response-lifetime tracking. This policy is a
+workspace addition and is not in the v0.3.0 release shown above.
 
 ## Concurrent calls and cancellation
 

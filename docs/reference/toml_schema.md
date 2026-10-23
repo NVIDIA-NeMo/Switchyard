@@ -216,6 +216,39 @@ Every route takes the common keys below, plus the keys for its type.
 | `reasoning` | No | unset | When `false`, the server rejects reasoning controls with HTTP 400 before dispatch. Explicit `true` and unset values do not restrict requests. The server does not include this declaration in `GET /v1/models`. |
 | `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. When `false`, the server rejects images with HTTP 400 before dispatch, including images in tool results. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. Declare `true` only when every target the route can select accepts images. |
 
+### Optional infrastructure check
+
+A `stage_router`, `auto`, or capability `llm_classifier` route without escalation may
+include `[routes.<name>.infra]`. Both tiers must have one model; each model may have
+multiple workers. A host applies the policy explicitly with `Route::apply_infra`
+after `Route::decide`, using periodically collected worker metrics and local in-flight
+counts. Plain `decide` and `execute` retain task routing. Sub-agent routing is unchanged.
+
+```toml
+[routes.example.infra]
+max_signal_age_ms = 1000
+min_waiting_requests = 4
+max_capable_inflight = 2
+max_spillovers = 2
+min_saving_ms = 500.0
+
+[routes.example.infra.efficient_workers.small-a]
+batch_size = 4
+batch_time_ms = 2000.0
+request_time_ms = 1000.0
+
+[routes.example.infra.capable_workers]
+large = 4000.0
+```
+
+All keys are required. Worker IDs must match the complete metrics inventory for each
+model. Limits and service times must be positive; `min_saving_ms` must be finite and
+nonnegative. The example times are illustrative, not measured defaults. Add one
+calibration entry per worker. Missing, stale or incomplete observations retain the
+task decision. See the
+[Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
+for the estimate, atomic local accounting and calibration limitations.
+
 ### `noop`
 
 Returns a buffered assistant response containing `OK` without calling an
