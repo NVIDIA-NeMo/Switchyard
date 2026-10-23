@@ -5,7 +5,6 @@
 //! request, call the configured backend over HTTP, decode the neutral response.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::future::ready;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -884,42 +883,72 @@ async fn prepare_response_stream(
             .map_err(convert_reqwest_error)
     });
     let mut chunks = decode_stream(bytes, backend.wire_format())?;
-    match chunks.next().await {
-        None => Ok(stream::empty().boxed()),
-        // Nothing has reached the caller, so transport failures can still be retried.
-        Some(Err(error @ (LlmClientError::Transport { .. } | LlmClientError::Timeout { .. }))) => {
-            Err(error)
-        }
-        Some(first) => {
-            // An in-band context overflow skips retries and advances to another candidate.
-            if let Some(message) = first_event_overflow(&first, backend) {
-                return Err(LlmClientError::ContextWindowExceeded {
-                    model: model.clone(),
-                    message,
-                });
+    let mut prefix = Vec::with_capacity(2);
+    while let Some(next) = chunks.next().await {
+        match next {
+            // Nothing has reached the caller, so transport failures can still be retried.
+            Err(error @ (LlmClientError::Transport { .. } | LlmClientError::Timeout { .. })) => {
+                return Err(error);
             }
-            Ok(stream::once(ready(first)).chain(chunks).boxed())
+            Ok(event) => {
+                if let Some(error) = pre_answer_error(&event, backend, model) {
+                    return Err(error);
+                }
+                // OpenAI streams often send a role-only prelude before the answer.
+                let hold_role = prefix.is_empty()
+                    && matches!(backend, Backend::OpenAiChat(_))
+                    && !event.normalized().is_empty()
+                    && event
+                        .normalized()
+                        .iter()
+                        .all(|chunk| matches!(chunk, LlmResponseChunk::MessageStart { .. }));
+                prefix.push(Ok(event));
+                if !hold_role {
+                    break;
+                }
+            }
+            Err(error) => {
+                prefix.push(Err(error));
+                break;
+            }
         }
     }
+    Ok(stream::iter(prefix).chain(chunks).boxed())
 }
 
-// The overflow message when a stream's first event is an in-band provider rejection
-// of the whole request, rather than the start of a response.
-fn first_event_overflow(
-    first: &Result<LlmResponseStreamEvent>,
+// Classify a provider rejection before any stream event is returned to the caller.
+fn pre_answer_error(
+    event: &LlmResponseStreamEvent,
     backend: &Backend,
-) -> Option<String> {
-    first
-        .as_ref()
-        .ok()?
-        .normalized()
-        .iter()
-        .find_map(|chunk| match chunk {
-            LlmResponseChunk::StreamError { message } if backend.is_context_overflow(message) => {
-                Some(message.clone())
-            }
-            _ => None,
-        })
+    model: &ModelId,
+) -> Option<LlmClientError> {
+    let message = event.normalized().iter().find_map(|chunk| match chunk {
+        LlmResponseChunk::StreamError { message } => Some(message),
+        _ => None,
+    })?;
+    if backend.is_context_overflow(message) {
+        return Some(LlmClientError::ContextWindowExceeded {
+            model: model.clone(),
+            message: message.clone(),
+        });
+    }
+    if !matches!(backend, Backend::OpenAiChat(_)) {
+        return None;
+    }
+    let code = event
+        .preservation()?
+        .raw()
+        .get("error")?
+        .get("code")?
+        .as_u64()
+        .and_then(|code| u16::try_from(code).ok())?;
+    if !metrics::is_retryable_http_status(code) {
+        return None;
+    }
+    Some(LlmClientError::UpstreamHttp {
+        status: StatusCode::from_u16(code).ok()?,
+        body: "upstream reported a retryable stream error".to_string(),
+    })
 }
 
 // Uses Retry-After when supplied, capped so an upstream cannot stall a request indefinitely.
