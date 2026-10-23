@@ -528,6 +528,18 @@ fn configured(
     Ok(incoming)
 }
 
+#[cfg(test)]
+pub fn install(
+    tool: Harness,
+    files: &[PathBuf],
+    root: &str,
+    model: &str,
+    context_window: Option<u64>,
+    login: bool,
+) -> Result<String, String> {
+    install_reviewed(tool, files, root, model, context_window, login, None)
+}
+
 pub fn install_reviewed(
     tool: Harness,
     files: &[PathBuf],
@@ -669,6 +681,12 @@ pub fn preview_restore(tool: Harness, files: &[PathBuf]) -> Result<Value, String
         "warning": "Restore replaces each listed file with its original version. \
                     Later edits are kept in a recovery copy before replacement."
     }))
+}
+
+// Restore receipts keep the original contents or absence available until backup cleanup finishes.
+#[cfg(test)]
+pub fn restore(files: &[PathBuf]) -> Result<String, String> {
+    restore_reviewed(files, None)
 }
 
 pub fn restore_reviewed(
@@ -908,4 +926,285 @@ pub fn binary(tool: Harness) -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     dirs.into_iter().map(|p| p.join(name)).find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    // Preview must match the installed settings without creating files or backups.
+    fn preview_matches_installation_without_writes() {
+        for (tool, _) in HARNESSES {
+            let dir = tempfile::tempdir().expect("directory");
+            let files = if *tool == Harness::Pi {
+                vec![
+                    dir.path().join("models.json"),
+                    dir.path().join("settings.json"),
+                ]
+            } else {
+                vec![dir.path().join("config")]
+            };
+            let original = if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
+                "# user comment\nmodel='before'\nsandbox_mode='workspace-write'\n"
+            } else {
+                "{\"custom\":true}"
+            };
+            std::fs::write(&files[0], original).expect("settings");
+            let result = preview(
+                *tool,
+                &files,
+                "http://localhost:4123",
+                "new-route",
+                None,
+                false,
+            )
+            .expect("preview");
+            assert!(
+                result["changes"]
+                    .as_array()
+                    .expect("diff")
+                    .iter()
+                    .any(|change| change["after"]
+                        .as_str()
+                        .is_some_and(|value| value.contains("new-route")))
+            );
+            assert_eq!(read(&files[0]).expect("unchanged"), original);
+            assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
+            install(
+                *tool,
+                &files,
+                "http://localhost:4123",
+                "new-route",
+                None,
+                false,
+            )
+            .expect("install");
+            assert_eq!(
+                result["proposed"],
+                inspect(*tool, &files).expect("installed")
+            );
+            install(
+                *tool,
+                &files,
+                "http://localhost:4123",
+                "refreshed-route",
+                None,
+                false,
+            )
+            .expect("refresh");
+            let installed = read(&files[0]).expect("settings");
+            assert!(installed.contains("refreshed-route"));
+            assert!(
+                installed.contains(if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
+                    "sandbox_mode"
+                } else {
+                    "custom"
+                })
+            );
+            assert_eq!(read(&backup_path(&files[0])).expect("backup"), original);
+            restore(&files).expect("restore");
+            assert_eq!(read(&files[0]).expect("original"), original);
+            if *tool == Harness::Pi {
+                assert!(!files[1].exists());
+            }
+            std::fs::write(&files[0], original.replace("before", "new-user-model"))
+                .expect("user edit");
+            install(*tool, &files, "http://localhost:4123", "again", None, false)
+                .expect("reinstall");
+            restore(&files).expect("restore again");
+            assert_eq!(
+                read(&files[0]).expect("new original"),
+                original.replace("before", "new-user-model")
+            );
+            assert!(
+                result["authentication"]
+                    .as_str()
+                    .expect("authentication")
+                    .contains("API credentials")
+            );
+        }
+        let dir = tempfile::tempdir().expect("directory");
+        let files = vec![dir.path().join("settings.json")];
+        let original =
+            r#"{"env":{"ANTHROPIC_API_KEY":"SECRET","ANTHROPIC_MODEL":{"key":"SECRET"}}}"#;
+        std::fs::write(&files[0], original).expect("settings");
+        assert!(
+            preview(
+                Harness::Claude,
+                &files,
+                "http://localhost:4123",
+                "route",
+                None,
+                true
+            )
+            .is_err()
+        );
+        assert_eq!(read(&files[0]).expect("unchanged"), original);
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 1);
+        let safe = preview(
+            Harness::Claude,
+            &files,
+            "http://localhost:4123",
+            "route",
+            None,
+            false,
+        )
+        .expect("API preview");
+        assert!(!safe.to_string().contains("SECRET"));
+        assert!(
+            safe["changes"]
+                .as_array()
+                .expect("diff")
+                .iter()
+                .any(|change| change["key"] == "env.ANTHROPIC_API_KEY"
+                    && change["before"] == "(set; hidden)")
+        );
+        std::fs::write(&files[0], "{}").expect("settings");
+        let result = preview(
+            Harness::Claude,
+            &files,
+            "http://localhost:4123",
+            "route",
+            None,
+            true,
+        )
+        .expect("login preview");
+        assert!(
+            result["authentication"]
+                .as_str()
+                .expect("authentication")
+                .contains("subscription login")
+        );
+    }
+
+    #[test]
+    fn a_pending_restore_blocks_install_and_retires_stale_backups_on_retry() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("settings.json");
+        let files = std::slice::from_ref(&path);
+        std::fs::write(&path, "{}").expect("settings");
+        install(
+            Harness::Claude,
+            files,
+            "http://localhost:4123",
+            "api",
+            None,
+            false,
+        )
+        .expect("install");
+        let pending = restore_pending_path(&path);
+        std::fs::write(
+            &pending,
+            serde_json::to_string(&Some("{}".to_string())).expect("receipt"),
+        )
+        .expect("pending retirement");
+        let installed = read(&path).expect("installed");
+        assert!(
+            install(
+                Harness::Claude,
+                files,
+                "http://localhost:4123",
+                "another",
+                None,
+                false
+            )
+            .is_err()
+        );
+        assert_eq!(read(&path).expect("unchanged"), installed);
+        // The backup was already retired, so retry uses the saved restoration receipt.
+        std::fs::remove_file(backup_path(&path)).expect("retired backup");
+        restore(files).expect("retry restore");
+        assert_eq!(read(&path).expect("restored"), "{}");
+        assert!(!pending.exists());
+    }
+
+    #[test]
+    fn subscription_install_removes_only_switchyard_credentials() {
+        let dir = tempfile::tempdir().expect("directory");
+        let path = dir.path().join("settings.json");
+        let files = std::slice::from_ref(&path);
+        std::fs::write(&path, "{}").expect("settings");
+        install(
+            Harness::Claude,
+            files,
+            "http://localhost:4123",
+            "api-route",
+            None,
+            false,
+        )
+        .expect("API install");
+        install(
+            Harness::Claude,
+            files,
+            "http://localhost:4123",
+            "subscription",
+            None,
+            true,
+        )
+        .expect("subscription install");
+        let doc = object(&read(&path).expect("settings")).expect("JSON");
+        assert!(doc["env"].get("ANTHROPIC_AUTH_TOKEN").is_none());
+        assert!(doc["env"].get("ANTHROPIC_API_KEY").is_none());
+        assert_eq!(doc["env"]["ANTHROPIC_MODEL"], "subscription");
+        for key in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+            for value in [
+                json!("user-secret"),
+                json!("switchyard-local"),
+                json!(null),
+                json!(false),
+                json!(123),
+                json!([]),
+                json!({}),
+            ] {
+                let original = json!({"env":{key:value}}).to_string();
+                std::fs::write(&path, &original).expect("settings");
+                let before = std::fs::read_dir(dir.path()).expect("files").count();
+                assert!(
+                    install(
+                        Harness::Claude,
+                        files,
+                        "http://localhost:4123",
+                        "subscription",
+                        None,
+                        true
+                    )
+                    .is_err()
+                );
+                assert_eq!(read(&path).expect("unchanged"), original);
+                assert_eq!(
+                    std::fs::read_dir(dir.path()).expect("files").count(),
+                    before
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_prepares_every_file_and_rejects_changed_inputs() {
+        let dir = tempfile::tempdir().expect("directory");
+        let first = dir.path().join("first");
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&first, "original").expect("first");
+        std::fs::write(&blocked, "not a directory").expect("blocked");
+        let files = vec![first.clone(), blocked.join("second")];
+        assert!(
+            replace(
+                &files,
+                &[Some("original".into()), None],
+                &[Some("new".into()), Some("new".into())]
+            )
+            .is_err()
+        );
+        assert_eq!(read(&first).expect("read"), "original");
+        assert!(
+            replace(
+                std::slice::from_ref(&first),
+                &[Some("stale".into())],
+                &[Some("new".into())]
+            )
+            .is_err()
+        );
+        assert_eq!(read(&first).expect("read"), "original");
+    }
 }
