@@ -13,6 +13,11 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    Restart {},
+    PreviewUpdate {},
+    Update {
+        preview_token: Option<String>,
+    },
     OpenLogs {},
     OpenUpdateLog {},
     OpenConfig {},
@@ -20,6 +25,20 @@ pub enum Action {
     OpenSettings {},
     CheckConfig {},
     ServerKeys {},
+    SaveServerKey {
+        name: String,
+        key: String,
+    },
+    ImportServerKey {
+        name: String,
+    },
+    RemoveServerKey {
+        name: String,
+    },
+    SavePreferences {
+        baseline_model: String,
+        refresh_seconds: u64,
+    },
 }
 
 /// Snapshot holds the data shown by the apps. The terminal app destructures every field,
@@ -116,6 +135,7 @@ pub struct Controller {
     config: Config,
     reader: rollup::Reader,
     health_probe: crate::health::Probe,
+    update_review: Option<(String, Value)>,
 }
 impl Controller {
     pub fn new(config: Config, settings: PathBuf) -> Self {
@@ -124,11 +144,24 @@ impl Controller {
             settings,
             reader: rollup::Reader::default(),
             health_probe: crate::health::Probe::default(),
+            update_review: None,
         }
     }
     fn reload(&mut self) -> Result<(), String> {
         self.config = Config::load(&self.settings)?;
         Ok(())
+    }
+    // Key actions accept only names that the server config declares.
+    fn declared_key(&self, name: &str) -> Result<(), String> {
+        if switchyard_desktop::install::credentials::variables(&self.config.config_file)?
+            .contains(name)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "The server config does not name {name} with api_key_env. Refresh and try again."
+            ))
+        }
     }
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.reload()?;
@@ -274,13 +307,83 @@ impl Controller {
                 server::command("open", &[&logs_dir()?.display().to_string()])?;
                 Ok(Reply::message("Opened Switchyard logs.".into()))
             }
+            Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
             Action::ServerKeys {} => Ok(Reply {
                 message: String::new(),
                 data: json!({"keys": server::server_keys(&self.config)?, "store": switchyard_desktop::install::credentials::STORE}),
             }),
+            Action::SaveServerKey { name, key } => {
+                self.declared_key(&name)?;
+                server::save_server_key(&name, &key)?;
+                Ok(Reply::message(format!(
+                    "Saved the key for {name}. Restart the server to use it."
+                )))
+            }
+            Action::ImportServerKey { name } => {
+                self.declared_key(&name)?;
+                server::import_server_key(&name)?;
+                Ok(Reply::message(format!(
+                    "Saved {name} from your login shell. Restart the server to use it."
+                )))
+            }
+            Action::RemoveServerKey { name } => {
+                self.declared_key(&name)?;
+                server::remove_server_key(&name)?;
+                Ok(Reply::message(format!(
+                    "Removed the saved key for {name}. The server will not start until it has one."
+                )))
+            }
+            Action::SavePreferences {
+                baseline_model,
+                refresh_seconds,
+            } => {
+                crate::config::save_preferences(&self.settings, &baseline_model, refresh_seconds)?;
+                self.reload()?;
+                Ok(Reply::message(format!(
+                    "Changed {}.",
+                    self.settings.display()
+                )))
+            }
             Action::OpenSettings {} => unreachable!(),
+            Action::PreviewUpdate {} => {
+                let mut data = switchyard_desktop::install::preview_update(&install_metadata(
+                    &self.settings,
+                )?)?;
+                let token = uuid::Uuid::now_v7().to_string();
+                let mut reviewed = data.clone();
+                reviewed
+                    .as_object_mut()
+                    .ok_or("Invalid update preview.")?
+                    .remove("status");
+                self.update_review = Some((token.clone(), reviewed));
+                data["preview_token"] = json!(token);
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
+            Action::Update { preview_token } => {
+                let (token, reviewed) = self
+                    .update_review
+                    .as_ref()
+                    .ok_or("Review the source update first.")?;
+                let mut current = switchyard_desktop::install::preview_update(&install_metadata(
+                    &self.settings,
+                )?)?;
+                current
+                    .as_object_mut()
+                    .ok_or("Invalid update preview.")?
+                    .remove("status");
+                if preview_token.as_deref() != Some(token.as_str()) || &current != reviewed {
+                    return Err(
+                        "The source checkout or installation changed. Review the update again."
+                            .into(),
+                    );
+                }
+                update(&self.settings).map(Reply::message)
+            }
             Action::OpenUpdateLog {} => {
                 let log = self.update_log()?;
                 server::command("open", &[&log.display().to_string()])?;
@@ -322,6 +425,16 @@ fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
             .join("install.toml")
     };
     Ok(metadata)
+}
+fn update(settings: &std::path::Path) -> Result<String, String> {
+    let metadata = install_metadata(settings)?;
+    let log = switchyard_desktop::install::start_update(&metadata)?;
+    Ok(format!(
+        "Started rebuilding and reinstalling from the saved source checkout. \
+         Progress and errors are recorded in {}. \
+         The app restarts after a successful install.",
+        log.display()
+    ))
 }
 
 #[cfg(test)]

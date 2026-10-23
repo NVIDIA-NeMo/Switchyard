@@ -473,6 +473,17 @@ pub(crate) fn delete_credential(target: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn restart(s: &Settings) -> Result<(), String> {
+    stop_task(s, false)?;
+    stop_images(&[s.binary("switchyard-server")])?;
+    // The terminal app calls this, so the scheduler command must not print onto its screen.
+    if task_succeeds(s, false, "/Run")? {
+        Ok(())
+    } else {
+        Err(format!("schtasks /Run /TN {} failed.", task_name(s, false)))
+    }
+}
+
 pub fn open(value: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     let value = wide(std::ffi::OsStr::new(value));

@@ -102,7 +102,18 @@ const FILTER_KEYS: &[Key] = &[
     ("esc", "clear", "Clear the filter."),
     ("ctrl-u", "erase", "Erase the filter text."),
 ];
+const FORM_KEYS: &[Key] = &[
+    ("⏎", "submit", ""),
+    ("tab", "next field", ""),
+    ("esc", "cancel", ""),
+];
+const UPDATE_KEYS: &[Key] = &[
+    ("⏎", "start", ""),
+    ("↑↓", "scroll", ""),
+    ("esc", "cancel", ""),
+];
 const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
+const CONFIRM_KEYS: &[Key] = &[("y", "confirm", ""), ("n", "cancel", "")];
 
 /// The Settings page uses these entries for action labels, help text, and shortcut keys.
 const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
@@ -119,10 +130,23 @@ const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
         ActionKind::CheckConfig,
     ),
     (
+        'b',
+        "Restart server",
+        "Checks the server config, then restarts the Switchyard service after you confirm. \
+         Requests in progress fail.",
+        ActionKind::Restart,
+    ),
+    (
         'a',
         "Open app settings",
         "Opens this app's settings file in $VISUAL or $EDITOR.",
         ActionKind::OpenSettings,
+    ),
+    (
+        'e',
+        "Change preferences",
+        "Changes the baseline model that prices savings and the refresh interval.",
+        ActionKind::SavePreferences,
     ),
     (
         'p',
@@ -136,6 +160,31 @@ const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
         "Check server keys",
         "Lists the API key variables that the server config names and whether each is saved.",
         ActionKind::ServerKeys,
+    ),
+    (
+        's',
+        "Save a server key",
+        "Saves an API key for a variable that the server config names. Restart the server to \
+         use it.",
+        ActionKind::SaveServerKey,
+    ),
+    (
+        'i',
+        "Import a server key",
+        "Saves an API key from your login shell's environment. Restart the server to use it.",
+        ActionKind::ImportServerKey,
+    ),
+    (
+        'x',
+        "Remove a server key",
+        "Removes a saved API key. The server does not start until the key is saved again.",
+        ActionKind::RemoveServerKey,
+    ),
+    (
+        'u',
+        "Update from source",
+        "Shows what the saved source checkout would install. Type UPDATE to start it.",
+        ActionKind::PreviewUpdate,
     ),
     (
         'l',
@@ -275,6 +324,139 @@ impl Period {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FormKind {
+    Preferences,
+    SaveKey,
+    ImportKey,
+    RemoveKey,
+    Update,
+}
+/// Form holds the text fields for an action that needs input.
+struct Form {
+    kind: FormKind,
+    title: &'static str,
+    fields: Vec<(&'static str, String)>,
+    index: usize,
+    /// This field counts characters, not bytes, from the start of the selected field.
+    cursor: usize,
+    /// This field shows the last validation or controller error below the fields.
+    error: String,
+}
+impl Form {
+    fn new(kind: FormKind, title: &'static str, fields: Vec<(&'static str, String)>) -> Self {
+        let cursor = fields.first().map_or(0, |field| field.1.chars().count());
+        Self {
+            kind,
+            title,
+            fields,
+            index: 0,
+            cursor,
+            error: String::new(),
+        }
+    }
+    fn byte_cursor(&self) -> usize {
+        let text = &self.fields[self.index].1;
+        text.char_indices()
+            .nth(self.cursor)
+            .map_or(text.len(), |(index, _)| index)
+    }
+    fn insert(&mut self, text: &str) {
+        let text = text.replace(['\r', '\n'], "");
+        let index = self.byte_cursor();
+        self.fields[self.index].1.insert_str(index, &text);
+        self.cursor += text.chars().count();
+    }
+    fn edit(&mut self, key: KeyEvent) {
+        let length = self.fields[self.index].1.chars().count();
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab => {
+                let count = self.fields.len();
+                self.index = if key.code == KeyCode::Tab {
+                    (self.index + 1) % count
+                } else {
+                    (self.index + count - 1) % count
+                };
+                self.cursor = self.fields[self.index].1.chars().count();
+            }
+            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Right => self.cursor = (self.cursor + 1).min(length),
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.cursor = length,
+            KeyCode::Backspace if self.cursor > 0 => {
+                self.cursor -= 1;
+                let index = self.byte_cursor();
+                self.fields[self.index].1.remove(index);
+            }
+            KeyCode::Delete if self.cursor < length => {
+                let index = self.byte_cursor();
+                self.fields[self.index].1.remove(index);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.fields[self.index].1.clear();
+                self.cursor = 0;
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.insert(&c.to_string());
+            }
+            _ => {}
+        }
+    }
+    fn value(&self, index: usize) -> String {
+        self.fields[index].1.trim().to_string()
+    }
+    /// This function builds the controller action that the form submits. An update needs the
+    /// token from the preview that the user read.
+    fn action(&self, preview: Option<&Value>) -> Result<Action, String> {
+        Ok(match self.kind {
+            FormKind::Preferences => Action::SavePreferences {
+                baseline_model: self.value(0),
+                refresh_seconds: self.value(1).parse().map_err(|_| {
+                    "Enter the refresh interval as a whole number of seconds.".to_string()
+                })?,
+            },
+            FormKind::SaveKey => {
+                if self.value(1).is_empty() {
+                    return Err("Enter a key first.".into());
+                }
+                Action::SaveServerKey {
+                    name: self.value(0),
+                    key: self.value(1),
+                }
+            }
+            FormKind::ImportKey => Action::ImportServerKey {
+                name: self.value(0),
+            },
+            FormKind::RemoveKey => Action::RemoveServerKey {
+                name: self.value(0),
+            },
+            FormKind::Update => {
+                if self.value(0) != "UPDATE" {
+                    return Err("Type UPDATE to start the reviewed source update.".into());
+                }
+                Action::Update {
+                    preview_token: preview
+                        .and_then(|preview| preview["preview_token"].as_str())
+                        .map(str::to_owned),
+                }
+            }
+        })
+    }
+    fn label(&self) -> &'static str {
+        match self.kind {
+            FormKind::Preferences => "Saving the preferences",
+            FormKind::SaveKey => "Saving the server key",
+            FormKind::ImportKey => "Importing the server key",
+            FormKind::RemoveKey => "Removing the server key",
+            FormKind::Update => "Starting the update",
+        }
+    }
+}
+
 enum Popup {
     Help {
         scroll: u16,
@@ -284,6 +466,13 @@ enum Popup {
         entry: Box<Entry>,
         scroll: u16,
     },
+    Restart,
+    Form(Form),
+    Update {
+        preview: Value,
+        scroll: u16,
+        confirm: Form,
+    },
     Message {
         title: &'static str,
         text: String,
@@ -292,11 +481,19 @@ enum Popup {
     },
 }
 impl Popup {
-    fn scroll_mut(&mut self) -> &mut u16 {
+    fn scroll_mut(&mut self) -> Option<&mut u16> {
         match self {
             Popup::Help { scroll }
             | Popup::Detail { scroll, .. }
-            | Popup::Message { scroll, .. } => scroll,
+            | Popup::Update { scroll, .. }
+            | Popup::Message { scroll, .. } => Some(scroll),
+            Popup::Restart | Popup::Form(_) => None,
+        }
+    }
+    fn form_mut(&mut self) -> Option<&mut Form> {
+        match self {
+            Popup::Form(form) | Popup::Update { confirm: form, .. } => Some(form),
+            _ => None,
         }
     }
 }
@@ -449,7 +646,7 @@ impl App {
         &mut self,
         reply: Option<Result<Reply, String>>,
         snapshot: Result<Box<Snapshot>, String>,
-    ) {
+    ) -> Option<Request> {
         let busy = self.busy.take();
         let automatic = busy.as_ref().is_some_and(|busy| busy.automatic);
         let kind = busy.and_then(|busy| busy.kind);
@@ -491,14 +688,29 @@ impl App {
             }
         }
         let Some(reply) = reply else {
-            return;
+            return None;
         };
         match (kind, reply) {
             (Some(ActionKind::ServerKeys), Err(error)) => {
                 self.server_keys = None;
                 self.notify(error, true);
             }
-            (_, Err(error)) => self.notify(error, true),
+            // A form stays open with the error, so the user can fix the input and submit again.
+            (_, Err(error)) => match self.popup.as_mut().and_then(Popup::form_mut) {
+                Some(form) => form.error = error,
+                None => self.notify(error, true),
+            },
+            (Some(ActionKind::PreviewUpdate), Ok(reply)) => {
+                self.popup = Some(Popup::Update {
+                    preview: reply.data,
+                    scroll: 0,
+                    confirm: Form::new(
+                        FormKind::Update,
+                        "Update from source?",
+                        vec![("Type UPDATE to start", String::new())],
+                    ),
+                });
+            }
             (Some(ActionKind::ServerKeys), Ok(reply)) => {
                 let text = key_lines(self.theme, Some(&reply.data))
                     .iter()
@@ -513,7 +725,25 @@ impl App {
                     scroll: 0,
                 });
             }
+            (
+                Some(
+                    ActionKind::SaveServerKey
+                    | ActionKind::ImportServerKey
+                    | ActionKind::RemoveServerKey,
+                ),
+                Ok(reply),
+            ) => {
+                self.popup = None;
+                self.notify(reply.message, false);
+                return Some(Request::run(
+                    Action::ServerKeys {},
+                    "Checking the server keys",
+                ));
+            }
             (_, Ok(reply)) => {
+                if matches!(self.popup, Some(Popup::Form(_) | Popup::Update { .. })) {
+                    self.popup = None;
+                }
                 let details: Vec<&str> = reply.data["details"]
                     .as_array()
                     .map(|items| items.iter().filter_map(Value::as_str).collect())
@@ -530,12 +760,23 @@ impl App {
                 }
             }
         }
+        None
     }
 
-    fn poll_results(&mut self, results: &mpsc::Receiver<Done>) -> Result<Option<PathBuf>, String> {
+    fn poll_results(
+        &mut self,
+        results: &mpsc::Receiver<Done>,
+        jobs: &mpsc::Sender<Job>,
+    ) -> Result<Option<PathBuf>, String> {
         loop {
             match results.try_recv() {
-                Ok(Done::Finished { reply, snapshot }) => self.finish(reply, snapshot),
+                Ok(Done::Finished { reply, snapshot }) => {
+                    if let Some(request) = self.finish(reply, snapshot)
+                        && !self.quit
+                    {
+                        self.start(jobs, request)?;
+                    }
+                }
                 Ok(Done::Editor(path)) => {
                     self.busy = None;
                     return Ok((!self.quit).then_some(path));
@@ -582,6 +823,9 @@ impl App {
 
     fn keys(&self) -> &'static [Key] {
         match (&self.popup, self.filtering, self.tab) {
+            (Some(Popup::Restart), _, _) => CONFIRM_KEYS,
+            (Some(Popup::Update { .. }), _, _) => UPDATE_KEYS,
+            (Some(Popup::Form(_)), _, _) => FORM_KEYS,
             (Some(_), _, _) => POPUP_KEYS,
             (None, true, _) => FILTER_KEYS,
             (None, false, Tab::Overview) => &[],
@@ -592,7 +836,9 @@ impl App {
     }
 
     fn paste(&mut self, text: &str) {
-        if self.filtering && self.popup.is_none() {
+        if let Some(form) = self.popup.as_mut().and_then(Popup::form_mut) {
+            form.insert(text);
+        } else if self.filtering && self.popup.is_none() {
             self.filter.extend(text.chars().filter(|c| !c.is_control()));
             self.selected = 0;
             self.rebuild_calls();
@@ -726,17 +972,67 @@ impl App {
     /// This function starts a Settings action. The match has no wildcard arm, so adding a
     /// controller action breaks the build until the terminal app can run it.
     fn start_action(&mut self, kind: ActionKind) -> Option<Request> {
+        let form = |kind, title, fields| Some(Popup::Form(Form::new(kind, title, fields)));
         let request = |action, label| Some(Request::run(action, label));
         match kind {
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
                 request(Action::CheckConfig {}, "Checking the server config")
             }
+            ActionKind::Restart => {
+                self.popup = Some(Popup::Restart);
+                None
+            }
             ActionKind::OpenSettings => {
                 request(Action::OpenSettings {}, "Opening the app settings")
             }
+            ActionKind::SavePreferences => {
+                let (baseline, refresh) = self
+                    .data
+                    .settings
+                    .as_ref()
+                    .map(|s| (s.baseline_model.clone(), s.refresh_seconds.to_string()))
+                    .unwrap_or_default();
+                self.popup = form(
+                    FormKind::Preferences,
+                    "Change preferences",
+                    vec![
+                        ("Baseline model ID", baseline),
+                        ("Refresh interval in seconds", refresh),
+                    ],
+                );
+                None
+            }
             ActionKind::OpenPrices => request(Action::OpenPrices {}, "Opening the model prices"),
             ActionKind::ServerKeys => request(Action::ServerKeys {}, "Checking the server keys"),
+            ActionKind::SaveServerKey => {
+                self.popup = form(
+                    FormKind::SaveKey,
+                    "Save a server key",
+                    vec![("Key name", String::new()), ("Key", String::new())],
+                );
+                None
+            }
+            ActionKind::ImportServerKey => {
+                self.popup = form(
+                    FormKind::ImportKey,
+                    "Import a server key from your login shell",
+                    vec![("Key name", String::new())],
+                );
+                None
+            }
+            ActionKind::RemoveServerKey => {
+                self.popup = form(
+                    FormKind::RemoveKey,
+                    "Remove a saved server key",
+                    vec![("Key name", String::new())],
+                );
+                None
+            }
+            // The update window submits Update after the user reads this preview.
+            ActionKind::PreviewUpdate | ActionKind::Update => {
+                request(Action::PreviewUpdate {}, "Reading the source checkout")
+            }
             ActionKind::OpenUpdateLog => {
                 request(Action::OpenUpdateLog {}, "Opening the update log")
             }
@@ -746,12 +1042,63 @@ impl App {
 
     fn popup_key(&mut self, key: KeyEvent) -> Option<Request> {
         let popup = self.popup.as_mut()?;
+        match popup {
+            Popup::Restart => {
+                match key.code {
+                    KeyCode::Char('y' | 'Y') => {
+                        self.popup = None;
+                        return Some(Request::run(Action::Restart {}, "Restarting the server"));
+                    }
+                    KeyCode::Char('n' | 'N' | 'q') | KeyCode::Esc | KeyCode::Enter => {
+                        self.popup = None;
+                    }
+                    _ => {}
+                }
+                return None;
+            }
+            Popup::Form(form) | Popup::Update { confirm: form, .. } => {
+                match key.code {
+                    KeyCode::Esc => self.popup = None,
+                    KeyCode::Enter => {
+                        let preview = match &self.popup {
+                            Some(Popup::Update { preview, .. }) => Some(preview),
+                            _ => None,
+                        };
+                        let form = match &self.popup {
+                            Some(Popup::Form(form) | Popup::Update { confirm: form, .. }) => form,
+                            _ => return None,
+                        };
+                        match form.action(preview) {
+                            Ok(action) => return Some(Request::run(action, form.label())),
+                            Err(error) => {
+                                if let Some(form) = self.popup.as_mut().and_then(Popup::form_mut) {
+                                    form.error = error;
+                                }
+                            }
+                        }
+                    }
+                    // Only the update window scrolls; its text field ignores the arrow keys.
+                    KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                        if let Some(scroll) = popup.scroll_mut()
+                            && let Some(next) =
+                                step(key.code, usize::from(*scroll), usize::from(u16::MAX))
+                        {
+                            *scroll = next as u16;
+                        }
+                    }
+                    _ => form.edit(key),
+                }
+                return None;
+            }
+            _ => {}
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?') => self.popup = None,
             // Drawing clamps the scroll to the text, so the last line here has no fixed value.
             code => {
-                let scroll = popup.scroll_mut();
-                if let Some(next) = step(code, usize::from(*scroll), usize::from(u16::MAX)) {
+                if let Some(scroll) = popup.scroll_mut()
+                    && let Some(next) = step(code, usize::from(*scroll), usize::from(u16::MAX))
+                {
                     *scroll = next as u16;
                 }
             }
@@ -1901,6 +2248,44 @@ fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'stat
     Line::from(spans)
 }
 
+/// This function draws a form's fields with a cursor in the selected one, then its error.
+fn form_lines(theme: Theme, form: &Form) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = form
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(index, (label, value))| {
+            // The key field shows one bullet per character, so the key never appears on screen.
+            let mut value = if form.kind == FormKind::SaveKey && index == 1 {
+                "•".repeat(value.chars().count())
+            } else {
+                value.clone()
+            };
+            let selected = index == form.index;
+            if selected {
+                let cursor = value
+                    .char_indices()
+                    .nth(form.cursor)
+                    .map_or(value.len(), |(byte, _)| byte);
+                value.insert(cursor, '▏');
+            }
+            Line::from(vec![
+                Span::styled(
+                    if selected { "› " } else { "  " },
+                    if selected { theme.key } else { theme.muted },
+                ),
+                Span::styled(format!("{label}: "), theme.muted),
+                Span::raw(value),
+            ])
+        })
+        .collect();
+    if !form.error.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::styled(form.error.clone(), theme.error));
+    }
+    lines
+}
+
 fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = app.theme;
     let Some(popup) = &app.popup else {
@@ -1932,6 +2317,53 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
             72,
             close,
         ),
+        Popup::Restart => (
+            "Restart the server?",
+            vec![
+                Line::from(format!(
+                    "This checks the server config, then restarts the Switchyard service at {}.",
+                    app.data.metrics.server_url
+                )),
+                Line::from("Requests in progress fail."),
+            ],
+            Vec::new(),
+            theme.warn,
+            64,
+            footer(&[("y", "Restart"), ("n", "Cancel")]),
+        ),
+        Popup::Form(form) => {
+            let mut lines = Vec::new();
+            if matches!(
+                form.kind,
+                FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey
+            ) {
+                lines.push(Line::styled("Server keys", theme.muted));
+                lines.extend(key_lines(theme, app.server_keys.as_ref()));
+                lines.push(Line::default());
+            }
+            (
+                form.title,
+                lines,
+                form_lines(theme, form),
+                theme.key,
+                72,
+                footer(&[("⏎", "Submit"), ("esc", "Cancel")]),
+            )
+        }
+        Popup::Update {
+            preview, confirm, ..
+        } => {
+            let mut pinned = vec![Line::default()];
+            pinned.extend(form_lines(theme, confirm));
+            (
+                confirm.title,
+                update_lines(theme, preview),
+                pinned,
+                theme.warn,
+                84,
+                footer(&[("⏎", "Start"), ("esc", "Cancel")]),
+            )
+        }
         Popup::Message {
             title, text, error, ..
         } => (
@@ -1967,7 +2399,7 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
             .areas(outer.inner(rect));
     // Scrolling stops at the last line, so scrolling back up responds at once.
     let last = rows.saturating_sub(text_area.height);
-    let scroll = match app.popup.as_mut().map(Popup::scroll_mut) {
+    let scroll = match app.popup.as_mut().and_then(Popup::scroll_mut) {
         Some(scroll) => {
             *scroll = (*scroll).min(last);
             *scroll
@@ -1978,6 +2410,45 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(outer, rect);
     frame.render_widget(paragraph.scroll((scroll, 0)), text_area);
     frame.render_widget(pinned, pinned_area);
+}
+
+fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    // `git status --short` starts some lines with a space, so only trailing space is removed.
+    let field = |name: &str| {
+        preview[name]
+            .as_str()
+            .unwrap_or_default()
+            .trim_end()
+            .to_string()
+    };
+    let row = |name: &str| labeled(theme, name, 10, field(name.to_lowercase().as_str()));
+    let mut lines = vec![
+        row("Source"),
+        row("Branch"),
+        row("Revision"),
+        Line::default(),
+        Line::styled("Uncommitted changes", theme.muted),
+    ];
+    let changes = field("changes");
+    if changes.is_empty() {
+        lines.push(Line::from("None"));
+    } else {
+        lines.extend(changes.lines().map(|line| Line::from(line.to_string())));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled("Plan", theme.muted));
+    lines.extend(
+        field("plan")
+            .lines()
+            .map(|line| Line::from(line.to_string())),
+    );
+    if let Some(message) = preview["status"]["message"].as_str() {
+        lines.push(Line::default());
+        lines.push(Line::styled(format!("Last update: {message}"), theme.warn));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from("The app restarts after a successful install."));
+    lines
 }
 
 /// The help window indents wrapped descriptions under their first line, so keys stay in one column.
@@ -2138,7 +2609,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
         // The initial refresh starts after terminal setup so a blocked read cannot delay drawing.
         app.start(&jobs, Request::refresh(true))?;
         loop {
-            if let Some(path) = app.poll_results(&results)? {
+            if let Some(path) = app.poll_results(&results, &jobs)? {
                 match edit_in_foreground(terminal, &path).map_err(|error| error.to_string())? {
                     Ok(()) => {
                         app.notify(format!("Closed the editor for {}.", path.display()), false)
@@ -2191,12 +2662,14 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, Availability, BTreeMap, Done, Estimate, KeyCode, KeyEvent, KeyModifiers, ModelTokens,
-        Popup, Request, Snapshot, Tab, Theme, Totals, Usage, draw, mpsc,
+        ACTIONS, Action, ActionKind, App, Availability, BTreeMap, Done, Estimate, Form, FormKind,
+        KeyCode, KeyEvent, KeyModifiers, ModelTokens, Popup, Request, Snapshot, Tab, Theme, Totals,
+        Usage, draw, mpsc,
     };
     use crate::history::Entry;
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
+    use strum::IntoEnumIterator;
 
     fn screen(app: &mut App, tab: Tab) -> String {
         app.tab = tab;
@@ -2443,10 +2916,10 @@ mod tests {
         let (jobs, _inbox) = mpsc::channel();
         app.start(&jobs, Request::refresh(false)).expect("refresh");
         let (done, results) = mpsc::channel();
-        assert!(app.poll_results(&results).is_ok());
+        assert!(app.poll_results(&results, &jobs).is_ok());
         drop(done);
         assert_eq!(
-            app.poll_results(&results),
+            app.poll_results(&results, &jobs),
             Err("The terminal operation worker stopped unexpectedly.".into())
         );
     }
@@ -2464,7 +2937,7 @@ mod tests {
             snapshot: Err(error.into()),
         })
         .expect("result");
-        app.poll_results(&results).expect("manual result");
+        app.poll_results(&results, &jobs).expect("manual result");
         assert!(matches!(app.popup, Some(Popup::Message { .. })));
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         for help in [false, true] {
@@ -2479,7 +2952,7 @@ mod tests {
                 snapshot: Err(error.into()),
             })
             .expect("result");
-            app.poll_results(&results).expect("automatic result");
+            app.poll_results(&results, &jobs).expect("automatic result");
             assert!(if help {
                 matches!(app.popup, Some(Popup::Help { scroll: 1 }))
             } else {
@@ -2569,5 +3042,36 @@ mod tests {
         let overview = screen(&mut app, Tab::Overview);
         assert!(overview.contains("Spent unknown"));
         assert!(overview.contains("no recorded cost"));
+    }
+
+    #[test]
+    // Every controller action needs a Settings key, or the desktop app can do something
+    // that the terminal app cannot.
+    fn every_controller_action_has_a_settings_key() {
+        let mut keys: Vec<char> = ACTIONS.iter().map(|&(key, ..)| key).collect();
+        // The Settings page reads its letters before the global keys and the j, g, and G moves.
+        let reserved = ['q', 'r', '?', '1', '2', '3', '4', 'j', 'g', 'G'];
+        keys.extend(reserved);
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(
+            keys.len(),
+            ACTIONS.len() + reserved.len(),
+            "Settings keys must be unique and must not use a global or movement key"
+        );
+
+        // Update is the only action without its own key: the u key reviews the update
+        // first, and the review window submits Update.
+        let missing: Vec<ActionKind> = ActionKind::iter()
+            .filter(|&kind| kind != ActionKind::Update && !ACTIONS.iter().any(|&(.., k)| k == kind))
+            .collect();
+        assert!(missing.is_empty(), "No Settings key runs {missing:?}");
+        let mut review = Form::new(FormKind::Update, "", vec![("", "UPDATE".into())]);
+        assert!(matches!(
+            review.action(Some(&json!({"preview_token": "t"}))),
+            Ok(Action::Update { preview_token: Some(token) }) if token == "t"
+        ));
+        review.fields[0].1 = "update".into();
+        assert!(review.action(None).is_err());
     }
 }
