@@ -473,6 +473,15 @@ pub(crate) fn delete_credential(target: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The app's model list saves each upstream base URL's key under its own target.
+pub fn saved_key(base_url: &str) -> Result<Option<String>, String> {
+    read_credential(&format!("Switchyard:model-list:{base_url}"))
+}
+
+pub fn save_key(base_url: &str, key: &str) -> Result<(), String> {
+    write_credential(&format!("Switchyard:model-list:{base_url}"), key.trim())
+}
+
 pub fn restart(s: &Settings) -> Result<(), String> {
     stop_task(s, false)?;
     stop_images(&[s.binary("switchyard-server")])?;
