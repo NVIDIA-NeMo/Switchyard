@@ -17,6 +17,7 @@ mod models;
 mod pricing;
 mod server;
 mod server_config;
+mod sessions;
 mod summary;
 mod tui;
 #[cfg(windows)]
@@ -53,6 +54,17 @@ Recorded spending remains visible when savings are unknown.";
 
 /// The command selects the graphical app, terminal app, printed summary, or TOML validation.
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    if let Some(result) = windows::terminal_job() {
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("switchyard-desktop: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     #[cfg(windows)]
     windows::attach_console();
     let mut settings = None;

@@ -504,6 +504,77 @@ pub fn command(program: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+// This function saves the script before opening a terminal so a save error cannot launch it.
+// If no terminal starts, this function removes the script; callers supply scripts that remove themselves on startup.
+#[cfg(not(windows))]
+pub fn open_terminal_script(prefix: &str, text: &str) -> Result<(), String> {
+    let mut script = tempfile::Builder::new()
+        .prefix(prefix)
+        .suffix(".command")
+        .tempfile()
+        .map_err(|e| e.to_string())?;
+    writeln!(script, "{text}").map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        script
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    let (_, path) = script.keep().map_err(|e| e.to_string())?;
+    if let Err(error) = run_in_terminal(&path) {
+        let _ = std::fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+// macOS `open` runs a `.command` file in Terminal.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn run_in_terminal(path: &Path) -> Result<(), String> {
+    command("open", &[&path.display().to_string()]).map(drop)
+}
+
+// xdg-open may open the script in an editor, so this function starts a terminal program that runs it.
+// It tries $TERMINAL first and then common terminal programs, and uses the first one that starts.
+#[cfg(target_os = "linux")]
+fn run_in_terminal(path: &Path) -> Result<(), String> {
+    let preferred = std::env::var("TERMINAL")
+        .ok()
+        .filter(|name| !name.is_empty());
+    let terminals = preferred
+        .as_deref()
+        .map(|name| (name, "-e"))
+        .into_iter()
+        .chain([
+            ("x-terminal-emulator", "-e"),
+            ("gnome-terminal", "--"),
+            ("konsole", "-e"),
+            ("xterm", "-e"),
+        ]);
+    for (program, flag) in terminals {
+        let started = Command::new(program)
+            .arg(flag)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut terminal) = started {
+            // A thread waits for the terminal so the exited process does not stay a zombie.
+            std::thread::spawn(move || terminal.wait());
+            return Ok(());
+        }
+    }
+    Err(
+        "Could not start a terminal. Switchyard tried $TERMINAL, x-terminal-emulator, \
+         gnome-terminal, konsole, and xterm. Set the TERMINAL environment variable to your \
+         terminal program, for example TERMINAL=xterm, and try again."
+            .into(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
