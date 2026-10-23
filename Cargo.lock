@@ -3673,6 +3673,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-ffi"
+version = "0.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "switchyard-protocol",
+ "switchyard-translation",
+]
+
+[[package]]
 name = "switchyard-libsy"
 version = "0.3.0"
 dependencies = [
