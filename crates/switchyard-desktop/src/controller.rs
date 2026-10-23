@@ -94,6 +94,27 @@ pub enum Action {
         settings_file: Option<String>,
         preview_token: Option<String>,
     },
+    AddAccount {
+        tool: Harness,
+        name: String,
+    },
+    LoginAccount {
+        tool: Harness,
+        name: String,
+    },
+    PreviewAccountArchive {
+        tool: Harness,
+        name: String,
+    },
+    ArchiveAccount {
+        tool: Harness,
+        name: String,
+        preview_token: Option<String>,
+    },
+    OpenAccount {
+        tool: Harness,
+        name: String,
+    },
     Restart {},
     PreviewUpdate {},
     Update {
@@ -384,7 +405,7 @@ pub struct Controller {
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
     tool_review: Option<Review>,
-
+    account_archive: Option<(Harness, String, String)>,
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
 }
@@ -398,7 +419,7 @@ impl Controller {
             generation: 0,
             route_reviews: Default::default(),
             tool_review: None,
-
+            account_archive: None,
             route_change: None,
             update_review: None,
         }
@@ -698,7 +719,9 @@ impl Controller {
             }
             Action::OpenUpdateLog {} => self.update_log().map(Some),
             Action::OpenLogs {} => logs_dir().map(Some),
-
+            // An account folder opens in the editor too, because a terminal may run over SSH,
+            // where `open` would start a file manager on another screen.
+            Action::OpenAccount { tool, name } => account_path(*tool, Some(name)),
             _ => Ok(None),
         }
     }
@@ -1021,6 +1044,52 @@ impl Controller {
                     }),
                     Err(error) => Err(error),
                 }
+            }
+            Action::AddAccount { tool, name } => {
+                accounts::add(tool, name.trim()).map(Reply::message)
+            }
+            Action::LoginAccount { tool, name } => {
+                let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
+                accounts::login(tool, &path, &name).map(Reply::message)
+            }
+            Action::PreviewAccountArchive { tool, name } => {
+                let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
+                let token = uuid::Uuid::now_v7().to_string();
+                self.account_archive = Some((tool, name.clone(), token.clone()));
+                Ok(Reply {
+                    message: String::new(),
+                    data: json!({
+                        "name": name,
+                        "path": path,
+                        "preview_token": token,
+                        "notice": "Archive moves this account out of the picker and preserves all \
+                                   login files. Existing sessions using its old directory may \
+                                   need a new login."
+                    }),
+                })
+            }
+            Action::ArchiveAccount {
+                tool,
+                name,
+                preview_token,
+            } => {
+                let (expected_tool, expected_name, token) = self
+                    .account_archive
+                    .as_ref()
+                    .ok_or("Review account archive first.")?;
+                if tool != *expected_tool
+                    || name != *expected_name
+                    || preview_token.as_deref() != Some(token.as_str())
+                {
+                    return Err("Review account archive again.".into());
+                }
+                let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
+                accounts::archive(tool, &path).map(Reply::message)
+            }
+            Action::OpenAccount { tool, name } => {
+                let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
+                server::command("open", &[&path.display().to_string()])?;
+                Ok(Reply::message("Opened the account folder.".into()))
             }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
