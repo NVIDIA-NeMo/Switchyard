@@ -472,3 +472,26 @@ pub(crate) fn delete_credential(target: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+pub fn open(value: &str) -> Result<(), String> {
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let value = wide(std::ffi::OsStr::new(value));
+    let verb = wide(std::ffi::OsStr::new("open"));
+    let status = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            value.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if status > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Windows could not open the file or URL (error {status})."
+        ))
+    }
+}

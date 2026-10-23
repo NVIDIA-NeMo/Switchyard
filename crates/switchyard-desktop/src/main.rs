@@ -13,6 +13,7 @@ mod controller;
 #[cfg(any(target_os = "macos", windows))]
 mod gui;
 mod pricing;
+mod server;
 mod summary;
 mod tui;
 #[cfg(windows)]
