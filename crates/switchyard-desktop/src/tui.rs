@@ -766,6 +766,7 @@ impl App {
     /// the selection keeps its position, so deleting a route selects the next one; `refilter`
     /// starts from the first match instead.
     fn rebuild_routes(&mut self, anchor: Option<String>) {
+        let algorithms = &self.data.algorithms;
         let filter = self.route_filter.as_str();
         self.route_visible = self
             .data
@@ -773,7 +774,10 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, route)| {
-                let title = route.kind.as_str();
+                let title = algorithms
+                    .iter()
+                    .find(|algorithm| algorithm.kind == route.kind)
+                    .map_or("", |algorithm| algorithm.title);
                 matches_words(&[&route.label, &route.key, title], filter)
             })
             .map(|(index, _)| index)
@@ -1437,23 +1441,24 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // This destructuring has no `..`, so adding a snapshot field breaks the build until a page
     // shows it. Each comment names the place that shows the field.
     let Snapshot {
-        update_status: _, // draw_settings
-        settings: _,      // draw_settings
-        data_state: _,    // every page checks availability; draw_overview shows health
-        routes: _,        // draw_routes and the route details
-
-        summary: _,   // --print shows these rows; draw_top_models builds the same notes
-        metrics: _,   // draw_header and the Overview cards
-        today: _,     // the Overview "Today" card title
-        analytics: _, // draw_top_models and draw_models
-        estimates: _, // the Overview cards and draw_models
-        baseline_model: _, // draw_top_models; draw_settings shows the saved setting
-        activity: _,  // draw_activity
-        sessions: _,  // the calls table title and the `s` key
-        entries: _,   // draw_call_table and the call details
-        limited: _,   // calls_block and draw_activity
-        skipped: _,   // calls_block
-        errors: _,    // draw_errors and draw_settings
+        update_status: _,   // draw_settings
+        settings: _,        // draw_settings
+        data_state: _,      // every page checks availability; draw_overview shows health
+        routes: _,          // draw_routes and the route details
+        clients: _,         // draw_endpoints, the endpoint fields, and the endpoint forms
+        algorithms: _,      // draw_routes, the route details, and the algorithm fields
+        summary: _,         // --print shows these rows; draw_top_models builds the same notes
+        metrics: _,         // draw_header and the Overview cards
+        today: _,           // the Overview "Today" card title
+        analytics: _,       // draw_top_models and draw_models
+        estimates: _,       // the Overview cards and draw_models
+        baseline_model: _,  // draw_top_models; draw_settings shows the saved setting
+        activity: _,        // draw_activity
+        sessions: _,        // the calls table title and the `s` key
+        entries: _,         // draw_call_table and the call details
+        limited: _,         // calls_block and draw_activity
+        skipped: _,         // calls_block
+        errors: _,          // draw_errors and draw_settings
         refresh_seconds: _, // App::refresh_due
     } = &app.data;
     let area = frame.area();
@@ -2203,19 +2208,63 @@ fn draw_models(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(table(theme, &columns, routes), routes_area);
 }
 
+/// This function returns the algorithm's name, or the route type for a type the apps cannot
+/// write.
+fn algorithm_title<'a>(data: &'a Snapshot, kind: &'a str) -> &'a str {
+    data.algorithms
+        .iter()
+        .find(|algorithm| algorithm.kind == kind)
+        .map_or(kind, |algorithm| algorithm.title)
+}
+
 fn draw_routes(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
     // A server config that cannot be read lists no routes, so its error explains the empty list.
     let errors = if app.data.routes.is_empty() && !app.data.errors.is_empty() {
         (app.data.errors.len() as u16 + 2).min(area.height / 3)
     } else {
         0
     };
-    let [errors_area, list] =
-        Layout::vertical([Constraint::Length(errors), Constraint::Fill(1)]).areas(area);
+    let notes = endpoint_notes(theme, &app.data);
+    let endpoints = (app.data.clients.len().max(1) + notes.len() + 3) as u16;
+    let [errors_area, top, endpoints_area] = Layout::vertical([
+        Constraint::Length(errors),
+        Constraint::Fill(1),
+        Constraint::Length(endpoints.min(area.height / 3)),
+    ])
+    .areas(area);
     if errors > 0 {
         draw_errors(frame, app, errors_area);
     }
+    draw_endpoints(frame, app, notes, endpoints_area);
+    let (title, lines) = match app.selected_route() {
+        Ok(route) => (route.id.clone(), route_lines(theme, &app.data, route)),
+        Err(_) => (
+            "Route".to_string(),
+            vec![Line::styled("No route selected.", theme.muted)],
+        ),
+    };
+    let detail = Paragraph::new(lines).wrap(Wrap { trim: false });
+    // Wide terminals put the details beside the list; others put them below it.
+    let (list, detail_area) = if top.width >= SIDE_DETAIL_WIDTH {
+        let [list, side] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(52)]).areas(top);
+        (list, side)
+    } else {
+        // The list keeps its borders, header, and the selected row; the details get the rest.
+        let rows = detail.line_count(top.width.saturating_sub(4)) as u16 + 2;
+        let [list, below] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(rows.min(top.height.saturating_sub(4))),
+        ])
+        .areas(top);
+        (list, below)
+    };
     draw_route_table(frame, app, list);
+    frame.render_widget(
+        detail.block(block(theme, &title).padding(Padding::horizontal(1))),
+        detail_area,
+    );
 }
 
 fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -2268,7 +2317,7 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .take(height)
         .map(|&index| {
             let route = &app.data.routes[index];
-            let models = if !route.choices.is_empty() {
+            let models = if route.editable {
                 let models: Vec<String> = route
                     .choices
                     .iter()
@@ -2280,7 +2329,7 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             let cells = [
                 Cell::from(route.id.clone()),
-                Cell::from(route.kind.clone()),
+                Cell::from(algorithm_title(&app.data, &route.kind).to_string()),
                 Cell::from(models),
             ];
             Row::new(
@@ -2308,6 +2357,118 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
         &mut state,
     );
     draw_scrollbar(frame, theme, area, visible, app.route_selected);
+}
+
+/// This function shows the selected route's algorithm and the model of each role first, so a
+/// short terminal still shows them, then the notes that limit editing it here.
+fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'static>> {
+    const WIDTH: usize = 11;
+    let field = |name: &str, value: String| labeled(theme, name, WIDTH, value);
+    let algorithm = data
+        .algorithms
+        .iter()
+        .find(|known| known.kind == route.kind);
+    let mut lines = vec![
+        field("Config", format!("[routes.{}]", route.key)),
+        field(
+            "Algorithm",
+            algorithm.map_or_else(
+                || route.kind.clone(),
+                |known| format!("{} ({})", known.title, known.kind),
+            ),
+        ),
+    ];
+    // A random route can list more models than a new one starts with, so later roles are
+    // numbered the same way.
+    for (index, choice) in route.choices.iter().enumerate() {
+        let role = algorithm
+            .and_then(|known| known.roles.get(index))
+            .map_or_else(|| format!("Model {}", index + 1), |role| role.label.clone());
+        lines.push(if choice.model.is_empty() {
+            Line::from(vec![
+                Span::styled(format!("{role:<WIDTH$}"), theme.muted),
+                Span::styled("No target", theme.warn),
+            ])
+        } else {
+            field(&role, format!("{} / {}", choice.client, choice.model))
+        });
+    }
+    if !route.editable {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            "This routing method has no editor here. Edit its fields in the server config.",
+            theme.warn,
+        ));
+    }
+    if let Some(generated) = &route.generated {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            format!("Generated by {generated}. That tool can replace edits made here."),
+            theme.warn,
+        ));
+    }
+    if let Some(known) = algorithm {
+        lines.push(Line::default());
+        lines.push(Line::styled(known.summary, theme.muted));
+    }
+    lines
+}
+
+/// This function explains which endpoints cannot list their models.
+fn endpoint_notes(theme: Theme, data: &Snapshot) -> Vec<Line<'static>> {
+    let unlisted = "The app cannot list this endpoint's models. Type model IDs by hand.";
+    data.clients
+        .iter()
+        .flat_map(|client| {
+            let unlisted = client.unlisted.then(|| unlisted.to_string());
+            unlisted.into_iter().chain(client.note.clone()).map(|note| {
+                Line::from(vec![
+                    Span::styled(format!("{}: ", client.name), theme.muted),
+                    Span::styled(note, theme.warn),
+                ])
+            })
+        })
+        .collect()
+}
+
+fn draw_endpoints(frame: &mut Frame, app: &App, notes: Vec<Line<'static>>, area: Rect) {
+    let theme = app.theme;
+    let clients = &app.data.clients;
+    let outer = block(theme, &format!("Endpoints [{}]", clients.len()));
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    if clients.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "The server config names no endpoints.",
+                theme.muted,
+            )),
+            inner,
+        );
+        return;
+    }
+    let [table_area, notes_area] = Layout::vertical([
+        Constraint::Length(clients.len() as u16 + 1),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    let rows: Vec<Row> = clients
+        .iter()
+        .map(|client| {
+            Row::new([
+                client.name.clone(),
+                client.host.clone(),
+                client.models.join(", "),
+            ])
+        })
+        .collect();
+    let columns = [
+        ("NAME", Constraint::Fill(1), false),
+        ("HOST", Constraint::Fill(1), false),
+        ("MODELS IN THE SERVER CONFIG", Constraint::Fill(3), false),
+    ];
+    frame.render_widget(table(theme, &columns, rows), table_area);
+    frame.render_widget(Paragraph::new(notes).wrap(Wrap { trim: false }), notes_area);
 }
 
 /// This function lists the server key variables from the last `ServerKeys` reply.

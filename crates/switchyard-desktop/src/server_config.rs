@@ -7,7 +7,9 @@
 //! edit does not touch stay as the user wrote them. The server's own
 //! `--dry-run` decides whether the result is valid; this module only builds it.
 
-use toml_edit::{DocumentMut, TableLike};
+use std::collections::HashMap;
+
+use toml_edit::{DocumentMut, Item, TableLike};
 
 /// Tier identifies the part a model plays in a route. A choice made for one algorithm carries
 /// over to the role with the same tier when the user switches algorithms.
@@ -22,6 +24,9 @@ pub enum Tier {
 #[derive(Debug)]
 pub struct Algorithm {
     pub kind: &'static str,
+    /// This field sets the name shown in both apps.
+    pub title: &'static str,
+    pub summary: &'static str,
     /// This field lists roles in display order. The list is empty for
     /// `random`, whose roles are the entries of its `targets` list.
     roles: &'static [RoleSpec],
@@ -46,6 +51,8 @@ const RANDOM: &str = "random";
 pub const ALGORITHMS: &[Algorithm] = &[
     Algorithm {
         kind: "passthrough",
+        title: "Single model",
+        summary: "This algorithm sends every request to one model.",
         roles: &[RoleSpec {
             label: "Model",
             hint: "This model answers every request.",
@@ -55,10 +62,15 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
     Algorithm {
         kind: RANDOM,
+        title: "Random split",
+        summary: "This algorithm splits requests at random between models \
+                  for A/B tests and baselines.",
         roles: &[],
     },
     Algorithm {
         kind: "llm_classifier",
+        title: "Judge per request",
+        summary: "A judge model reads each request and picks the capable or the efficient model.",
         roles: &[
             RoleSpec {
                 label: "Judge",
@@ -82,6 +94,9 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
     Algorithm {
         kind: "composite",
+        title: "Judge plus stage router",
+        summary: "A judge picks the starting model on each user turn, and tool results move \
+                  requests between the capable and the efficient model.",
         roles: &[
             RoleSpec {
                 label: "Judge",
@@ -105,6 +120,9 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
     Algorithm {
         kind: "stage_router",
+        title: "Stage router",
+        summary: "Tool results and agent progress move each request between the capable and \
+                  the efficient model.",
         roles: &[
             RoleSpec {
                 label: "Capable",
@@ -122,6 +140,9 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
     Algorithm {
         kind: "advisor",
+        title: "Executor and advisor",
+        summary: "The executor answers every turn, and a stronger advisor reviews its final \
+                  answers.",
         roles: &[
             RoleSpec {
                 label: "Executor",
@@ -139,6 +160,9 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
     Algorithm {
         kind: "plan_execute",
+        title: "Plan, then execute",
+        summary: "The capable model inspects and plans. The efficient model takes over after \
+                  the first file edit.",
         roles: &[
             RoleSpec {
                 label: "Capable",
@@ -156,6 +180,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
     Algorithm {
         kind: "auto",
+        title: "Recommended preset",
+        summary: "This stage router starts each request on the efficient model.",
         roles: &[
             RoleSpec {
                 label: "Capable",
@@ -181,6 +207,28 @@ pub struct Route {
     /// This field sets the public model ID that callers send.
     pub id: String,
     pub kind: String,
+}
+
+/// Client describes one entry under `[llm_clients]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Client {
+    pub name: String,
+    pub format: String,
+    pub base_url: String,
+    pub api_key_env: Option<String>,
+    pub forward_auth: bool,
+}
+
+impl Client {
+    /// This function returns the host in `base_url`, such as `chatgpt.com`. A port stays.
+    pub fn host(&self) -> &str {
+        let rest = self
+            .base_url
+            .split_once("://")
+            .map_or(self.base_url.as_str(), |(_, rest)| rest);
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        authority.rsplit('@').next().unwrap_or(authority)
+    }
 }
 
 /// Choice identifies a model and the client that serves it.
@@ -213,6 +261,12 @@ enum Slot {
 impl Slot {}
 
 impl Algorithm {
+    /// This function returns the roles that a new route of this type needs. A new
+    /// random route starts with two models.
+    pub fn new_route_roles(&self) -> Vec<Role> {
+        self.roles_for(0)
+    }
+
     /// This function returns the roles of this type. `listed` is the number of entries
     /// in a random route's `targets` list; other types ignore it.
     fn roles_for(&self, listed: usize) -> Vec<Role> {
@@ -243,12 +297,17 @@ impl Algorithm {
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
     doc: DocumentMut,
+    /// This field maps tables inside generated blocks to each block's first marker.
+    generated: HashMap<String, String>,
 }
 
 impl ServerConfig {
     pub fn parse(text: &str) -> Result<Self, String> {
         text.parse::<DocumentMut>()
-            .map(|doc| Self { doc })
+            .map(|doc| Self {
+                doc,
+                generated: generated_tables(text),
+            })
             .map_err(|error| {
                 format!(
                     "Could not parse the server config. Fix this TOML error and try again:\n\
@@ -265,6 +324,41 @@ impl ServerConfig {
                 kind: text(route, "type").unwrap_or_default().to_string(),
             })
             .collect()
+    }
+
+    pub fn clients(&self) -> Vec<Client> {
+        entries(self.table("llm_clients"))
+            .map(|(name, client)| Client {
+                name: name.to_string(),
+                format: text(client, "format").unwrap_or_default().to_string(),
+                base_url: text(client, "base_url").unwrap_or_default().to_string(),
+                api_key_env: text(client, "api_key_env").map(str::to_string),
+                forward_auth: client
+                    .get("forward_auth")
+                    .and_then(Item::as_bool)
+                    .unwrap_or(false),
+            })
+            .collect()
+    }
+
+    /// This function returns the text of the marker that opens the block another tool
+    /// writes around `[table.key]`, when the table sits inside one. That tool
+    /// overwrites the table the next time it runs.
+    pub fn generated_by(&self, table: &str, key: &str) -> Option<&str> {
+        self.generated
+            .get(&format!("{table}.{key}"))
+            .map(String::as_str)
+    }
+
+    /// This function returns the model IDs that targets name on `client`, sorted, each once.
+    pub fn models_on(&self, client: &str) -> Vec<String> {
+        let mut models: Vec<String> = entries(self.table("targets"))
+            .filter(|(_, target)| text(*target, "llm_client") == Some(client))
+            .filter_map(|(_, target)| text(target, "id").map(str::to_string))
+            .collect();
+        models.sort();
+        models.dedup();
+        models
     }
 
     /// This function returns the algorithm a route uses now, or `None` when the picker
@@ -352,4 +446,43 @@ fn entries(table: Option<&dyn TableLike>) -> impl Iterator<Item = (&str, &dyn Ta
 
 fn text<'a>(table: &'a dyn TableLike, key: &str) -> Option<&'a str> {
     table.get(key)?.as_str()
+}
+
+/// This function finds the route and target tables that sit inside blocks another tool
+/// writes. A block starts at a line that begins with `# >>>` and ends at the
+/// next line that begins with `# <<<`, the markers that the installer scripts
+/// use. Each table maps to the text of its block's first marker, with the `#`
+/// and the `>>>` removed.
+fn generated_tables(text: &str) -> HashMap<String, String> {
+    let mut tables = HashMap::new();
+    let mut block: Option<String> = None;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with("# >>>") {
+            block = Some(
+                line.trim_matches(|c: char| c == '#' || c == '>' || c.is_whitespace())
+                    .to_string(),
+            );
+        } else if line.starts_with("# <<<") {
+            block = None;
+        } else if let Some(block) = &block
+            && let Some(header) = line.strip_prefix('[')
+            && let Some((table, rest)) = header.split_once('.')
+            && matches!(table, "routes" | "targets")
+            && let Some(key) = table_key(rest)
+        {
+            tables
+                .entry(format!("{table}.{key}"))
+                .or_insert_with(|| block.clone());
+        }
+    }
+    tables
+}
+
+/// This function returns the first key of a table header's dotted path, bare or in double
+/// quotes: `name` for `name.child]`, and `a.b` for `"a.b"]`.
+fn table_key(path: &str) -> Option<&str> {
+    if let Some(quoted) = path.strip_prefix('"') {
+        return quoted.split_once('"').map(|(key, _)| key);
+    }
+    path.split(['.', ']']).next().filter(|key| !key.is_empty())
 }
