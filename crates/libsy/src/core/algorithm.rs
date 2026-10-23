@@ -125,7 +125,6 @@ impl CallModel {
     /// Run host work until it completes or the algorithm stops waiting for this call.
     /// Dropping the waiting [`Driver::call_model`] future drops `work` and returns `Ok(())`.
     /// Errors stop the host's run unless [`Self::recover_errors`] is enabled.
-    /// [`LibsyError::HostAbort`] always stops it.
     /// Use `std::future::ready(result)` for an already available response.
     /// A delivered response stream owns its subsequent lifetime.
     pub async fn respond(mut self, work: impl Future<Output = Result<Response>>) -> Result<()> {
@@ -138,7 +137,7 @@ impl CallModel {
         if self.reply.as_ref().is_some_and(oneshot::Sender::is_closed) {
             return Ok(());
         }
-        if (!self.recover_errors || matches!(result, Err(LibsyError::HostAbort { .. })))
+        if !self.recover_errors
             && let Err(error) = result
         {
             return self.fail(error);
@@ -203,7 +202,6 @@ pub struct CallDecision {
 
 impl CallDecision {
     /// Run host work and return its response or error to the algorithm.
-    /// [`LibsyError::HostAbort`] stops the host's run instead.
     /// Dropping the waiting [`Driver::call_decision`] future drops `work` and returns `Ok(())`.
     /// Use `std::future::ready(result)` for an already available response.
     pub async fn respond(
@@ -216,11 +214,6 @@ impl CallDecision {
             _ = reply.closed() => return Ok(()),
             result = work => result,
         };
-        if matches!(result, Err(LibsyError::HostAbort { .. }))
-            && let Err(error) = result
-        {
-            return self.fail(error);
-        }
         self.record(result.is_ok());
         if let Ok(response) = &result {
             observability::record_decision_response(response, &self.span);
@@ -1445,81 +1438,6 @@ mod tests {
         }
 
         assert!(saw_error, "expected an error step");
-        Ok(())
-    }
-
-    // Error recovery covers failed calls; a host abort means the host refused the call.
-    #[tokio::test]
-    async fn host_aborts_stop_runs_that_recover_from_call_errors() -> Result<()> {
-        struct Recovers(&'static str);
-
-        #[async_trait]
-        impl Algorithm for Recovers {
-            fn name(&self) -> &str {
-                "recovers"
-            }
-
-            async fn route(
-                self: Arc<Self>,
-                driver: Driver,
-                request: Request,
-            ) -> Result<RoutingOutcome> {
-                let failed = if self.0 == "model" {
-                    driver
-                        .call_model_with_error_recovery(request.clone(), vec!["judge".into()], true)
-                        .await
-                        .is_err()
-                } else {
-                    let decision = DecisionRequest {
-                        model: None,
-                        context: serde_json::json!({}),
-                        questions: Default::default(),
-                    };
-                    driver
-                        .call_decision(decision, "judge".into())
-                        .await
-                        .is_err()
-                };
-                assert!(failed);
-                Ok(RoutingOutcome::route_to("fallback".into(), vec![], request))
-            }
-        }
-
-        for kind in ["model", "decision"] {
-            for abort in [false, true] {
-                let outcome = drive(
-                    Arc::new(Recovers(kind)),
-                    request(),
-                    Arc::new(RuntimeModels::default()),
-                    move |call| async move {
-                        let error = if abort {
-                            LibsyError::host_abort(TestError("budget exhausted"))
-                        } else {
-                            test_error("judge unavailable")
-                        };
-                        match call {
-                            Call::Model(call) => call.respond(std::future::ready(Err(error))).await,
-                            Call::Decision(call) => {
-                                call.respond(std::future::ready(Err(error))).await
-                            }
-                        }
-                    },
-                )
-                .await;
-                if abort {
-                    assert!(
-                        matches!(&outcome, Err(LibsyError::HostAbort { .. })),
-                        "{kind}"
-                    );
-                    assert_eq!(
-                        outcome.err().map(|error| error.to_string()),
-                        Some("host aborted routing: budget exhausted".to_string())
-                    );
-                } else {
-                    assert_eq!(outcome?.selected_model_id()?, "fallback", "{kind}");
-                }
-            }
-        }
         Ok(())
     }
 

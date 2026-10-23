@@ -68,8 +68,11 @@ func (e abortError) Error() string { return e.err.Error() }
 func (e abortError) Unwrap() error { return e.err }
 
 // Abort marks a host call refusal. Route stops and returns err, even when the
-// algorithm would recover from a failed call.
+// algorithm would recover from a failed call. A nil error remains nil.
 func Abort(err error) error {
+	if err == nil {
+		return nil
+	}
 	return abortError{err}
 }
 
