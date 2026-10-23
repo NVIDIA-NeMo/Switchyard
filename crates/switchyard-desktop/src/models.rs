@@ -528,3 +528,199 @@ fn parse_ids(body: &str) -> Result<Vec<String>, String> {
     ids.dedup();
     Ok(ids)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    /// Stub returns the configured response and records each request header.
+    /// Drop wakes its listener and joins the worker so a failed assertion cannot leave it running.
+    struct Stub {
+        /// This field sets the client base URL used to list models from this server.
+        url: String,
+        requests: Arc<Mutex<Vec<Vec<String>>>>,
+        address: SocketAddr,
+        stopping: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Stub {
+        fn start(response: String) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let address = listener.local_addr().expect("addr");
+            let url = format!("http://{address}/v1");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stopping = Arc::new(AtomicBool::new(false));
+            let stop = Arc::clone(&stopping);
+            let record = Arc::clone(&requests);
+            let worker = std::thread::spawn(move || {
+                for mut stream in listener.incoming().map_while(Result::ok) {
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut head = Vec::new();
+                    let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|read| read > 0) && line != "\r\n" {
+                        head.push(line.trim_end().to_string());
+                        line.clear();
+                    }
+                    record.lock().expect("lock").push(head);
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            Self {
+                url,
+                requests,
+                address,
+                stopping,
+                worker: Some(worker),
+            }
+        }
+
+        fn requests(&self) -> Vec<Vec<String>> {
+            self.requests.lock().expect("lock").clone()
+        }
+    }
+
+    impl Drop for Stub {
+        fn drop(&mut self) {
+            self.stopping.store(true, Ordering::Release);
+            let _ = TcpStream::connect(self.address);
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+
+    fn listing(models: &[&str]) -> String {
+        let data: Vec<_> = models
+            .iter()
+            .map(|id| serde_json::json!({ "id": id }))
+            .collect();
+        format!(
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{}",
+            serde_json::json!({ "data": data })
+        )
+    }
+
+    fn client(name: &str, format: &str, base_url: &str) -> Client {
+        Client {
+            name: name.to_string(),
+            format: format.to_string(),
+            base_url: base_url.to_string(),
+            api_key_env: None,
+            forward_auth: true,
+        }
+    }
+
+    // The subprocess isolates PATH; its curl fixture exits before reading the oversized header.
+    #[cfg(unix)]
+    #[test]
+    fn failed_header_write_reaps_the_curl_process() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(record) = std::env::var("SWITCHYARD_CURL_FIXTURE") {
+            let error = fetch(
+                "http://localhost/models",
+                "openai_chat",
+                Some(&"k".repeat(1024 * 1024)),
+            )
+            .expect_err("header write fails");
+            assert!(
+                matches!(error, ListError::Failed(message) if message.starts_with("send headers to curl:"))
+            );
+            let pid = std::fs::read_to_string(record).expect("curl PID");
+            assert!(
+                !Command::new("/bin/kill")
+                    .args(["-0", pid.trim()])
+                    .status()
+                    .expect("process status")
+                    .success()
+            );
+            return;
+        }
+        let dir = tempfile::tempdir().expect("fixture");
+        let record = dir.path().join("pid");
+        let curl = dir.path().join("curl");
+        std::fs::write(
+            &curl,
+            "#!/bin/sh\nprintf '%s' \"$$\" > \"$SWITCHYARD_CURL_FIXTURE\"\nexit 1\n",
+        )
+        .expect("curl fixture");
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700))
+            .expect("permissions");
+        let output = Command::new(std::env::current_exe().expect("runner"))
+            .args([
+                "--exact",
+                "models::tests::failed_header_write_reaps_the_curl_process",
+            ])
+            .env("SWITCHYARD_CURL_FIXTURE", &record)
+            .env("PATH", dir.path())
+            .output()
+            .expect("child");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn entered_key_is_sent_only_to_its_selected_base_url() {
+        let selected = Stub::start(listing(&["selected"]));
+        let unrelated = Stub::start(listing(&["unrelated"]));
+        let unauthenticated = Stub::start(listing(&["public"]));
+        let dir = tempfile::tempdir().expect("fixture");
+        let clients = [
+            client("selected", "openai_chat", &selected.url),
+            Client {
+                api_key_env: Some("SWITCHYARD_MENUBAR_TEST_UNSET_KEY".into()),
+                ..client("unrelated", "openai_chat", &unrelated.url)
+            },
+            Client {
+                forward_auth: false,
+                ..client("public", "openai_chat", &unauthenticated.url)
+            },
+        ];
+        let loaded: Vec<_> = clients
+            .iter()
+            .enumerate()
+            .map(|(index, client)| {
+                load(
+                    &dir.path().join(CACHE_FILE),
+                    client,
+                    true,
+                    (index == 0).then_some("selected-secret"),
+                )
+            })
+            .collect();
+        assert_eq!(loaded[0].error, None);
+        assert_eq!(loaded[0].source, "endpoint");
+        assert!(
+            !std::fs::read_to_string(dir.path().join(CACHE_FILE))
+                .expect("cache")
+                .contains("selected-secret")
+        );
+        assert_eq!(selected.requests().len(), 1);
+        assert!(selected.requests()[0].contains(&"Authorization: Bearer selected-secret".into()));
+        assert_eq!(
+            loaded[1].error,
+            Some(ListError::NoEnv("SWITCHYARD_MENUBAR_TEST_UNSET_KEY".into()))
+        );
+        assert!(unrelated.requests().is_empty());
+        assert_eq!(loaded[2].error, None);
+        assert_eq!(loaded[2].source, "endpoint");
+        assert_eq!(unauthenticated.requests().len(), 1);
+        assert!(
+            unauthenticated.requests()[0]
+                .iter()
+                .all(|header| !header.starts_with("Authorization:"))
+        );
+    }
+}
