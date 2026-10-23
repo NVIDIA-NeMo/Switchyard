@@ -8,8 +8,8 @@
 //! refreshes and actions, so moving around and filtering never wait for the log or a service.
 
 use crate::controller::{
-    AccountInfo, Action, ActionKind, AppSettings, Availability, Controller, Reply, RouteInfo,
-    Snapshot, ToolInfo,
+    AccountInfo, Action, ActionKind, AppSettings, Availability, Controller, Dependent, Reply,
+    RouteInfo, Snapshot, ToolInfo,
 };
 use crate::history::Entry;
 use crate::pricing::Estimate;
@@ -235,6 +235,22 @@ const ACTIONS: &[ActionRow] = &[
         "Shows the settings diff that installing the selected route would make. Nothing is \
          saved.",
         &[ActionKind::PreviewInstall],
+    ),
+    (
+        Tab::Harnesses,
+        'i',
+        "install",
+        "Shows the settings diff, then saves it after you type INSTALL. A backup keeps the \
+         original settings.",
+        &[ActionKind::PreviewInstall, ActionKind::Install],
+    ),
+    (
+        Tab::Harnesses,
+        'u',
+        "restore",
+        "Shows which files return to their original versions, then restores them after you \
+         type RESTORE.",
+        &[ActionKind::PreviewRestore, ActionKind::Restore],
     ),
     (
         Tab::Settings,
@@ -834,7 +850,13 @@ impl Form {
             FormKind::NewRoute { .. }
             | FormKind::NewRouteModels { .. }
             | FormKind::RouteIdentity { .. } => "Reviewing the route change",
-            FormKind::Confirm(_, _action) => "Saving the route",
+            // The reviewed action names what typing the confirmation word saves.
+            FormKind::Confirm(_, action) => match **action {
+                Action::Install { .. } => "Installing the harness settings",
+                Action::Restore { .. } => "Restoring the harness settings",
+
+                _ => "Saving the route",
+            },
             FormKind::Remove { .. } => "Deleting the route",
             FormKind::Models => "Loading models",
             FormKind::ModelKey => "Saving the key and loading models",
@@ -945,7 +967,30 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             choices,
             preview_token,
         },
-
+        Action::PreviewInstall {
+            tool,
+            account,
+            route,
+            id,
+            settings_file,
+        } => Action::Install {
+            tool,
+            account,
+            route,
+            id,
+            settings_file,
+            preview_token,
+        },
+        Action::PreviewRestore {
+            tool,
+            account,
+            settings_file,
+        } => Action::Restore {
+            tool,
+            account,
+            settings_file,
+            preview_token,
+        },
         _ => return None,
     })
 }
@@ -1351,17 +1396,17 @@ impl App {
         reply: Option<Result<Reply, String>>,
         snapshot: Result<Box<Snapshot>, String>,
     ) -> Option<Request> {
-        let (action, _key) = match self.busy.take() {
+        let (action, key) = match self.busy.take() {
             Some(busy) => (busy.action, busy.key),
             None => (None, None),
         };
         self.apply_snapshot(snapshot.map(|snapshot| *snapshot));
         let reply = reply?;
-        if matches!(
-            (&action, reply.is_ok()),
-            (Some(Action::PreviewInstall { .. }), false)
-        ) {
-            self.install_preview = None;
+        match (&action, reply.is_ok()) {
+            // Saved settings no longer match an earlier diff, and a failed preview has none.
+            (Some(Action::Install { .. } | Action::Restore { .. }), true)
+            | (Some(Action::PreviewInstall { .. }), false) => self.install_preview = None,
+            _ => {}
         }
         match (action.as_ref().map(ActionKind::from), reply) {
             (Some(ActionKind::ServerKeys), Err(error)) => {
@@ -1383,7 +1428,8 @@ impl App {
                     "Type UPDATE to start",
                 ));
             }
-            // The Harnesses page shows the diff while the selection still matches it.
+            // The p key shows the diff on the page. The i key also opens the review, unless the
+            // settings already match the route.
             (Some(ActionKind::PreviewInstall), Ok(reply)) => {
                 let previewed = action?;
                 let changed = reply.data["changes"]
@@ -1391,9 +1437,39 @@ impl App {
                     .is_some_and(|changes| !changes.is_empty());
                 if !changed {
                     self.notify("The settings already match this route.".into(), Tone::Done);
+                } else if key == Some('i')
+                    && let Some(install @ Action::Install { tool, .. }) =
+                        reviewed(previewed.clone(), &reply.data)
+                {
+                    let known = self.data.tools.iter().find(|known| known.tool == tool);
+                    let label = known.map_or("the harness", |known| known.label);
+                    let title = format!("Apply routing to {label}?");
+                    self.popup = Some(Popup::review(
+                        install_lines(self.theme, &reply.data),
+                        "Install",
+                        FormKind::Confirm("INSTALL".into(), Box::new(install)),
+                        title,
+                        "Type INSTALL to save the settings",
+                    ));
+                } else {
+                    let text = "Press i to apply this diff.";
+                    self.notify(text.into(), Tone::Done);
                 }
                 self.install_preview = Some((previewed, reply.data));
             }
+            (Some(ActionKind::PreviewRestore), Ok(reply)) => {
+                if let Some(restore) = action.and_then(|action| reviewed(action, &reply.data)) {
+                    self.popup = Some(Popup::review(
+                        restore_lines(self.theme, &reply.data),
+                        "Restore",
+                        FormKind::Confirm("RESTORE".into(), Box::new(restore)),
+                        "Restore harness settings?",
+                        "Type RESTORE to replace the files",
+                    ));
+                }
+            }
+            // The reply lists the roles of the chosen algorithm. The models form replaces the
+            // algorithm form only while that form is still open for the same route.
             (Some(ActionKind::Editor), Ok(reply)) => {
                 if let Some(Action::Editor {
                     route: key,
@@ -1873,14 +1949,27 @@ impl App {
                 };
                 self.open(form)
             }
-            ActionKind::PreviewInstall => {
+            // Both keys preview the install. App::finish shows the diff for p and opens the
+            // review, which submits Install, for i.
+            ActionKind::PreviewInstall | ActionKind::Install => {
                 let label = match key {
                     'p' => "Previewing the settings",
+                    'i' => "Reviewing the settings",
                     _ => return Err(format!("The {key} key does not preview harness settings.")),
                 };
                 request(self.install_action()?, label)
             }
-
+            // The review window lists the files that return to their backups and submits
+            // Restore.
+            ActionKind::PreviewRestore | ActionKind::Restore => {
+                let tool = self.harness()?.tool;
+                let restore = Action::PreviewRestore {
+                    tool,
+                    account: self.account(),
+                    settings_file: self.custom_file(),
+                };
+                request(restore, "Reading the original settings")
+            }
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
                 request(Action::CheckConfig {}, "Checking the server config")
@@ -3157,6 +3246,7 @@ fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'st
         editable,
         generated,
         compatibility: _, // harness_lines explains it for the selected harness
+        dependents: _,    // remove_lines lists them in the delete review
     } = route;
     let field = |name: &str, value: String| labeled(theme, name, WIDTH, value);
     let algorithm = data.algorithms.iter().find(|known| known.kind == *kind);
@@ -3984,6 +4074,33 @@ fn remove_lines(
          kept. Any harness using {} must choose another route.",
         route.id
     ))];
+    if !route.dependents.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            format!(
+                "These harness settings use {} and must choose another route:",
+                route.id
+            ),
+            theme.warn,
+        ));
+        for dependent in &route.dependents {
+            // This destructuring has no `..`, so adding a field breaks the build until this
+            // review shows it.
+            let Dependent {
+                tool: _, // the label names the harness
+                label,
+                account,
+                files,
+            } = dependent;
+            let account = account.as_ref().map(|name| format!(" ({name})"));
+            let files: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+            lines.push(Line::from(format!(
+                "{label}{}: {}",
+                account.unwrap_or_default(),
+                files.join(", ")
+            )));
+        }
+    }
     if let Some(generated) = &route.generated {
         lines.push(Line::default());
         lines.push(Line::styled(
@@ -4048,6 +4165,28 @@ fn install_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
     }
     lines.push(Line::default());
     lines.push(Line::from(text(preview, "authentication")));
+    lines
+}
+
+/// This function shows a restore preview: what restoring does to each file, the backup it
+/// uses, and the settings that change.
+fn restore_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(text(preview, "warning"))];
+    for file in preview["files"].as_array().into_iter().flatten() {
+        lines.extend([
+            Line::default(),
+            Line::from(format!("{}: {}", text(file, "action"), text(file, "file"))),
+            Line::styled(
+                format!("Original backup: {}", text(file, "backup")),
+                theme.muted,
+            ),
+        ]);
+    }
+    // The controller leaves the diff out when a file cannot be compared.
+    if preview["changes"].is_array() {
+        lines.push(Line::default());
+        lines.extend(diff_lines(theme, preview, "restored"));
+    }
     lines
 }
 

@@ -4,6 +4,7 @@
 //! This module installs and restores user settings for the supported harnesses.
 
 use serde_json::{Value, json};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, value};
 
@@ -527,6 +528,78 @@ fn configured(
     Ok(incoming)
 }
 
+pub fn install_reviewed(
+    tool: Harness,
+    files: &[PathBuf],
+    root: &str,
+    model: &str,
+    context_window: Option<u64>,
+    login: bool,
+    expected: Option<&[ReviewedFile]>,
+) -> Result<String, String> {
+    let root = validate(tool, root, model, login)?;
+    for path in files {
+        if read_file(&restore_pending_path(path))?.is_some() {
+            return Err("A previous restore did not finish retiring its backups. \
+                        Retry Restore before installing another route."
+                .into());
+        }
+    }
+    let originals = files
+        .iter()
+        .map(|p| read_file(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    check_review(expected)?;
+    let incoming = configured(tool, &originals, &root, model, context_window, login)?;
+    let incoming: Vec<_> = incoming.into_iter().map(Some).collect();
+    for (path, original) in files.iter().zip(&originals) {
+        if let Some(expected) = expected
+            .and_then(|files| files.iter().find(|(file, _)| file == path))
+            .map(|(_, bytes)| bytes)
+            && original.as_ref().map(|text| text.as_bytes()) != expected.as_deref()
+        {
+            return Err("Harness settings changed after the preview. Review them again.".into());
+        }
+    }
+    for (path, before) in files.iter().zip(&originals) {
+        let backup = backup_path(path);
+        let absent = absent_path(path);
+        if read_file(&backup)?.is_some() || read_file(&absent)?.is_some() {
+            continue;
+        }
+        let (destination, text) = match before {
+            Some(text) => (&backup, text.as_str()),
+            None => (&absent, ""),
+        };
+        prepare(destination, text)?
+            .persist_noclobber(destination)
+            .map_err(|e| e.to_string())?;
+    }
+    replace(files, &originals, &incoming)?;
+    let next = match tool {
+        Harness::CodexCli => {
+            let profile = files[0]
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".config.toml"));
+            profile
+                .map(|name| format!(" Start Codex CLI with codex -p {name}."))
+                .unwrap_or_else(|| " Restart Codex CLI.".into())
+        }
+        Harness::Pi => " Reload Pi models with /model.".into(),
+        Harness::CodexApp => " Restart Codex app.".into(),
+        Harness::Claude => " Restart Claude Code.".into(),
+    };
+    Ok(format!(
+        "Connected route {model}. Changed {}.{next}",
+        files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
 fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(
         "{}.switchyard-original",
@@ -556,6 +629,219 @@ pub fn review_files(files: &[PathBuf]) -> Vec<PathBuf> {
             ]
         })
         .collect()
+}
+
+pub fn preview_restore(tool: Harness, files: &[PathBuf]) -> Result<Value, String> {
+    let resuming = files.iter().any(|path| restore_pending_path(path).exists());
+    let mut plan = Vec::new();
+    let mut before = Vec::new();
+    let mut after = Vec::new();
+    for path in files {
+        let current = read_file(path)?;
+        let pending = read_file(&restore_pending_path(path))?;
+        let original = match pending {
+            Some(text) => {
+                serde_json::from_str::<Option<String>>(&text).map_err(|error| error.to_string())?
+            }
+            None => match read_file(&backup_path(path))? {
+                Some(text) => Some(text),
+                None if read_file(&absent_path(path))?.is_some() => None,
+                None if resuming => current.clone(),
+                None => return Err("No original backup is available for this destination.".into()),
+            },
+        };
+        let action = if current == original {
+            "unchanged"
+        } else {
+            match (&current, &original) {
+                (_, None) => "remove",
+                (None, _) => "create",
+                _ => "replace",
+            }
+        };
+        before.push(current.unwrap_or_default());
+        after.push(original.unwrap_or_default());
+        plan.push(json!({"file":path,"action":action,"backup":backup_path(path)}));
+    }
+    Ok(json!({
+        "files": plan,
+        "changes": settings_changes(tool, files, &before, &after).ok(),
+        "warning": "Restore replaces each listed file with its original version. \
+                    Later edits are kept in a recovery copy before replacement."
+    }))
+}
+
+pub fn restore_reviewed(
+    files: &[PathBuf],
+    expected: Option<&[ReviewedFile]>,
+) -> Result<String, String> {
+    let pending = files
+        .iter()
+        .map(|path| read_file(&restore_pending_path(path)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let resuming = pending.iter().any(Option::is_some);
+    let mut restored = Vec::new();
+    for (path, pending) in files.iter().zip(pending) {
+        let original = read_file(&backup_path(path))?;
+        let absent = read_file(&absent_path(path))?.is_some();
+        let original = match pending {
+            Some(text) => serde_json::from_str::<Option<String>>(&text)
+                .map_err(|e| format!("Read pending restore: {e}"))?,
+            None if original.is_none() && !absent => {
+                if !resuming {
+                    return Err("No original backup is available for this installation.".into());
+                }
+                // A cleared receipt means this file finished restoring, so a retry preserves later edits.
+                read_file(path)?
+            }
+            None => original,
+        };
+        restored.push(original);
+    }
+    let current = files
+        .iter()
+        .map(|p| read_file(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    check_review(expected)?;
+    for (path, original) in files.iter().zip(&current) {
+        if let Some(expected) = expected
+            .and_then(|files| files.iter().find(|(file, _)| file == path))
+            .map(|(_, bytes)| bytes)
+            && original.as_ref().map(|text| text.as_bytes()) != expected.as_deref()
+        {
+            return Err(
+                "Harness settings changed after the restore preview. Review them again.".into(),
+            );
+        }
+    }
+    let mut kept_paths = Vec::new();
+    for (path, before) in files.iter().zip(&current) {
+        let Some(before) = before else {
+            continue;
+        };
+        let mut recovery = tempfile::Builder::new()
+            .prefix("switchyard-before-restore-")
+            .tempfile_in(path.parent().ok_or("Settings need a parent directory")?)
+            .map_err(|e| e.to_string())?;
+        recovery
+            .write_all(before.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let (_, kept) = recovery.keep().map_err(|e| e.to_string())?;
+        kept_paths.push(kept.display().to_string());
+    }
+    // Each private receipt stores the original contents or absence and blocks installation during cleanup.
+    for (path, original) in files.iter().zip(&restored) {
+        let pending = restore_pending_path(path);
+        if read_file(&pending)?.is_none() {
+            let text = serde_json::to_string(original).map_err(|e| e.to_string())?;
+            prepare(&pending, &text)?
+                .persist_noclobber(&pending)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    let recovery = format!("Previous settings: {}", kept_paths.join(", "));
+    replace(files, &current, &restored).map_err(|error| format!("{error}. {recovery}"))?;
+    for path in files {
+        for retired in [backup_path(path), absent_path(path)] {
+            match std::fs::remove_file(&retired) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Restored settings, but could not retire {}: {error}. \
+                         Retry Restore before installing another route. {recovery}",
+                        retired.display()
+                    ));
+                }
+            }
+        }
+    }
+    for path in files {
+        let pending = restore_pending_path(path);
+        std::fs::remove_file(&pending).map_err(|error| {
+            format!(
+                "Restored settings, but could not clear {}: {error}. {recovery}",
+                pending.display()
+            )
+        })?;
+    }
+    Ok(format!(
+        "Restored original settings. Restart the harness. {recovery}"
+    ))
+}
+
+fn check_review(expected: Option<&[ReviewedFile]>) -> Result<(), String> {
+    if let Some(files) = expected {
+        for (path, expected) in files {
+            let current = match std::fs::read(path) {
+                Ok(bytes) => Some(std::sync::Arc::<[u8]>::from(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            if &current != expected {
+                return Err(format!(
+                    "{} changed after the preview. Review it again.",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prepare(path: &Path, text: &str) -> Result<tempfile::NamedTempFile, String> {
+    let parent = path.parent().ok_or("Settings need a parent directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    temp.write_all(text.as_bytes())
+        .and_then(|_| temp.as_file().sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(temp)
+}
+
+// Each file replacement is atomic, but the set of replacements is not.
+// A later failure triggers an attempt to restore files already replaced.
+fn replace(
+    files: &[PathBuf],
+    before: &[Option<String>],
+    after: &[Option<String>],
+) -> Result<(), String> {
+    let staged = files
+        .iter()
+        .zip(after)
+        .map(|(path, text)| text.as_deref().map(|text| prepare(path, text)).transpose())
+        .collect::<Result<Vec<_>, _>>()?;
+    for (path, expected) in files.iter().zip(before) {
+        if read_file(path)? != *expected {
+            return Err(format!(
+                "{} changed while installing. Refresh and try again.",
+                path.display()
+            ));
+        }
+    }
+    for (index, (path, temp)) in files.iter().zip(staged).enumerate() {
+        let result = match temp {
+            Some(temp) => temp.persist(path).map(|_| ()).map_err(|e| e.to_string()),
+            None if before[index].is_some() => {
+                std::fs::remove_file(path).map_err(|e| e.to_string())
+            }
+            None => Ok(()),
+        };
+        if let Err(error) = result {
+            for (path, original) in files[..index].iter().zip(before) {
+                match original {
+                    Some(text) => {
+                        prepare(path, text)?
+                            .persist(path)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    None => std::fs::remove_file(path).map_err(|e| e.to_string())?,
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 pub fn binary(tool: Harness) -> Option<PathBuf> {
