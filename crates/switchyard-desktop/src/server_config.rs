@@ -273,6 +273,16 @@ const TARGET_SETTINGS: [&str; 4] = [
     "omit_body_fields",
 ];
 
+/// Route describes one entry under `[routes]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Route {
+    /// This field names the route's table in this file. Callers never send it.
+    pub key: String,
+    /// This field sets the public model ID that callers send.
+    pub id: String,
+    pub kind: String,
+}
+
 /// Client describes one entry under `[llm_clients]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Client {
@@ -369,6 +379,8 @@ impl Algorithm {
 /// Edited stores the result of [`ServerConfig::edit`].
 #[derive(Debug)]
 pub struct Edited {
+    /// This field stores the new config text.
+    pub text: String,
     /// This field stores user-facing notes about the edit.
     pub notes: Vec<String>,
 }
@@ -394,6 +406,16 @@ impl ServerConfig {
                      {error}"
                 )
             })
+    }
+
+    pub fn routes(&self) -> Vec<Route> {
+        entries(self.table("routes"))
+            .map(|(key, route)| Route {
+                key: key.to_string(),
+                id: text(route, "id").unwrap_or(key).to_string(),
+                kind: text(route, "type").unwrap_or_default().to_string(),
+            })
+            .collect()
     }
 
     pub fn clients(&self) -> Vec<Client> {
@@ -618,7 +640,10 @@ impl ServerConfig {
                 set_at(table, path, setting.value());
             }
         }
-        Ok(Edited { notes })
+        Ok(Edited {
+            text: doc.to_string(),
+            notes,
+        })
     }
 
     fn table(&self, name: &str) -> Option<&dyn TableLike> {
