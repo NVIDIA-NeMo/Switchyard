@@ -11,6 +11,7 @@ use crate::controller::{
     AccountInfo, Action, ActionKind, AppSettings, Availability, Controller, Dependent, Reply,
     RouteInfo, Snapshot, ToolInfo,
 };
+use crate::harness::Harness;
 use crate::history::Entry;
 use crate::pricing::Estimate;
 use crate::rollup::{CLASSIFIER_TIER, ModelTokens, Totals, Usage};
@@ -251,6 +252,38 @@ const ACTIONS: &[ActionRow] = &[
         "Shows which files return to their original versions, then restores them after you \
          type RESTORE.",
         &[ActionKind::PreviewRestore, ActionKind::Restore],
+    ),
+    (
+        Tab::Harnesses,
+        'n',
+        "add account",
+        "Creates a saved account and opens the harness's login in a new terminal window.",
+        &[ActionKind::AddAccount],
+    ),
+    (
+        Tab::Harnesses,
+        'l',
+        "login",
+        "Opens the selected account's login again in a new terminal window.",
+        &[ActionKind::LoginAccount],
+    ),
+    (
+        Tab::Harnesses,
+        'o',
+        "open account",
+        "Opens the selected account folder in $VISUAL or $EDITOR.",
+        &[ActionKind::OpenAccount],
+    ),
+    (
+        Tab::Harnesses,
+        'd',
+        "archive",
+        "Moves the selected account out of the list after you type its name. Its login files \
+         are kept.",
+        &[
+            ActionKind::PreviewAccountArchive,
+            ActionKind::ArchiveAccount,
+        ],
     ),
     (
         Tab::Settings,
@@ -549,6 +582,8 @@ enum FormKind {
     },
     Models,
     ModelKey,
+    /// The harness is the one selected when the form opened.
+    Account(Harness),
     SettingsFile,
 }
 /// Choices names the list that ↑ and ↓ cycle through in a form field.
@@ -835,6 +870,10 @@ impl Form {
                 refresh: true,
                 key: Some(self.value(1)),
             },
+            FormKind::Account(tool) => Action::AddAccount {
+                tool: *tool,
+                name: self.value(0),
+            },
             FormKind::SettingsFile => return Ok(Submit::SettingsFile(self.value(0))),
         }))
     }
@@ -854,13 +893,13 @@ impl Form {
             FormKind::Confirm(_, action) => match **action {
                 Action::Install { .. } => "Installing the harness settings",
                 Action::Restore { .. } => "Restoring the harness settings",
-
+                Action::ArchiveAccount { .. } => "Archiving the account",
                 _ => "Saving the route",
             },
             FormKind::Remove { .. } => "Deleting the route",
             FormKind::Models => "Loading models",
             FormKind::ModelKey => "Saving the key and loading models",
-
+            FormKind::Account(_) => "Adding the account",
             FormKind::SettingsFile => "Choosing the settings file",
         }
     }
@@ -989,6 +1028,11 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             tool,
             account,
             settings_file,
+            preview_token,
+        },
+        Action::PreviewAccountArchive { tool, name } => Action::ArchiveAccount {
+            tool,
+            name,
             preview_token,
         },
         _ => return None,
@@ -1322,6 +1366,14 @@ impl App {
         }
     }
 
+    /// Account actions change one saved account, so this function rejects other destinations.
+    fn selected_account(&self) -> Result<(Harness, String), String> {
+        let name = self
+            .account()
+            .ok_or("Press a to select a saved account first.")?;
+        Ok((self.harness()?.tool, name))
+    }
+
     /// This function builds the install preview of the selected route for the selected
     /// harness and destination.
     fn install_action(&self) -> Result<Action, String> {
@@ -1406,6 +1458,8 @@ impl App {
             // Saved settings no longer match an earlier diff, and a failed preview has none.
             (Some(Action::Install { .. } | Action::Restore { .. }), true)
             | (Some(Action::PreviewInstall { .. }), false) => self.install_preview = None,
+            // The archived account leaves the list, so the harness's own settings are next.
+            (Some(Action::ArchiveAccount { .. }), true) => self.destination = Destination::Harness,
             _ => {}
         }
         match (action.as_ref().map(ActionKind::from), reply) {
@@ -1465,6 +1519,20 @@ impl App {
                         FormKind::Confirm("RESTORE".into(), Box::new(restore)),
                         "Restore harness settings?",
                         "Type RESTORE to replace the files",
+                    ));
+                }
+            }
+            (Some(ActionKind::PreviewAccountArchive), Ok(reply)) => {
+                if let Some(archive) = action.and_then(|action| reviewed(action, &reply.data))
+                    && let Action::ArchiveAccount { name, .. } = &archive
+                {
+                    let name = name.clone();
+                    self.popup = Some(Popup::review(
+                        archive_lines(self.theme, &reply.data),
+                        "Archive",
+                        FormKind::Confirm(name.clone().into(), Box::new(archive)),
+                        format!("Archive the account {name}?"),
+                        "Type the account name to archive",
                     ));
                 }
             }
@@ -1969,6 +2037,34 @@ impl App {
                     settings_file: self.custom_file(),
                 };
                 request(restore, "Reading the original settings")
+            }
+            ActionKind::AddAccount => {
+                let harness = self.harness()?;
+                let title = format!("Sign in to another {} account", harness.label);
+                let kind = FormKind::Account(harness.tool);
+                self.open(Form::new(
+                    kind,
+                    title,
+                    vec![("Account name", String::new())],
+                ))
+            }
+            ActionKind::LoginAccount => {
+                let (tool, name) = self.selected_account()?;
+                request(Action::LoginAccount { tool, name }, "Opening the login")
+            }
+            // Controller::editor_target returns the account folder, so it opens in the editor.
+            ActionKind::OpenAccount => {
+                let (tool, name) = self.selected_account()?;
+                request(
+                    Action::OpenAccount { tool, name },
+                    "Opening the account folder",
+                )
+            }
+            // The review window names the account folder and submits ArchiveAccount.
+            ActionKind::PreviewAccountArchive | ActionKind::ArchiveAccount => {
+                let (tool, name) = self.selected_account()?;
+                let archive = Action::PreviewAccountArchive { tool, name };
+                request(archive, "Reviewing the account archive")
             }
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
@@ -4040,6 +4136,14 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             ),
             Line::default(),
         ],
+        FormKind::Account(_) => vec![
+            Line::from(
+                "Use 1–64 ASCII letters, digits, hyphens, or underscores. Login opens in a new \
+                 terminal window; finish it there. API routes use credentials configured on \
+                 the server. The Codex app manages its own account.",
+            ),
+            Line::default(),
+        ],
         FormKind::Preferences
         | FormKind::Update(_)
         | FormKind::Confirm(..)
@@ -4188,6 +4292,15 @@ fn restore_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
         lines.extend(diff_lines(theme, preview, "restored"));
     }
     lines
+}
+
+fn archive_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    vec![
+        Line::from(text(preview, "notice")),
+        Line::default(),
+        labeled(theme, "Account", 11, text(preview, "name")),
+        labeled(theme, "Directory", 11, text(preview, "path")),
+    ]
 }
 
 fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {

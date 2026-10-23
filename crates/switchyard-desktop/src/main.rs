@@ -19,6 +19,7 @@ mod models;
 mod pricing;
 mod server;
 mod server_config;
+mod sessions;
 mod summary;
 mod tui;
 #[cfg(windows)]
@@ -53,6 +54,17 @@ baseline_model's bundled rates or the table selected by pricing_file.
 Recorded spending remains visible when savings are unknown.";
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    if let Some(result) = windows::terminal_job() {
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("switchyard-desktop: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     #[cfg(windows)]
     windows::attach_console();
     let mut settings = None;
