@@ -3797,11 +3797,28 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::config::Config;
     use crate::controller::Source;
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
     use strum::IntoEnumIterator;
+
+    fn press(app: &mut App, code: KeyCode) -> Option<Request> {
+        app.key(KeyEvent::from(code))
+    }
+
+    /// This function runs one request the way the worker thread does.
+    fn work(app: &mut App, controller: &mut Controller, request: Option<Request>) {
+        let (jobs, inbox) = mpsc::channel();
+        app.start(&jobs, request.expect("a request"))
+            .expect("start");
+        let Ok(Job::Run(action)) = inbox.try_recv() else {
+            panic!("the request runs no action");
+        };
+        let reply = controller.dispatch(action);
+        let next = app.finish(Some(reply), controller.snapshot().map(Box::new));
+        assert!(next.is_none());
+    }
 
     fn screen(app: &mut App, tab: Tab) -> String {
         app.tab = tab;
@@ -3913,5 +3930,54 @@ mod tests {
             .filter(|kind| !ACTIONS.iter().any(|&(.., flow)| flow.contains(kind)))
             .collect();
         assert!(missing.is_empty(), "No key runs {missing:?}");
+    }
+
+    #[test]
+    // The models form must keep the revision from when the editor opened, so a server config
+    // that changed since then fails the review and keeps the draft instead of saving old
+    // choices into the new file.
+    fn externally_changed_routes_cannot_bless_snapshot_choices() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let settings = dir.path().join("desktop.toml");
+        let routes = dir.path().join("server.toml");
+        let original = "[llm_clients.c]\n\
+                        base_url='http://localhost:1'\n\
+                        format='openai_responses'\n\
+                        [targets.m]\n\
+                        id='original'\n\
+                        llm_client='c'\n\
+                        [routes.r]\n\
+                        id='public'\n\
+                        type='passthrough'\n\
+                        target='m'\n";
+        std::fs::write(&routes, original).expect("routes");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={routes:?}\nrouting_log={:?}\nserver_url='http://127.0.0.1:0'",
+                dir.path().join("log")
+            ),
+        )
+        .expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("config"), settings);
+        let mut app = App::new(Theme::new(false), controller.snapshot().expect("snapshot"));
+        app.tab = Tab::Routes;
+        assert!(press(&mut app, KeyCode::Char('e')).is_none());
+        let external = original.replace("id='original'", "id='external'");
+        std::fs::write(&routes, &external).expect("external edit");
+        let editor = press(&mut app, KeyCode::Enter);
+        work(&mut app, &mut controller, editor);
+        let preview = press(&mut app, KeyCode::Enter);
+        work(&mut app, &mut controller, preview);
+        let Some(Popup::Form(draft)) = &app.popup else {
+            panic!("the draft closed");
+        };
+        assert!(matches!(draft.kind, FormKind::RouteModels { .. }));
+        assert!(draft.error.contains("Review"), "{}", draft.error);
+        assert_eq!(
+            std::fs::read_to_string(&routes).expect("preserved"),
+            external
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
     }
 }
