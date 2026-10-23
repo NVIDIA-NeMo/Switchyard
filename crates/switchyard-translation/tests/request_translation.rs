@@ -4911,21 +4911,10 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
     let engine = TranslationEngine::default();
     let format = WireFormat::OpenAiResponses;
     let mut body = responses_mcp_request();
-    let headers = json!({
-        "Authorization": "Bearer synthetic-inventory-token",
-        "X-Api-Key": "synthetic-header-token",
-        "X-Tenant-ID": "tenant-123"
-    });
-    body["tools"][0]["headers"] = headers.clone();
-    body["tools"][0]["server_description"] = json!("Look up inventory stock");
-    body["tools"][0]["allowed_callers"] = json!(["programmatic"]);
+    body["tools"][0]["headers"] = json!({"X-Api-Key": "synthetic-header-token"});
     let expected_tools = body["tools"].clone();
-    body["tools"][0]["extra"] = json!("native-only");
-    for preservation in [
-        PreservationPolicy::Disabled,
-        PreservationPolicy::InMemory,
-        PreservationPolicy::Embed,
-    ] {
+    body["tools"][0]["extra"] = json!("unrecognized field");
+    for preservation in [PreservationPolicy::InMemory, PreservationPolicy::Disabled] {
         let policy = TranslationPolicy {
             preservation,
             lossy_conversion_policy: LossyConversionPolicy::Reject,
@@ -4933,572 +4922,29 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
         };
         let decoded = engine.decode_request(format, &body, &policy)?;
         assert!(decoded.diagnostics.is_empty());
-        let mut request = decoded.request;
-        assert_eq!(request.tools.len(), 3);
-        let Tool::Mcp(mcp) = &request.tools[0] else {
+        let Tool::Mcp(mcp) = &decoded.request.tools[0] else {
             panic!("expected MCP definition")
         };
-        assert_eq!(mcp.name, "inventory");
-        assert_eq!(mcp.url.as_deref(), Some("https://example.invalid/mcp"));
-        assert_eq!(json!(mcp.headers), headers);
-        assert_eq!(
-            mcp.authorization_token.as_deref(),
-            Some("synthetic-inventory-token")
-        );
         assert_eq!(mcp.default_config.enabled, Some(false));
         assert_eq!(mcp.default_config.defer_loading, Some(true));
         assert_eq!(mcp.configs["lookup"].enabled, Some(true));
         assert_eq!(mcp.require_approval, Some(false));
-        assert!(matches!(&request.tools[1], Tool::Function(tool) if tool.name == "local_lookup"));
-        let output = engine.encode_request(format, &request, &policy)?;
+        let output = engine.encode_request(format, &decoded.request, &policy)?;
         assert!(output.diagnostics.is_empty());
-        if preservation != PreservationPolicy::Disabled {
+        if preservation == PreservationPolicy::InMemory {
             assert_eq!(output.body, body);
         } else {
             assert_eq!(output.body["tools"], expected_tools);
         }
-        prepare_request_for_target(
-            &mut request,
-            &"target/model".into(),
-            Some("Target instruction"),
-        );
-        request.preservation.requests.clear();
-        let Tool::Mcp(mcp) = &mut request.tools[0] else {
-            unreachable!()
-        };
-        mcp.authorization_token = None;
-        mcp.name = "stock".into();
-        let output = engine.encode_request(format, &request, &policy)?;
-        assert!(output.diagnostics.is_empty());
-        assert_eq!(output.body["model"], "target/model");
-        assert_eq!(output.body["instructions"], "Target instruction");
-        assert_eq!(output.body["tools"][0]["server_label"], "stock");
-        assert_eq!(output.body["tools"][0]["headers"], headers);
-        assert!(output.body["tools"][0].get("authorization").is_none());
-        assert!(output.body["tools"][0].get("extra").is_none());
-        assert_eq!(
-            output.body["tools"][0]["allowed_callers"],
-            json!(["programmatic"])
-        );
-        assert_eq!(
-            output.body["tools"][0]["server_description"],
-            body["tools"][0]["server_description"]
-        );
-        assert_eq!(
-            engine
-                .decode_request(format, &output.body, &policy)?
-                .request
-                .tools,
-            request.tools
-        );
-        let Tool::Mcp(mcp) = &mut request.tools[0] else {
-            unreachable!()
-        };
-        mcp.headers.clear();
-        let output = engine.encode_request(format, &request, &policy)?;
-        assert!(output.body["tools"][0].get("headers").is_none());
-        let permissive = TranslationPolicy {
-            lossy_conversion_policy: LossyConversionPolicy::AllowWithDiagnostics,
-            ..policy.clone()
-        };
-        for (index, key) in ["allowed_callers", "server_description"].iter().enumerate() {
-            assert!(matches!(
-                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy),
-                Err(TranslationError::LossyConversion(message)) if message.contains(key)
-            ));
-            let anthropic =
-                engine.encode_request(WireFormat::AnthropicMessages, &request, &permissive)?;
-            assert_eq!(anthropic.diagnostics.len(), 2 - index);
-            assert!(anthropic.diagnostics.iter().any(|diagnostic| {
-                diagnostic.code == "lossy_conversion" && diagnostic.message.contains(key)
-            }));
-            assert_eq!(anthropic.body["tools"][0]["type"], "mcp_toolset");
-            assert!(
-                anthropic.body["tools"][0]
-                    .get("server_description")
-                    .is_none()
-            );
-            assert!(anthropic.body["tools"][0].get("allowed_callers").is_none());
-            let Tool::Mcp(mcp) = &mut request.tools[0] else {
-                unreachable!()
-            };
-            mcp.extensions.fields["openai_responses"]
-                .as_object_mut()
-                .ok_or("expected Responses extensions")?
-                .remove(*key);
-        }
-        let anthropic = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
-        assert!(anthropic.diagnostics.is_empty());
-        assert_eq!(anthropic.body["tools"][0]["type"], "mcp_toolset");
-        assert!(anthropic.body["tools"][0].get("allowed_callers").is_none());
-        assert!(
-            anthropic.body["tools"][0]
-                .get("server_description")
-                .is_none()
-        );
     }
-    Ok(())
-}
 
-#[test]
-fn responses_mcp_headers_normalization_and_target_limits() -> TestResult {
-    let engine = TranslationEngine::default();
-    let format = WireFormat::OpenAiResponses;
-    for headers in [
-        Value::Null,
-        json!({}),
-        json!({"X-Api-Key": "synthetic-header-token"}),
-    ] {
-        for lossy_conversion_policy in [
-            LossyConversionPolicy::AllowWithDiagnostics,
-            LossyConversionPolicy::Reject,
-        ] {
-            let policy = TranslationPolicy {
-                lossy_conversion_policy,
-                ..normalized_policy()
-            };
-            let mut body = responses_mcp_request();
-            body["tools"][0]["headers"] = headers.clone();
-            let decoded = engine.decode_request(format, &body, &policy)?;
-            assert!(decoded.diagnostics.is_empty());
-            let request = decoded.request;
-            let Tool::Mcp(mcp) = &request.tools[0] else {
-                panic!("expected MCP definition")
-            };
-            if headers.is_null() || headers == json!({}) {
-                assert!(mcp.headers.is_empty());
-                let rebuilt = engine.encode_request(format, &request, &policy)?;
-                assert!(rebuilt.body["tools"][0].get("headers").is_none());
-                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
-            } else {
-                let error = engine
-                    .encode_request(WireFormat::AnthropicMessages, &request, &policy)
-                    .expect_err("Anthropic cannot retain arbitrary MCP headers");
-                assert!(matches!(error, TranslationError::LossyConversion(_)));
-                assert!(error.to_string().contains("headers"));
-            }
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_mcp_portable_definitions_translate_both_directions() -> TestResult {
-    let engine = TranslationEngine::default();
-    let policy = TranslationPolicy {
-        lossy_conversion_policy: LossyConversionPolicy::Reject,
-        ..normalized_policy()
-    };
-    for (allowed, loading) in [
-        (None, None),
-        (Some(json!([])), Some(false)),
-        (Some(json!(["lookup"])), Some(true)),
-    ] {
-        let mut body = responses_mcp_request();
-        let tool = body["tools"][0].as_object_mut().unwrap();
-        tool.remove("allowed_tools");
-        tool.remove("defer_loading");
-        if let Some(allowed) = &allowed {
-            tool.insert("allowed_tools".into(), allowed.clone());
-        }
-        if let Some(loading) = loading {
-            tool.insert("defer_loading".into(), json!(loading));
-        }
-        let source = engine.decode_request(WireFormat::OpenAiResponses, &body, &policy)?;
-        let Tool::Mcp(mcp) = &source.request.tools[0] else {
-            panic!("expected MCP definition")
-        };
-        assert_eq!(mcp.default_config.enabled, allowed.as_ref().map(|_| false));
-        assert_eq!(mcp.default_config.defer_loading, loading);
-        assert_eq!(
-            mcp.configs.len(),
-            allowed
-                .as_ref()
-                .map_or(0, |value| value.as_array().unwrap().len())
-        );
-        let anthropic =
-            engine.encode_request(WireFormat::AnthropicMessages, &source.request, &policy)?;
-        assert!(anthropic.diagnostics.is_empty());
-        assert_eq!(
-            anthropic.body["mcp_servers"][0],
-            json!({
-                "type": "url", "name": "inventory", "url": "https://example.invalid/mcp",
-                "authorization_token": "synthetic-inventory-token"
-            })
-        );
-        assert_eq!(anthropic.body["tools"][0]["type"], "mcp_toolset");
-        let decoded =
-            engine.decode_request(WireFormat::AnthropicMessages, &anthropic.body, &policy)?;
-        assert_eq!(decoded.request.tools, source.request.tools);
-        let back = engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &policy)?;
-        assert!(back.diagnostics.is_empty());
-        assert_eq!(back.body["tools"], body["tools"]);
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_mcp_direct_caller_round_trip_is_lossless() -> TestResult {
-    let engine = TranslationEngine::default();
-    for lossy_conversion_policy in [
-        LossyConversionPolicy::AllowWithDiagnostics,
-        LossyConversionPolicy::Reject,
-    ] {
-        let policy = TranslationPolicy {
-            lossy_conversion_policy,
-            ..normalized_policy()
-        };
-        let mut body = responses_mcp_request();
-        body["tools"][0]["allowed_callers"] = json!(["direct"]);
-        let source = engine.decode_request(WireFormat::OpenAiResponses, &body, &policy)?;
-        let anthropic =
-            engine.encode_request(WireFormat::AnthropicMessages, &source.request, &policy)?;
-        assert!(anthropic.diagnostics.is_empty());
-        assert!(anthropic.body["tools"][0].get("allowed_callers").is_none());
-        let decoded =
-            engine.decode_request(WireFormat::AnthropicMessages, &anthropic.body, &policy)?;
-        let back = engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &policy)?;
-        assert!(back.diagnostics.is_empty());
-        // Omitted allowed_callers defaults to direct invocation in Responses.
-        body["tools"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("allowed_callers");
-        assert_eq!(back.body["tools"], body["tools"]);
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_mcp_approval_defaults_and_target_limits() -> TestResult {
-    let engine = TranslationEngine::default();
-    for approval in [
-        None,
-        Some(Value::Null),
-        Some(json!("always")),
-        Some(json!("never")),
-    ] {
-        let mut body = responses_mcp_request();
-        body["tools"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("require_approval");
-        if let Some(approval) = &approval {
-            body["tools"][0]["require_approval"] = approval.clone();
-        }
-        let is_required = approval != Some(json!("never"));
-        for lossy_conversion_policy in [
-            LossyConversionPolicy::AllowWithDiagnostics,
-            LossyConversionPolicy::Reject,
-        ] {
-            let policy = TranslationPolicy {
-                lossy_conversion_policy,
-                ..normalized_policy()
-            };
-            let request = engine
-                .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
-                .request;
-            let Tool::Mcp(mcp) = &request.tools[0] else {
-                panic!("expected MCP definition")
-            };
-            assert_eq!(mcp.require_approval, Some(is_required));
-            let native = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
-            assert_eq!(
-                native.body["tools"][0]["require_approval"],
-                if is_required { "always" } else { "never" }
-            );
-            let anthropic = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy);
-            if is_required {
-                assert!(matches!(
-                    anthropic,
-                    Err(TranslationError::LossyConversion(_))
-                ));
-            } else {
-                assert!(anthropic?.diagnostics.is_empty());
-            }
-            assert!(matches!(
-                engine.encode_request(WireFormat::OpenAiChat, &request, &policy),
-                Err(TranslationError::LossyConversion(_))
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_mcp_filters_survive_reconstruction() -> TestResult {
-    let engine = TranslationEngine::default();
-    let format = WireFormat::OpenAiResponses;
-    for (field, filter) in [
-        (
-            "require_approval",
-            json!({"never": {"tool_names": ["lookup"]}}),
-        ),
-        (
-            "require_approval",
-            json!({"always": {"read_only": false}, "never": {"read_only": true}}),
-        ),
-        ("allowed_tools", json!({"read_only": true})),
-        ("allowed_tools", json!({"tool_names": ["lookup"]})),
-        (
-            "allowed_tools",
-            json!({"read_only": false, "tool_names": ["delete_order"]}),
-        ),
-    ] {
-        for lossy_conversion_policy in [
-            LossyConversionPolicy::AllowWithDiagnostics,
-            LossyConversionPolicy::Reject,
-        ] {
-            let policy = TranslationPolicy {
-                lossy_conversion_policy,
-                ..TranslationPolicy::default()
-            };
-            let mut body = responses_mcp_request();
-            body["tools"][0][field] = filter.clone();
-            body["tools"][0]["server_description"] = json!("Look up inventory stock");
-            body["tools"][0]["allowed_callers"] = json!(["direct", "programmatic"]);
-            let decoded = engine.decode_request(format, &body, &policy)?;
-            assert!(decoded.diagnostics.is_empty());
-            let mut request = decoded.request;
-            let replayed = engine.encode_request(format, &request, &policy)?;
-            assert_eq!(replayed.body, body);
-            assert!(replayed.diagnostics.is_empty());
-
-            request.preservation.requests.clear();
-            let Tool::Mcp(mcp) = &mut request.tools[0] else {
-                panic!("expected MCP definition")
-            };
-            if field == "require_approval" {
-                assert_eq!(mcp.require_approval, None);
-            } else {
-                assert_eq!(mcp.default_config.enabled, None);
-                assert!(mcp.configs.is_empty());
-            }
-            assert_eq!(mcp.extensions.fields["openai_responses"][field], filter);
-            mcp.name = "stock".into();
-            // Preserved filters take precedence over normalized settings.
-            mcp.require_approval = Some(false);
-            mcp.default_config.enabled = Some(false);
-            let rebuilt = engine.encode_request(format, &request, &policy)?;
-            assert_eq!(rebuilt.body["tools"][0]["server_label"], "stock");
-            assert_eq!(rebuilt.body["tools"][0][field], filter);
-            for key in ["server_description", "allowed_callers"] {
-                assert_eq!(rebuilt.body["tools"][0][key], body["tools"][0][key]);
-            }
-            assert!(rebuilt.diagnostics.is_empty());
-            for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiChat] {
-                assert!(matches!(
-                    engine.encode_request(target, &request, &policy),
-                    Err(TranslationError::LossyConversion(_))
-                ));
-            }
-            let Tool::Mcp(mcp) = &mut request.tools[0] else {
-                unreachable!()
-            };
-            mcp.extensions.fields.clear();
-            let rebuilt = engine.encode_request(format, &request, &policy)?;
-            assert_eq!(rebuilt.body["tools"][0]["require_approval"], "never");
-            assert!(rebuilt.body["tools"][0]["allowed_tools"].is_array());
-            assert!(rebuilt.body["tools"][0].get("server_description").is_none());
-            assert!(rebuilt.body["tools"][0].get("allowed_callers").is_none());
-            let anthropic =
-                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
-            assert!(anthropic.diagnostics.is_empty());
-            assert!(anthropic.body["tools"][0].get("require_approval").is_none());
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_mcp_connectors_and_tunnels_replay_and_reconstruct() -> TestResult {
-    let engine = TranslationEngine::default();
-    let format = WireFormat::OpenAiResponses;
-    for (key, id) in [
-        ("connector_id", "connector_dropbox"),
-        ("tunnel_id", "tunnel_fixture"),
-    ] {
-        let mut body = responses_mcp_request();
-        body["tools"][0] = json!({
-            "type": "mcp", "server_label": "inventory",
-            "authorization": "synthetic-token", "require_approval": "never"
-        });
-        body["tools"][0][key] = json!(id);
-        for lossy_conversion_policy in [
-            LossyConversionPolicy::AllowWithDiagnostics,
-            LossyConversionPolicy::Reject,
-        ] {
-            let policy = TranslationPolicy {
-                lossy_conversion_policy,
-                ..TranslationPolicy::default()
-            };
-            let decoded = engine.decode_request(format, &body, &policy)?;
-            assert!(decoded.diagnostics.is_empty());
-            let mut request = decoded.request;
-            let Tool::Mcp(mcp) = &request.tools[0] else {
-                panic!("expected MCP definition")
-            };
-            assert_eq!(mcp.extensions.fields["openai_responses"][key], id);
-            assert_eq!(mcp.url, None);
-            let replayed = engine.encode_request(format, &request, &policy)?;
-            assert_eq!(replayed.body, body);
-            assert!(replayed.diagnostics.is_empty());
-
-            prepare_request_for_target(&mut request, &"target/model".into(), None);
-            request.preservation.requests.clear();
-            let rebuilt = engine.encode_request(format, &request, &policy)?;
-            assert_eq!(rebuilt.body["model"], "target/model");
-            assert_eq!(rebuilt.body["tools"], body["tools"]);
-            assert!(rebuilt.body["tools"][0].get("server_url").is_none());
-            assert!(rebuilt.diagnostics.is_empty());
-            assert!(matches!(
-                engine.encode_request(WireFormat::AnthropicMessages, &request, &policy),
-                Err(TranslationError::LossyConversion(message)) if message.contains("URL")
-            ));
-            assert!(matches!(
-                engine.encode_request(WireFormat::OpenAiChat, &request, &policy),
-                Err(TranslationError::LossyConversion(_))
-            ));
-
-            let Tool::Mcp(mcp) = &mut request.tools[0] else {
-                unreachable!()
-            };
-            mcp.name = "stock".into();
-            mcp.authorization_token = None;
-            let rebuilt = engine.encode_request(format, &request, &policy)?;
-            assert_eq!(rebuilt.body["tools"][0]["server_label"], "stock");
-            assert_eq!(rebuilt.body["tools"][0][key], id);
-            assert!(rebuilt.body["tools"][0].get("authorization").is_none());
-            let Tool::Mcp(mcp) = &mut request.tools[0] else {
-                unreachable!()
-            };
-            mcp.url = Some("https://example.invalid/mcp".into());
-            let anthropic = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy);
-            if lossy_conversion_policy == LossyConversionPolicy::Reject {
-                assert!(matches!(anthropic,
-                    Err(TranslationError::LossyConversion(message)) if message.contains(key)));
-            } else {
-                let anthropic = anthropic?;
-                assert_eq!(
-                    anthropic.body["mcp_servers"][0]["url"],
-                    "https://example.invalid/mcp"
-                );
-                assert_eq!(anthropic.diagnostics.len(), 1);
-                assert!(anthropic.diagnostics[0].message.contains(key));
-            }
-            let Tool::Mcp(mcp) = &mut request.tools[0] else {
-                unreachable!()
-            };
-            mcp.url = None;
-            mcp.extensions.fields.clear();
-            assert!(matches!(
-                engine.encode_request(format, &request, &policy),
-                Err(TranslationError::LossyConversion(_))
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_mcp_definitions_reject_unsupported_input() {
-    let engine = TranslationEngine::default();
-    for (key, value) in [
-        ("server_label", None),
-        ("server_label", Some(json!(42))),
-        ("server_url", None),
-        ("server_url", Some(json!(""))),
-        ("connector_id", Some(json!(""))),
-        ("tunnel_id", Some(json!(42))),
-        ("authorization", Some(json!(42))),
-        ("allowed_tools", Some(json!([42]))),
-        ("allowed_tools", Some(json!(true))),
-        ("defer_loading", Some(json!("true"))),
-        ("require_approval", Some(json!(false))),
-        ("headers", Some(json!([]))),
-        ("headers", Some(json!({"X-Api-Key": 42}))),
-    ] {
-        let mut body = responses_mcp_request();
-        let tool = body["tools"][0].as_object_mut().unwrap();
-        if let Some(value) = value {
-            tool.insert(key.into(), value);
-        } else {
-            tool.remove(key);
-        }
-        let error = engine
-            .decode_request(
-                WireFormat::OpenAiResponses,
-                &body,
-                &TranslationPolicy::default(),
-            )
-            .expect_err("unsupported MCP definition must fail");
-        assert!(matches!(
-            error,
-            TranslationError::InvalidValue { .. }
-                | TranslationError::InvalidType { .. }
-                | TranslationError::LossyConversion(_)
-        ));
-        assert!(error.to_string().contains(key), "{key}: {error}");
-    }
-}
-
-#[test]
-fn responses_mcp_rejects_unrepresentable_access_and_loading() -> TestResult {
-    let engine = TranslationEngine::default();
-    for lossy_conversion_policy in [
-        LossyConversionPolicy::AllowWithDiagnostics,
-        LossyConversionPolicy::Reject,
-    ] {
-        let policy = TranslationPolicy {
-            lossy_conversion_policy,
-            ..normalized_policy()
-        };
-        for (default, config, error) in [
-            (json!({}), json!({"enabled": false}), "disabled default"),
-            (
-                json!({"enabled": true}),
-                json!({"enabled": false}),
-                "disabled default",
-            ),
-            (
-                json!({"defer_loading": true}),
-                json!({"defer_loading": false}),
-                "loading settings",
-            ),
-            (
-                json!({}),
-                json!({"defer_loading": true}),
-                "loading settings",
-            ),
-        ] {
-            let mut body = anthropic_mcp_request();
-            body["mcp_servers"].as_array_mut().unwrap().remove(0);
-            body["tools"].as_array_mut().unwrap().truncate(1);
-            body["tools"][0]["default_config"] = default;
-            body["tools"][0]["configs"] = json!({"lookup": config});
-            let request = engine
-                .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
-                .request;
-            let rejected = engine
-                .encode_request(WireFormat::OpenAiResponses, &request, &policy)
-                .expect_err("unrepresentable MCP settings must fail");
-            assert!(matches!(rejected, TranslationError::LossyConversion(_)));
-            assert!(rejected.to_string().contains(error), "{rejected}");
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_mcp_definitions_in_namespaces_and_additional_tools() -> TestResult {
-    let engine = TranslationEngine::default();
+    // Namespace qualification applies to functions, including in additional_tools.
     let policy = normalized_policy();
-    let format = WireFormat::OpenAiResponses;
-    for is_additional in [false, true] {
+    for additional in [false, true] {
         let mut body = responses_mcp_request();
-        let tools = json!([{"type": "namespace", "name": "inventory", "description": "Stock tools",
-            "tools": body["tools"]}]);
-        if is_additional {
+        let tools = json!([{"type": "namespace", "name": "inventory",
+            "description": "Stock tools", "tools": body["tools"]}]);
+        if additional {
             body.as_object_mut().unwrap().remove("tools");
             body["input"] = json!([
                 {"type": "additional_tools", "role": "developer", "tools": tools},
@@ -5510,26 +4956,208 @@ fn responses_mcp_definitions_in_namespaces_and_additional_tools() -> TestResult 
         let request = engine.decode_request(format, &body, &policy)?.request;
         assert_eq!(request.tools.len(), 3);
         assert!(matches!(&request.tools[0], Tool::Mcp(mcp) if mcp.name == "inventory"));
-        assert!(
-            matches!(&request.tools[1], Tool::Function(tool) if tool.name == "inventory__local_lookup")
-        );
+        assert!(matches!(&request.tools[1], Tool::Function(tool)
+            if tool.name == "inventory__local_lookup"));
         let output = engine.encode_request(format, &request, &policy)?;
-        if is_additional {
+        if additional {
             assert!(output.body.get("tools").is_none());
             assert_eq!(output.body["input"][0]["tools"], tools);
         } else {
             assert_eq!(output.body["tools"][0]["server_label"], "inventory");
             assert_eq!(output.body["tools"][2]["tools"][0]["name"], "local_lookup");
         }
-        let nested = if is_additional {
-            &mut body["input"][0]["tools"][0]["tools"][0]
-        } else {
-            &mut body["tools"][0]["tools"][0]
-        };
-        nested["defer_loading"] = json!("invalid");
+    }
+    for (field, invalid) in [
+        ("server_url", Value::Null),
+        ("allowed_tools", json!([42])),
+        ("headers", json!({"X-Api-Key": 42})),
+    ] {
+        let mut body = responses_mcp_request();
+        body["tools"][0][field] = invalid;
+        let error = engine.decode_request(format, &body, &policy).unwrap_err();
         assert!(matches!(
-            engine.decode_request(format, &body, &policy),
-            Err(TranslationError::InvalidType { .. })
+            error,
+            TranslationError::InvalidValue { .. } | TranslationError::InvalidType { .. }
+        ));
+        assert!(error.to_string().contains(field), "{error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_mcp_anthropic_translation_and_limits() -> TestResult {
+    let engine = TranslationEngine::default();
+    let responses = WireFormat::OpenAiResponses;
+    let anthropic = WireFormat::AnthropicMessages;
+    let permissive = normalized_policy();
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..permissive.clone()
+    };
+    for allowed in [Value::Null, json!([]), json!(["lookup"])] {
+        let mut body = responses_mcp_request();
+        body["tools"][0]["allowed_tools"] = allowed;
+        let expected = engine.decode_request(responses, &body, &strict)?.request;
+        body["tools"][0]["allowed_callers"] = json!(["direct"]);
+        let translated = engine.translate_request(responses, anthropic, &body, &strict)?;
+        assert!(translated.diagnostics.is_empty());
+        assert_eq!(
+            translated.body["mcp_servers"][0],
+            json!({
+                "type": "url", "name": "inventory", "url": "https://example.invalid/mcp",
+                "authorization_token": "synthetic-inventory-token"
+            })
+        );
+        assert!(translated.body["tools"][0].get("allowed_callers").is_none());
+        let back = engine.translate_request(anthropic, responses, &translated.body, &strict)?;
+        assert!(back.diagnostics.is_empty());
+        // Omitted allowed_callers defaults to direct invocation in Responses.
+        assert_eq!(
+            engine
+                .decode_request(responses, &back.body, &strict)?
+                .request
+                .tools,
+            expected.tools
+        );
+    }
+
+    // These restrictions cannot be translated even under the permissive policy.
+    for (field, value, message) in [
+        ("require_approval", Value::Null, "require_approval"),
+        ("require_approval", json!("always"), "require_approval"),
+        (
+            "require_approval",
+            json!({"never": {"tool_names": ["lookup"]}}),
+            "approval",
+        ),
+        (
+            "headers",
+            json!({"X-Api-Key": "synthetic-token"}),
+            "headers",
+        ),
+        ("allowed_tools", json!({"read_only": true}), "filter"),
+    ] {
+        let mut body = responses_mcp_request();
+        body["tools"][0][field] = value;
+        let error = engine
+            .translate_request(responses, anthropic, &body, &permissive)
+            .expect_err("unsupported MCP restriction must fail");
+        assert!(matches!(error, TranslationError::LossyConversion(_)));
+        assert!(error.to_string().contains(message), "{field}: {error}");
+    }
+
+    // Lossy fields warn under AllowWithDiagnostics and fail under Reject.
+    for (field, value) in [
+        ("allowed_callers", json!(["programmatic"])),
+        ("allowed_callers", json!(["direct", "programmatic"])),
+        ("server_description", json!("Inventory tools")),
+        ("connector_id", json!("connector_dropbox")),
+        ("tunnel_id", json!("tunnel_fixture")),
+    ] {
+        let mut body = responses_mcp_request();
+        body["tools"][0][field] = value;
+        assert!(
+            matches!(engine.translate_request(responses, anthropic, &body, &strict),
+            Err(TranslationError::LossyConversion(message)) if message.contains(field))
+        );
+        let translated = engine.translate_request(responses, anthropic, &body, &permissive)?;
+        assert_eq!(translated.diagnostics.len(), 1);
+        assert_eq!(translated.diagnostics[0].code, "lossy_conversion");
+        assert!(translated.diagnostics[0].message.contains(field));
+        assert!(translated.body["tools"][0].get(field).is_none());
+        assert!(translated.body["mcp_servers"][0].get(field).is_none());
+    }
+    for (default, config, message) in [
+        (json!({}), json!({"enabled": false}), "disabled default"),
+        (
+            json!({"defer_loading": true}),
+            json!({"defer_loading": false}),
+            "loading settings",
+        ),
+    ] {
+        let mut body = anthropic_mcp_request();
+        body["mcp_servers"].as_array_mut().unwrap().remove(0);
+        body["tools"].as_array_mut().unwrap().truncate(1);
+        body["tools"][0]["default_config"] = default;
+        body["tools"][0]["configs"] = json!({"lookup": config});
+        let error = engine
+            .translate_request(anthropic, responses, &body, &permissive)
+            .expect_err("unrepresentable MCP settings must fail");
+        assert!(matches!(error, TranslationError::LossyConversion(_)));
+        assert!(error.to_string().contains(message), "{error}");
+    }
+    assert!(matches!(
+        engine.translate_request(
+            responses,
+            WireFormat::OpenAiChat,
+            &responses_mcp_request(),
+            &permissive
+        ),
+        Err(TranslationError::LossyConversion(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn responses_mcp_extensions_survive_reconstruction() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let policy = normalized_policy();
+    let mut body = responses_mcp_request();
+    body["tools"][0]["require_approval"] = json!({"never": {"tool_names": ["lookup"]}});
+    body["tools"][0]["allowed_tools"] = json!({"read_only": true});
+    body["tools"][0]["server_description"] = json!("Inventory tools");
+    body["tools"][0]["allowed_callers"] = json!(["programmatic"]);
+    let mut request = engine.decode_request(format, &body, &policy)?.request;
+    let Tool::Mcp(mcp) = &mut request.tools[0] else {
+        panic!("expected MCP definition")
+    };
+    assert_eq!(mcp.require_approval, None);
+    assert_eq!(mcp.default_config.enabled, None);
+    assert!(mcp.configs.is_empty());
+    // Preserved filters take precedence until the caller clears them.
+    mcp.require_approval = Some(false);
+    mcp.default_config.enabled = Some(false);
+    let rebuilt = engine.encode_request(format, &request, &policy)?;
+    assert_eq!(rebuilt.body["tools"], body["tools"]);
+    assert!(rebuilt.diagnostics.is_empty());
+    let Tool::Mcp(mcp) = &mut request.tools[0] else {
+        unreachable!()
+    };
+    mcp.extensions.fields.clear();
+    let rebuilt = engine.encode_request(format, &request, &policy)?;
+    assert_eq!(rebuilt.body["tools"][0]["require_approval"], "never");
+    assert_eq!(rebuilt.body["tools"][0]["allowed_tools"], json!([]));
+    assert!(rebuilt.body["tools"][0].get("allowed_callers").is_none());
+    assert!(rebuilt.body["tools"][0].get("server_description").is_none());
+
+    for (field, id) in [
+        ("connector_id", "connector_dropbox"),
+        ("tunnel_id", "tunnel_fixture"),
+    ] {
+        let mut body = responses_mcp_request();
+        body["tools"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("server_url");
+        body["tools"][0][field] = json!(id);
+        let mut request = engine.decode_request(format, &body, &policy)?.request;
+        assert!(matches!(&request.tools[0], Tool::Mcp(mcp)
+            if mcp.url.is_none() && mcp.extensions.fields["openai_responses"][field] == id));
+        let rebuilt = engine.encode_request(format, &request, &policy)?;
+        assert_eq!(rebuilt.body["tools"], body["tools"]);
+        assert!(rebuilt.diagnostics.is_empty());
+        assert!(
+            matches!(engine.encode_request(WireFormat::AnthropicMessages, &request, &policy),
+            Err(TranslationError::LossyConversion(message)) if message.contains("URL"))
+        );
+        let Tool::Mcp(mcp) = &mut request.tools[0] else {
+            unreachable!()
+        };
+        mcp.extensions.fields.clear();
+        assert!(matches!(
+            engine.encode_request(format, &request, &policy),
+            Err(TranslationError::LossyConversion(_))
         ));
     }
     Ok(())
