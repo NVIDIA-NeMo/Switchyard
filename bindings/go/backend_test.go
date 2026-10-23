@@ -84,7 +84,7 @@ func testRoutingDeadline(t *testing.T, router *Router) {
 	}
 }
 
-// Host calls must overlap without blocking other requests.
+// Waiting for a provider must leave the shared guest available to other requests.
 func TestConcurrentHostCalls(t *testing.T) {
 	router := newRouter(t, composite)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
