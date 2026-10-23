@@ -4,16 +4,21 @@
 //! The terminal controller reloads settings and combines usage and server health into snapshots.
 //! It retains the log reader and health probe across refreshes.
 
-use crate::{config::Config, rollup};
+use crate::{config::Config, history, pricing, rollup};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// Snapshot holds the terminal app's usage, server health, errors, and refresh interval.
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub data_state: DataState,
     pub metrics: Metrics,
+    pub today: chrono::NaiveDate,
+    /// The keys are `today`, `week`, and `all`. A value is null when usage could not be read.
+    pub estimates: BTreeMap<&'static str, Option<pricing::Estimate>>,
+    pub activity: [u64; 24],
+    pub limited: bool,
     pub errors: Vec<String>,
     pub refresh_seconds: u64,
 }
@@ -89,6 +94,23 @@ impl Controller {
                 errors.push(format!("Could not read usage: {error}"));
                 rollup::Usage::default()
             });
+        // Invalid overrides leave baseline rates unknown and add an error to the snapshot.
+        let rates = pricing::load(self.config.prices_file.as_deref()).unwrap_or_else(|error| {
+            errors.push(format!("Could not read model prices: {error}"));
+            Default::default()
+        });
+        let estimates = [
+            ("today", &usage.today),
+            ("week", &usage.week),
+            ("all", &usage.all),
+        ]
+        .into_iter()
+        .map(|(period, totals)| {
+            let estimate = (usage_state == Availability::Available)
+                .then(|| pricing::Estimate::new(totals, &rates, &self.config.baseline_model));
+            (period, estimate)
+        })
+        .collect();
         let checked_at = chrono::Utc::now().to_rfc3339();
         let mut health = self.health_probe.details(&self.config.server_url);
         health["checked_at"] = json!(checked_at);
@@ -98,6 +120,11 @@ impl Controller {
         } else {
             crate::health::ServerStatus::Stopped
         };
+        let history = history::load(&self.config.routing_log).unwrap_or_else(|e| {
+            errors.push(e);
+            history::History::default()
+        });
+        let activity = history::hourly_calls(&history.entries, chrono::Utc::now());
         let server_url = self.config.server_url.clone();
         let routing_log = self.config.routing_log.clone();
         let refresh_seconds = self.config.refresh_seconds;
@@ -122,6 +149,10 @@ impl Controller {
                     tokens: usage.week.tokens(),
                 },
             },
+            today,
+            estimates,
+            activity,
+            limited: history.limited,
             errors,
             refresh_seconds: refresh_seconds.max(1),
         })
