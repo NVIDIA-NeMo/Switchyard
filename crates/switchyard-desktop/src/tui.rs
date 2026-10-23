@@ -1,15 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app shows recorded usage and server status on the Overview and Models pages.
+//! The terminal app shows recorded usage, recent calls, and server status.
 //!
 //! One worker thread owns the controller and refreshes its snapshots while the UI thread
 //! draws and reads input.
 
 use crate::controller::{Availability, Controller, Snapshot};
+use crate::history::Entry;
 use crate::pricing::Estimate;
-use crate::rollup::{ModelTokens, Totals, Usage};
+use crate::rollup::{CLASSIFIER_TIER, ModelTokens, Totals, Usage};
 use crate::summary::{money, tokens};
+use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -17,7 +19,8 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Bar, BarChart, Block, BorderType, Cell, Clear, Padding, Paragraph, Row, Table, Tabs, Wrap,
+        Bar, BarChart, Block, BorderType, Cell, Clear, Padding, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, TableState, Tabs, Wrap,
     },
 };
 use std::{
@@ -26,10 +29,13 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use switchyard_costs::{CostSource, RecordedCost};
 
 /// Smaller terminals show a resize message instead of clipped panels.
 const MIN_WIDTH: u16 = 60;
 const MIN_HEIGHT: u16 = 16;
+/// The calls page puts the detail pane beside the table at this width or wider.
+const SIDE_DETAIL_WIDTH: u16 = 120;
 const TOAST_TIME: Duration = Duration::from_secs(4);
 const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
@@ -37,14 +43,14 @@ const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '�
 type Key = (&'static str, &'static str, &'static str);
 const GLOBAL_KEYS: &[Key] = &[
     (
-        "1-2",
+        "1-3",
         "page",
         "Switch pages. Tab, Shift-Tab, ← and → also switch pages.",
     ),
     (
         "r",
         "refresh",
-        "Reload usage and server health now. F5 also refreshes.",
+        "Reload usage, calls, and server health now. F5 also refreshes.",
     ),
     ("?", "help", "Show or hide this help."),
     (
@@ -53,15 +59,51 @@ const GLOBAL_KEYS: &[Key] = &[
         "Quit the app. The server keeps running. Ctrl-C also quits.",
     ),
 ];
+const CALLS_KEYS: &[Key] = &[
+    (
+        "↑↓",
+        "select",
+        "Move the selection. j, k, PgUp, PgDn, g, and G also move it.",
+    ),
+    (
+        "/",
+        "filter",
+        "Filter as you type. Every word must appear in the model, route, session, or turn. \
+         A word with a capital letter must match case exactly.",
+    ),
+    (
+        "s",
+        "session",
+        "Show one session at a time, then all sessions again.",
+    ),
+    ("⏎", "details", "Open the selected call's details."),
+    ("esc", "clear", "Clear the filter and the session."),
+];
 const MODELS_KEYS: &[Key] = &[(
     "p",
     "period",
     "Switch the period: today, the past 7 days, or the whole log. The [ and ] keys also work.",
 )];
+const FILTER_KEYS: &[Key] = &[
+    ("⏎", "keep", "Keep the filter and go back to the list."),
+    ("esc", "clear", "Clear the filter."),
+    ("ctrl-u", "erase", "Erase the filter text."),
+];
 const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
 
 /// Column is a table heading, its width, and whether its values are right-aligned.
 type Column = (&'static str, Constraint, bool);
+/// The calls table drops the columns marked `true` below 90 columns.
+const CALL_COLUMNS: [(Column, bool); 8] = [
+    (("TIME", Constraint::Length(8), true), false),
+    (("MODEL", Constraint::Fill(2), false), false),
+    (("ROUTE", Constraint::Fill(1), false), true),
+    (("KIND", Constraint::Length(7), false), false),
+    (("IN", Constraint::Length(7), true), false),
+    (("CACHED", Constraint::Length(7), true), true),
+    (("OUT", Constraint::Length(7), true), false),
+    (("COST", Constraint::Length(9), true), false),
+];
 
 /// Theme maps each kind of text to one style. NO_COLOR keeps the text modifiers.
 #[derive(Clone, Copy)]
@@ -112,13 +154,15 @@ fn color_enabled() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Overview,
+    Calls,
     Models,
 }
-const TABS: [Tab; 2] = [Tab::Overview, Tab::Models];
+const TABS: [Tab; 3] = [Tab::Overview, Tab::Calls, Tab::Models];
 impl Tab {
     fn name(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
+            Tab::Calls => "Calls",
             Tab::Models => "Models",
         }
     }
@@ -173,6 +217,9 @@ enum Popup {
     Help {
         scroll: u16,
     },
+    Detail {
+        scroll: u16,
+    },
     Message {
         title: &'static str,
         text: String,
@@ -183,7 +230,9 @@ enum Popup {
 impl Popup {
     fn scroll_mut(&mut self) -> &mut u16 {
         match self {
-            Popup::Help { scroll } | Popup::Message { scroll, .. } => scroll,
+            Popup::Help { scroll } | Popup::Detail { scroll } | Popup::Message { scroll, .. } => {
+                scroll
+            }
         }
     }
 }
@@ -229,6 +278,13 @@ struct App {
     data: Snapshot,
     tab: Tab,
     period: Period,
+    filter: String,
+    filtering: bool,
+    session: Option<String>,
+    /// These indexes point into `data.entries`, newest first, after both filters are applied.
+    visible: Vec<usize>,
+    selected: usize,
+    offset: usize,
     popup: Option<Popup>,
     toast: Option<Toast>,
     busy: Option<Busy>,
@@ -246,6 +302,12 @@ impl App {
             data: Snapshot::default(),
             tab: Tab::Overview,
             period: Period::Week,
+            filter: String::new(),
+            filtering: false,
+            session: None,
+            visible: Vec::new(),
+            selected: 0,
+            offset: 0,
             popup: None,
             toast: None,
             busy: None,
@@ -254,6 +316,30 @@ impl App {
             last_refresh: Instant::now(),
             width: 80,
         }
+    }
+
+    fn rebuild_calls(&mut self) {
+        let session = self.session.as_deref();
+        let filter = self.filter.as_str();
+        self.visible = self
+            .data
+            .entries
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, entry)| {
+                session.is_none_or(|session| entry.session_id.as_deref() == Some(session))
+                    && matches_filter(entry, filter)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        self.selected = self.selected.min(self.visible.len().saturating_sub(1));
+    }
+
+    fn selected_entry(&self) -> Option<&Entry> {
+        self.visible
+            .get(self.selected)
+            .map(|&index| &self.data.entries[index])
     }
 
     /// Short single-line messages appear in the status bar; others open a scrollable window.
@@ -281,8 +367,22 @@ impl App {
         let automatic = self.busy.take().is_some_and(|busy| busy.automatic);
         match snapshot {
             Ok(data) => {
+                // A refresh follows the newest call or restores an older selection if it is still visible.
+                let anchor = self
+                    .selected_entry()
+                    .filter(|_| self.selected > 0)
+                    .map(|entry| (entry.ts.clone(), entry.model.clone(), entry.turn_id.clone()));
                 self.data = *data;
                 self.refreshed = Some(Instant::now());
+                self.rebuild_calls();
+                if let Some((ts, model, turn)) = anchor
+                    && let Some(position) = self.visible.iter().position(|&index| {
+                        let entry = &self.data.entries[index];
+                        entry.ts == ts && entry.model == model && entry.turn_id == turn
+                    })
+                {
+                    self.selected = position;
+                }
             }
             Err(error) => {
                 // Overview keeps the error after the status message is dismissed.
@@ -338,10 +438,20 @@ impl App {
     }
 
     fn keys(&self) -> &'static [Key] {
-        match (&self.popup, self.tab) {
-            (Some(_), _) => POPUP_KEYS,
-            (None, Tab::Overview) => &[],
-            (None, Tab::Models) => MODELS_KEYS,
+        match (&self.popup, self.filtering, self.tab) {
+            (Some(_), _, _) => POPUP_KEYS,
+            (None, true, _) => FILTER_KEYS,
+            (None, false, Tab::Overview) => &[],
+            (None, false, Tab::Calls) => CALLS_KEYS,
+            (None, false, Tab::Models) => MODELS_KEYS,
+        }
+    }
+
+    fn paste(&mut self, text: &str) {
+        if self.filtering && self.popup.is_none() {
+            self.filter.extend(text.chars().filter(|c| !c.is_control()));
+            self.selected = 0;
+            self.rebuild_calls();
         }
     }
 
@@ -353,10 +463,14 @@ impl App {
         if self.popup.is_some() {
             return self.popup_key(key);
         }
+        if self.filtering {
+            self.filter_key(key);
+            return None;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
-            KeyCode::Char(digit @ '1'..='2') => {
+            KeyCode::Char(digit @ '1'..='3') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
             KeyCode::Tab | KeyCode::Right => self.tab = TABS[(self.tab.index() + 1) % TABS.len()],
@@ -364,9 +478,17 @@ impl App {
                 self.tab = TABS[(self.tab.index() + TABS.len() - 1) % TABS.len()];
             }
             KeyCode::Char('r') | KeyCode::F(5) => return Some(Request::refresh(false)),
-            KeyCode::Esc => self.toast = None,
+            KeyCode::Esc => {
+                self.toast = None;
+                if self.tab == Tab::Calls {
+                    self.filter.clear();
+                    self.session = None;
+                    self.rebuild_calls();
+                }
+            }
             code => match self.tab {
                 Tab::Overview => {}
+                Tab::Calls => self.calls_key(code),
                 Tab::Models => match code {
                     KeyCode::Char('p' | ']') => self.period = self.period.next(),
                     KeyCode::Char('[') => self.period = self.period.previous(),
@@ -375,6 +497,62 @@ impl App {
             },
         }
         None
+    }
+
+    fn calls_key(&mut self, code: KeyCode) {
+        if let Some(selected) = step(code, self.selected, self.visible.len().saturating_sub(1)) {
+            self.selected = selected;
+            return;
+        }
+        match code {
+            KeyCode::Char('/') => self.filtering = true,
+            KeyCode::Enter if self.selected_entry().is_some() => {
+                self.popup = Some(Popup::Detail { scroll: 0 });
+            }
+            KeyCode::Char('s') => {
+                let sessions = &self.data.sessions;
+                self.session = match &self.session {
+                    None => sessions.first().cloned(),
+                    Some(current) => sessions
+                        .iter()
+                        .position(|session| session == current)
+                        .and_then(|index| sessions.get(index + 1))
+                        .cloned(),
+                };
+                self.selected = 0;
+                self.rebuild_calls();
+            }
+            _ => {}
+        }
+    }
+
+    fn filter_key(&mut self, key: KeyEvent) {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Enter => self.filtering = false,
+            KeyCode::Esc => {
+                self.filtering = false;
+                self.filter.clear();
+            }
+            KeyCode::Backspace => {
+                self.filter.pop();
+            }
+            KeyCode::Char('u') if control => self.filter.clear(),
+            KeyCode::Char('w') if control => {
+                let kept = self
+                    .filter
+                    .trim_end()
+                    .rfind(' ')
+                    .map_or(0, |index| index + 1);
+                self.filter.truncate(kept);
+            }
+            KeyCode::Char(c) if !control && !key.modifiers.contains(KeyModifiers::ALT) => {
+                self.filter.push(c);
+            }
+            _ => return,
+        }
+        self.selected = 0;
+        self.rebuild_calls();
     }
 
     fn popup_key(&mut self, key: KeyEvent) -> Option<Request> {
@@ -406,6 +584,30 @@ fn step(code: KeyCode, current: usize, last: usize) -> Option<usize> {
     })
 }
 
+/// Every filter word must appear in the call's model, route, session, or turn ID.
+/// Words with uppercase letters match case exactly; other words ignore ASCII case.
+fn matches_filter(entry: &Entry, filter: &str) -> bool {
+    let fields = [
+        entry.model.as_str(),
+        entry.route_id.as_str(),
+        entry.session_id.as_deref().unwrap_or_default(),
+        entry.turn_id.as_deref().unwrap_or_default(),
+    ];
+    filter.split_whitespace().all(|word| {
+        let exact = word.chars().any(char::is_uppercase);
+        fields.iter().any(|field| {
+            if exact {
+                field.contains(word)
+            } else {
+                field
+                    .as_bytes()
+                    .windows(word.len())
+                    .any(|window| window.eq_ignore_ascii_case(word.as_bytes()))
+            }
+        })
+    })
+}
+
 fn count(value: u64) -> String {
     let digits = value.to_string();
     let mut text = String::with_capacity(digits.len() + digits.len() / 3);
@@ -420,6 +622,19 @@ fn count(value: u64) -> String {
 
 fn plural(value: u64, one: &str, many: &str) -> String {
     format!("{} {}", count(value), if value == 1 { one } else { many })
+}
+
+/// Single calls often cost fractions of a cent, so `call_money` shows more digits than `money`.
+fn call_money(usd: f64) -> String {
+    if usd == 0.0 {
+        "$0".into()
+    } else if usd >= 0.01 {
+        money(usd)
+    } else if usd >= 0.0001 {
+        format!("${usd:.4}")
+    } else {
+        "<$0.0001".into()
+    }
 }
 
 /// This function shows a total only when every call has a cost. Otherwise it shows the known
@@ -473,11 +688,37 @@ fn hidden_savings(estimate: &Estimate, baseline: &str) -> String {
     }
 }
 
+fn age(ts: &str, now: DateTime<Utc>) -> String {
+    let Ok(time) = DateTime::parse_from_rfc3339(ts) else {
+        return "—".into();
+    };
+    let seconds = now.signed_duration_since(time).num_seconds().max(0);
+    match seconds {
+        0..60 => format!("{seconds}s ago"),
+        60..3_600 => format!("{}m ago", seconds / 60),
+        3_600..86_400 => format!("{}h ago", seconds / 3_600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
 fn server_state(theme: Theme, running: bool) -> [Span<'static>; 2] {
     [
         Span::styled("● ", if running { theme.ok } else { theme.error }),
         Span::raw(if running { "running" } else { "not responding" }),
     ]
+}
+
+/// This function draws a muted label in a fixed-width column, then the value or "Not recorded".
+fn labeled(theme: Theme, name: &str, width: usize, value: String) -> Line<'static> {
+    let value = if value.is_empty() {
+        "Not recorded".to_string()
+    } else {
+        value
+    };
+    Line::from(vec![
+        Span::styled(format!("{name:<width$}"), theme.muted),
+        Span::raw(value),
+    ])
 }
 
 fn right<'a>(line: impl Into<Line<'a>>) -> Cell<'a> {
@@ -524,7 +765,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
         estimates: _,       // the Overview cards, draw_top_models, and draw_models
         baseline_model: _,  // draw_top_models and draw_models
         activity: _,        // draw_activity
-        limited: _,         // draw_activity
+        sessions: _,        // The Calls title and the `s` key use these IDs.
+        entries: _,         // draw_call_table and the call details show these entries.
+        skipped: _,         // calls_block shows the number of unreadable records.
+        limited: _,         // calls_block and draw_activity show this limit.
         errors: _,          // draw_errors
         refresh_seconds: _, // App::refresh_due
     } = &app.data;
@@ -543,6 +787,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     draw_header(frame, app, header);
     match app.tab {
         Tab::Overview => draw_overview(frame, app, body),
+        Tab::Calls => draw_calls(frame, app, body),
         Tab::Models => draw_models(frame, app, body),
     }
     draw_status(frame, app, status);
@@ -894,6 +1139,257 @@ fn draw_top_models(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_calls(frame: &mut Frame, app: &mut App, area: Rect) {
+    let area = draw_errors(frame, app, area);
+    if app.data.data_state.history.state == Availability::Unavailable {
+        return;
+    }
+    if area.width >= SIDE_DETAIL_WIDTH {
+        let [table, detail] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(48)]).areas(area);
+        draw_call_table(frame, app, table);
+        let lines = app
+            .selected_entry()
+            .map(|entry| detail_lines(app.theme, entry))
+            .unwrap_or_else(|| vec![Line::styled("No call selected.", app.theme.muted)]);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(block(app.theme, "Call details").padding(Padding::horizontal(1))),
+            detail,
+        );
+    } else {
+        draw_call_table(frame, app, area);
+    }
+}
+
+fn calls_block(app: &App) -> Block<'static> {
+    let theme = app.theme;
+    let mut title = vec![
+        Span::styled(" Calls ", Modifier::BOLD),
+        Span::styled(
+            format!("[{}] ", count(app.visible.len() as u64)),
+            theme.muted,
+        ),
+    ];
+    if let Some(session) = &app.session {
+        let note = if app.data.sessions.contains(session) {
+            ""
+        } else {
+            " (not in recent calls)"
+        };
+        title.push(Span::styled(format!("session {session}{note} "), theme.key));
+    }
+    if !app.filter.is_empty() || app.filtering {
+        title.push(Span::styled(format!("/{} ", app.filter), theme.key));
+    }
+    let mut outer = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(if app.filtering {
+            theme.key
+        } else {
+            theme.border
+        })
+        .title(Line::from(title));
+    if !app.visible.is_empty() {
+        outer = outer.title_bottom(
+            Line::styled(
+                format!(
+                    " {} of {} ",
+                    app.selected + 1,
+                    count(app.visible.len() as u64)
+                ),
+                theme.muted,
+            )
+            .right_aligned(),
+        );
+    }
+    let mut notes = Vec::new();
+    if app.data.limited {
+        notes.push("latest 5,000 calls".to_string());
+    }
+    if app.data.skipped > 0 {
+        notes.push(format!(
+            "{} skipped",
+            plural(
+                app.data.skipped as u64,
+                "unreadable record",
+                "unreadable records"
+            )
+        ));
+    }
+    if !notes.is_empty() {
+        outer = outer.title_bottom(Line::styled(
+            format!(" {} ", notes.join(" · ")),
+            theme.muted,
+        ));
+    }
+    outer
+}
+
+fn draw_call_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    // The table shows this many calls; the borders and the header row take three rows.
+    let height = usize::from(area.height.saturating_sub(3)).max(1);
+    if app.selected < app.offset {
+        app.offset = app.selected;
+    } else if app.selected >= app.offset + height {
+        app.offset = app.selected + 1 - height;
+    }
+    app.offset = app.offset.min(app.visible.len().saturating_sub(height));
+    let app = &*app;
+    let theme = app.theme;
+    let outer = calls_block(app);
+    if app.visible.is_empty() {
+        let text = if app.data.entries.is_empty() {
+            "No calls recorded yet."
+        } else {
+            "No calls match the session and filter. Press Esc to clear them."
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(text, theme.muted))
+                .centered()
+                .block(outer.padding(Padding::top(1))),
+            area,
+        );
+        return;
+    }
+    let wide = area.width >= 90;
+    let shown = |column: &(Column, bool)| wide || !column.1;
+    let now = Utc::now();
+    let rows: Vec<Row> = app.visible[app.offset..]
+        .iter()
+        .take(height)
+        .map(|&index| {
+            let entry = &app.data.entries[index];
+            let usage = ModelTokens::from(entry);
+            let routing = entry.tier == CLASSIFIER_TIER;
+            let dim = if routing { theme.muted } else { Style::new() };
+            let cells = [
+                right(Span::styled(age(&entry.ts, now), theme.muted)),
+                Cell::from(Span::styled(entry.model.clone(), dim)),
+                Cell::from(entry.route_id.clone()),
+                Cell::from(Span::styled(
+                    if routing { "routing" } else { "answer" },
+                    theme.muted,
+                )),
+                right(tokens(usage.input)),
+                right(tokens(usage.cached_input)),
+                right(tokens(usage.output)),
+                match entry.cost {
+                    Some(cost) => right(call_money(cost.usd)),
+                    None => right(Span::styled("—", theme.warn)),
+                },
+            ];
+            Row::new(
+                cells
+                    .into_iter()
+                    .zip(&CALL_COLUMNS)
+                    .filter(|(_, column)| shown(column))
+                    .map(|(cell, _)| cell),
+            )
+        })
+        .collect();
+    let columns: Vec<Column> = CALL_COLUMNS
+        .iter()
+        .filter(|column| shown(column))
+        .map(|column| column.0)
+        .collect();
+    let mut state = TableState::default().with_selected(Some(app.selected - app.offset));
+    frame.render_stateful_widget(
+        table(theme, &columns, rows)
+            .row_highlight_style(theme.selected)
+            .highlight_symbol("› ")
+            .block(outer),
+        area,
+        &mut state,
+    );
+    if app.visible.len() > height {
+        let mut scroll = ScrollbarState::new(app.visible.len()).position(app.selected);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(theme.key)
+                .track_symbol(Some("│"))
+                .track_style(theme.border),
+            // The scrollbar covers the data rows, below the top border and the header row.
+            Rect {
+                y: area.y + 2,
+                height: area.height.saturating_sub(3),
+                ..area
+            },
+            &mut scroll,
+        );
+    }
+}
+
+fn detail_lines(theme: Theme, entry: &Entry) -> Vec<Line<'static>> {
+    let usage = ModelTokens::from(entry);
+    let field = |name: &str, value: String| labeled(theme, name, 9, value);
+    let time = DateTime::parse_from_rfc3339(&entry.ts).map_or_else(
+        |_| entry.ts.clone(),
+        |time| {
+            format!(
+                "{} ({})",
+                time.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S"),
+                age(&entry.ts, Utc::now())
+            )
+        },
+    );
+    let kind = if entry.tier == CLASSIFIER_TIER {
+        "Routing call (classifier or judge)"
+    } else {
+        "Answer call"
+    };
+    let mut lines = vec![
+        field("Time", time),
+        field("Model", entry.model.clone()),
+        field("Kind", kind.into()),
+        field("Route", entry.route_id.clone()),
+        field("Session", entry.session_id.clone().unwrap_or_default()),
+        field("Turn", entry.turn_id.clone().unwrap_or_default()),
+        Line::default(),
+        field(
+            "Input",
+            format!(
+                "{} uncached · {} cached",
+                count(usage.input),
+                count(usage.cached_input)
+            ),
+        ),
+    ];
+    if usage.cache_write > 0 {
+        lines.push(field(
+            "Cache",
+            format!(
+                "{} written ({} at the 1-hour rate)",
+                count(usage.cache_write),
+                count(usage.cache_write_1h)
+            ),
+        ));
+    }
+    lines.push(field("Output", count(usage.output)));
+    lines.push(match entry.cost {
+        Some(RecordedCost { usd, source }) => field(
+            "Cost",
+            format!(
+                "{} · {}",
+                call_money(usd),
+                match source {
+                    CostSource::ProviderReported => "reported by the provider",
+                    _ => "estimated from token prices",
+                }
+            ),
+        ),
+        None => Line::from(vec![
+            Span::styled(format!("{:<9}", "Cost"), theme.muted),
+            Span::styled("Not recorded", theme.warn),
+        ]),
+    });
+    lines
+}
+
 fn draw_models(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
     let area = draw_errors(frame, app, area);
@@ -1010,7 +1506,20 @@ fn draw_models(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
-    let left = if let Some(busy) = &app.busy {
+    let left = if app.filtering {
+        Line::from(vec![
+            Span::styled(" / ", theme.key),
+            Span::raw(app.filter.clone()),
+            Span::styled("▏", theme.key),
+            Span::styled(
+                format!(
+                    "  {} ",
+                    plural(app.visible.len() as u64, "match", "matches")
+                ),
+                theme.muted,
+            ),
+        ])
+    } else if let Some(busy) = &app.busy {
         let frame_index = busy.started.elapsed().as_millis() / 100 % SPINNER.len() as u128;
         let mut spans = vec![
             Span::styled(format!(" {} ", SPINNER[frame_index as usize]), theme.key),
@@ -1030,7 +1539,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Line::default()
     };
     let room = usize::from(area.width).saturating_sub(left.width() + 2);
-    let global = app.popup.is_none();
+    let global = app.popup.is_none() && !app.filtering;
     let hints = fit_keys(theme, app.keys(), global, room);
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Length(left.width() as u16), Constraint::Fill(1)])
@@ -1092,6 +1601,16 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
             let lines = help_lines(theme, usize::from(text_width));
             ("Help", lines, Vec::new(), theme.key, width, close)
         }
+        Popup::Detail { .. } => (
+            "Call details",
+            app.selected_entry()
+                .map(|entry| detail_lines(theme, entry))
+                .unwrap_or_default(),
+            Vec::new(),
+            theme.key,
+            72,
+            close,
+        ),
         Popup::Message {
             title, text, error, ..
         } => (
@@ -1145,7 +1664,12 @@ fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
     const KEY_WIDTH: usize = 8;
     let room = width.saturating_sub(KEY_WIDTH).max(20);
     let mut lines = Vec::new();
-    for (section, keys) in [("Every page", GLOBAL_KEYS), ("Models", MODELS_KEYS)] {
+    for (section, keys) in [
+        ("Every page", GLOBAL_KEYS),
+        ("Calls", CALLS_KEYS),
+        ("While filtering calls", FILTER_KEYS),
+        ("Models", MODELS_KEYS),
+    ] {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
@@ -1222,6 +1746,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
             let wait = Duration::from_millis(if app.busy.is_some() { 100 } else { 250 });
             if event::poll(wait).map_err(|e| e.to_string())? {
                 match event::read().map_err(|e| e.to_string())? {
+                    Event::Paste(text) => app.paste(&text),
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if let Some(request) = app.key(key) {
                             app.start(&jobs, request)?;
@@ -1266,6 +1791,44 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    // A refresh must follow new calls at the top without moving a selection on an older call.
+    #[test]
+    fn successful_refresh_populates_calls_and_preserves_selection() {
+        let entry = |turn: &str| -> Entry {
+            serde_json::from_value(json!({
+                "ts": "2026-10-21T12:00:00Z",
+                "model": "gemini-4-argon",
+                "route_id": "answer",
+                "turn_id": turn
+            }))
+            .expect("entry")
+        };
+        let snapshot = |turns: &[&str]| {
+            Box::new(Snapshot {
+                entries: turns.iter().map(|turn| entry(turn)).collect(),
+                ..Snapshot::default()
+            })
+        };
+        let mut app = App::new(Theme::new(false));
+        app.finish(Ok(snapshot(&["first", "second"])));
+        assert_eq!(app.visible.len(), 2);
+        assert_eq!(
+            app.selected_entry().expect("newest").turn_id.as_deref(),
+            Some("second")
+        );
+        app.finish(Ok(snapshot(&["first", "second", "third"])));
+        assert_eq!(
+            app.selected_entry().expect("newest").turn_id.as_deref(),
+            Some("third")
+        );
+        app.calls_key(KeyCode::Down);
+        app.finish(Ok(snapshot(&["first", "second", "third", "fourth"])));
+        assert_eq!(
+            app.selected_entry().expect("selected").turn_id.as_deref(),
+            Some("second")
+        );
     }
 
     // Esc dismisses the status message while Overview keeps the refresh error.
@@ -1404,10 +1967,13 @@ mod tests {
             ]
             .into(),
             baseline_model: "gemini-4-argon".into(),
+            entries: vec![entry],
             ..Snapshot::default()
         };
         app.data.data_state.usage.state = Availability::Available;
-        for tab in [Tab::Overview, Tab::Models] {
+        app.data.data_state.history.state = Availability::Available;
+        app.rebuild_calls();
+        for tab in [Tab::Overview, Tab::Calls, Tab::Models] {
             let text = screen(&mut app, tab);
             assert!(!text.contains("$0"), "{tab:?} shows a zero cost:\n{text}");
         }

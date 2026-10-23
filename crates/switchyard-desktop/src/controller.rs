@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
 
-/// Snapshot holds the terminal app's usage, server health, errors, and refresh interval.
+/// Snapshot holds the terminal app's usage, recent calls, server health, errors, and refresh interval.
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub data_state: DataState,
@@ -20,6 +20,9 @@ pub struct Snapshot {
     pub estimates: BTreeMap<&'static str, Option<pricing::Estimate>>,
     pub baseline_model: String,
     pub activity: [u64; 24],
+    pub sessions: Vec<String>,
+    pub entries: Vec<history::Entry>,
+    pub skipped: usize,
     pub limited: bool,
     pub errors: Vec<String>,
     pub refresh_seconds: u64,
@@ -28,6 +31,7 @@ pub struct Snapshot {
 #[derive(Clone, Default, Serialize)]
 pub struct DataState {
     pub usage: Source,
+    pub history: Source,
     /// This field holds the `/health` result with `state`, `reason`, `checked_at`, and `url`.
     pub health: Value,
 }
@@ -122,7 +126,9 @@ impl Controller {
         } else {
             crate::health::ServerStatus::Stopped
         };
+        let mut history_state = Availability::Available;
         let history = history::load(&self.config.routing_log).unwrap_or_else(|error| {
+            history_state = Availability::Unavailable;
             errors.push(format!("Could not read recent calls: {error}"));
             history::History::default()
         });
@@ -135,6 +141,11 @@ impl Controller {
                 usage: Source {
                     state: usage_state,
                     checked_at: checked_at.clone(),
+                    path: routing_log.clone(),
+                },
+                history: Source {
+                    state: history_state,
+                    checked_at,
                     path: routing_log.clone(),
                 },
                 health,
@@ -156,6 +167,9 @@ impl Controller {
             estimates,
             baseline_model: self.config.baseline_model.clone(),
             activity,
+            sessions: history.sessions(),
+            entries: history.entries,
+            skipped: history.skipped,
             limited: history.limited,
             errors,
             refresh_seconds: refresh_seconds.max(1),
