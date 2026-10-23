@@ -162,9 +162,6 @@ Features and integrations recently merged into `main`.
 - **2026-10-12 · Bring Switchyard to TypeScript and Pi**\
   Select models in Node.js or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
 
-- **2026-10-08 · Run Codex with Switchyard on macOS**\
-  Install a background router and Codex profile, then track usage and estimated savings from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
-
 ## Community and license
 
 [Report an issue](https://github.com/NVIDIA-NeMo/Switchyard/issues) · [Contribute](CONTRIBUTING.md) · [Code of conduct](CODE_OF_CONDUCT.md)
