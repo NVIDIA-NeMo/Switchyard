@@ -345,37 +345,53 @@ Each call has its own reply channel. Awaiting calls one at a time in the step lo
 serves them sequentially. To run calls concurrently, your application must keep
 reading steps while polling their work.
 
-For concurrent execution, use
-<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>.
-It polls your call handlers concurrently and returns the `RoutingOutcome`. Your
-handler receives
-<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/enum.Call.html"><code>Call::Model</code> or <code>Call::Decision</code></a>;
-`drive` handles `Done` itself:
+Use the same inputs and clients, but replace the earlier `run_stream` call and
+sequential loop with this version. `tokio::select!` polls both the Step stream and
+the pending calls, so new calls can start before earlier ones finish:
 
 ```rust
-// Borrow the adapters so every call can use them.
-let client = &client;
-let decision_client = &decision_client;
-let outcome = switchyard_libsy::drive(algorithm, request, models, |call| async move {
-    match call {
-        Call::Model(call) => {
-            let request = call.request.clone();
-            call.respond(client.call(request)).await
-        }
-        Call::Decision(call) => {
-            let request = call.request.clone();
-            call.respond(decision_client.call(request)).await
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
+use switchyard_libsy::LibsyError;
+
+let mut steps = algorithm.run_stream(request, models, state);
+let mut in_flight = FuturesUnordered::new();
+
+let outcome = loop {
+    tokio::select! {
+        Some(result) = in_flight.next() => result?,
+        step = steps.next() => {
+            let step = step.ok_or(LibsyError::MissingFinalResponse)?;
+            match step? {
+                Step::CallModel(call) => {
+                    let request = call.request.clone();
+                    in_flight.push(call.respond(client.call(request)).boxed());
+                }
+                Step::CallDecision(call) => {
+                    let request = call.request.clone();
+                    in_flight.push(call.respond(decision_client.call(request)).boxed());
+                }
+                Step::Done(outcome) => break *outcome,
+            }
         }
     }
-}).await?;
+};
+// Stop unused calls before handling the final outcome.
+drop(in_flight);
+drop(steps);
 ```
 
-It starts with default state. Use `run_stream` directly to supply your own state
-or execution loop.
+`boxed()` gives the two call kinds a common future type for the collection.
+Only calls requested concurrently by the algorithm can overlap. The returned
+`outcome` is handled as shown in [`Step::Done`](#stepdone).
 
-If the algorithm stops waiting, `respond` drops that call's work future. Dropping
-the step stream aborts the algorithm task; your application cleans up separately
-started work. `drive` drops its outstanding handlers when the run ends or is dropped.
+For a ready-made version, see
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>
+and its [reference execution loop](../crates/libsy/src/core/algorithm.rs#L593).
+
+If the algorithm stops waiting, `respond` drops that call's work future. The
+explicit drops stop the remaining handlers and abort the algorithm task. Returning
+an error or cancelling the enclosing future also drops these local values. Your
+application must clean up any separately spawned work itself.
 
 A model-call failure normally stops the host run when propagated with `?`.
 `call.recover_errors` lets the algorithm receive and handle it instead. Decision
