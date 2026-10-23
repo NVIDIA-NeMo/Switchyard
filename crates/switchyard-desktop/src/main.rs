@@ -8,7 +8,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-use switchyard_desktop::{config, health, rollup};
+use switchyard_desktop::{config, health, history, rollup};
 mod controller;
 #[cfg(any(target_os = "macos", windows))]
 mod gui;
