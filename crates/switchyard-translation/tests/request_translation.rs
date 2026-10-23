@@ -5001,7 +5001,7 @@ fn responses_mcp_definitions_replay_and_reconstruct() -> TestResult {
             lossy_conversion_policy: LossyConversionPolicy::AllowWithDiagnostics,
             ..policy.clone()
         };
-        for (index, key) in ["server_description", "allowed_callers"].iter().enumerate() {
+        for (index, key) in ["allowed_callers", "server_description"].iter().enumerate() {
             assert!(matches!(
                 engine.encode_request(WireFormat::AnthropicMessages, &request, &policy),
                 Err(TranslationError::LossyConversion(message)) if message.contains(key)
@@ -5132,6 +5132,38 @@ fn responses_mcp_portable_definitions_translate_both_directions() -> TestResult 
         assert_eq!(decoded.request.tools, source.request.tools);
         let back = engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &policy)?;
         assert!(back.diagnostics.is_empty());
+        assert_eq!(back.body["tools"], body["tools"]);
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_mcp_direct_caller_round_trip_is_lossless() -> TestResult {
+    let engine = TranslationEngine::default();
+    for lossy_conversion_policy in [
+        LossyConversionPolicy::AllowWithDiagnostics,
+        LossyConversionPolicy::Reject,
+    ] {
+        let policy = TranslationPolicy {
+            lossy_conversion_policy,
+            ..normalized_policy()
+        };
+        let mut body = responses_mcp_request();
+        body["tools"][0]["allowed_callers"] = json!(["direct"]);
+        let source = engine.decode_request(WireFormat::OpenAiResponses, &body, &policy)?;
+        let anthropic =
+            engine.encode_request(WireFormat::AnthropicMessages, &source.request, &policy)?;
+        assert!(anthropic.diagnostics.is_empty());
+        assert!(anthropic.body["tools"][0].get("allowed_callers").is_none());
+        let decoded =
+            engine.decode_request(WireFormat::AnthropicMessages, &anthropic.body, &policy)?;
+        let back = engine.encode_request(WireFormat::OpenAiResponses, &decoded.request, &policy)?;
+        assert!(back.diagnostics.is_empty());
+        // Omitted allowed_callers defaults to direct invocation in Responses.
+        body["tools"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("allowed_callers");
         assert_eq!(back.body["tools"], body["tools"]);
     }
     Ok(())

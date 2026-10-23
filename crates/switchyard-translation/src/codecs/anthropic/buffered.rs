@@ -1413,12 +1413,19 @@ fn encode_anthropic_tools(
                         "Anthropic MCP encoding requires require_approval = false".into(),
                     ));
                 }
-                for key in [
-                    "server_description",
-                    "allowed_callers",
-                    "connector_id",
-                    "tunnel_id",
-                ] {
+                if let Some(callers) = extensions.and_then(|fields| fields.get("allowed_callers")) {
+                    // Anthropic MCP tools only support direct calls, so omitting ["direct"]
+                    // preserves the requested invocation mode.
+                    if callers != &json!(["direct"]) {
+                        push_lossy(
+                            diagnostics,
+                            policy,
+                            "Anthropic MCP cannot preserve allowed_callers; the field was dropped",
+                        )?;
+                    }
+                }
+
+                for key in ["server_description", "connector_id", "tunnel_id"] {
                     if extensions.and_then(|fields| fields.get(key)).is_some() {
                         push_lossy(
                             diagnostics,
