@@ -260,6 +260,7 @@ pub struct RoutingOutcome {
     pub request: Request,
     /// The request the fallback candidates receive instead of `request`, when routing
     /// rewrote `request` for the selected model only.
+    /// Content-policy denials do not advance to these fallback candidates.
     pub fallback_request: Option<Request>,
     /// A response produced while routing, or `None` when the client must make the answer call.
     pub response: Option<Response>,
