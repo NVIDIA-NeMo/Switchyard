@@ -562,7 +562,8 @@ impl TranslatingLlmClient {
         if status.is_success() {
             if streaming {
                 let upstream_headers = response.headers().clone();
-                let chunks = match prepare_response_stream(response, backend, model).await {
+                let chunks = match prepare_response_stream(response, backend, metadata, model).await
+                {
                     Ok(chunks) => chunks,
                     Err(error) => {
                         metrics::record_upstream_attempt(None);
@@ -912,9 +913,11 @@ fn stream_with_deadline(
     .boxed()
 }
 
+/// Check initial stream events before returning them, while fallback is still possible.
 async fn prepare_response_stream(
     response: reqwest::Response,
     backend: &Backend,
+    metadata: Option<&Metadata>,
     model: &ModelId,
 ) -> Result<LlmResponseStream> {
     let bytes = response.bytes_stream().map(|chunk| {
@@ -931,7 +934,7 @@ async fn prepare_response_stream(
                 return Err(error);
             }
             Ok(event) => {
-                if let Some(error) = pre_answer_error(&event, backend, model) {
+                if let Some(error) = pre_answer_error(&event, backend, metadata, model) {
                     return Err(error);
                 }
                 // OpenAI streams often send a role-only prelude before the answer.
@@ -956,10 +959,11 @@ async fn prepare_response_stream(
     Ok(stream::iter(prefix).chain(chunks).boxed())
 }
 
-// Classify a provider rejection before any stream event is returned to the caller.
+/// Classify a provider rejection before any stream event reaches the caller.
 fn pre_answer_error(
     event: &LlmResponseStreamEvent,
     backend: &Backend,
+    metadata: Option<&Metadata>,
     model: &ModelId,
 ) -> Option<LlmClientError> {
     let message = event.normalized().iter().find_map(|chunk| match chunk {
@@ -987,7 +991,7 @@ fn pre_answer_error(
     }
     Some(LlmClientError::UpstreamHttp {
         status: StatusCode::from_u16(code).ok()?,
-        body: "upstream reported a retryable stream error".to_string(),
+        body: redact_forwarded_headers(message.clone(), metadata, backend.is_forwarding_auth()),
     })
 }
 
@@ -2888,6 +2892,48 @@ mod tests {
         assert_eq!(agg.usage.input_tokens, Some(1));
         assert_eq!(agg.usage.output_tokens, Some(2));
         assert_eq!(agg.usage.total_tokens, Some(3));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_preserves_stream_error_message_without_forwarded_credentials()
+    -> Result<()> {
+        let server = MockServer::start().await;
+        let sse = "data: {\"error\":{\"code\":503,\"message\":\"provider overloaded for Bearer client-key\"}}\n\n";
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(wiremock::matchers::header(
+                "authorization",
+                "Bearer client-key",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let mut backend_config = forwarding_config(&format!("{}/v1", server.uri()));
+        backend_config.max_retries = 1;
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "gpt",
+            Backend::OpenAiChat(backend_config),
+            None,
+        )])?;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            http::HeaderValue::from_static("Bearer client-key"),
+        );
+        let mut request = request_with_headers("gpt", headers);
+        request.llm_request.stream = true;
+
+        let Err(error) = client.call_rewrite_model(request, None).await else {
+            panic!("expected an upstream stream error");
+        };
+        let LlmClientError::UpstreamHttp { status, body } = error else {
+            panic!("expected the upstream stream error, got {error:?}");
+        };
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body, "provider overloaded for [REDACTED]");
         Ok(())
     }
 
