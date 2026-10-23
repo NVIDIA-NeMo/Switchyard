@@ -7,13 +7,15 @@
 //! refreshes and actions, so moving around and filtering never wait for the log or a service.
 
 use crate::controller::{Availability, Controller, Snapshot};
+use crate::pricing::Estimate;
+use crate::summary::{money, tokens};
 use ratatui::{
     Frame,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Padding, Paragraph, Tabs, Wrap},
+    widgets::{Bar, BarChart, Block, BorderType, Clear, Padding, Paragraph, Tabs, Wrap},
 };
 use std::{
     sync::mpsc,
@@ -41,12 +43,14 @@ const GLOBAL_KEYS: &[Key] = &[
         "refresh",
         "Reload usage, calls, and server health now. F5 also refreshes.",
     ),
+    ("?", "help", "Show or hide this help."),
     (
         "q",
         "quit",
         "Quit the app. The server keeps running. Ctrl-C also quits.",
     ),
 ];
+const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
 
 /// Theme maps each kind of text to one style. NO_COLOR keeps only bold, dim, and reverse.
 #[derive(Clone, Copy)]
@@ -54,9 +58,11 @@ struct Theme {
     muted: Style,
     key: Style,
     ok: Style,
+    warn: Style,
     error: Style,
     selected: Style,
     border: Style,
+    bar: Style,
 }
 impl Theme {
     fn new(color: bool) -> Self {
@@ -66,9 +72,11 @@ impl Theme {
                 muted: plain.add_modifier(Modifier::DIM),
                 key: plain.add_modifier(Modifier::BOLD),
                 ok: plain,
+                warn: plain.add_modifier(Modifier::BOLD),
                 error: plain.add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 selected: plain.add_modifier(Modifier::REVERSED),
                 border: plain,
+                bar: plain,
             };
         }
         // Named ANSI colors follow the terminal's palette, so they work on light and dark themes.
@@ -76,10 +84,12 @@ impl Theme {
             muted: plain.fg(Color::DarkGray),
             key: plain.fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ok: plain.fg(Color::Green),
+            warn: plain.fg(Color::Yellow),
             error: plain.fg(Color::Red),
             // A fixed foreground keeps dim cells readable on the selected row.
             selected: plain.fg(Color::Black).bg(Color::Cyan),
             border: plain.fg(Color::DarkGray),
+            bar: plain.fg(Color::Cyan),
         }
     }
 }
@@ -101,6 +111,47 @@ impl Tab {
     }
     fn index(self) -> usize {
         self as usize
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Period {
+    Today,
+    Week,
+}
+impl Period {
+    fn name(self) -> &'static str {
+        match self {
+            Period::Today => "Today",
+            Period::Week => "Past 7 days",
+        }
+    }
+    /// The estimate is `None` when the usage log could not be read.
+    fn estimate(self, snapshot: &Snapshot) -> Option<Estimate> {
+        let key = match self {
+            Period::Today => "today",
+            Period::Week => "week",
+        };
+        snapshot.estimates.get(key).copied().flatten()
+    }
+}
+
+enum Popup {
+    Help {
+        scroll: u16,
+    },
+    Message {
+        title: &'static str,
+        text: String,
+        error: bool,
+        scroll: u16,
+    },
+}
+impl Popup {
+    fn scroll_mut(&mut self) -> &mut u16 {
+        match self {
+            Popup::Help { scroll } | Popup::Message { scroll, .. } => scroll,
+        }
     }
 }
 
@@ -140,6 +191,7 @@ struct App {
     theme: Theme,
     data: Snapshot,
     tab: Tab,
+    popup: Option<Popup>,
     toast: Option<Toast>,
     busy: Option<Busy>,
     /// A quit request waits for the running job, so a restart or update is never cut off.
@@ -155,6 +207,7 @@ impl App {
             theme,
             data: Snapshot::default(),
             tab: Tab::Overview,
+            popup: None,
             toast: None,
             busy: None,
             quit: false,
@@ -176,9 +229,19 @@ impl App {
         }
     }
 
-    /// Messages appear in the status bar.
+    /// Short messages appear in the status bar; long ones open a window so nothing is cut off.
     fn notify(&mut self, text: String, error: bool) {
-        if !text.is_empty() {
+        if text.is_empty() {
+            return;
+        }
+        if text.contains('\n') || text.chars().count() + 8 > usize::from(self.width) * 2 / 3 {
+            self.popup = Some(Popup::Message {
+                title: if error { "Error" } else { "Done" },
+                text,
+                error,
+                scroll: 0,
+            });
+        } else {
             self.toast = Some(Toast {
                 text,
                 error,
@@ -217,7 +280,10 @@ impl App {
     }
 
     fn keys(&self) -> &'static [Key] {
-        &[]
+        match (&self.popup, self.tab) {
+            (Some(_), _) => POPUP_KEYS,
+            (None, Tab::Overview) => &[],
+        }
     }
 
     fn key(&mut self, key: KeyEvent) -> Option<Request> {
@@ -225,8 +291,12 @@ impl App {
             self.quit = true;
             return None;
         }
+        if self.popup.is_some() {
+            return self.popup_key(key);
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
             KeyCode::Char(digit @ '1'..='1') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
@@ -240,6 +310,79 @@ impl App {
         }
         None
     }
+
+    fn popup_key(&mut self, key: KeyEvent) -> Option<Request> {
+        let popup = self.popup.as_mut()?;
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?') => self.popup = None,
+            // Drawing clamps the scroll to the text, so the last line here has no fixed value.
+            code => {
+                let scroll = popup.scroll_mut();
+                if let Some(next) = step(code, usize::from(*scroll), usize::from(u16::MAX)) {
+                    *scroll = next as u16;
+                }
+            }
+        }
+        None
+    }
+}
+
+/// This function moves a list position for the arrow, vim, page, and jump keys.
+fn step(code: KeyCode, current: usize, last: usize) -> Option<usize> {
+    Some(match code {
+        KeyCode::Down | KeyCode::Char('j') => current.saturating_add(1).min(last),
+        KeyCode::Up | KeyCode::Char('k') => current.saturating_sub(1),
+        KeyCode::PageDown => current.saturating_add(10).min(last),
+        KeyCode::PageUp => current.saturating_sub(10),
+        KeyCode::Home | KeyCode::Char('g') => 0,
+        KeyCode::End | KeyCode::Char('G') => last,
+        _ => return None,
+    })
+}
+
+fn count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut text = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
+/// This function shows a total only when every call has a cost. Otherwise it shows the known
+/// part as a lower bound, or "unknown", so a missing cost never reads as $0.
+fn cost(theme: Theme, total: Option<f64>, known: f64) -> Span<'static> {
+    match total {
+        Some(total) => Span::raw(money(total)),
+        None if known > 0.0 => Span::styled(format!("≥ {}", money(known)), theme.warn),
+        None => Span::styled("unknown", theme.warn),
+    }
+}
+
+/// This function shows the savings and their share of the baseline, or "hidden" when
+/// `Estimate::savings` has no figure. With `baseline`, it also shows the baseline cost.
+fn saved(theme: Theme, estimate: &Estimate, baseline: bool) -> Vec<Span<'static>> {
+    let Some(savings) = estimate.savings() else {
+        return vec![Span::styled("hidden", theme.warn)];
+    };
+    let style = if savings.saved() < 0.0 {
+        theme.error
+    } else {
+        theme.ok
+    };
+    let mut spans = vec![Span::styled(money(savings.saved()), style.bold())];
+    if let Some(percent) = savings.percent() {
+        let text = if baseline {
+            format!(" · {percent:.0}% of {}", money(savings.baseline))
+        } else {
+            format!(" · {percent:.0}%")
+        };
+        spans.push(Span::styled(text, theme.muted));
+    }
+    spans
 }
 
 fn server_state(theme: Theme, running: bool) -> [Span<'static>; 2] {
@@ -262,6 +405,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
     let Snapshot {
         data_state: _,
         metrics: _,
+        today: _,
+        estimates: _,
+        activity: _,
+        limited: _,
         errors: _,
         refresh_seconds: _,
     } = &app.data;
@@ -282,6 +429,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Overview => draw_overview(frame, app, body),
     }
     draw_status(frame, app, status);
+    draw_popup(frame, app, body);
 }
 
 fn draw_too_small(frame: &mut Frame, theme: Theme, area: Rect) {
@@ -356,9 +504,42 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(status), status_area);
 }
 
+fn draw_errors(frame: &mut Frame, app: &App, area: Rect) {
+    let lines: Vec<Line> = app
+        .data
+        .errors
+        .iter()
+        .map(|error| Line::styled(error.as_str(), app.theme.error))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block(app.theme, "Data errors").border_style(app.theme.error)),
+        area,
+    );
+}
+
 fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
     let data = &app.data;
+    let errors = if data.errors.is_empty() {
+        0
+    } else {
+        (data.errors.len() as u16 + 2).min(area.height / 2)
+    };
+    let [errors_area, rest] =
+        Layout::vertical([Constraint::Length(errors), Constraint::Fill(1)]).areas(area);
+    if errors > 0 {
+        draw_errors(frame, app, errors_area);
+    }
+    let usage = data.data_state.usage.state == Availability::Available;
+    let chart = if usage && rest.height >= 24 { 9 } else { 0 };
+    let [cards, chart_area, _] = Layout::vertical([
+        Constraint::Length(5),
+        Constraint::Length(chart),
+        Constraint::Fill(1),
+    ])
+    .areas(rest);
     let mut server = vec![
         Line::from(server_state(theme, data.metrics.running).to_vec()),
         Line::styled(data.metrics.server_url.as_str(), theme.muted),
@@ -366,24 +547,95 @@ fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(reason) = data.data_state.health["reason"].as_str() {
         server.push(Line::styled(reason.to_string(), theme.muted));
     }
-    for error in &data.errors {
-        server.push(Line::styled(error.as_str(), theme.error));
+    // Without usage data, the page shows only the connection so nothing reads as zero usage.
+    if !usage {
+        let [card, _] = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(2)]).areas(cards);
+        draw_card(frame, theme, "Server", server, card);
+        return;
     }
-    if data.data_state.usage.state == Availability::Available {
-        server.push(Line::from(format!(
-            "Today: {} calls · {} tokens",
-            data.metrics.today.requests, data.metrics.today.tokens
-        )));
-        server.push(Line::from(format!(
-            "Past 7 days: {} calls · {} tokens",
-            data.metrics.week.requests, data.metrics.week.tokens
-        )));
+    // The header already shows the server state, so narrow terminals give its card to usage.
+    let periods = if cards.width >= 100 {
+        let [server_card, rest] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Fill(2)]).areas(cards);
+        draw_card(frame, theme, "Server", server, server_card);
+        rest
+    } else {
+        cards
+    };
+    let [today, week] = Layout::horizontal([Constraint::Fill(1); 2]).areas(periods);
+    let today_title = format!("Today · {}", data.today.format("%b %-d"));
+    for (period, title, card) in [
+        (Period::Today, today_title.as_str(), today),
+        (Period::Week, Period::Week.name(), week),
+    ] {
+        let lines = period_lines(app, period, card.width >= 36);
+        draw_card(frame, theme, title, lines, card);
     }
+    if chart > 0 {
+        draw_activity(frame, app, chart_area);
+    }
+}
+
+fn draw_card(frame: &mut Frame, theme: Theme, title: &str, lines: Vec<Line>, area: Rect) {
     frame.render_widget(
-        Paragraph::new(server)
-            .wrap(Wrap { trim: false })
-            .block(block(theme, "Server").padding(Padding::horizontal(1))),
+        Paragraph::new(lines).block(block(theme, title).padding(Padding::horizontal(1))),
         area,
+    );
+}
+
+/// This function draws one period's calls, spending, and savings for an Overview card.
+fn period_lines(app: &App, period: Period, baseline: bool) -> Vec<Line<'static>> {
+    let theme = app.theme;
+    let counts = match period {
+        Period::Today => &app.data.metrics.today,
+        _ => &app.data.metrics.week,
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(count(counts.requests), Modifier::BOLD),
+        Span::styled(" calls · ", theme.muted),
+        Span::styled(tokens(counts.tokens), Modifier::BOLD),
+        Span::styled(" tokens", theme.muted),
+    ])];
+    if let Some(estimate) = period.estimate(&app.data) {
+        lines.push(Line::from(vec![
+            Span::styled("Spent ", theme.muted),
+            cost(theme, estimate.actual, estimate.known).bold(),
+        ]));
+        let mut savings = vec![Span::styled("Saved ", theme.muted)];
+        savings.extend(saved(theme, &estimate, baseline));
+        lines.push(Line::from(savings));
+    }
+    lines
+}
+
+fn draw_activity(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let data = &app.data.activity;
+    let peak = data.iter().copied().max().unwrap_or_default();
+    let mut outer = block(theme, "Calls per hour · past 24h")
+        .title_top(Line::styled(format!(" peak {} ", count(peak)), theme.muted).right_aligned())
+        .title_bottom(Line::styled(" 24h ago ", theme.muted))
+        .title_bottom(Line::styled(" now ", theme.muted).right_aligned());
+    if app.data.limited {
+        outer = outer
+            .title_bottom(Line::styled(" from the latest 5,000 calls ", theme.muted).centered());
+    }
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let bars = data.len() as u16;
+    let gap = u16::from(inner.width >= bars * 3);
+    let width = ((inner.width + gap) / bars).saturating_sub(gap).max(1);
+    let chart = inner.centered_horizontally(Constraint::Length(bars * (width + gap) - gap));
+    let bars: Vec<Bar> = data
+        .iter()
+        .map(|&value| Bar::new(value).text_value(String::new()))
+        .collect();
+    frame.render_widget(
+        BarChart::new(bars)
+            .bar_width(width)
+            .bar_gap(gap)
+            .bar_style(theme.bar),
+        chart,
     );
 }
 
@@ -410,7 +662,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     };
     let room = usize::from(area.width).saturating_sub(left.width() + 2);
     // Page keys do nothing while a window is open or the filter takes the keyboard.
-    let global = true;
+    let global = app.popup.is_none();
     let hints = fit_keys(theme, app.keys(), global, room);
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Length(left.width() as u16), Constraint::Fill(1)])
@@ -420,7 +672,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// This function lists the page's keys, then the global keys, and stops before a hint would be
-/// cut.
+/// cut. It keeps room for the help key, so the status bar always says how to find every key.
 fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'static> {
     let hint = |key: &'static str, label: &str| {
         [
@@ -428,10 +680,14 @@ fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'stat
             Span::styled(format!(" {label}  "), theme.muted),
         ]
     };
+    const HELP_WIDTH: usize = "? help  ".len();
     let mut spans = Vec::new();
-    let mut used = 0;
+    let mut used = if global { HELP_WIDTH } else { 0 };
     let globals = if global { GLOBAL_KEYS } else { &[] };
     for (key, label, _) in keys.iter().chain(globals) {
+        if *key == "?" {
+            continue;
+        }
         let width = key.chars().count() + label.chars().count() + 3;
         if used + width > room {
             break;
@@ -439,7 +695,117 @@ fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'stat
         used += width;
         spans.extend(hint(key, label));
     }
+    if global && room >= HELP_WIDTH {
+        spans.extend(hint("?", "help"));
+    }
     Line::from(spans)
+}
+
+fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
+    let theme = app.theme;
+    let Some(popup) = &app.popup else {
+        return;
+    };
+    let footer = |pairs: &[(&'static str, &'static str)]| {
+        let mut spans = Vec::new();
+        for (key, label) in pairs {
+            spans.push(Span::styled(format!(" {key} "), theme.key));
+            spans.push(Span::raw(*label));
+        }
+        spans.push(Span::raw(" "));
+        Line::from(spans)
+    };
+    let close = footer(&[("esc", "close")]);
+    // A window that asks for a decision keeps its keys on the border and its text fields below
+    // the scrolling text, so both stay visible when the text is long.
+    let (title, lines, pinned, border, preferred, footer) = match popup {
+        Popup::Help { .. } => {
+            let width = 76;
+            let text_width = width.min(area.width.saturating_sub(2)).saturating_sub(4);
+            let lines = help_lines(theme, usize::from(text_width));
+            ("Help", lines, Vec::new(), theme.key, width, close)
+        }
+        Popup::Message {
+            title, text, error, ..
+        } => (
+            *title,
+            text.lines()
+                .map(|line| Line::from(line.to_string()))
+                .collect(),
+            Vec::new(),
+            if *error { theme.error } else { theme.key },
+            76,
+            close,
+        ),
+    };
+    let width = preferred.min(area.width.saturating_sub(2));
+    // The text area is inside the two border columns and the two padding columns.
+    let text_width = width.saturating_sub(4);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let pinned = Paragraph::new(pinned).wrap(Wrap { trim: false });
+    let rows = paragraph.line_count(text_width) as u16;
+    let pinned_rows = pinned.line_count(text_width) as u16;
+    let rect = area.centered(
+        Constraint::Length(width),
+        Constraint::Length((rows + pinned_rows + 2).min(area.height.saturating_sub(2))),
+    );
+    let outer = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        .title(Span::styled(format!(" {title} "), border.bold()))
+        .title_bottom(footer.right_aligned())
+        .padding(Padding::horizontal(1));
+    let [text_area, pinned_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(pinned_rows)])
+            .areas(outer.inner(rect));
+    // Scrolling stops at the last line, so scrolling back up responds at once.
+    let last = rows.saturating_sub(text_area.height);
+    let scroll = match app.popup.as_mut().map(Popup::scroll_mut) {
+        Some(scroll) => {
+            *scroll = (*scroll).min(last);
+            *scroll
+        }
+        None => 0,
+    };
+    frame.render_widget(Clear, rect);
+    frame.render_widget(outer, rect);
+    frame.render_widget(paragraph.scroll((scroll, 0)), text_area);
+    frame.render_widget(pinned, pinned_area);
+}
+
+/// The help window indents wrapped descriptions under their first line, so keys stay in one column.
+fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
+    const KEY_WIDTH: usize = 8;
+    let room = width.saturating_sub(KEY_WIDTH).max(20);
+    let mut lines = Vec::new();
+    for (section, keys) in [("Every page", GLOBAL_KEYS)] {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled(format!(" {section} "), theme.selected.bold()));
+        for (key, _, about) in keys {
+            let mut rows = Vec::new();
+            let mut row = String::new();
+            for word in about.split_whitespace() {
+                if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > room {
+                    rows.push(std::mem::take(&mut row));
+                }
+                if !row.is_empty() {
+                    row.push(' ');
+                }
+                row.push_str(word);
+            }
+            rows.push(row);
+            for (index, row) in rows.into_iter().enumerate() {
+                let key = if index == 0 { *key } else { "" };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{key:<KEY_WIDTH$}"), theme.key),
+                    Span::raw(row),
+                ]));
+            }
+        }
+    }
+    lines
 }
 
 struct PasteMode;
