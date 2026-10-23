@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"runtime"
 	"slices"
 	"strings"
@@ -202,16 +203,27 @@ func TestHostFailureUsesAlgorithmPolicy(t *testing.T) {
 
 // An aborted host call stops routing even when the algorithm recovers from host errors.
 func TestHostAbortStopsRouting(t *testing.T) {
+	if Abort(nil) != nil {
+		t.Fatal("nil error should stay nil")
+	}
 	errBudget := errors.New("budget exhausted")
+	refused := &fs.PathError{Op: "route", Path: "judge", Err: errBudget}
+	original := fmt.Errorf("judge call refused: %w", refused)
 	for _, algorithm := range []string{composite, decision} {
 		router := newRouter(t, strings.Replace(algorithm, `"fail_open":false`, `"fail_open":true`, 1))
 		calls := 0
-		_, err := router.Route(context.Background(), input(), func(context.Context, Work) (Reply, error) {
+		var hostCtx context.Context
+		_, err := router.Route(context.Background(), input(), func(ctx context.Context, _ Work) (Reply, error) {
 			calls++
-			return Reply{}, Abort(fmt.Errorf("judge call refused: %w", errBudget))
+			hostCtx = ctx
+			return Reply{}, Abort(original)
 		})
-		if calls != 1 || !errors.Is(err, errBudget) || err.Error() != "judge call refused: budget exhausted" {
+		var typed *fs.PathError
+		if calls != 1 || err != original || !errors.Is(err, errBudget) || !errors.As(err, &typed) || typed != refused {
 			t.Fatalf("calls=%d err=%v", calls, err)
+		}
+		if hostCtx.Err() != context.Canceled {
+			t.Fatal("abort did not cancel host context")
 		}
 	}
 }

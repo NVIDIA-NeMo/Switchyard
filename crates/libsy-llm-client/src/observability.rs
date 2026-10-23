@@ -194,7 +194,6 @@ fn client_call_error_type(error: &LibsyError) -> Cow<'static, str> {
         LibsyError::Driver(_) => Cow::Borrowed("driver_error"),
         LibsyError::MissingFinalResponse => Cow::Borrowed("missing_final_response"),
         LibsyError::External { .. } => Cow::Borrowed("_OTHER"),
-        LibsyError::HostAbort { .. } => Cow::Borrowed("host_abort"),
     }
 }
 
