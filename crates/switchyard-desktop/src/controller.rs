@@ -133,6 +133,16 @@ pub enum Action {
         tool: Harness,
         name: String,
     },
+    OpenSession {
+        id: String,
+    },
+    PreviewSessionCleanup {
+        id: String,
+    },
+    RemoveSession {
+        id: String,
+        preview_token: Option<String>,
+    },
     Restart {},
     PreviewUpdate {},
     Update {
@@ -444,7 +454,7 @@ pub struct Controller {
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
     tool_review: Option<Review>,
-
+    session_cleanup: Option<(String, String, Value)>,
     account_archive: Option<(Harness, String, String)>,
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
@@ -460,7 +470,7 @@ impl Controller {
             generation: 0,
             route_reviews: Default::default(),
             tool_review: None,
-
+            session_cleanup: None,
             account_archive: None,
             route_change: None,
             update_review: None,
@@ -775,7 +785,13 @@ impl Controller {
             // Account and session folders open in the editor too, because a terminal may run
             // over SSH, where `open` would start a file manager on another screen.
             Action::OpenAccount { tool, name } => account_path(*tool, Some(name)),
-
+            Action::OpenSession { id } => {
+                let receipt = sessions::managed_session(id)?;
+                let worktree = receipt["worktree"]
+                    .as_str()
+                    .ok_or("Missing session directory.")?;
+                Ok(Some(PathBuf::from(worktree)))
+            }
             _ => Ok(None),
         }
     }
@@ -1240,6 +1256,37 @@ impl Controller {
                 let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
                 server::command("open", &[&path.display().to_string()])?;
                 Ok(Reply::message("Opened the account folder.".into()))
+            }
+            Action::OpenSession { id } => {
+                let receipt = sessions::managed_session(&id)?;
+                server::command(
+                    "open",
+                    &[receipt["worktree"]
+                        .as_str()
+                        .ok_or("Missing session directory.")?],
+                )?;
+                Ok(Reply::message("Opened the session folder.".into()))
+            }
+            Action::PreviewSessionCleanup { id } => {
+                let data = sessions::cleanup_preview(&id)?;
+                let token = uuid::Uuid::now_v7().to_string();
+                self.session_cleanup = Some((id, token.clone(), data.clone()));
+                let mut data = data;
+                data["preview_token"] = json!(token);
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
+            Action::RemoveSession { id, preview_token } => {
+                let (expected_id, token, data) = self
+                    .session_cleanup
+                    .as_ref()
+                    .ok_or("Review session cleanup first.")?;
+                if &id != expected_id || preview_token.as_deref() != Some(token.as_str()) {
+                    return Err("Review session cleanup again.".into());
+                }
+                sessions::cleanup(&id, data).map(Reply::message)
             }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
