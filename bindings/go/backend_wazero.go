@@ -513,21 +513,15 @@ func (run *wasmRun) hostCall(call HostCall, work Work, replies chan<- wasmHostRe
 }
 
 func (run *wasmRun) deliver(ctx context.Context, reply wasmHostReply) error {
-	envelope := struct {
-		Response    json.RawMessage `json:"response,omitempty"`
-		ServedModel string          `json:"served_model,omitempty"`
-		Error       *string         `json:"error,omitempty"`
-	}{Response: reply.reply.Response, ServedModel: reply.reply.ServedModel}
-	if reply.err != nil {
-		envelope.Response = nil
-		message := reply.err.Error()
-		envelope.Error = &message
-	}
-	data, err := json.Marshal(envelope)
+	data, err := hostReplyJSON(reply.reply, reply.err)
 	if err != nil {
 		return err
 	}
-	if err := run.respond(ctx, reply.id, data); err != nil {
+	err = run.respond(ctx, reply.id, data)
+	if abort := hostAbort(reply.err); abort != nil {
+		return abort
+	}
+	if err != nil {
 		if reply.err != nil {
 			return fmt.Errorf("host call failed: %w", reply.err)
 		}

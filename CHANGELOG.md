@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Host aborts** - `LibsyError::HostAbort` stops a run when the host
+  refuses a model or decision call, even if the algorithm recovers from failed
+  calls. The C ABI accepts an `abort` reply, and the Go binding adds `Abort(err)`.
+  **Rust source-breaking change:** callers that match exhaustively on
+  `LibsyError` must handle the new variant.
 - **VGR routing (planned for 0.4.0)** — adds `type = "vgr"` deployment routes
   and the `AlgorithmSpec::Vgr` variant. **Rust source-breaking change:** callers
   that match exhaustively on `AlgorithmSpec` must handle the new variant.

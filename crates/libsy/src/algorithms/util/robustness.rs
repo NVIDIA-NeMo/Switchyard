@@ -37,6 +37,8 @@ pub(crate) fn safe_error_summary(error: &LibsyError) -> String {
         // The operation is a static label, but the boxed source comes from a user
         // extension and is unvetted.
         LibsyError::External { operation, .. } => format!("{operation} failed"),
+        // The host's reason is unvetted, like an extension's source.
+        LibsyError::HostAbort { .. } => "host aborted routing".to_string(),
         // The remaining variants render only structural detail: configured target
         // names and fixed strings, nothing request-derived.
         LibsyError::TargetNotFound { .. }

@@ -352,6 +352,63 @@ fn invalid_decision_replies_preserve_pending_calls() {
     assert_eq!(done["selected_model_ids"], json!(["capable", "efficient"]));
 }
 
+fn fail_open_judge_router(decision: bool) -> Box<SyRouter> {
+    let mut algorithm = json!({
+        "type": "llm_classifier", "classifier_target": "judge",
+        "strong_target": "capable", "weak_target": "efficient", "fail_open": true,
+    });
+    if decision {
+        algorithm["decision"] = json!({
+            "cutoff": 0.5, "candidates": {"a": "capable", "b": "efficient"}, "evidence": {},
+        });
+    } else {
+        algorithm["base_threshold"] = json!(0.5);
+    }
+    router(algorithm)
+}
+
+fn judge_input() -> Value {
+    json!({
+        "request": {},
+        "models": {
+            "any": ["capable", "efficient"], "capable": ["capable"],
+            "efficient": ["efficient"], "judge": ["judge"],
+        },
+    })
+}
+
+// An abort reply stops the run even when the algorithm recovers from an error reply.
+#[test]
+fn abort_replies_fail_runs_that_recover_from_errors() {
+    for (decision, kind) in [(false, "call_model"), (true, "call_decision")] {
+        let router = fail_open_judge_router(decision);
+        let recovered = run(&router, judge_input());
+        let call = next(&recovered);
+        assert_eq!(call["type"], kind);
+        let id = call["id"].as_u64().unwrap();
+        check(unsafe {
+            sy_run_respond(
+                &*recovered,
+                id,
+                c"{\"error\":\"judge unavailable\"}".as_ptr(),
+            )
+        });
+        assert_eq!(next(&recovered)["type"], "done", "{kind}");
+
+        let aborted = run(&router, judge_input());
+        let id = next(&aborted)["id"].as_u64().unwrap();
+        let error =
+            unsafe { sy_run_respond(&*aborted, id, c"{\"abort\":\"budget exhausted\"}".as_ptr()) };
+        assert_eq!(
+            error_message(error),
+            "host aborted routing: budget exhausted",
+            "{kind}"
+        );
+        let (sender, _receiver) = mpsc::channel();
+        assert_eq!(next_async(&aborted, &sender).unwrap_err(), "routing failed");
+    }
+}
+
 // Translation exports return owned JSON strings that the caller releases through the ABI.
 #[test]
 fn translation_exports_return_owned_json() {
