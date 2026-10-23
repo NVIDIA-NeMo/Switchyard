@@ -25,8 +25,9 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    McpToolConfig, McpToolset, MediaSource, Message, OutputParams, ProviderExtensions,
+    ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, Tool, ToolCall, ToolChoice,
+    ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -114,10 +115,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         let mut tool_namespaces = Map::new();
         let mut custom_tools = Map::new();
         request.tools =
-            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools)
-                .into_iter()
-                .map(Tool::from)
-                .collect();
+            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools)?;
         // Responses-lite clients (Codex with a GPT-5 model) carry the tool definitions inside
         // `input` as an `additional_tools` developer item instead of top-level `tools`. Those
         // definitions are the request's tools; the item itself is kept verbatim so the request
@@ -129,15 +127,11 @@ impl FormatCodec for OpenAiResponsesCodec {
                     && item.get("type").and_then(Value::as_str) == Some("additional_tools")
                     && let Some(tools) = item.get("tools").and_then(Value::as_array)
                 {
-                    request.tools.extend(
-                        decode_responses_tools(
-                            Some(&Value::Array(tools.clone())),
-                            &mut tool_namespaces,
-                            &mut custom_tools,
-                        )
-                        .into_iter()
-                        .map(Tool::from),
-                    );
+                    request.tools.extend(decode_responses_tools(
+                        Some(&Value::Array(tools.clone())),
+                        &mut tool_namespaces,
+                        &mut custom_tools,
+                    )?);
                     additional_tools.extend(tools.iter().cloned());
                 }
             }
@@ -1007,7 +1001,6 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
 }
 
 // Decodes Responses tool shapes, including Codex-style tool entries.
-// Decodes Responses tool shapes, including Codex-style tool entries.
 //
 // Codex groups tools into non-standard ``namespace`` containers that
 // OpenAI-compatible upstreams do not accept. Each child is exposed under a
@@ -1017,9 +1010,9 @@ fn decode_responses_tools(
     value: Option<&Value>,
     namespaces: &mut Map<String, Value>,
     custom_tools: &mut Map<String, Value>,
-) -> Vec<ToolDefinition> {
+) -> Result<Vec<Tool>> {
     let Some(tools) = value.and_then(Value::as_array) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut out = Vec::new();
     for tool in tools {
@@ -1034,25 +1027,31 @@ fn decode_responses_tools(
                 .and_then(Value::as_str)
                 .filter(|name| !name.is_empty());
             let description = tool.get("description").and_then(Value::as_str);
-            for mut child in decode_responses_tools(tool.get("tools"), namespaces, custom_tools) {
-                // A nested container already qualified its own children, and the
-                // innermost name is the one that identifies the tool.
-                let already_qualified = namespaces.contains_key(&child.name);
-                if let Some(container) = container
-                    && !already_qualified
-                {
-                    let qualified =
-                        crate::codex_namespaces::qualified_tool_name(container, &child.name);
-                    crate::codex_namespaces::record_tool_namespace(
-                        namespaces,
-                        &qualified,
-                        container,
-                        description,
-                    );
-                    child.name = qualified;
+            for child in decode_responses_tools(tool.get("tools"), namespaces, custom_tools)? {
+                if let Tool::Function(mut child) = child {
+                    // A nested container already qualified its own children, and the
+                    // innermost name is the one that identifies the tool.
+                    let already_qualified = namespaces.contains_key(&child.name);
+                    if let Some(container) = container
+                        && !already_qualified
+                    {
+                        let qualified =
+                            crate::codex_namespaces::qualified_tool_name(container, &child.name);
+                        crate::codex_namespaces::record_tool_namespace(
+                            namespaces,
+                            &qualified,
+                            container,
+                            description,
+                        );
+                        child.name = qualified;
+                    }
+                    out.push(Tool::Function(child));
+                } else {
+                    out.push(child);
                 }
-                out.push(child);
             }
+        } else if tool.get("type").and_then(Value::as_str) == Some("mcp") {
+            out.push(Tool::Mcp(decode_mcp_tool(tool)?));
         } else if tool.get("type").and_then(Value::as_str) == Some("custom") {
             // A freeform tool takes a raw string, not JSON arguments. The IR sees it as a
             // function with a single `input` argument; the verbatim definition is kept so a
@@ -1066,7 +1065,7 @@ fn decode_responses_tools(
                 .filter(|name| !name.is_empty())
             {
                 custom_tools.insert(name.to_string(), Value::Object(tool.clone()));
-                out.push(ToolDefinition {
+                out.push(Tool::Function(ToolDefinition {
                     name: name.to_string(),
                     description: tool
                         .get("description")
@@ -1074,14 +1073,14 @@ fn decode_responses_tools(
                         .map(ToOwned::to_owned),
                     parameters: crate::codex_custom_tools::input_schema(),
                     strict: None,
-                });
+                }));
             }
         } else if tool.get("type").and_then(Value::as_str) == Some("function") {
             if let Some(function) = tool.get("function").and_then(Value::as_object) {
                 if let Some(name) = function.get("name").and_then(Value::as_str)
                     && !name.is_empty()
                 {
-                    out.push(ToolDefinition {
+                    out.push(Tool::Function(ToolDefinition {
                         name: name.to_string(),
                         description: function
                             .get("description")
@@ -1092,7 +1091,7 @@ fn decode_responses_tools(
                             .cloned()
                             .unwrap_or_else(|| json!({})),
                         strict: function.get("strict").and_then(Value::as_bool),
-                    });
+                    }));
                 }
             } else {
                 if !push_responses_function_tool(&mut out, tool) {
@@ -1105,12 +1104,157 @@ fn decode_responses_tools(
             push_responses_id_tool(&mut out, tool);
         }
     }
-    out
+    Ok(out)
+}
+
+fn decode_mcp_tool(tool: &Map<String, Value>) -> Result<McpToolset> {
+    let required = |key: &str| {
+        tool.get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| TranslationError::InvalidValue {
+                path: format!("tools.{key}"),
+                message: "MCP definition requires a nonempty string".into(),
+            })
+    };
+    let name = required("server_label")?;
+    let url = tool
+        .get("server_url")
+        .filter(|value| !value.is_null())
+        .map(|_| required("server_url").map(str::to_owned))
+        .transpose()?;
+    let mut response_extensions = Map::new();
+    // These IDs refer to OpenAI-managed connections rather than portable endpoints.
+    // https://developers.openai.com/api/docs/guides/tools-connectors-mcp#connectors
+    // https://developers.openai.com/api/docs/guides/secure-mcp-tunnels
+    for key in ["connector_id", "tunnel_id"] {
+        if tool.get(key).is_some_and(|value| !value.is_null()) {
+            response_extensions.insert(key.into(), json!(required(key)?));
+        }
+    }
+    if url.is_none()
+        && !response_extensions.contains_key("connector_id")
+        && !response_extensions.contains_key("tunnel_id")
+    {
+        return Err(TranslationError::InvalidValue {
+            path: "tools.server_url".into(),
+            message: "MCP definition requires server_url, connector_id, or tunnel_id".into(),
+        });
+    }
+    let headers = tool
+        .get("headers")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value(value.clone()).map_err(|_| TranslationError::InvalidType {
+                path: "tools.headers".into(),
+                expected: "object with string values",
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let authorization_token = tool
+        .get("authorization")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value.as_str().ok_or_else(|| TranslationError::InvalidType {
+                path: "tools.authorization".into(),
+                expected: "string",
+            })
+        })
+        .transpose()?
+        .map(str::to_owned);
+    for key in ["server_description", "allowed_callers"] {
+        if let Some(value) = tool.get(key) {
+            response_extensions.insert(key.into(), value.clone());
+        }
+    }
+    let allowed_tools = match tool.get("allowed_tools") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(names)) => Some(names),
+        Some(value @ Value::Object(_)) => {
+            response_extensions.insert("allowed_tools".into(), value.clone());
+            None
+        }
+        _ => {
+            return Err(TranslationError::InvalidType {
+                path: "tools.allowed_tools".into(),
+                expected: "array of tool names or a filter object",
+            });
+        }
+    };
+    let defer_loading = tool
+        .get("defer_loading")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| TranslationError::InvalidType {
+                    path: "tools.defer_loading".into(),
+                    expected: "boolean",
+                })
+        })
+        .transpose()?;
+    let require_approval = match tool.get("require_approval") {
+        // Responses requires approval when the setting is omitted.
+        None | Some(Value::Null) => Some(true),
+        Some(Value::String(value)) if value == "always" => Some(true),
+        Some(Value::String(value)) if value == "never" => Some(false),
+        Some(value @ Value::Object(_)) => {
+            response_extensions.insert("require_approval".into(), value.clone());
+            None
+        }
+        _ => {
+            return Err(TranslationError::InvalidValue {
+                path: "tools.require_approval".into(),
+                message: "MCP approval requires always, never, or a filter object".into(),
+            });
+        }
+    };
+    let mut extensions = ProviderExtensions::default();
+    if !response_extensions.is_empty() {
+        extensions.fields.insert(
+            WireFormat::OpenAiResponses.as_str().into(),
+            Value::Object(response_extensions),
+        );
+    }
+    let configs = allowed_tools
+        .into_iter()
+        .flatten()
+        .map(|value| {
+            let name = value
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| TranslationError::InvalidValue {
+                    path: "tools.allowed_tools".into(),
+                    message: "MCP allowed tools require nonempty string names".into(),
+                })?;
+            Ok((
+                name.to_owned(),
+                McpToolConfig {
+                    enabled: Some(true),
+                    defer_loading: None,
+                },
+            ))
+        })
+        .collect::<Result<_>>()?;
+    Ok(McpToolset {
+        name: name.to_owned(),
+        url,
+        authorization_token,
+        headers,
+        default_config: McpToolConfig {
+            enabled: allowed_tools.map(|_| false),
+            defer_loading,
+        },
+        configs,
+        require_approval,
+        extensions,
+    })
 }
 
 // Adds an OpenAI-style function tool to the normalized tool list.
 fn push_responses_function_tool(
-    out: &mut Vec<ToolDefinition>,
+    out: &mut Vec<Tool>,
     tool: &serde_json::Map<String, Value>,
 ) -> bool {
     let Some(name) = tool.get("name").and_then(Value::as_str) else {
@@ -1120,7 +1264,7 @@ fn push_responses_function_tool(
         return false;
     }
 
-    out.push(ToolDefinition {
+    out.push(Tool::Function(ToolDefinition {
         name: name.to_string(),
         description: tool
             .get("description")
@@ -1128,15 +1272,12 @@ fn push_responses_function_tool(
             .map(ToOwned::to_owned),
         parameters: tool.get("parameters").cloned().unwrap_or_else(|| json!({})),
         strict: tool.get("strict").and_then(Value::as_bool),
-    });
+    }));
     true
 }
 
 // Adds a Codex-style ID tool to the normalized tool list.
-fn push_responses_id_tool(
-    out: &mut Vec<ToolDefinition>,
-    tool: &serde_json::Map<String, Value>,
-) -> bool {
+fn push_responses_id_tool(out: &mut Vec<Tool>, tool: &serde_json::Map<String, Value>) -> bool {
     let Some(id) = tool.get("id").and_then(Value::as_str) else {
         return false;
     };
@@ -1144,7 +1285,7 @@ fn push_responses_id_tool(
         return false;
     }
 
-    out.push(ToolDefinition {
+    out.push(Tool::Function(ToolDefinition {
         name: id.to_string(),
         description: tool
             .get("description")
@@ -1157,7 +1298,7 @@ fn push_responses_id_tool(
             .cloned()
             .unwrap_or_else(|| json!({})),
         strict: None,
-    });
+    }));
     true
 }
 
@@ -1700,7 +1841,6 @@ fn responses_file_part(source: &FileSource) -> Option<Value> {
     Some(Value::Object(part))
 }
 
-// Encodes normalized tool definitions into Responses tool JSON.
 // Encodes normalized tools as Responses entries.
 //
 // A Responses client understands Codex containers, so a tool whose name this
@@ -1713,10 +1853,18 @@ fn encode_responses_tools(
     let mut out: Vec<Value> = Vec::new();
     let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
     for tool in tools {
+        if let Tool::Mcp(mcp) = tool {
+            out.push(encode_mcp_tool(mcp)?);
+            continue;
+        }
+        if let Tool::Provider { provider, raw } = tool
+            && provider.as_str() == WireFormat::OpenAiResponses.as_str()
+        {
+            out.push(raw.clone());
+            continue;
+        }
         let tool = tool.function().ok_or_else(|| {
-            TranslationError::LossyConversion(
-                "MCP and provider tool encoding is not implemented".into(),
-            )
+            TranslationError::LossyConversion("provider tool encoding is not implemented".into())
         })?;
         // A freeform tool goes back out exactly as the client defined it.
         if let Some(custom) = custom_tools.and_then(|custom| custom.get(&tool.name)) {
@@ -1763,6 +1911,89 @@ fn encode_responses_tools(
         }));
     }
     Ok(Value::Array(out))
+}
+
+fn encode_mcp_tool(mcp: &McpToolset) -> Result<Value> {
+    let extensions = mcp
+        .extensions
+        .fields
+        .get(WireFormat::OpenAiResponses.as_str());
+    if mcp.url.is_none()
+        && !["connector_id", "tunnel_id"].iter().any(|key| {
+            extensions
+                .and_then(|fields| fields.get(key))
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
+    {
+        return Err(TranslationError::LossyConversion(
+            "Responses MCP requires a URL, connector ID, or tunnel ID".into(),
+        ));
+    }
+    let allowed_tools = extensions.and_then(|fields| fields.get("allowed_tools"));
+    // An open-ended exclusion cannot be expressed as a finite allow-list.
+    if allowed_tools.is_none()
+        && mcp.default_config.enabled != Some(false)
+        && mcp
+            .configs
+            .values()
+            .any(|config| config.enabled == Some(false))
+    {
+        return Err(TranslationError::LossyConversion(
+            "Responses MCP tool exclusions require a disabled default".into(),
+        ));
+    }
+    if mcp
+        .configs
+        .values()
+        .filter_map(|config| config.defer_loading)
+        .any(|value| value != mcp.default_config.defer_loading.unwrap_or(false))
+    {
+        return Err(TranslationError::LossyConversion(
+            "Responses MCP cannot represent conflicting per-tool loading settings".into(),
+        ));
+    }
+    let mut tool = json!({"type": "mcp", "server_label": mcp.name});
+    if let Some(url) = &mcp.url {
+        tool["server_url"] = json!(url);
+    }
+    if let Some(token) = &mcp.authorization_token {
+        tool["authorization"] = json!(token);
+    }
+    if !mcp.headers.is_empty() {
+        tool["headers"] = json!(mcp.headers);
+    }
+    if let Some(approval) = extensions.and_then(|fields| fields.get("require_approval")) {
+        tool["require_approval"] = approval.clone();
+    } else if let Some(approval) = mcp.require_approval {
+        tool["require_approval"] = json!(if approval { "always" } else { "never" });
+    }
+    // Clear a preserved filter before replacing it with normalized tool settings.
+    if let Some(filter) = allowed_tools {
+        tool["allowed_tools"] = filter.clone();
+    } else if mcp.default_config.enabled == Some(false) {
+        let allowed: Vec<_> = mcp
+            .configs
+            .iter()
+            .filter(|(_, config)| config.enabled == Some(true))
+            .map(|(name, _)| name)
+            .collect();
+        tool["allowed_tools"] = json!(allowed);
+    }
+    if let Some(defer_loading) = mcp.default_config.defer_loading {
+        tool["defer_loading"] = json!(defer_loading);
+    }
+    for key in [
+        "server_description",
+        "allowed_callers",
+        "connector_id",
+        "tunnel_id",
+    ] {
+        if let Some(value) = extensions.and_then(|fields| fields.get(key)) {
+            tool[key] = value.clone();
+        }
+    }
+    Ok(tool)
 }
 
 // Encodes normalized tool choice into Responses JSON.
