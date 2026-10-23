@@ -463,38 +463,44 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#fulfill-a-model-call" class="md-nav__link">
+    <nav class="md-nav" aria-label="Read the next Step">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stepcallmodel" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Fulfill a model call
+        Step::CallModel
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#return-a-typed-decision" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepcalldecision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Return a typed decision
+        Step::CallDecision
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#receive-the-final-outcome" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepdone" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Receive the final outcome
+        Step::Done
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1808,38 +1814,44 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#fulfill-a-model-call" class="md-nav__link">
+    <nav class="md-nav" aria-label="Read the next Step">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stepcallmodel" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Fulfill a model call
+        Step::CallModel
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#return-a-typed-decision" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepcalldecision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Return a typed decision
+        Step::CallDecision
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#receive-the-final-outcome" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepdone" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Receive the final outcome
+        Step::Done
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1894,8 +1906,8 @@ how those models are called.</p>
     execute --&gt;|"call.respond(...)"| route
     route --&gt;|"Done"| done
 
-    classDef algorithm fill:#eef6df,stroke:#76b900,color:#24350b
-    classDef application fill:#f5f6f7,stroke:#6b7280,color:#1f2937
+    classDef algorithm fill:#76b9001a,stroke:#76b900,stroke-width:2px
+    classDef application fill:transparent,stroke:#6b7280
     class route algorithm
     class execute,done application</code></pre>
 <p>A run can finish with <code>Done</code> immediately or request several calls before finishing.</p>
@@ -2000,7 +2012,7 @@ ask your client to call a judge:</p>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>Judge-based routing:  CallModel(call) -&gt; your response -&gt; Done(outcome)
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Decision routing:     CallDecision(call) -&gt; your typed response -&gt; Done(outcome)
 </span></code></pre></div>
-<h2 id="fulfill-a-model-call">Fulfill a model call<a class="headerlink" href="#fulfill-a-model-call" title="Permanent link">&para;</a></h2>
+<h3 id="stepcallmodel"><code>Step::CallModel</code><a class="headerlink" href="#stepcallmodel" title="Permanent link">&para;</a></h3>
 <p>Suppose the next step is <code>CallModel</code>. The
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html"><code>CallModel</code></a>
 object describes the operation:</p>
@@ -2012,26 +2024,21 @@ object describes the operation:</p>
 <p><code>models</code> is a nonempty candidate list in fallback order. Your application executes
 the attempts and must update the request's model before trying a later candidate.
 <code>call.algorithm</code> names the requesting algorithm for your own telemetry.</p>
-<p>Your application returns the result through
-<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html#method.respond"><code>call.respond</code></a>.
-Inside the <code>Step::CallModel(call)</code> arm, the exchange looks like this:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1">// Pass the work future to respond; it returns the result to the algorithm.</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-</span></code></pre></div>
-<p>Here, <code>client.call</code> is your async adapter, returning
-<code>switchyard_libsy::Result&lt;Response&gt;</code>. It owns the provider call and any format
-conversion, as in the <a href="../getting_started/#use-libsy-with-your-client">OpenRouter adapter</a>.
-<code>respond</code> consumes the call, allowing the algorithm to continue with its result.</p>
+<p>In the <a href="#read-the-next-step">Step loop</a>, <code>client.call</code> is your async adapter,
+returning <code>switchyard_libsy::Result&lt;Response&gt;</code>. It owns the provider call and any
+format conversion, as in the
+<a href="../getting_started/#use-libsy-with-your-client">OpenRouter adapter</a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html#method.respond"><code>call.respond</code></a>
+consumes the call and runs that work future, returning its result to the algorithm.</p>
 <p>The returned
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/envelope/struct.Response.html"><code>Response</code></a>
 contains an
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/stream/enum.LlmResponse.html"><code>LlmResponse</code></a>
 in its <code>llm_response</code> field:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">LlmResponse</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span><span class="n">Stream</span><span class="p">(</span><span class="n">LlmResponseStream</span><span class="p">),</span><span class="w"> </span><span class="c1">// Live response events.</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="n">Agg</span><span class="p">(</span><span class="n">AggLlmResponse</span><span class="p">),</span><span class="w">       </span><span class="c1">// A complete, buffered answer.</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="p">}</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">LlmResponse</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">    </span><span class="n">Stream</span><span class="p">(</span><span class="n">LlmResponseStream</span><span class="p">),</span><span class="w"> </span><span class="c1">// Live response events.</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="n">Agg</span><span class="p">(</span><span class="n">AggLlmResponse</span><span class="p">),</span><span class="w">       </span><span class="c1">// A complete, buffered answer.</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>The
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/stream/struct.LlmResponseStreamEvent.html"><code>LlmResponseStreamEvent</code></a>
@@ -2044,18 +2051,15 @@ completion first.</p>
 Its async <code>call(Request)</code> returns a <code>Response</code> or <code>LlmClientError</code>; the
 <a href="../reference/host_integration/#serve-routing-time-calls">host guide</a> shows the error
 adapter. Using your own adapter method, as above, also works.</p>
-<h2 id="return-a-typed-decision">Return a typed decision<a class="headerlink" href="#return-a-typed-decision" title="Permanent link">&para;</a></h2>
+<h3 id="stepcalldecision"><code>Step::CallDecision</code><a class="headerlink" href="#stepcalldecision" title="Permanent link">&para;</a></h3>
 <p>An algorithm can ask a decision model to evaluate a question through
 <code>Step::CallDecision(call)</code>. This time, <code>call</code> holds a
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallDecision.html"><code>CallDecision</code></a>.
 It has one <code>model</code> and a
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/decision/struct.DecisionRequest.html"><code>DecisionRequest</code></a>
 in <code>request</code>.</p>
-<p>The algorithm creates the question. Your application sends the supplied request
-through its decision client and returns the typed answer:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">decision_client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-</span></code></pre></div>
+<p>The algorithm creates the question. The <a href="#read-the-next-step">Step loop</a> sends
+the supplied request through <code>decision_client.call</code> and returns the typed answer.</p>
 <p>The adapter returns <code>switchyard_libsy::Result&lt;DecisionResponse&gt;</code>. The optional
 shared interface is
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>.
@@ -2071,44 +2075,44 @@ uses the same question IDs.</p>
 <summary>Example payloads: a Boolean question and its answer</summary>
 <p>These values illustrate what crosses the boundary. The algorithm supplies a
 request like this in <code>call.request</code>:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionRequest</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="n">context</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">}),</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="n">questions</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">        </span><span class="n">DecisionQuestion</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">            </span><span class="n">instructions</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;Does this task need Capable?&quot;</span><span class="p">),</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">            </span><span class="n">kind</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionKind</span><span class="p">::</span><span class="n">Boolean</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">                </span><span class="n">true_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">                </span><span class="n">false_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">            </span><span class="p">},</span>
-</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">        </span><span class="p">},</span>
-</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="p">)]),</span>
-</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="p">};</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionRequest</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="n">context</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">}),</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="n">questions</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">        </span><span class="n">DecisionQuestion</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">            </span><span class="n">instructions</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;Does this task need Capable?&quot;</span><span class="p">),</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">            </span><span class="n">kind</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionKind</span><span class="p">::</span><span class="n">Boolean</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">                </span><span class="n">true_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="w">                </span><span class="n">false_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="w">            </span><span class="p">},</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">        </span><span class="p">},</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="w">    </span><span class="p">)]),</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="p">};</span>
 </span></code></pre></div>
 <p>The client might return this answer to <code>needs_capable</code>:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionResponse</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="n">answers</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
-</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">        </span><span class="n">DecisionAnswer</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">            </span><span class="n">value</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionValue</span><span class="p">::</span><span class="n">Boolean</span><span class="p">(</span><span class="n">BooleanEstimate</span><span class="p">::</span><span class="n">Value</span><span class="p">(</span><span class="kc">true</span><span class="p">)),</span>
-</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">            </span><span class="n">provider_confidence</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">        </span><span class="p">},</span>
-</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">    </span><span class="p">)]),</span>
-</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="w">    </span><span class="n">usage</span><span class="p">:</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
-</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="p">};</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionResponse</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="n">answers</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">        </span><span class="n">DecisionAnswer</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">            </span><span class="n">value</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionValue</span><span class="p">::</span><span class="n">Boolean</span><span class="p">(</span><span class="n">BooleanEstimate</span><span class="p">::</span><span class="n">Value</span><span class="p">(</span><span class="kc">true</span><span class="p">)),</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">            </span><span class="n">provider_confidence</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">        </span><span class="p">},</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">    </span><span class="p">)]),</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">    </span><span class="n">usage</span><span class="p">:</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="p">};</span>
 </span></code></pre></div>
 </details>
-<h2 id="receive-the-final-outcome">Receive the final outcome<a class="headerlink" href="#receive-the-final-outcome" title="Permanent link">&para;</a></h2>
+<h3 id="stepdone"><code>Step::Done</code><a class="headerlink" href="#stepdone" title="Permanent link">&para;</a></h3>
 <p>Once the algorithm has enough information, it emits <code>Step::Done(outcome)</code> with a
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.RoutingOutcome.html"><code>RoutingOutcome</code></a>.
 Inside that match arm, check whether routing has already produced an answer:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">response</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">    </span><span class="nb">Some</span><span class="p">(</span><span class="n">response</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">response</span><span class="p">,</span><span class="w"> </span><span class="c1">// Reuse the answer obtained during routing.</span>
-</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">outcome</span><span class="p">.</span><span class="n">request</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="c1">// Make the final call.</span>
-</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="p">};</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">response</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="nb">Some</span><span class="p">(</span><span class="n">response</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">response</span><span class="p">,</span><span class="w"> </span><span class="c1">// Reuse the answer obtained during routing.</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">outcome</span><span class="p">.</span><span class="n">request</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="c1">// Make the final call.</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="p">};</span>
 </span></code></pre></div>
 <p>With <code>Some(response)</code>, another final call would repeat work already done. With
 <code>None</code>, your application can send <code>outcome.request</code> now, as above, or return it to
@@ -2118,27 +2122,27 @@ selected model. <code>outcome.selected_model_ids</code> lists that model first, 
 ordered fallbacks.</p>
 <p>To read the final answer as text, collect a live stream or use the existing
 buffered answer:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">answer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="p">.</span><span class="n">into_agg</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">));</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">answer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="p">.</span><span class="n">into_agg</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">));</span>
 </span></code></pre></div>
 <p>For live text, set <code>stream: true</code> in the initial <code>LlmRequest</code> before starting the
 run. Use a streaming-capable adapter; the quickstart's OpenRouter adapter returns
 buffered responses. Handle both response forms so a buffered answer is still shown:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">io</span><span class="p">::</span><span class="n">Write</span><span class="p">;</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="k">match</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">    </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Stream</span><span class="p">(</span><span class="k">mut</span><span class="w"> </span><span class="n">events</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">event</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">events</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">event</span><span class="o">?</span><span class="p">.</span><span class="n">normalized</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponseChunk</span><span class="p">::</span><span class="n">TextDelta</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">                    </span><span class="fm">print!</span><span class="p">(</span><span class="s">&quot;{text}&quot;</span><span class="p">);</span>
-</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">                    </span><span class="n">std</span><span class="p">::</span><span class="n">io</span><span class="p">::</span><span class="n">stdout</span><span class="p">().</span><span class="n">flush</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
-</span><span id="__span-14-10"><a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">                </span><span class="p">}</span>
-</span><span id="__span-14-11"><a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">            </span><span class="p">}</span>
-</span><span id="__span-14-12"><a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="w">        </span><span class="p">}</span>
-</span><span id="__span-14-13"><a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-14-14"><a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a><span class="w">    </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">)),</span>
-</span><span id="__span-14-15"><a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="p">}</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">io</span><span class="p">::</span><span class="n">Write</span><span class="p">;</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="k">match</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Stream</span><span class="p">(</span><span class="k">mut</span><span class="w"> </span><span class="n">events</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-12-5"><a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">event</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">events</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-12-6"><a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">event</span><span class="o">?</span><span class="p">.</span><span class="n">normalized</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-12-7"><a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponseChunk</span><span class="p">::</span><span class="n">TextDelta</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-12-8"><a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a><span class="w">                    </span><span class="fm">print!</span><span class="p">(</span><span class="s">&quot;{text}&quot;</span><span class="p">);</span>
+</span><span id="__span-12-9"><a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a><span class="w">                    </span><span class="n">std</span><span class="p">::</span><span class="n">io</span><span class="p">::</span><span class="n">stdout</span><span class="p">().</span><span class="n">flush</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-12-10"><a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-12-11"><a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-12-12"><a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-12-13"><a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-12-14"><a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a><span class="w">    </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">)),</span>
+</span><span id="__span-12-15"><a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>These are alternative ways to consume a response. The text-only loop omits tool
 and usage events; handle those chunks too when your application needs them.</p>
@@ -2151,42 +2155,57 @@ identifies the run and algorithm and may include evidence for the decision.</p>
 <p>Each call has its own reply channel. Awaiting calls one at a time in the step loop
 serves them sequentially. To run calls concurrently, your application must keep
 reading steps while polling their work.</p>
-<p>For concurrent execution, use
-<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>.
-It polls your call handlers concurrently and returns the <code>RoutingOutcome</code>. Your
-handler receives
-<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/enum.Call.html"><code>Call::Model</code> or <code>Call::Decision</code></a>;
-<code>drive</code> handles <code>Done</code> itself:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1">// Borrow the adapters so every call can use them.</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">client</span><span class="p">;</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="kd">let</span><span class="w"> </span><span class="n">decision_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">decision_client</span><span class="p">;</span>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="kd">let</span><span class="w"> </span><span class="n">outcome</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">switchyard_libsy</span><span class="p">::</span><span class="n">drive</span><span class="p">(</span><span class="n">algorithm</span><span class="p">,</span><span class="w"> </span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">models</span><span class="p">,</span><span class="w"> </span><span class="o">|</span><span class="n">call</span><span class="o">|</span><span class="w"> </span><span class="k">async</span><span class="w"> </span><span class="k">move</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">    </span><span class="k">match</span><span class="w"> </span><span class="n">call</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">        </span><span class="n">Call</span><span class="p">::</span><span class="n">Model</span><span class="p">(</span><span class="n">call</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="w">            </span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span>
-</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">        </span><span class="p">}</span>
-</span><span id="__span-15-10"><a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">        </span><span class="n">Call</span><span class="p">::</span><span class="n">Decision</span><span class="p">(</span><span class="n">call</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-15-11"><a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-15-12"><a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">            </span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">decision_client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span>
-</span><span id="__span-15-13"><a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a><span class="w">        </span><span class="p">}</span>
-</span><span id="__span-15-14"><a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-15-15"><a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="p">}).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<p>Use the same inputs and clients, but replace the earlier <code>run_stream</code> call and
+sequential loop with this version. <code>tokio::select!</code> polls both the Step stream and
+the pending calls, so new calls can start before earlier ones finish:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">use</span><span class="w"> </span><span class="n">futures</span><span class="p">::{</span><span class="n">FutureExt</span><span class="p">,</span><span class="w"> </span><span class="n">StreamExt</span><span class="p">,</span><span class="w"> </span><span class="n">stream</span><span class="p">::</span><span class="n">FuturesUnordered</span><span class="p">};</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_libsy</span><span class="p">::</span><span class="n">LibsyError</span><span class="p">;</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">steps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">algorithm</span><span class="p">.</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">models</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">);</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">in_flight</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">FuturesUnordered</span><span class="p">::</span><span class="n">new</span><span class="p">();</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
+</span><span id="__span-13-7"><a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="kd">let</span><span class="w"> </span><span class="n">outcome</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">loop</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-13-8"><a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">    </span><span class="n">tokio</span><span class="p">::</span><span class="n">select</span><span class="o">!</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-13-9"><a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="w">        </span><span class="nb">Some</span><span class="p">(</span><span class="n">result</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">in_flight</span><span class="p">.</span><span class="n">next</span><span class="p">()</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">result</span><span class="o">?</span><span class="p">,</span>
+</span><span id="__span-13-10"><a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a><span class="w">        </span><span class="n">step</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">steps</span><span class="p">.</span><span class="n">next</span><span class="p">()</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-13-11"><a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">step</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">step</span><span class="p">.</span><span class="n">ok_or</span><span class="p">(</span><span class="n">LibsyError</span><span class="p">::</span><span class="n">MissingFinalResponse</span><span class="p">)</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-13-12"><a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a><span class="w">            </span><span class="k">match</span><span class="w"> </span><span class="n">step</span><span class="o">?</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-13-13"><a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">CallModel</span><span class="p">(</span><span class="n">call</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-13-14"><a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a><span class="w">                    </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-13-15"><a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a><span class="w">                    </span><span class="n">in_flight</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="n">boxed</span><span class="p">());</span>
+</span><span id="__span-13-16"><a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-13-17"><a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">CallDecision</span><span class="p">(</span><span class="n">call</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-13-18"><a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a><span class="w">                    </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-13-19"><a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a><span class="w">                    </span><span class="n">in_flight</span><span class="p">.</span><span class="n">push</span><span class="p">(</span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">decision_client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="n">boxed</span><span class="p">());</span>
+</span><span id="__span-13-20"><a id="__codelineno-13-20" name="__codelineno-13-20" href="#__codelineno-13-20"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-13-21"><a id="__codelineno-13-21" name="__codelineno-13-21" href="#__codelineno-13-21"></a><span class="w">                </span><span class="n">Step</span><span class="p">::</span><span class="n">Done</span><span class="p">(</span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="k">break</span><span class="w"> </span><span class="o">*</span><span class="n">outcome</span><span class="p">,</span>
+</span><span id="__span-13-22"><a id="__codelineno-13-22" name="__codelineno-13-22" href="#__codelineno-13-22"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-13-23"><a id="__codelineno-13-23" name="__codelineno-13-23" href="#__codelineno-13-23"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-13-24"><a id="__codelineno-13-24" name="__codelineno-13-24" href="#__codelineno-13-24"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-13-25"><a id="__codelineno-13-25" name="__codelineno-13-25" href="#__codelineno-13-25"></a><span class="p">};</span>
+</span><span id="__span-13-26"><a id="__codelineno-13-26" name="__codelineno-13-26" href="#__codelineno-13-26"></a><span class="c1">// Stop unused calls before handling the final outcome.</span>
+</span><span id="__span-13-27"><a id="__codelineno-13-27" name="__codelineno-13-27" href="#__codelineno-13-27"></a><span class="nb">drop</span><span class="p">(</span><span class="n">in_flight</span><span class="p">);</span>
+</span><span id="__span-13-28"><a id="__codelineno-13-28" name="__codelineno-13-28" href="#__codelineno-13-28"></a><span class="nb">drop</span><span class="p">(</span><span class="n">steps</span><span class="p">);</span>
 </span></code></pre></div>
-<p>It starts with default state. Use <code>run_stream</code> directly to supply your own state
-or execution loop.</p>
-<p>If the algorithm stops waiting, <code>respond</code> drops that call's work future. Dropping
-the step stream aborts the algorithm task; your application cleans up separately
-started work. <code>drive</code> drops its outstanding handlers when the run ends or is dropped.</p>
+<p><code>boxed()</code> gives the two call kinds a common future type for the collection.
+Only calls requested concurrently by the algorithm can overlap. The returned
+<code>outcome</code> is handled as shown in <a href="#stepdone"><code>Step::Done</code></a>.</p>
+<p>For a ready-made version, see
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>
+and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/62efb7758eeafdb0f7d1c9ba5937c48ce71ea720/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
+<p>If the algorithm stops waiting, <code>respond</code> drops that call's work future. The
+explicit drops stop the remaining handlers and abort the algorithm task. Returning
+an error or cancelling the enclosing future also drops these local values. Your
+application must clean up any separately spawned work itself.</p>
 <p>A model-call failure normally stops the host run when propagated with <code>?</code>.
 <code>call.recover_errors</code> lets the algorithm receive and handle it instead. Decision
 failures passed through <code>respond</code> also return to the algorithm. Dropping an
 unanswered call gives the waiting algorithm <code>DriverError::ResponseDropped</code>.</p>
 <p>Once a response stream has been delivered, its consumer owns its lifetime.
 Cancelling local work cannot guarantee that a provider stops generation or billing,
-or undo side effects that have already occurred. The <a href="../reference/host_integration/#concurrent-calls-and-cancellation">host integration
-guide</a> covers host
-cleanup in Rust and Python.</p>
+or undo side effects that have already occurred. See the <a href="../reference/host_integration/#concurrent-calls-and-cancellation">host integration
+guide</a> for
+Python task cleanup.</p>
 <p>The <a href="../reference/rust_api/">Rust API reference</a> links the complete crate
 documentation for these types.</p>
 
