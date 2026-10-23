@@ -1,0 +1,35 @@
+name: Go bindings
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "1"
+      GOEXPERIMENT: cgocheck2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: bindings/go/go.mod
+          # Go's cache does not track the external Rust library or C header.
+          cache: false
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build switchyard-ffi
+        run: cargo build -p switchyard-ffi --release --locked
+      - name: go test (native)
+        working-directory: bindings/go
+        run: go test -count=1 -race -tags switchyard_native ./...
+      - name: go vet (native)
+        working-directory: bindings/go
+        run: go vet -tags switchyard_native ./...
