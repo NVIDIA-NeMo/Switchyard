@@ -310,6 +310,15 @@ const ACTIONS: &[ActionRow] = &[
     ),
     (
         Tab::Sessions,
+        'l',
+        "launch",
+        "Asks for a Git project folder and shows the session review. After you type LAUNCH, \
+         it creates a worktree from committed HEAD and opens the harness there in a new \
+         terminal window.",
+        &[ActionKind::PreviewLaunch, ActionKind::Launch],
+    ),
+    (
+        Tab::Sessions,
         'n',
         "add account",
         "Creates a saved account and opens the harness's login in a new terminal window.",
@@ -627,6 +636,13 @@ enum FormKind {
     /// The harness is the one selected when the form opened.
     Account(Harness),
     SettingsFile,
+    /// The harness, account, and route are the ones selected when the form opened.
+    Project {
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+    },
 }
 /// Choices names the list that ↑ and ↓ cycle through in a form field.
 enum Choices {
@@ -917,6 +933,18 @@ impl Form {
                 name: self.value(0),
             },
             FormKind::SettingsFile => return Ok(Submit::SettingsFile(self.value(0))),
+            FormKind::Project {
+                tool,
+                account,
+                route,
+                id,
+            } => Action::PreviewLaunch {
+                tool: *tool,
+                account: account.clone(),
+                route: route.clone(),
+                id: id.clone(),
+                project: self.value(0),
+            },
         }))
     }
     fn label(&self) -> &'static str {
@@ -936,6 +964,7 @@ impl Form {
                 Action::Install { .. } => "Installing the harness settings",
                 Action::Restore { .. } => "Restoring the harness settings",
                 Action::ArchiveAccount { .. } => "Archiving the account",
+                Action::Launch { .. } => "Launching the session",
 
                 _ => "Saving the route",
             },
@@ -944,6 +973,7 @@ impl Form {
             FormKind::ModelKey => "Saving the key and loading models",
             FormKind::Account(_) => "Adding the account",
             FormKind::SettingsFile => "Choosing the settings file",
+            FormKind::Project { .. } => "Reviewing the session",
         }
     }
 }
@@ -1077,6 +1107,20 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             tool,
             name,
             preview_token,
+        },
+        Action::PreviewLaunch {
+            tool,
+            account,
+            route,
+            id,
+            project,
+        } => Action::Launch {
+            preview_token,
+            tool,
+            account,
+            route,
+            id,
+            project,
         },
 
         _ => return None,
@@ -1639,6 +1683,21 @@ impl App {
                     ));
                 }
             }
+            // Like a route review, the launch review replaces the project form that asked for
+            // it, so a form that the user closed meanwhile stays closed.
+            (Some(ActionKind::PreviewLaunch), Ok(reply)) => {
+                if matches!(self.popup, Some(Popup::Form(_)))
+                    && let Some(launch) = action.and_then(|action| reviewed(action, &reply.data))
+                {
+                    self.popup = Some(Popup::review(
+                        launch_lines(self.theme, &reply.data),
+                        "Launch",
+                        FormKind::Confirm("LAUNCH".into(), Box::new(launch)),
+                        "Start this session?",
+                        "Type LAUNCH to start it",
+                    ));
+                }
+            }
             (Some(ActionKind::Models), Ok(reply)) => {
                 let models: Vec<&str> = reply.data["models"]
                     .as_array()
@@ -2155,6 +2214,26 @@ impl App {
                 let (tool, name) = self.selected_account()?;
                 let archive = Action::PreviewAccountArchive { tool, name };
                 request(archive, "Reviewing the account archive")
+            }
+            // The project form submits PreviewLaunch, and the review window submits Launch.
+            ActionKind::PreviewLaunch | ActionKind::Launch => {
+                let harness = self.harness()?;
+                let route = self.selected_route()?;
+                let title = format!(
+                    "Launch a worktree session · {} · {}",
+                    harness.label, route.label
+                );
+                let kind = FormKind::Project {
+                    tool: harness.tool,
+                    account: self.account(),
+                    route: route.key.clone(),
+                    id: route.id.clone(),
+                };
+                self.open(Form::new(
+                    kind,
+                    title,
+                    vec![("Git project folder", String::new())],
+                ))
             }
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
@@ -4449,6 +4528,14 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             ),
             Line::default(),
         ],
+        FormKind::Project { .. } => vec![
+            Line::from(
+                "Switchyard creates a Git worktree from the folder's committed HEAD and opens \
+                 the harness there in a new terminal window. Uncommitted changes stay in the \
+                 original checkout. The next step shows the review.",
+            ),
+            Line::default(),
+        ],
         FormKind::Preferences
         | FormKind::Update(_)
         | FormKind::Confirm(..)
@@ -4606,6 +4693,51 @@ fn archive_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
         labeled(theme, "Account", 11, text(preview, "name")),
         labeled(theme, "Directory", 11, text(preview, "path")),
     ]
+}
+
+/// This function returns a text field of a controller reply, or `fallback` when it is empty
+/// or missing.
+fn text_or(value: &Value, key: &str, fallback: &str) -> String {
+    match value[key].as_str() {
+        Some(text) if !text.is_empty() => text.into(),
+        _ => fallback.into(),
+    }
+}
+
+/// This function shows a launch preview: where the session starts, what it uses, and what
+/// stays in the original checkout.
+fn launch_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let field = |name: &str, value: String| labeled(theme, name, 17, value);
+    let folder = text(preview, "relative_directory");
+    let folder = if folder.is_empty() {
+        "New worktree root".into()
+    } else {
+        format!("{folder} within the new worktree")
+    };
+    let mut lines = vec![
+        field("Repository", text(preview, "repository")),
+        field("Starting folder", folder),
+        field("Branch", text_or(preview, "branch", "Detached HEAD")),
+        field("Revision", text(preview, "revision")),
+        field("Route", text(preview, "route")),
+        field(
+            "Account",
+            text_or(preview, "account_directory", "Current login"),
+        ),
+        Line::default(),
+    ];
+    if preview["dirty"] == true {
+        lines.push(Line::styled(
+            "Your checkout has uncommitted changes.",
+            theme.warn,
+        ));
+    }
+    lines.push(Line::from(text(preview, "notice")));
+    let settings = text(preview, "settings_notice");
+    if !settings.is_empty() {
+        lines.extend([Line::default(), Line::from(settings)]);
+    }
+    lines
 }
 
 fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {

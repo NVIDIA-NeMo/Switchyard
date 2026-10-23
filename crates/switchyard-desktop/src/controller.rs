@@ -101,6 +101,21 @@ pub enum Action {
         tool: Harness,
         name: String,
     },
+    Launch {
+        preview_token: Option<String>,
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+        project: String,
+    },
+    PreviewLaunch {
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+        project: String,
+    },
     LoginAccount {
         tool: Harness,
         name: String,
@@ -409,6 +424,17 @@ impl Review {
     }
 }
 
+// Each Controller retains one launch review until the next preview or a selected config change.
+// Review keeps raw settings private; Launch uses these values and the reviewed Git commit.
+struct ReviewedLaunch {
+    review: Review,
+    project: Value,
+    model: String,
+    server_url: String,
+    login: bool,
+    account: Option<PathBuf>,
+}
+
 pub struct Controller {
     health_probe: crate::health::Probe,
     settings: PathBuf,
@@ -422,6 +448,7 @@ pub struct Controller {
     account_archive: Option<(Harness, String, String)>,
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
+    launch_review: Option<ReviewedLaunch>,
 }
 impl Controller {
     pub fn new(config: Config, settings: PathBuf) -> Self {
@@ -437,6 +464,7 @@ impl Controller {
             account_archive: None,
             route_change: None,
             update_review: None,
+            launch_review: None,
         }
     }
     fn reload(&mut self) -> Result<(), String> {
@@ -446,6 +474,7 @@ impl Controller {
             self.route_reviews.clear();
             self.tool_review = None;
             self.route_change = None;
+            self.launch_review = None;
         }
         self.config = config;
 
@@ -1072,6 +1101,102 @@ impl Controller {
             }
             Action::AddAccount { tool, name } => {
                 accounts::add(tool, name.trim()).map(Reply::message)
+            }
+            Action::Launch {
+                tool,
+                account,
+                route,
+                id,
+                project,
+                preview_token,
+            } => {
+                let inputs =
+                    json!({"tool":tool,"account":account,"route":route,"id":id,"project":project});
+                let plan = self
+                    .launch_review
+                    .as_ref()
+                    .ok_or("Review the session before opening Terminal.")?;
+                plan.review.check(preview_token.as_deref(), &inputs)?;
+                let current = sessions::preview(std::path::Path::new(&project))?;
+                if current != plan.project {
+                    return Err(
+                        "The project changed since review. Review the session again.".into(),
+                    );
+                }
+                sessions::launch(
+                    tool,
+                    std::path::Path::new(
+                        plan.project["project"]
+                            .as_str()
+                            .ok_or("Missing reviewed project.")?,
+                    ),
+                    &plan.model,
+                    &plan.server_url,
+                    plan.login,
+                    plan.account.as_deref(),
+                    plan.project["revision"]
+                        .as_str()
+                        .ok_or("Missing reviewed commit.")?,
+                )
+                .map(Reply::message)
+            }
+            Action::PreviewLaunch {
+                tool,
+                account,
+                route,
+                id,
+                project,
+            } => {
+                if tool == Harness::CodexApp {
+                    return Err("Use Codex app’s workspace controls or choose Codex CLI.".into());
+                }
+                if harness::binary(tool).is_none() {
+                    return Err("Install the selected harness first.".into());
+                }
+                let inputs =
+                    json!({"tool":tool,"account":account,"route":route,"id":id,"project":project});
+                let review = Review::capture(
+                    inputs.clone(),
+                    vec![self.config.config_file.clone(), self.settings.clone()],
+                )?;
+                let app_config = Config::load(&self.settings)?;
+                review.check(Some(&review.token), &inputs)?;
+                if app_config.config_file != self.config.config_file {
+                    return Err("Review these changes again before applying them.".into());
+                }
+                let config = ServerConfig::parse(review.original()?).map_err(
+                    |_| "The server config contains invalid TOML. Open it in Settings to fix it.",
+                )?;
+                let route = current_route(&config, &route, Some(&id))?;
+                let login = login_mode(tool, &config, &route)?;
+                let account = account_path(tool, account.as_deref())?;
+                let project_review = sessions::preview(std::path::Path::new(&project))?;
+                let mut data = project_review.clone();
+                data["tool"] = json!(tool);
+                data["route"] = json!(route.id);
+                data["account_directory"] = json!(account);
+                data["server_url"] = json!(app_config.server_url);
+                data["login"] = json!(login);
+                if tool == Harness::Pi {
+                    data["settings_notice"] = json!(
+                        "Pi uses isolated session settings. \
+                         Personal settings and extensions are not copied."
+                    );
+                }
+                review.check(Some(&review.token), &inputs)?;
+                data["preview_token"] = json!(review.token);
+                self.launch_review = Some(ReviewedLaunch {
+                    review,
+                    project: project_review,
+                    model: route.id,
+                    server_url: app_config.server_url,
+                    login,
+                    account,
+                });
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
             }
             Action::LoginAccount { tool, name } => {
                 let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
