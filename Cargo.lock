@@ -5407,6 +5407,8 @@ dependencies = [
  "self-replace",
  "serde",
  "serde_json",
+ "shlex",
+ "strum",
  "switchyard-costs",
  "switchyard-protocol",
  "switchyard-runner",
@@ -5416,6 +5418,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "toml_edit 0.25.13+spec-1.1.0",
  "url",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
