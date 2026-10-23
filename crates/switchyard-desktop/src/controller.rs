@@ -962,3 +962,327 @@ fn update(settings: &std::path::Path) -> Result<String, String> {
         log.display()
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    // An algorithm switch must not give stale choices a revision for externally edited bytes.
+    fn algorithm_switches_keep_the_first_revision_and_external_edits_reject_it() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let settings = dir.path().join("desktop.toml");
+        let config = dir.path().join("server.toml");
+        let text = "[llm_clients.c]\n\
+                    base_url='http://localhost:1234'\n\
+                    [targets.m]\n\
+                    id='actual'\n\
+                    llm_client='c'\n\
+                    [routes.r]\n\
+                    id='public'\n\
+                    type='passthrough'\n\
+                    target='m'\n";
+        std::fs::write(&config, text).expect("config");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={config:?}\nrouting_log={:?}",
+                dir.path().join("log")
+            ),
+        )
+        .expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("load"), settings);
+        let first = controller
+            .dispatch(Action::Editor {
+                generation: 0,
+                route: "r".into(),
+                algorithm: "passthrough".into(),
+            })
+            .expect("editor");
+        let second = controller
+            .dispatch(Action::Editor {
+                generation: 0,
+                route: "r".into(),
+                algorithm: "random".into(),
+            })
+            .expect("switch roles");
+        assert_eq!(first.data["revision"], second.data["revision"]);
+        assert_eq!(
+            controller.snapshot().expect("snapshot").routes[0].revision,
+            first.data["revision"]
+        );
+        std::fs::write(&config, format!("{text}# external edit\n")).expect("external edit");
+        let latest = controller
+            .dispatch(Action::Editor {
+                generation: 0,
+                route: "r".into(),
+                algorithm: "passthrough".into(),
+            })
+            .expect("new editor");
+        assert_ne!(latest.data["revision"], first.data["revision"]);
+        let rejected = controller.dispatch(Action::PreviewRoute {
+            generation: 0,
+            route: "r".into(),
+            algorithm: "passthrough".into(),
+            choices: vec![Choice {
+                client: "c".into(),
+                model: "replacement".into(),
+            }],
+            revision: first.data["revision"].as_str().map(str::to_string),
+        });
+        assert!(rejected.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&config).expect("config"),
+            format!("{text}# external edit\n")
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    // A cached list must not let an untested key reach Keychain.
+    fn submitting_a_key_checks_upstream_even_when_refresh_is_false() {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().expect("directory");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let url = format!("http://{}/v1", listener.local_addr().expect("address"));
+        #[cfg(windows)]
+        assert_eq!(
+            switchyard_desktop::install::windows::saved_key(&url).expect("no saved key"),
+            None
+        );
+        let worker = std::thread::spawn(move || {
+            for _ in 0..200 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    stream.set_nonblocking(false).expect("blocking request");
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                        .expect("timeout");
+                    let mut request = Vec::new();
+                    let mut chunk = [0; 1024];
+                    for _ in 0..4 {
+                        let n = stream.read(&mut chunk).expect("request");
+                        request.extend_from_slice(&chunk[..n]);
+                        if n == 0 || request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 401 Unauthorized\r\n\
+                              Content-Length: 0\r\n\
+                              Connection: close\r\n\
+                              \r\n",
+                        )
+                        .expect("response");
+                    return String::from_utf8_lossy(&request).into_owned();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            String::new()
+        });
+        let settings = dir.path().join("settings.toml");
+        let routes = dir.path().join("routes.toml");
+        std::fs::write(
+            &routes,
+            format!(
+                "[llm_clients.c]\n\
+                 base_url={url:?}\n\
+                 format='openai_responses'\n\
+                 forward_auth=true\n\
+                 [targets.m]\n\
+                 id='actual'\n\
+                 llm_client='c'\n\
+                 [routes.r]\n\
+                 id='public'\n\
+                 type='passthrough'\n\
+                 target='m'\n"
+            ),
+        )
+        .expect("routes");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={routes:?}\nrouting_log={:?}",
+                dir.path().join("log")
+            ),
+        )
+        .expect("settings");
+        let cached =
+            json!({format!("{url}/models"): {"models":["cached"],"fetched_at":models::now()}})
+                .to_string();
+        let cache = dir.path().join(models::CACHE_FILE);
+        std::fs::write(&cache, &cached).expect("cache");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        let cached_reply = controller
+            .dispatch(Action::Models {
+                client: "c".into(),
+                refresh: false,
+                key: None,
+            })
+            .expect("cached list");
+        assert_eq!(cached_reply.data["warning"], false);
+        assert_eq!(cached_reply.data["source"], "cache");
+        // A failed refresh must not report the cached list as a successful upstream fetch.
+        let failed_refresh = controller
+            .dispatch(Action::Models {
+                client: "c".into(),
+                refresh: true,
+                key: None,
+            })
+            .expect("cached fallback");
+        assert_eq!(failed_refresh.data["warning"], true);
+        assert_eq!(failed_refresh.data["source"], "cache");
+        assert_eq!(failed_refresh.data["models"], json!(["cached"]));
+        let result = controller.dispatch(Action::Models {
+            client: "c".into(),
+            refresh: false,
+            key: Some("rejected-fixture-key".into()),
+        });
+        let request = worker.join().expect("worker");
+        assert!(result.err().expect("rejected key").contains("401"));
+        assert!(request.starts_with("GET /v1/models "));
+        assert!(request.contains("Authorization: Bearer rejected-fixture-key"));
+        assert_eq!(std::fs::read_to_string(cache).expect("cache"), cached);
+        #[cfg(windows)]
+        assert_eq!(
+            switchyard_desktop::install::windows::saved_key(&url).expect("rejected key not saved"),
+            None
+        );
+        std::fs::write(
+            &routes,
+            "[llm_clients.c]\n\
+             base_url='http://127.0.0.1:9/v1'\n\
+             format='openai_responses'\n\
+             [targets.m]\n\
+             id='actual'\n\
+             llm_client='c'\n\
+             [routes.r]\n\
+             id='public'\n\
+             type='passthrough'\n\
+             target='m'\n",
+        )
+        .expect("routes");
+        let result = controller.dispatch(Action::Models {
+            client: "c".into(),
+            refresh: false,
+            key: Some("unused-fixture-key".into()),
+        });
+        assert!(
+            result
+                .err()
+                .expect("unused key")
+                .contains("does not accept a model-list key")
+        );
+    }
+    #[test]
+    // Matching route names in two files must not let an old draft edit the newly selected file.
+    fn stale_editor_rejects_after_settings_change_without_writes() {
+        let dir = tempfile::tempdir().expect("directory");
+        let settings = dir.path().join("settings.toml");
+        let first = dir.path().join("first.toml");
+        let second = dir.path().join("second.toml");
+        let text = "[llm_clients.c]\n\
+                    base_url='https://example.com/v1'\n\
+                    format='openai_responses'\n\
+                    [targets.m]\n\
+                    id='actual'\n\
+                    llm_client='c'\n\
+                    [routes.r]\n\
+                    id='public'\n\
+                    type='passthrough'\n\
+                    target='m'\n";
+        std::fs::write(&first, text).expect("first");
+        std::fs::write(&second, text).expect("second");
+        let write_settings = |path: &std::path::Path| {
+            std::fs::write(
+                &settings,
+                format!(
+                    "config_file={path:?}\nrouting_log={:?}",
+                    dir.path().join("log")
+                ),
+            )
+            .expect("settings");
+        };
+        write_settings(&first);
+        let mut controller =
+            Controller::new(Config::load(&settings).expect("settings"), settings.clone());
+        let snapshot = controller.snapshot().expect("snapshot");
+        assert_eq!(
+            snapshot.routes[0].tiers,
+            Some(vec![Some("Capable".to_string())])
+        );
+        let generation = snapshot.generation;
+        write_settings(&second);
+        for action in [
+            Action::Editor {
+                generation,
+                route: "r".into(),
+                algorithm: "passthrough".into(),
+            },
+            Action::Apply {
+                generation,
+                route: "r".into(),
+                algorithm: "passthrough".into(),
+                choices: vec![Choice {
+                    client: "c".into(),
+                    model: "changed".into(),
+                }],
+                revision: None,
+            },
+        ] {
+            assert!(controller.dispatch(action).is_err());
+        }
+        assert_eq!(std::fs::read_to_string(&second).expect("second"), text);
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 3);
+        assert_eq!(
+            controller.snapshot().expect("snapshot").generation,
+            generation + 1
+        );
+    }
+
+    #[test]
+    fn unsupported_routes_are_read_only_before_any_write() {
+        let dir = tempfile::tempdir().expect("directory");
+        let config = dir.path().join("server.toml");
+        let settings = dir.path().join("app.toml");
+        std::fs::write(
+            &settings,
+            format!("config_file={config:?}\nserver_url='http://127.0.0.1:0'"),
+        )
+        .expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        // These fixtures use valid server algorithms that the app cannot edit.
+        for fields in [
+            "type='noop'",
+            "type='prefill_router'\ntargets=['answer']\ncheckpoint='router.pt'",
+            "type='llm_classifier'\n\
+             mode='custom'\n\
+             models={judge=['judge'],any=['answer']}\n\
+             default_target='any'\n\
+             prompt='Select a target.'\n\
+             response_schema='{\"type\":\"object\"}'\n\
+             policy={type='target_selector',selector='/target'}",
+        ] {
+            let _: switchyard_runner::AlgorithmSpec =
+                toml::from_str(fields).expect("server route schema");
+            let original = format!("[routes.r]\nid='public'\n{fields}\n");
+            std::fs::write(&config, &original).expect("config");
+            assert!(!controller.snapshot().expect("snapshot").routes[0].editable);
+            for kind in ["editor", "apply"] {
+                let mut raw =
+                    json!({"kind":kind,"generation":0,"route":"r","algorithm":"passthrough"});
+                if kind == "apply" {
+                    raw["choices"] = json!([]);
+                }
+                let action = serde_json::from_value(raw).expect("action");
+                assert_eq!(
+                    controller.dispatch(action).err().expect("read only"),
+                    "This route must be edited in the server config file."
+                );
+            }
+            assert_eq!(std::fs::read_to_string(&config).expect("config"), original);
+            assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
+        }
+    }
+}
