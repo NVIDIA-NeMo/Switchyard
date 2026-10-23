@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bounded, host-supplied target requirements and stateless request admission.
-//! Routes support 64 requirement sets over 32 labels of at most 128 bytes each.
+//! Bounded, host-supplied target requirements and monotonic task admission.
+//! Routes support 64 requirement sets over 32 labels of at most 128 bytes each. Task retention
+//! stores at most 4,096 nonempty requirement sets under task IDs of at most 512 bytes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
+use parking_lot::Mutex;
 use serde_json::Value;
 use switchyard_protocol::{LlmClientError, Request, WireFormat};
 
@@ -15,16 +17,19 @@ const MAX_LABEL_BYTES: usize = 128;
 const MAX_REQUIREMENT_SETS: usize = 64;
 // A JSON Unicode escape can use six bytes per input byte, plus separators and brackets.
 const MAX_METADATA_BYTES: usize = MAX_LABELS * (MAX_LABEL_BYTES * 6 + 3) + 2;
+const MAX_TASK_ID_BYTES: usize = 512;
+const MAX_TASKS: usize = 4_096;
 const RESPONSES_STATE_FIELDS: [&str; 2] = ["previous_response_id", "conversation"];
 
 /// Labels that every target serving one request must satisfy.
 pub(crate) type Requirements = BTreeSet<String>;
 
-/// Admits configured requirement sets independently for each request.
+/// Admits configured requirement sets, retaining authoritative requirements by task.
 pub(crate) struct EligibilityPolicy {
     require_explicit_requirements: bool,
     accepted_requirement_sets: BTreeSet<Requirements>,
     vocabulary: Requirements,
+    tasks: Option<Mutex<HashMap<String, Requirements>>>,
 }
 
 impl EligibilityPolicy {
@@ -32,6 +37,7 @@ impl EligibilityPolicy {
     pub(crate) fn new(
         require_explicit_requirements: bool,
         accepted_requirement_sets: Vec<Vec<String>>,
+        task_scope: bool,
     ) -> Result<Self, LlmClientError> {
         let mut configured = BTreeSet::from([Requirements::new()]);
         let mut vocabulary = Requirements::new();
@@ -49,6 +55,7 @@ impl EligibilityPolicy {
             require_explicit_requirements,
             accepted_requirement_sets: configured,
             vocabulary,
+            tasks: task_scope.then(Mutex::default),
         })
     }
 
@@ -57,7 +64,7 @@ impl EligibilityPolicy {
         &self.accepted_requirement_sets
     }
 
-    /// Validates trusted requirements and rejects unconfigured sets or stored provider state.
+    /// Retains known requirements before rejecting an unsupported accumulated set.
     pub(crate) fn admit(&self, request: &Request) -> Result<Requirements, LlmClientError> {
         let has_signal = has_external_requirements(request);
         if self.require_explicit_requirements && !has_signal {
@@ -65,9 +72,28 @@ impl EligibilityPolicy {
                 "route requires explicit external target requirements",
             ));
         }
-        let requirements = external_requirements(request)?;
+        let mut requirements = external_requirements(request)?;
         if !requirements.is_subset(&self.vocabulary) {
             return Err(invalid("target requirements contain an unknown label"));
+        }
+
+        if let Some(tasks) = &self.tasks {
+            let task_id = task_id(request)?;
+            // Persist tightening even when no lane can serve the resulting union. Otherwise a
+            // later request could drop the new requirement and reopen a less restrictive lane.
+            let mut tasks = tasks.lock();
+            if let Some(retained) = tasks.get_mut(task_id) {
+                retained.extend(requirements);
+                requirements = retained.clone();
+            } else {
+                // Unknown tasks must stay closed when new restrictions cannot be remembered.
+                if tasks.len() >= MAX_TASKS {
+                    return Err(invalid("target requirement task capacity exhausted"));
+                }
+                if !requirements.is_empty() {
+                    tasks.insert(task_id.to_string(), requirements.clone());
+                }
+            }
         }
         if !self.accepted_requirement_sets.contains(&requirements) {
             return Err(invalid("target requirement set is not configured"));
@@ -164,6 +190,15 @@ fn record_labels(request: &mut Request, requirements: &Requirements) -> Result<(
     Ok(())
 }
 
+fn task_id(request: &Request) -> Result<&str, LlmClientError> {
+    request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.task_id.as_deref())
+        .filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID_BYTES && id.trim() == *id)
+        .ok_or_else(|| invalid("target requirements need a valid task id"))
+}
+
 fn invalid(message: &'static str) -> LlmClientError {
     LlmClientError::InvalidRequest {
         message: message.to_string(),
@@ -241,13 +276,14 @@ mod tests {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    fn policy(accepted_requirement_sets: &[&[&str]]) -> EligibilityPolicy {
+    fn policy(accepted_requirement_sets: &[&[&str]], task_scope: bool) -> EligibilityPolicy {
         EligibilityPolicy::new(
             false,
             accepted_requirement_sets
                 .iter()
                 .map(|labels| labels.iter().map(|label| (*label).to_string()).collect())
                 .collect(),
+            task_scope,
         )
         .expect("test requirement sets should be valid")
     }
@@ -257,6 +293,12 @@ mod tests {
         if !names.is_empty() {
             require_target_labels(&mut request, names).expect("test labels should be valid");
         }
+        request
+    }
+
+    fn task_request(task: &str, names: &[&str]) -> Request {
+        let mut request = request(names);
+        request.metadata.get_or_insert_default().task_id = Some(task.to_string());
         request
     }
 
@@ -277,11 +319,11 @@ mod tests {
     fn external_requirements_need_known_labels() -> Result<(), LlmClientError> {
         let marked = request(&["private"]);
         let configured = vec![vec!["private".to_string()]];
-        let accepts_signal = EligibilityPolicy::new(false, configured)?;
+        let accepts_signal = EligibilityPolicy::new(false, configured, false)?;
         assert!(has_external_requirements(&marked));
         assert_eq!(accepts_signal.admit(&marked)?, labels(&["private"]));
         assert!(accepts_signal.admit(&request(&[]))?.is_empty());
-        let policy = policy(&[&["eu"]]);
+        let policy = policy(&[&["eu"]], false);
         assert!(policy.admit(&marked).is_err());
         assert_eq!(policy.admit(&request(&["eu"]))?, labels(&["eu"]));
         assert!(policy.admit(&request(&["unknown"])).is_err());
@@ -298,21 +340,24 @@ mod tests {
         Ok(())
     }
 
-    // Explicit empty signals are accepted; absent and malformed signals are rejected.
+    // Explicit empty signals do not clear task history; absent signals are always rejected.
     #[test]
     fn required_signals_distinguish_missing_empty_and_malformed_markers()
     -> Result<(), LlmClientError> {
-        let policy = EligibilityPolicy::new(true, vec![vec!["private".into()]])?;
-        let missing = request(&[]);
+        let policy = EligibilityPolicy::new(true, vec![vec!["private".into()]], true)?;
+        let missing = task_request("task", &[]);
         assert!(policy.admit(&missing).is_err());
 
         let mut empty = missing.clone();
         require_target_labels(&mut empty, std::iter::empty::<&str>())?;
         assert!(policy.admit(&empty)?.is_empty());
 
-        assert_eq!(policy.admit(&request(&["private"]))?, labels(&["private"]));
+        assert_eq!(
+            policy.admit(&task_request("task", &["private"]))?,
+            labels(&["private"])
+        );
         assert!(policy.admit(&missing).is_err());
-        assert!(policy.admit(&empty)?.is_empty());
+        assert_eq!(policy.admit(&empty)?, labels(&["private"]));
 
         empty
             .metadata
@@ -330,7 +375,7 @@ mod tests {
     #[test]
     fn request_requirements_are_stateless_and_require_configured_sets() -> Result<(), LlmClientError>
     {
-        let policy = policy(&[&["eu"], &["private"]]);
+        let policy = policy(&[&["eu"], &["private"]], false);
         assert_eq!(policy.admit(&request(&["eu"]))?, labels(&["eu"]));
         assert_eq!(policy.admit(&request(&["private"]))?, labels(&["private"]));
         assert!(policy.admit(&request(&["eu", "private"])).is_err());
@@ -338,15 +383,78 @@ mod tests {
         Ok(())
     }
 
+    // An unsupported union stays retained, so omitting a requirement cannot reopen the task.
+    #[test]
+    fn task_requirements_tighten_even_without_a_configured_union() -> Result<(), LlmClientError> {
+        let restricted = policy(&[&["eu"], &["private"]], true);
+        assert_eq!(
+            restricted.admit(&task_request("task", &["eu"]))?,
+            labels(&["eu"])
+        );
+        assert!(
+            restricted
+                .admit(&task_request("task", &["private"]))
+                .is_err()
+        );
+        assert!(restricted.admit(&task_request("task", &[])).is_err());
+        assert_eq!(
+            restricted.admit(&task_request("other", &[]))?,
+            Requirements::new()
+        );
+
+        let concurrent = policy(&[&["eu"], &["private"], &["eu", "private"]], true);
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            for label in ["eu", "private"] {
+                let policy = &concurrent;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    policy
+                        .admit(&task_request("shared", &[label]))
+                        .expect("concurrent requirements should be admitted");
+                });
+            }
+        });
+        assert_eq!(
+            concurrent.admit(&task_request("shared", &[]))?,
+            labels(&["eu", "private"])
+        );
+        Ok(())
+    }
+
+    // Capacity exhaustion rejects new tasks while existing tasks can still acquire labels.
+    #[test]
+    fn task_capacity_does_not_prevent_existing_tasks_from_tightening() -> Result<(), LlmClientError>
+    {
+        let policy = policy(&[&["eu"], &["private"], &["eu", "private"]], true);
+        let tasks = policy
+            .tasks
+            .as_ref()
+            .expect("task policy should have state");
+        tasks
+            .lock()
+            .extend((0..MAX_TASKS).map(|task| (task.to_string(), labels(&["eu"]))));
+        assert!(policy.admit(&task_request("new", &["private"])).is_err());
+        assert!(policy.admit(&task_request("new", &[])).is_err());
+        assert_eq!(
+            policy.admit(&task_request("0", &["private"]))?,
+            labels(&["eu", "private"])
+        );
+        assert!(policy.admit(&Request::default()).is_err());
+        Ok(())
+    }
+
     #[test]
     fn configuration_and_metadata_are_bounded() {
         assert!(
-            EligibilityPolicy::new(false, vec![vec!["x".repeat(MAX_LABEL_BYTES + 1)]]).is_err()
+            EligibilityPolicy::new(false, vec![vec!["x".repeat(MAX_LABEL_BYTES + 1)]], false)
+                .is_err()
         );
         let vocabulary = (0..=MAX_LABELS)
             .map(|index| vec![format!("label_{index}")])
             .collect();
-        assert!(EligibilityPolicy::new(false, vocabulary).is_err());
+        assert!(EligibilityPolicy::new(false, vocabulary, false).is_err());
         let accepted_requirement_sets = (1..=MAX_REQUIREMENT_SETS)
             .map(|bits| {
                 (0..7)
@@ -355,8 +463,8 @@ mod tests {
                     .collect()
             })
             .collect();
-        assert!(EligibilityPolicy::new(false, accepted_requirement_sets).is_err());
-        let policy = policy(&[]);
+        assert!(EligibilityPolicy::new(false, accepted_requirement_sets, false).is_err());
+        let policy = policy(&[], false);
         let mut request = Request::default();
         request
             .metadata

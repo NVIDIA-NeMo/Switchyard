@@ -512,6 +512,58 @@ mod tests {
         }
     }
 
+    // Rejected content must not erase authoritative requirements supplied with that turn.
+    #[tokio::test]
+    async fn rejected_turn_retains_requirements() {
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(RecordingClient {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let build_lane = |name: &str| {
+            lane(
+                Arc::new(Passthrough),
+                Arc::clone(&client),
+                RuntimeModels::new(HashMap::from([(Category::Any, vec![name.into()])])),
+                name,
+            )
+        };
+        let groups = BTreeMap::from([
+            (Requirements::from(["eu".into()]), build_lane("eu")),
+            (
+                Requirements::from(["eu".into(), "private".into()]),
+                build_lane("private-eu"),
+            ),
+        ]);
+        let policy = EligibilityPolicy::new(
+            false,
+            vec![vec!["eu".into()], vec!["eu".into(), "private".into()]],
+            true,
+        )
+        .expect("configured requirement sets");
+        let route = Route::from_lane(
+            build_lane("standard"),
+            None,
+            ModelCapabilities::default(),
+            Vec::new(),
+        )
+        .with_eligibility(policy, groups);
+        let mut request = Request::default();
+        request.metadata.get_or_insert_default().task_id = Some("task".into());
+        crate::require_target_labels(&mut request, ["eu"]).expect("trusted labels");
+        let outcome = route.decide(request.clone()).await.expect("EU decision");
+        assert_eq!(outcome.selected_model_id().expect("model"), "eu");
+
+        crate::require_target_labels(&mut request, ["private"]).expect("trusted labels");
+        request.llm_request.extensions.fields.insert(
+            "previous_response_id".into(),
+            Value::String("hidden".into()),
+        );
+        assert!(route.decide(request).await.is_err());
+        let mut next = Request::default();
+        next.metadata.get_or_insert_default().task_id = Some("task".into());
+        let outcome = route.decide(next).await.expect("retained decision");
+        assert_eq!(outcome.selected_model_id().expect("model"), "private-eu");
+    }
+
     // Admission selects one group for routing, completion fallbacks, auxiliaries and hosted calls.
     #[tokio::test]
     async fn requirements_cover_judges_fallbacks_and_auxiliary_calls() {
@@ -544,7 +596,7 @@ mod tests {
         assert!(route.decide(eligible_request()).await.is_err());
         let requirements = Requirements::from(["eu".into(), "private".into()]);
         let route = route.with_eligibility(
-            EligibilityPolicy::new(false, vec![requirements.iter().cloned().collect()])
+            EligibilityPolicy::new(false, vec![requirements.iter().cloned().collect()], false)
                 .expect("configured labels"),
             BTreeMap::from([(requirements, restricted)]),
         );
@@ -652,7 +704,7 @@ mod tests {
             ],
         )
         .with_eligibility(
-            EligibilityPolicy::new(false, vec![requirements.iter().cloned().collect()])
+            EligibilityPolicy::new(false, vec![requirements.iter().cloned().collect()], false)
                 .expect("configured labels"),
             BTreeMap::from([(requirements, restricted)]),
         );
