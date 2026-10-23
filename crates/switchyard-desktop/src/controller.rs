@@ -1436,6 +1436,133 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
     }
 
+    #[test]
+    // A custom destination must use the same files for preview, installation, backup, and restore.
+    fn custom_settings_are_validated_and_restored() {
+        let dir = tempfile::tempdir().expect("directory");
+        for (tool, _) in harness::HARNESSES {
+            let file = dir.path().join(if *tool == Harness::Pi {
+                "models.json"
+            } else {
+                "custom-settings"
+            });
+            assert_eq!(
+                install_paths(*tool, None, Some(file.to_str().expect("path"))).expect("custom")[0],
+                file
+            );
+        }
+        for (account, file) in [
+            (None, "relative.json"),
+            (None, ""),
+            (Some("account"), "/tmp/settings.json"),
+            (None, "/tmp/settings\n.json"),
+        ] {
+            assert!(install_paths(Harness::Claude, account, Some(file)).is_err());
+        }
+        assert!(install_paths(Harness::Pi, None, Some("/tmp/settings.json")).is_err());
+        assert!(install_paths(Harness::Claude, None, dir.path().to_str()).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 0);
+        let settings = dir.path().join("app.toml");
+        let config = dir.path().join("server.toml");
+        std::fs::write(
+            &config,
+            "[llm_clients.c]\n\
+             base_url='https://example.com/v1'\n\
+             format='openai_chat'\n\
+             [targets.m]\n\
+             id='actual'\n\
+             llm_client='c'\n\
+             [routes.r]\n\
+             id='public'\n\
+             type='passthrough'\n\
+             target='m'\n",
+        )
+        .expect("config");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={config:?}\nrouting_log={:?}",
+                dir.path().join("log")
+            ),
+        )
+        .expect("settings");
+        let custom = dir.path().join("custom.json");
+        std::fs::write(&custom, "{\"user\":true}").expect("custom");
+        let mut controller = Controller::new(Config::load(&settings).expect("settings"), settings);
+        let file = Some(custom.display().to_string());
+        let preview = controller
+            .dispatch(Action::PreviewInstall {
+                tool: Harness::Claude,
+                account: None,
+                settings_file: file.clone(),
+                route: "r".into(),
+                id: "public".into(),
+            })
+            .expect("preview");
+        assert!(
+            preview.data["changes"]
+                .as_array()
+                .expect("diff")
+                .iter()
+                .any(|change| change["file"] == custom.display().to_string())
+        );
+        std::fs::write(&custom, "{\"external\":true}").expect("external edit");
+        let rejected = controller.dispatch(Action::Install {
+            tool: Harness::Claude,
+            account: None,
+            settings_file: file.clone(),
+            route: "r".into(),
+            id: "public".into(),
+            preview_token: preview.data["preview_token"].as_str().map(str::to_string),
+        });
+        assert!(rejected.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&custom).expect("custom"),
+            "{\"external\":true}"
+        );
+        assert!(
+            !custom
+                .with_file_name("custom.json.switchyard-original")
+                .exists()
+        );
+        std::fs::write(&custom, "{\"user\":true}").expect("restore fixture");
+        controller
+            .dispatch(Action::Install {
+                tool: Harness::Claude,
+                account: None,
+                settings_file: file.clone(),
+                route: "r".into(),
+                id: "public".into(),
+                preview_token: preview.data["preview_token"].as_str().map(str::to_string),
+            })
+            .expect("install");
+        assert_eq!(
+            preview.data["proposed"],
+            harness::inspect(Harness::Claude, std::slice::from_ref(&custom)).expect("inspect")
+        );
+        let restore_preview = controller
+            .dispatch(Action::PreviewRestore {
+                tool: Harness::Claude,
+                account: None,
+                settings_file: file.clone(),
+            })
+            .expect("restore preview");
+        controller
+            .dispatch(Action::Restore {
+                tool: Harness::Claude,
+                account: None,
+                settings_file: file,
+                preview_token: restore_preview.data["preview_token"]
+                    .as_str()
+                    .map(str::to_string),
+            })
+            .expect("restore");
+        assert_eq!(
+            std::fs::read_to_string(custom).expect("custom"),
+            "{\"user\":true}"
+        );
+    }
+
     #[cfg(any(target_os = "macos", windows))]
     #[test]
     // A cached list must not let an untested key reach Keychain.
