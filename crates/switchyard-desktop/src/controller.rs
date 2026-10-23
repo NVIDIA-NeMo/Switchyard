@@ -4,14 +4,30 @@
 //! The terminal controller reloads settings and combines usage and server health into snapshots.
 //! It retains the log reader and health probe across refreshes.
 
-use crate::{config::Config, history, pricing, rollup};
-use serde::Serialize;
+use crate::{config::Config, history, pricing, rollup, server};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
 
-/// Snapshot holds the terminal app's usage, recent calls, server health, errors, and refresh interval.
+#[derive(Clone, Debug, Deserialize, strum::EnumDiscriminants)]
+#[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Action {
+    OpenLogs {},
+    OpenUpdateLog {},
+    OpenConfig {},
+    OpenPrices {},
+    OpenSettings {},
+    CheckConfig {},
+    ServerKeys {},
+}
+
+/// Snapshot holds everything that the apps show. The terminal app destructures it without
+/// `..`, so adding a field breaks the build until the terminal app shows it.
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub update_status: Value,
+    pub settings: Option<AppSettings>,
     pub data_state: DataState,
     pub metrics: Metrics,
     pub today: chrono::NaiveDate,
@@ -26,6 +42,21 @@ pub struct Snapshot {
     pub limited: bool,
     pub errors: Vec<String>,
     pub refresh_seconds: u64,
+}
+
+/// AppSettings holds every app setting and the file that stores them. `Controller::snapshot`
+/// destructures `Config` without `..`, so adding a setting to `Config` breaks the build until
+/// it is added here too.
+#[derive(Clone, Default, Serialize)]
+pub struct AppSettings {
+    pub path: PathBuf,
+    pub server_url: String,
+    pub routing_log: PathBuf,
+    pub config_file: PathBuf,
+    pub launchd_label: String,
+    pub refresh_seconds: u64,
+    pub baseline_model: String,
+    pub prices_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -65,6 +96,20 @@ pub struct Metrics {
 pub struct Counts {
     pub requests: u64,
     pub tokens: u64,
+}
+
+#[derive(Serialize)]
+pub struct Reply {
+    pub message: String,
+    pub data: Value,
+}
+impl Reply {
+    fn message(message: String) -> Self {
+        Self {
+            message,
+            data: Value::Null,
+        }
+    }
 }
 
 pub struct Controller {
@@ -133,10 +178,30 @@ impl Controller {
             history::History::default()
         });
         let activity = history::hourly_calls(&history.entries, chrono::Utc::now());
-        let server_url = self.config.server_url.clone();
-        let routing_log = self.config.routing_log.clone();
-        let refresh_seconds = self.config.refresh_seconds;
+        let Config {
+            server_url,
+            routing_log,
+            config_file,
+            launchd_label,
+            refresh_seconds,
+            baseline_model,
+            prices_file,
+        } = self.config.clone();
+        let update_status = install_metadata(&self.settings)
+            .and_then(|path| switchyard_desktop::install::update_status(&path))
+            .unwrap_or_else(|error| json!({"state":"unavailable","message":error}));
         Ok(Snapshot {
+            update_status,
+            settings: Some(AppSettings {
+                path: self.settings.clone(),
+                server_url: server_url.clone(),
+                routing_log: routing_log.clone(),
+                config_file,
+                launchd_label,
+                refresh_seconds,
+                baseline_model: baseline_model.clone(),
+                prices_file,
+            }),
             data_state: DataState {
                 usage: Source {
                     state: usage_state,
@@ -165,7 +230,7 @@ impl Controller {
             today,
             analytics: usage,
             estimates,
-            baseline_model: self.config.baseline_model.clone(),
+            baseline_model,
             activity,
             sessions: history.sessions(),
             entries: history.entries,
@@ -175,6 +240,89 @@ impl Controller {
             refresh_seconds: refresh_seconds.max(1),
         })
     }
+    /// The TUI uses these file paths to run an editor in the foreground.
+    pub fn editor_target(&mut self, action: &Action) -> Result<Option<PathBuf>, String> {
+        match action {
+            Action::OpenSettings {} => Ok(Some(self.settings.clone())),
+            Action::OpenConfig {} => {
+                self.reload()?;
+                Ok(Some(self.config.config_file.clone()))
+            }
+            // When `prices_file` is unset, this arm returns `None` and `dispatch` describes the
+            // bundled rates.
+            Action::OpenPrices {} => {
+                self.reload()?;
+                Ok(self.config.prices_file.clone())
+            }
+            Action::OpenUpdateLog {} => self.update_log().map(Some),
+            Action::OpenLogs {} => logs_dir().map(Some),
+            _ => Ok(None),
+        }
+    }
+    fn update_log(&self) -> Result<PathBuf, String> {
+        let metadata =
+            switchyard_desktop::install::Settings::load(&install_metadata(&self.settings)?)?;
+        Ok(metadata.sy_home.join("logs/update.log"))
+    }
+    pub fn dispatch(&mut self, action: Action) -> Result<Reply, String> {
+        if matches!(action, Action::OpenSettings {}) {
+            server::command("open", &[&self.settings.display().to_string()])?;
+            return Ok(Reply::message("Opened app settings.".into()));
+        }
+        self.reload()?;
+        match action {
+            Action::OpenLogs {} => {
+                server::command("open", &[&logs_dir()?.display().to_string()])?;
+                Ok(Reply::message("Opened Switchyard logs.".into()))
+            }
+            Action::CheckConfig {} => server::check_config(&self.config)
+                .map(|()| Reply::message("Server config check passed.".into())),
+            Action::ServerKeys {} => Ok(Reply {
+                message: String::new(),
+                data: json!({"keys": server::server_keys(&self.config)?, "store": switchyard_desktop::install::credentials::STORE}),
+            }),
+            Action::OpenSettings {} => unreachable!(),
+            Action::OpenUpdateLog {} => {
+                let log = self.update_log()?;
+                server::command("open", &[&log.display().to_string()])?;
+                Ok(Reply::message("Opened the update log.".into()))
+            }
+            Action::OpenConfig {} => {
+                server::command("open", &[&self.config.config_file.display().to_string()])?;
+                Ok(Reply::message(
+                    "Opened the server config in your default editor.".into(),
+                ))
+            }
+            Action::OpenPrices {} => {
+                let Some(path) = self.config.prices_file.as_ref() else {
+                    return Ok(Reply::message("Bundled model prices are active. To use custom rates, set pricing_file in app settings and pass the same file to the server with --pricing-file.".into()));
+                };
+                server::command("open", &[&path.display().to_string()])?;
+                Ok(Reply::message(
+                    "Opened the model prices in your default editor. Restart the server after \
+                     you save them; it reads the prices when it starts."
+                        .into(),
+                ))
+            }
+        }
+    }
+}
+fn logs_dir() -> Result<PathBuf, String> {
+    crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
+}
+
+fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = switchyard_desktop::install::bundle_metadata(&executable);
+    let metadata = if bundle.is_file() {
+        bundle
+    } else {
+        settings
+            .parent()
+            .ok_or("The settings file has no parent directory.")?
+            .join("install.toml")
+    };
+    Ok(metadata)
 }
 
 #[cfg(test)]
