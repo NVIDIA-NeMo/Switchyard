@@ -6,7 +6,7 @@
 use serde_json::Value;
 
 /// Identity and optional algorithm evidence attached to a successful routing outcome.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct OutcomeMetadata {
     outcome_id: String,
     /// Stable name of the algorithm that produced the outcome.

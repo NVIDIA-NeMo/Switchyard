@@ -346,7 +346,9 @@ returns the selected target and ordered fallbacks with their model, format, base
 `extra_body`. It does not make a post-routing answer call. Routing-time calls still execute, and
 response-dependent algorithms such as escalation and advisor routing may produce an answer while
 deciding. When they do, the endpoint includes the buffered answer as `response`, encoded in
-`input_format`; otherwise the field is omitted.
+`input_format`; otherwise the field is omitted. When the algorithm attaches outcome metadata, the
+endpoint returns it as `metadata`, with the outcome ID, the algorithm name and the algorithm's
+evidence.
 
 For `stage_router`, `algorithm_stats.stage_router` groups routing decisions by source and semantic
 target and summarizes its score, confidence, and input-dimension histograms. These values reset

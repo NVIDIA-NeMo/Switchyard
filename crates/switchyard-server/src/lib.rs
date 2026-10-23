@@ -140,6 +140,8 @@ struct DecisionResponse {
     selected: DecisionTargetResponse,
     fallbacks: Vec<DecisionTargetResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<libsy::OutcomeMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     response: Option<Value>,
 }
 
@@ -284,6 +286,7 @@ impl ServerState {
         Some(DecisionResponse {
             selected: convert(description.selected),
             fallbacks: description.fallbacks.into_iter().map(convert).collect(),
+            metadata: description.metadata,
             response,
         })
     }
