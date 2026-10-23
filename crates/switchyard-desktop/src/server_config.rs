@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use toml_edit::{DocumentMut, Item, TableLike};
+use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
 
 /// Tier identifies the part a model plays in a route. A choice made for one algorithm carries
 /// over to the role with the same tier when the user switches algorithms.
@@ -30,6 +30,11 @@ pub struct Algorithm {
     /// This field lists roles in display order. The list is empty for
     /// `random`, whose roles are the entries of its `targets` list.
     roles: &'static [RoleSpec],
+    /// This field lists settings written when a route switches to this type. They
+    /// match the values the routing docs use in their examples.
+    settings: &'static [(&'static [&'static str], Setting)],
+    /// This field records whether the type accepts a nested `subagents` policy.
+    subagents: bool,
 }
 
 /// RoleSpec describes one role of an algorithm.
@@ -41,6 +46,21 @@ struct RoleSpec {
     tier: Tier,
     /// This field names the key path to the role's target under the route.
     path: &'static [&'static str],
+}
+
+#[derive(Debug)]
+enum Setting {
+    Text(&'static str),
+    Number(f64),
+}
+
+impl Setting {
+    fn value(&self) -> Value {
+        match self {
+            Self::Text(text) => Value::from(*text),
+            Self::Number(number) => Value::from(*number),
+        }
+    }
 }
 
 const RANDOM: &str = "random";
@@ -59,6 +79,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
             tier: Tier::Capable,
             path: &["target"],
         }],
+        settings: &[],
+        subagents: true,
     },
     Algorithm {
         kind: RANDOM,
@@ -66,6 +88,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
         summary: "This algorithm splits requests at random between models \
                   for A/B tests and baselines.",
         roles: &[],
+        settings: &[],
+        subagents: false,
     },
     Algorithm {
         kind: "llm_classifier",
@@ -91,6 +115,11 @@ pub const ALGORITHMS: &[Algorithm] = &[
                 path: &["weak_target"],
             },
         ],
+        settings: &[
+            (&["mode"], Setting::Text("capability")),
+            (&["base_threshold"], Setting::Number(0.5)),
+        ],
+        subagents: false,
     },
     Algorithm {
         kind: "composite",
@@ -117,6 +146,15 @@ pub const ALGORITHMS: &[Algorithm] = &[
                 path: &["stage", "efficient_target"],
             },
         ],
+        settings: &[
+            (&["classifier", "base_threshold"], Setting::Number(0.5)),
+            (
+                &["classifier", "classify_trigger"],
+                Setting::Text("user_turn"),
+            ),
+            (&["stage", "confidence_threshold"], Setting::Number(0.5)),
+        ],
+        subagents: true,
     },
     Algorithm {
         kind: "stage_router",
@@ -137,6 +175,11 @@ pub const ALGORITHMS: &[Algorithm] = &[
                 path: &["efficient_target"],
             },
         ],
+        settings: &[
+            (&["picker"], Setting::Text("efficient_first")),
+            (&["confidence_threshold"], Setting::Number(0.5)),
+        ],
+        subagents: true,
     },
     Algorithm {
         kind: "advisor",
@@ -157,6 +200,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
                 path: &["advisor_target"],
             },
         ],
+        settings: &[],
+        subagents: false,
     },
     Algorithm {
         kind: "plan_execute",
@@ -177,6 +222,8 @@ pub const ALGORITHMS: &[Algorithm] = &[
                 path: &["efficient_target"],
             },
         ],
+        settings: &[],
+        subagents: false,
     },
     Algorithm {
         kind: "auto",
@@ -196,7 +243,33 @@ pub const ALGORITHMS: &[Algorithm] = &[
                 path: &["efficient_target"],
             },
         ],
+        settings: &[],
+        subagents: false,
     },
+];
+
+/// COMMON_ROUTE_KEYS lists keys that every route type accepts. Switching types keeps these and removes
+/// the rest, so settings of the old type cannot fail the new type's checks.
+const COMMON_ROUTE_KEYS: [&str; 6] = [
+    "id",
+    "type",
+    "context_window",
+    "tool_calling",
+    "reasoning",
+    "vision",
+];
+
+/// REQUEST_SETTINGS lists target settings that change the request body. The server keeps one
+/// target per model on a client, so it rejects two targets that name the
+/// same model on the same client with different values for these.
+const REQUEST_SETTINGS: [&str; 3] = ["omit_body_fields", "reasoning_effort", "extra_body"];
+
+/// TARGET_SETTINGS lists settings that a route takes on when it uses the target.
+const TARGET_SETTINGS: [&str; 4] = [
+    "system_prompt",
+    "reasoning_effort",
+    "extra_body",
+    "omit_body_fields",
 ];
 
 /// Route describes one entry under `[routes]`.
@@ -258,7 +331,16 @@ enum Slot {
     Listed(usize),
 }
 
-impl Slot {}
+impl Slot {
+    /// This function returns the slot's key path under the route, such as
+    /// `stage.capable_target`.
+    fn path(&self) -> String {
+        match self {
+            Self::Key(path) => path.join("."),
+            Self::Listed(_) => "targets".to_string(),
+        }
+    }
+}
 
 impl Algorithm {
     /// This function returns the roles that a new route of this type needs. A new
@@ -291,6 +373,13 @@ impl Algorithm {
             })
             .collect()
     }
+}
+
+/// Edited stores the result of [`ServerConfig::edit`].
+#[derive(Debug)]
+pub struct Edited {
+    /// This field stores user-facing notes about the edit.
+    pub notes: Vec<String>,
 }
 
 /// ServerConfig keeps the parsed config and the original text's layout.
@@ -405,6 +494,152 @@ impl ServerConfig {
             .collect()
     }
 
+    /// This function returns the config text with `route` switched to `algorithm`, using
+    /// one choice per role, and notes about the edit.
+    ///
+    /// Each role keeps its target if it already names the selected model.
+    /// Otherwise, this function reuses a matching target with equivalent settings,
+    /// or with request settings that prevent the server from accepting a duplicate.
+    /// If neither exists, this function edits an unshared target or copies a shared one.
+    /// Roles earlier in this edit also count as users of a target. A changed or copied target keeps settings
+    /// such as `extra_body` and `omit_body_fields`, including settings meant
+    /// for the old model. Targets no route uses any more are left in the file.
+    pub fn edit(
+        &self,
+        route: &str,
+        algorithm: &Algorithm,
+        choices: &[Choice],
+    ) -> Result<Edited, String> {
+        if self.route(route).is_none() {
+            return Err(format!("The config has no [routes.{route}] table."));
+        }
+        let current = self
+            .algorithm(route)
+            .ok_or("This route must be edited in the server config file.")?;
+        let roles = if algorithm.kind == RANDOM {
+            if choices.len() < 2 {
+                return Err("Random routing needs at least two models.".into());
+            }
+            algorithm.roles_for(choices.len())
+        } else {
+            self.roles(route, algorithm)
+        };
+        if roles.len() != choices.len() {
+            return Err(format!(
+                "{} needs {} models, not {}.",
+                algorithm.kind,
+                roles.len(),
+                choices.len()
+            ));
+        }
+        let clients = self.clients();
+        for (role, choice) in roles.iter().zip(choices) {
+            if choice.model.trim().is_empty() {
+                return Err(format!("Pick a model for {}.", role.label));
+            }
+            if choice.client.is_empty() {
+                return Err(format!("Pick an endpoint for {}.", role.label));
+            }
+            if !clients.iter().any(|client| client.name == choice.client) {
+                return Err(format!(
+                    "The config has no LLM client named \"{}\".",
+                    choice.client
+                ));
+            }
+        }
+
+        let same_type = current.kind == algorithm.kind;
+        let old_roles = self.roles(route, current);
+        // When the type changes, each new role starts from the old role with
+        // the same tier, so a composite's capable target stays the capable one.
+        let by_tier: Vec<(Option<Tier>, &str)> = old_roles
+            .iter()
+            .filter_map(|role| Some((role.tier, self.target_at(route, &role.slot)?)))
+            .collect();
+        let mut users = self.target_users();
+        let place = self.new_target_position();
+
+        let mut doc = self.doc.clone();
+        let mut names = Vec::with_capacity(roles.len());
+        let mut notes = Vec::new();
+        for (role, choice) in roles.iter().zip(choices) {
+            let existing = if same_type {
+                self.target_at(route, &role.slot)
+            } else {
+                role.tier.and_then(|tier| {
+                    by_tier
+                        .iter()
+                        .find(|(old, _)| *old == Some(tier))
+                        .map(|(_, name)| *name)
+                })
+            };
+            let choice = Choice {
+                client: choice.client.clone(),
+                model: choice.model.trim().to_string(),
+            };
+            let (name, moved_from) =
+                choose_target(&mut doc, &mut users, route, role, &choice, existing, place)?;
+            if let Some(old) = moved_from
+                && let Some(note) = kept_settings_note(&doc, &clients, &name, &old, &choice)
+            {
+                notes.push(note);
+            }
+            let mut others: Vec<&str> = users
+                .get(name.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|other| *other != route)
+                .collect();
+            others.dedup();
+            if Some(name.as_str()) != existing && !others.is_empty() {
+                let plural = if others.len() == 1 { "" } else { "s" };
+                notes.push(format!(
+                    "{} now shares [targets.{name}] with route{plural} {}.",
+                    role.label,
+                    others.join(", ")
+                ));
+            }
+            names.push(name);
+        }
+        notes.extend(self.login_note(route, choices));
+        notes.extend(self.generated_note(route, &names));
+
+        let table = doc
+            .get_mut("routes")
+            .and_then(Item::as_table_like_mut)
+            .and_then(|routes| routes.get_mut(route))
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| format!("The config has no [routes.{route}] table."))?;
+        if !same_type {
+            let old_slots: Vec<String> = old_roles.iter().map(|role| role.slot.path()).collect();
+            let removed = reset_route(table, algorithm, &old_slots);
+            if !removed.is_empty() {
+                notes.push(format!(
+                    "Switching to {} removed these settings from [routes.{route}]: {}. The \
+                     backup still has them.",
+                    algorithm.kind,
+                    removed.join(", ")
+                ));
+            }
+        }
+        if algorithm.kind == RANDOM {
+            table.insert(
+                "targets",
+                Item::Value(toml_edit::Value::Array(toml_edit::Array::new())),
+            );
+        }
+        for (role, name) in roles.iter().zip(&names) {
+            set_slot(table, &role.slot, name);
+        }
+        if !same_type {
+            for (path, setting) in algorithm.settings {
+                set_at(table, path, setting.value());
+            }
+        }
+        Ok(Edited { notes })
+    }
+
     fn table(&self, name: &str) -> Option<&dyn TableLike> {
         self.doc.get(name)?.as_table_like()
     }
@@ -435,6 +670,383 @@ impl ServerConfig {
             Slot::Listed(index) => route.get("targets")?.as_array()?.get(*index)?.as_str(),
         }
     }
+
+    /// This function returns each target name with the routes that use it.
+    /// Each mention adds one entry, including mentions in nested policies.
+    /// A target with one entry is used in one role.
+    fn target_users(&self) -> HashMap<&str, Vec<&str>> {
+        let mut users: HashMap<&str, Vec<&str>> = entries(self.table("targets"))
+            .map(|(name, _)| (name, Vec::new()))
+            .collect();
+        for (route, item) in self
+            .table("routes")
+            .into_iter()
+            .flat_map(|routes| routes.iter())
+        {
+            visit_strings(item, &mut |text| {
+                if let Some(routes) = users.get_mut(text) {
+                    routes.push(route);
+                }
+            });
+        }
+        users
+    }
+
+    /// This function returns the file position for a new `[targets.*]` table. The table
+    /// goes after the last target outside every generated block, so that the
+    /// next rewrite of a block cannot delete it. When every target sits
+    /// inside a block, any other place is next to a generated target, so the
+    /// table goes before the first table of the file.
+    fn new_target_position(&self) -> Option<isize> {
+        self.table("targets")?
+            .iter()
+            .filter(|(key, _)| self.generated_by("targets", key).is_none())
+            .filter_map(|(_, item)| item.as_table()?.position())
+            .max()
+            .or_else(|| {
+                self.generated
+                    .keys()
+                    .any(|key| key.starts_with("targets."))
+                    .then_some(-1)
+            })
+    }
+
+    /// This function says so when the edit sends the callers' logins to another host. A
+    /// client with `forward_auth` sends each caller's own login, and a caller
+    /// that has none for the new host gets HTTP 401.
+    fn login_note(&self, route: &str, choices: &[Choice]) -> Option<String> {
+        let clients = self.clients();
+        let before = login_hosts(&clients, &self.choices(route));
+        let after = login_hosts(&clients, choices);
+        if after.iter().all(|host| before.contains(host)) {
+            return None;
+        }
+        let was = if before.is_empty() {
+            String::new()
+        } else {
+            format!(" It sent them to {} before.", before.join(" and "))
+        };
+        Some(format!(
+            "[routes.{route}] now sends each caller's own login to {}.{was} A caller that has \
+             no login for the new host gets HTTP 401.",
+            after.join(" and ")
+        ))
+    }
+
+    /// This function returns a warning when the route sits inside a block that another tool
+    /// writes, which overwrites the route, or when the route uses targets
+    /// inside such a block, which that tool can change or remove.
+    fn generated_note(&self, route: &str, targets: &[String]) -> Option<String> {
+        if let Some(block) = self.generated_by("routes", route) {
+            return Some(format!(
+                "[routes.{route}] sits inside a block that another tool writes. That tool \
+                 overwrites this change the next time it runs. Block marker: \"{block}\"."
+            ));
+        }
+        let inside: Vec<String> = targets
+            .iter()
+            .filter(|name| self.generated_by("targets", name).is_some())
+            .map(|name| format!("[targets.{name}]"))
+            .collect();
+        let (verb, pronoun) = if inside.len() == 1 {
+            ("sits", "it")
+        } else {
+            ("sit", "them")
+        };
+        (!inside.is_empty()).then(|| {
+            format!(
+                "[routes.{route}] uses {}, which {verb} inside a block that another tool \
+                 writes. The next time that tool runs, it can change or remove {pronoun}.",
+                inside.join(", ")
+            )
+        })
+    }
+}
+
+/// This function picks or writes the target that serves `choice` for one role. Returns its
+/// name, and the model that the target named before when the edit changed
+/// the target in place or copied it. Reusing a target adds the route to the
+/// target's users, so a later role in the same edit copies that target
+/// instead of changing it in place.
+/// A new target goes at file position `place`, where the next rewrite of a
+/// generated block cannot delete it.
+fn choose_target<'a>(
+    doc: &mut DocumentMut,
+    users: &mut HashMap<&'a str, Vec<&'a str>>,
+    route: &'a str,
+    role: &Role,
+    choice: &Choice,
+    existing: Option<&str>,
+    place: Option<isize>,
+) -> Result<(String, Option<Choice>), String> {
+    if doc.get("targets").is_none() {
+        doc["targets"] = Item::Table(Table::new());
+    }
+    let targets = doc
+        .get_mut("targets")
+        .and_then(Item::as_table_like_mut)
+        .ok_or("Targets must be a table.")?;
+
+    let current = existing
+        .and_then(|name| targets.get(name))
+        .and_then(Item::as_table_like);
+    if let Some(name) = existing
+        && current.is_some_and(|target| names_choice(target, choice))
+    {
+        return Ok((name.to_string(), None));
+    }
+    let old = current.and_then(|target| {
+        Some(Choice {
+            client: text(target, "llm_client")?.to_string(),
+            model: text(target, "id")?.to_string(),
+        })
+    });
+    if let Some(name) = reusable(&*targets, current, choice).map(str::to_string) {
+        if let Some(routes) = users.get_mut(name.as_str()) {
+            routes.push(route);
+        }
+        return Ok((name, None));
+    }
+    if let Some(name) = existing
+        && users.get(name).is_some_and(|routes| routes.len() == 1)
+        && let Some(target) = targets.get_mut(name).and_then(Item::as_table_like_mut)
+    {
+        set_value(target, "id", Value::from(choice.model.as_str()));
+        set_value(target, "llm_client", Value::from(choice.client.as_str()));
+        return Ok((name.to_string(), old));
+    }
+
+    let mut table = Table::new();
+    if let Some(source) = existing
+        .and_then(|name| targets.get(name))
+        .and_then(Item::as_table_like)
+    {
+        for (key, item) in source.iter() {
+            let mut item = item.clone();
+            unplace(&mut item);
+            table.insert(key, item);
+        }
+    }
+    set_value(&mut table, "id", Value::from(choice.model.as_str()));
+    set_value(
+        &mut table,
+        "llm_client",
+        Value::from(choice.client.as_str()),
+    );
+    let base = format!("{route}_{}", role.label.to_lowercase().replace(' ', "_"));
+    let mut name = base.clone();
+    let mut suffix = 1;
+    while targets.contains_key(&name) {
+        suffix += 1;
+        name = format!("{base}_{suffix}");
+    }
+    // A table with no position is written after the last [targets.*] table in
+    // the file, which can sit inside a block that another tool writes.
+    table.set_position(place);
+    targets.insert(&name, Item::Table(table));
+    Ok((name, old))
+}
+
+/// This function returns a note about the request settings that a target kept when the
+/// edit moved it from `old` to `new`, a model of another family or on a
+/// client with another request format. A setting meant for the old model can
+/// make the provider reject the new model's requests, and `--dry-run` does
+/// not catch that. So the note lists the kept settings, or says that the
+/// target has none, and the user decides.
+fn kept_settings_note(
+    doc: &DocumentMut,
+    clients: &[Client],
+    name: &str,
+    old: &Choice,
+    new: &Choice,
+) -> Option<String> {
+    let format = |name: &str| {
+        clients
+            .iter()
+            .find(|client| client.name == name)
+            .map(|client| client.format.as_str())
+    };
+    if family(&old.model) == family(&new.model) && format(&old.client) == format(&new.client) {
+        return None;
+    }
+    let target = doc
+        .get("targets")?
+        .as_table_like()?
+        .get(name)?
+        .as_table_like()?;
+    let kept: Vec<String> = REQUEST_SETTINGS
+        .iter()
+        .filter_map(|key| Some(format!("{key} = {}", setting(target, key)?)))
+        .collect();
+    Some(if kept.is_empty() {
+        format!(
+            "[targets.{name}] now names {} and has no omit_body_fields, reasoning_effort, or \
+             extra_body. Check whether the new model needs one of them.",
+            new.model
+        )
+    } else {
+        format!(
+            "[targets.{name}] now names {} and kept {} from {}. Check that the new model \
+             accepts these settings.",
+            new.model,
+            kept.join(", "),
+            old.model
+        )
+    })
+}
+
+/// This function returns a model's family: the first word of the last part of its ID,
+/// such as `gpt` for `openai/gpt-5.6-sol`.
+fn family(model: &str) -> String {
+    let name = model.rsplit('/').next().unwrap_or(model);
+    name.split(['-', '.', '_', ':'])
+        .next()
+        .unwrap_or(name)
+        .to_lowercase()
+}
+
+/// This function returns another target that names `choice` and that a role whose target
+/// is `current` may use. The role takes on that target's settings. So it
+/// uses a target with the same settings as `current`, or else a target whose
+/// request settings differ from `current`, because the server would reject a
+/// second target for this model with other request settings.
+fn reusable<'t>(
+    targets: &'t dyn TableLike,
+    current: Option<&dyn TableLike>,
+    choice: &Choice,
+) -> Option<&'t str> {
+    let same = |target: &dyn TableLike, keys: &[&str]| {
+        keys.iter()
+            .all(|key| setting(target, key) == current.and_then(|current| setting(current, key)))
+    };
+    let candidates: Vec<(&str, &dyn TableLike)> = targets
+        .iter()
+        .filter_map(|(name, target)| Some((name, target.as_table_like()?)))
+        .filter(|(_, target)| names_choice(*target, choice))
+        .collect();
+    candidates
+        .iter()
+        .find(|(_, target)| same(*target, &TARGET_SETTINGS))
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|(_, target)| !same(*target, &REQUEST_SETTINGS))
+        })
+        .map(|(name, _)| *name)
+}
+
+/// This function returns a target's setting as plain data, so the same value written in
+/// another layout compares equal.
+fn setting(target: &dyn TableLike, key: &str) -> Option<toml::Value> {
+    let mut table = Table::new();
+    table.insert(key, target.get(key)?.clone());
+    DocumentMut::from(table)
+        .to_string()
+        .parse::<toml::Table>()
+        .ok()?
+        .remove(key)
+}
+
+/// This function clears the file position of every table in `item`. A copied sub-table
+/// then follows the header of the table it is copied into, not the header
+/// of the table it came from.
+fn unplace(item: &mut Item) {
+    if let Some(table) = item.as_table_mut() {
+        table.set_position(None);
+        for (_, child) in table.iter_mut() {
+            unplace(child);
+        }
+    }
+}
+
+/// This function returns whether a target names exactly this model on this client.
+fn names_choice(target: &dyn TableLike, choice: &Choice) -> bool {
+    text(target, "llm_client") == Some(choice.client.as_str())
+        && text(target, "id") == Some(choice.model.as_str())
+}
+
+/// This function removes the old type's settings, sets the new `type`, and returns the
+/// removed settings as key paths, such as `classifier.base_threshold`. The
+/// list leaves out `old_slots`, the old roles' targets, which the new roles
+/// replace.
+fn reset_route(
+    route: &mut dyn TableLike,
+    algorithm: &Algorithm,
+    old_slots: &[String],
+) -> Vec<String> {
+    let kept =
+        |key: &str| COMMON_ROUTE_KEYS.contains(&key) || (algorithm.subagents && key == "subagents");
+    let stale: Vec<String> = route
+        .iter()
+        .map(|(key, _)| key)
+        .filter(|key| !kept(key))
+        .map(str::to_string)
+        .collect();
+    let mut removed = Vec::new();
+    for key in stale {
+        if let Some(item) = route.remove(&key) {
+            key_paths(&key, &item, &mut removed);
+        }
+    }
+    removed.retain(|path| !old_slots.contains(path));
+    set_value(route, "type", Value::from(algorithm.kind));
+    removed
+}
+
+/// This function adds the key path of every value in `item` to `paths`.
+fn key_paths(path: &str, item: &Item, paths: &mut Vec<String>) {
+    match item.as_table_like() {
+        Some(table) => {
+            for (key, child) in table.iter() {
+                key_paths(&format!("{path}.{key}"), child, paths);
+            }
+        }
+        None => paths.push(path.to_string()),
+    }
+}
+
+fn set_slot(route: &mut dyn TableLike, slot: &Slot, name: &str) {
+    match slot {
+        Slot::Key(path) => set_at(route, path, Value::from(name)),
+        Slot::Listed(index) => {
+            if !route.get("targets").is_some_and(Item::is_array) {
+                route.insert("targets", toml_edit::value(toml_edit::Array::new()));
+            }
+            if let Some(targets) = route.get_mut("targets").and_then(Item::as_array_mut) {
+                if *index < targets.len() {
+                    targets.replace(*index, name);
+                } else {
+                    targets.push(name);
+                }
+            }
+        }
+    }
+}
+
+/// This function sets a value at a key path, creating missing tables on the way.
+fn set_at(table: &mut dyn TableLike, path: &[&str], value: Value) {
+    match path {
+        [] => {}
+        [key] => set_value(table, key, value),
+        [key, rest @ ..] => {
+            if !table.get(key).is_some_and(Item::is_table_like) {
+                table.insert(key, Item::Table(Table::new()));
+            }
+            if let Some(child) = table.get_mut(key).and_then(Item::as_table_like_mut) {
+                set_at(child, rest, value);
+            }
+        }
+    }
+}
+
+/// This function replaces a value, keeping the spacing and trailing comment around it.
+fn set_value(table: &mut dyn TableLike, key: &str, mut value: Value) {
+    if let Some(old) = table.get_mut(key).and_then(Item::as_value_mut) {
+        *value.decor_mut() = old.decor().clone();
+        *old = value;
+    } else {
+        table.insert(key, Item::Value(value));
+    }
 }
 
 fn entries(table: Option<&dyn TableLike>) -> impl Iterator<Item = (&str, &dyn TableLike)> {
@@ -446,6 +1058,45 @@ fn entries(table: Option<&dyn TableLike>) -> impl Iterator<Item = (&str, &dyn Ta
 
 fn text<'a>(table: &'a dyn TableLike, key: &str) -> Option<&'a str> {
     table.get(key)?.as_str()
+}
+
+fn visit_strings(item: &Item, visit: &mut dyn FnMut(&str)) {
+    match item {
+        Item::Value(value) => visit_value(value, visit),
+        Item::Table(table) => table
+            .iter()
+            .for_each(|(_, item)| visit_strings(item, visit)),
+        Item::ArrayOfTables(tables) => tables
+            .iter()
+            .flat_map(Table::iter)
+            .for_each(|(_, item)| visit_strings(item, visit)),
+        Item::None => {}
+    }
+}
+
+fn visit_value(value: &Value, visit: &mut dyn FnMut(&str)) {
+    match value {
+        Value::String(text) => visit(text.value()),
+        Value::Array(array) => array.iter().for_each(|value| visit_value(value, visit)),
+        Value::InlineTable(table) => table
+            .iter()
+            .for_each(|(_, value)| visit_value(value, visit)),
+        _ => {}
+    }
+}
+
+/// This function returns the hosts that get the callers' own logins: the hosts of the
+/// `forward_auth` clients that `choices` name, sorted, each once.
+fn login_hosts<'c>(clients: &'c [Client], choices: &[Choice]) -> Vec<&'c str> {
+    let mut hosts: Vec<&str> = choices
+        .iter()
+        .filter_map(|choice| clients.iter().find(|client| client.name == choice.client))
+        .filter(|client| client.forward_auth)
+        .map(Client::host)
+        .collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    hosts
 }
 
 /// This function finds the route and target tables that sit inside blocks another tool
