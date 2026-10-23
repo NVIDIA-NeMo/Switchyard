@@ -1,7 +1,9 @@
 # switchyard-translation
 
 Pure Rust translation between OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages
-request, response, and streaming formats.
+request, response, and streaming formats. Native Gemini `generateContent` is also
+available for buffered requests and responses through the
+[`gemini_generate_content` codec](../../docs/translation/gemini.md).
 
 The crate translates through provider-neutral LLM types from `switchyard-protocol` and does not
 depend on provider SDKs, HTTP servers, Python, or FFI bindings.
