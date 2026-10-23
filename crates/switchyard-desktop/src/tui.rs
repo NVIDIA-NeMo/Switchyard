@@ -1,14 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app shows usage, recent calls, and routes from controller snapshots, and it
-//! runs server and route actions.
+//! The terminal app shows usage, recent calls, routes, and harness settings from controller
+//! snapshots, and it runs server, route, harness, and account actions.
 //!
 //! The UI thread owns every view setting. One worker thread owns the controller and runs
 //! refreshes and actions, so moving around and filtering never wait for the log or a service.
 
 use crate::controller::{
-    Action, ActionKind, AppSettings, Availability, Controller, Reply, RouteInfo, Snapshot,
+    AccountInfo, Action, ActionKind, AppSettings, Availability, Controller, Reply, RouteInfo,
+    Snapshot, ToolInfo,
 };
 use crate::history::Entry;
 use crate::pricing::Estimate;
@@ -52,7 +53,7 @@ const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '�
 type Key = (&'static str, &'static str, &'static str);
 const GLOBAL_KEYS: &[Key] = &[
     (
-        "1-5",
+        "1-6",
         "page",
         "Switch pages. Tab, Shift-Tab, ← and → also switch pages.",
     ),
@@ -107,6 +108,27 @@ const ROUTES_KEYS: &[Key] = &[
          exactly.",
     ),
     ("esc", "clear", "Clear the filter."),
+];
+const HARNESSES_KEYS: &[Key] = &[
+    (
+        "↑↓",
+        "route",
+        "Choose the route to install. j, k, PgUp, PgDn, g, and G also move it. The Routes page \
+         selects the same route, and its filter limits the choices.",
+    ),
+    ("t", "harness", "Select the next harness."),
+    (
+        "a",
+        "account",
+        "Select the next saved account, then the harness's own settings again. Install, \
+         restore, and the account keys use the selection.",
+    ),
+    (
+        "x",
+        "custom file",
+        "Install to or restore a custom settings file instead. Leave it empty to use the \
+         detected settings again.",
+    ),
 ];
 const SETTINGS_KEYS: &[Key] = &[
     ("↑↓", "select", "Select an action. j, g, and G also move."),
@@ -326,6 +348,14 @@ const ROUTE_COLUMNS: [(Column, bool); 3] = [
     (("ALGORITHM", Constraint::Length(24), false), false),
     (("MODELS", Constraint::Fill(2), false), true),
 ];
+/// The harnesses table drops the columns marked `true` below 80 columns; the details still
+/// show the current settings.
+const HARNESS_COLUMNS: [(Column, bool); 4] = [
+    (("HARNESS", Constraint::Fill(2), false), false),
+    (("STATE", Constraint::Length(13), false), false),
+    (("CURRENT SETTINGS", Constraint::Fill(3), false), true),
+    (("ACCOUNTS", Constraint::Length(8), true), false),
+];
 
 /// Theme maps each kind of text to one style. NO_COLOR keeps only bold, dim, and reverse.
 #[derive(Clone, Copy)]
@@ -379,13 +409,15 @@ enum Tab {
     Calls,
     Models,
     Routes,
+    Harnesses,
     Settings,
 }
-const TABS: [Tab; 5] = [
+const TABS: [Tab; 6] = [
     Tab::Overview,
     Tab::Calls,
     Tab::Models,
     Tab::Routes,
+    Tab::Harnesses,
     Tab::Settings,
 ];
 impl Tab {
@@ -395,6 +427,7 @@ impl Tab {
             Tab::Calls => "Calls",
             Tab::Models => "Models",
             Tab::Routes => "Routes",
+            Tab::Harnesses => "Harnesses",
             Tab::Settings => "Settings",
         }
     }
@@ -481,8 +514,9 @@ enum FormKind {
         operation: &'static str,
         route: String,
     },
-    /// The action is the one that the user reviewed. Typing SAVE submits it unchanged.
-    Save(Box<Action>),
+    /// The fields hold the word that the user must type and the reviewed action, which the
+    /// form submits unchanged.
+    Confirm(Cow<'static, str>, Box<Action>),
     Remove {
         generation: u64,
         route: String,
@@ -491,17 +525,20 @@ enum FormKind {
     },
     Models,
     ModelKey,
+    SettingsFile,
 }
 /// Choices names the list that ↑ and ↓ cycle through in a form field.
 enum Choices {
     Algorithms,
     Endpoints,
 }
-/// Submit is what a form sends: a controller action, or the next form of a flow that needs
-/// more input before the controller can review it.
+/// Submit is what a form sends: a controller action, the next form of a flow that needs more
+/// input before the controller can review it, or a custom settings file, which changes only
+/// where the Harnesses page installs.
 enum Submit {
     Run(Action),
     Next(Form),
+    SettingsFile(String),
 }
 /// Form holds the text fields for an action that needs input.
 struct Form {
@@ -746,8 +783,8 @@ impl Form {
                     choices: Vec::new(),
                 }
             }
-            FormKind::Save(action) => {
-                confirm("SAVE", "Type SAVE to apply the reviewed changes.")?;
+            FormKind::Confirm(word, action) => {
+                confirm(word, &format!("Type {word} to apply the reviewed changes."))?;
                 (**action).clone()
             }
             FormKind::Remove {
@@ -774,6 +811,7 @@ impl Form {
                 refresh: true,
                 key: Some(self.value(1)),
             },
+            FormKind::SettingsFile => return Ok(Submit::SettingsFile(self.value(0))),
         }))
     }
     fn label(&self) -> &'static str {
@@ -788,10 +826,12 @@ impl Form {
             FormKind::NewRoute { .. }
             | FormKind::NewRouteModels { .. }
             | FormKind::RouteIdentity { .. } => "Reviewing the route change",
-            FormKind::Save(_) => "Saving the route",
+            FormKind::Confirm(_, _action) => "Saving the route",
             FormKind::Remove { .. } => "Deleting the route",
             FormKind::Models => "Loading models",
             FormKind::ModelKey => "Saving the key and loading models",
+
+            FormKind::SettingsFile => "Choosing the settings file",
         }
     }
 }
@@ -861,8 +901,10 @@ fn route_models_form(
 }
 
 /// This function returns the action that a preview's review window submits after the user
-/// types SAVE: the previewed inputs, plus the token for a route change.
+/// types the confirmation word: the previewed inputs, plus the preview's token for every flow
+/// except a route edit, which sends its revision instead.
 fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
+    let preview_token = preview["preview_token"].as_str().map(str::to_owned);
     Some(match previewed {
         Action::PreviewRoute {
             generation,
@@ -893,8 +935,9 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             id,
             algorithm,
             choices,
-            preview_token: preview["preview_token"].as_str().map(str::to_owned),
+            preview_token,
         },
+
         _ => return None,
     })
 }
@@ -972,18 +1015,23 @@ enum Done {
 struct Request {
     job: Job,
     label: &'static str,
+    /// This field holds the `ACTIONS` key that started the job. Keys that share a first action
+    /// continue differently when the reply arrives, such as `p` and `i` on the Harnesses page.
+    key: Option<char>,
 }
 impl Request {
     fn run(action: Action, label: &'static str) -> Self {
         Self {
             job: Job::Run(action),
             label,
+            key: None,
         }
     }
     fn refresh() -> Self {
         Self {
             job: Job::Refresh,
             label: "Refreshing",
+            key: None,
         }
     }
 }
@@ -992,6 +1040,7 @@ struct Busy {
     /// This field holds the running action, so its reply can update the right view and a
     /// preview's review window can submit exactly what the controller reviewed.
     action: Option<Action>,
+    key: Option<char>,
     started: Instant,
 }
 struct Toast {
@@ -1019,6 +1068,18 @@ impl Tone {
     }
 }
 
+/// Destination is where the Harnesses page installs and restores settings.
+enum Destination {
+    /// The harness's own settings files.
+    Harness,
+    /// A saved account, by name. The name stays after a refresh stops listing the account, so
+    /// its actions still send it and the controller rejects them instead of changing other
+    /// settings.
+    Account(String),
+    /// A custom settings file path.
+    File(String),
+}
+
 struct App {
     theme: Theme,
     data: Snapshot,
@@ -1037,6 +1098,9 @@ struct App {
     route_visible: Vec<usize>,
     route_selected: usize,
     route_offset: usize,
+    /// This field indexes `data.tools`, which lists every harness in a fixed order.
+    harness: usize,
+    destination: Destination,
     /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys,
     /// and a failed check clears it so the page never shows outdated key states.
     server_keys: Option<Value>,
@@ -1068,6 +1132,9 @@ impl App {
             route_visible: Vec::new(),
             route_selected: 0,
             route_offset: 0,
+            harness: 0,
+            destination: Destination::Harness,
+
             server_keys: None,
             popup: None,
             toast: None,
@@ -1176,6 +1243,20 @@ impl App {
         }
     }
 
+    fn harness(&self) -> Result<&ToolInfo, String> {
+        self.data
+            .tools
+            .get(self.harness)
+            .ok_or_else(|| "No harness is listed. Fix the app settings, then press r.".into())
+    }
+
+    fn custom_file(&self) -> Option<String> {
+        match &self.destination {
+            Destination::File(path) => Some(path.clone()),
+            Destination::Harness | Destination::Account(_) => None,
+        }
+    }
+
     /// Short messages appear in the status bar; long ones open a window so nothing is cut off.
     fn notify(&mut self, text: String, tone: Tone) {
         if text.is_empty() {
@@ -1207,9 +1288,14 @@ impl App {
         reply: Option<Result<Reply, String>>,
         snapshot: Result<Box<Snapshot>, String>,
     ) -> Option<Request> {
-        let action = self.busy.take().and_then(|busy| busy.action);
+        let (action, _key) = match self.busy.take() {
+            Some(busy) => (busy.action, busy.key),
+            None => (None, None),
+        };
         self.apply_snapshot(snapshot.map(|snapshot| *snapshot));
-        match (action.as_ref().map(ActionKind::from), reply?) {
+        let reply = reply?;
+
+        match (action.as_ref().map(ActionKind::from), reply) {
             (Some(ActionKind::ServerKeys), Err(error)) => {
                 self.server_keys = None;
                 self.notify(error, Tone::Error);
@@ -1229,8 +1315,6 @@ impl App {
                     "Type UPDATE to start",
                 ));
             }
-            // The reply lists the roles of the chosen algorithm. The models form replaces the
-            // algorithm form only while that form is still open for the same route.
             (Some(ActionKind::Editor), Ok(reply)) => {
                 if let Some(Action::Editor {
                     route: key,
@@ -1256,7 +1340,7 @@ impl App {
                     self.popup = Some(Popup::review(
                         change_lines(self.theme, &reply.data),
                         "Save",
-                        FormKind::Save(Box::new(reviewed)),
+                        FormKind::Confirm("SAVE".into(), Box::new(reviewed)),
                         "Review route changes",
                         "Type SAVE to apply",
                     ));
@@ -1353,6 +1437,7 @@ impl App {
         self.busy = Some(Busy {
             label: request.label,
             action,
+            key: request.key,
             started: Instant::now(),
         });
         Ok(())
@@ -1370,6 +1455,7 @@ impl App {
             (None, false, Tab::Calls) => CALLS_KEYS,
             (None, false, Tab::Models) => MODELS_KEYS,
             (None, false, Tab::Routes) => ROUTES_KEYS,
+            (None, false, Tab::Harnesses) => HARNESSES_KEYS,
             (None, false, Tab::Settings) => SETTINGS_KEYS,
         }
     }
@@ -1419,7 +1505,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
-            KeyCode::Char(digit @ '1'..='5') => {
+            KeyCode::Char(digit @ '1'..='6') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
             KeyCode::Tab | KeyCode::Right => self.tab = TABS[(self.tab.index() + 1) % TABS.len()],
@@ -1439,7 +1525,7 @@ impl App {
                         self.route_filter.clear();
                         self.refilter();
                     }
-                    Tab::Overview | Tab::Models | Tab::Settings => {}
+                    Tab::Overview | Tab::Models | Tab::Harnesses | Tab::Settings => {}
                 }
             }
             code => {
@@ -1463,6 +1549,7 @@ impl App {
                         _ => {}
                     },
                     Tab::Routes => self.routes_key(code),
+                    Tab::Harnesses => self.harnesses_key(code),
                     Tab::Settings => return self.settings_key(code),
                 }
             }
@@ -1506,6 +1593,44 @@ impl App {
         }
     }
 
+    /// The arrows choose the route, which is the longer list; `t` cycles through the few
+    /// harnesses. A new harness starts at its own settings, because accounts belong to one
+    /// harness.
+    fn harnesses_key(&mut self, code: KeyCode) {
+        let last = self.route_visible.len().saturating_sub(1);
+        if let Some(selected) = step(code, self.route_selected, last) {
+            self.route_selected = selected;
+            return;
+        }
+        match code {
+            KeyCode::Char('t') => {
+                self.harness = (self.harness + 1) % self.data.tools.len().max(1);
+                self.destination = Destination::Harness;
+            }
+            // The cycle runs through the harness's own settings and then each saved account.
+            KeyCode::Char('a') => {
+                let names = self.harness().map_or(&[][..], |tool| &tool.accounts);
+                let current = match &self.destination {
+                    Destination::Account(name) => names.iter().position(|known| known == name),
+                    Destination::Harness | Destination::File(_) => None,
+                };
+                let next = names.get(current.map_or(0, |index| index + 1)).cloned();
+                self.destination = next.map_or(Destination::Harness, Destination::Account);
+            }
+            KeyCode::Char('x') => {
+                self.popup = Some(Popup::Form(Form::new(
+                    FormKind::SettingsFile,
+                    "Custom settings file · leave empty to use the detected settings",
+                    vec![(
+                        "Absolute file path (Pi: models.json)",
+                        self.custom_file().unwrap_or_default(),
+                    )],
+                )));
+            }
+            _ => {}
+        }
+    }
+
     fn filter_key(&mut self, key: KeyEvent) {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -1544,11 +1669,19 @@ impl App {
         None
     }
 
+    /// This function runs a row's flow and records its key on the request, so the reply can
+    /// continue that key's flow.
     fn run_row(&mut self, kind: ActionKind, key: char) -> Option<Request> {
-        self.start_action(kind, key).unwrap_or_else(|error| {
-            self.notify(error, Tone::Error);
-            None
-        })
+        match self.start_action(kind, key) {
+            Ok(request) => request.map(|request| Request {
+                key: Some(key),
+                ..request
+            }),
+            Err(error) => {
+                self.notify(error, Tone::Error);
+                None
+            }
+        }
     }
 
     fn open(&mut self, form: Form) -> Result<Option<Request>, String> {
@@ -1661,6 +1794,7 @@ impl App {
                 };
                 self.open(form)
             }
+
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
                 request(Action::CheckConfig {}, "Checking the server config")
@@ -1738,6 +1872,16 @@ impl App {
                     KeyCode::Enter => match form.action(&self.data) {
                         Ok(Submit::Run(action)) => return Some(Request::run(action, form.label())),
                         Ok(Submit::Next(next)) => self.popup = Some(Popup::Form(next)),
+                        Ok(Submit::SettingsFile(path)) => {
+                            self.popup = None;
+                            self.destination = if path.is_empty() {
+                                Destination::Harness
+                            } else {
+                                Destination::File(path)
+                            };
+                            let text = "Press p to preview or i to install.";
+                            self.notify(text.into(), Tone::Done);
+                        }
                         Err(error) => form.error = error,
                     },
                     // A field with choices cycles through them. Otherwise only the review
@@ -1982,6 +2126,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         generation: _,      // every route form sends it back with its action
         routes: _,          // draw_routes and the route details
         clients: _,         // draw_endpoints, the endpoint fields, and the endpoint forms
+        tools: _,           // draw_harnesses and harness_lines
         algorithms: _,      // draw_routes, the route details, and the algorithm fields
         summary: _,         // --print shows these rows; draw_top_models builds the same notes
         metrics: _,         // draw_header and the Overview cards
@@ -2015,6 +2160,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Calls => draw_calls(frame, app, body),
         Tab::Models => draw_models(frame, app, body),
         Tab::Routes => draw_routes(frame, app, body),
+        Tab::Harnesses => draw_harnesses(frame, app, body),
         Tab::Settings => draw_settings(frame, app, body),
     }
     draw_status(frame, app, status);
@@ -2048,14 +2194,27 @@ fn draw_too_small(frame: &mut Frame, theme: Theme, area: Rect) {
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
-    let titles = TABS.map(|tab| {
-        Line::from(vec![
-            Span::styled(format!("{} ", tab.index() + 1), theme.key),
-            Span::raw(tab.name()),
-        ])
-    });
+    // Each title is the tab's digit and at most `letters` letters of its name.
+    let titles = |letters: usize| {
+        TABS.map(|tab| {
+            let name = tab.name().get(..letters).unwrap_or(tab.name());
+            Line::from(vec![
+                Span::styled((tab.index() + 1).to_string(), theme.key),
+                Span::raw(if name.is_empty() { "" } else { " " }),
+                Span::raw(name),
+            ])
+        })
+    };
     // Tabs pads each title by one space on both sides and puts a divider between titles.
-    let tabs_width: usize = titles.iter().map(|title| title.width() + 3).sum();
+    let width = |titles: &[Line]| titles.iter().map(|title| title.width() + 3).sum::<usize>();
+    // Narrow terminals shorten the names to three letters, then show the digits alone, so no
+    // tab is cut off.
+    let titles = [usize::MAX, 3]
+        .into_iter()
+        .map(titles)
+        .find(|titles| width(titles) <= usize::from(area.width))
+        .unwrap_or_else(|| titles(0));
+    let tabs_width = width(&titles);
     let running = app.data.metrics.running;
     let mut status = server_state(theme, running).to_vec();
     let updated = match app.refreshed {
@@ -2899,24 +3058,34 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
 /// short terminal still shows them, then the notes that limit editing it here.
 fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'static>> {
     const WIDTH: usize = 11;
+    // This destructuring has no `..`, so adding a route field breaks the build until the
+    // terminal app shows it. Each comment names the place that shows the field.
+    let RouteInfo {
+        key,
+        id: _, // draw_routes titles these details with it
+        kind,
+        revision: _, // the edit and delete flows send it back
+        label: _,    // harness_lines names the route with it, and the filter reads it
+        choices,
+        tiers: _, // route_models_form keeps each role's model by tier
+        editable,
+        generated,
+    } = route;
     let field = |name: &str, value: String| labeled(theme, name, WIDTH, value);
-    let algorithm = data
-        .algorithms
-        .iter()
-        .find(|known| known.kind == route.kind);
+    let algorithm = data.algorithms.iter().find(|known| known.kind == *kind);
     let mut lines = vec![
-        field("Config", format!("[routes.{}]", route.key)),
+        field("Config", format!("[routes.{key}]")),
         field(
             "Algorithm",
             algorithm.map_or_else(
-                || route.kind.clone(),
+                || kind.clone(),
                 |known| format!("{} ({})", known.title, known.kind),
             ),
         ),
     ];
     // A random route can list more models than a new one starts with, so later roles are
     // numbered the same way.
-    for (index, choice) in route.choices.iter().enumerate() {
+    for (index, choice) in choices.iter().enumerate() {
         let role = algorithm
             .and_then(|known| known.roles.get(index))
             .map_or_else(|| format!("Model {}", index + 1), |role| role.label.clone());
@@ -2929,14 +3098,14 @@ fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'st
             field(&role, format!("{} / {}", choice.client, choice.model))
         });
     }
-    if !route.editable {
+    if !editable {
         lines.push(Line::default());
         lines.push(Line::styled(
             "This routing method has no editor here. Edit its fields in the server config.",
             theme.warn,
         ));
     }
-    if let Some(generated) = &route.generated {
+    if let Some(generated) = generated {
         lines.push(Line::default());
         lines.push(Line::styled(
             format!("Generated by {generated}. That tool can replace edits made here."),
@@ -3005,6 +3174,198 @@ fn draw_endpoints(frame: &mut Frame, app: &App, notes: Vec<Line<'static>>, area:
     ];
     frame.render_widget(table(theme, &columns, rows), table_area);
     frame.render_widget(Paragraph::new(notes).wrap(Wrap { trim: false }), notes_area);
+}
+
+fn draw_harnesses(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    // The borders and the header row take three rows.
+    let rows = app.data.tools.len().max(1) as u16 + 3;
+    let [list, rest] = Layout::vertical([
+        Constraint::Length(rows.min(area.height / 2)),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    draw_harness_table(frame, app, list);
+    let Ok(harness) = app.harness() else {
+        return;
+    };
+    let detail = Paragraph::new(harness_lines(app, harness))
+        .wrap(Wrap { trim: false })
+        .block(block(theme, harness.label).padding(Padding::horizontal(1)));
+    frame.render_widget(detail, rest);
+}
+
+fn draw_harness_table(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let tools = &app.data.tools;
+    let outer = block(theme, &format!("Harnesses [{}]", tools.len()));
+    if tools.is_empty() {
+        let text = "No harness is listed. Fix the app settings, then press r.";
+        frame.render_widget(
+            Paragraph::new(Line::styled(text, theme.muted))
+                .centered()
+                .block(outer),
+            area,
+        );
+        return;
+    }
+    let wide = area.width >= 80;
+    let shown = |column: &(Column, bool)| wide || !column.1;
+    let rows: Vec<Row> = tools
+        .iter()
+        .map(|tool| {
+            let state = if tool.available {
+                Span::styled("Detected", theme.ok)
+            } else {
+                Span::styled("Not detected", theme.warn)
+            };
+            // The first two lines name the model and the endpoint, or hold the read error.
+            let settings: Vec<&str> = tool.status.lines().take(2).collect();
+            let cells = [
+                Cell::from(tool.label),
+                Cell::from(state),
+                Cell::from(settings.join(" · ")),
+                right(count(tool.accounts.len() as u64)),
+            ];
+            Row::new(
+                cells
+                    .into_iter()
+                    .zip(&HARNESS_COLUMNS)
+                    .filter(|(_, column)| shown(column))
+                    .map(|(cell, _)| cell),
+            )
+        })
+        .collect();
+    let columns: Vec<Column> = HARNESS_COLUMNS
+        .iter()
+        .filter(|column| shown(column))
+        .map(|column| column.0)
+        .collect();
+    let mut state = TableState::default().with_selected(Some(app.harness));
+    frame.render_stateful_widget(
+        table(theme, &columns, rows)
+            .row_highlight_style(theme.selected)
+            .highlight_symbol("› ")
+            .block(outer),
+        area,
+        &mut state,
+    );
+}
+
+/// This function shows the route to install and whether the harness can use it, then where
+/// the settings go and what they hold now, then the saved accounts.
+fn harness_lines(app: &App, harness: &ToolInfo) -> Vec<Line<'static>> {
+    const WIDTH: usize = 12;
+    let theme = app.theme;
+    let field = |name: &str, value: String| labeled(theme, name, WIDTH, value);
+    let heading = |text: &'static str| Line::styled(text, theme.muted.bold());
+    // This destructuring has no `..`, so adding a harness field breaks the build until this
+    // page shows it.
+    let ToolInfo {
+        tool: _,
+        label: _, // draw_harnesses titles these details with it
+        available,
+        files,
+        status,
+        accounts: _, // the a key cycles through them, and account_details has the same names
+        account_details,
+        discovery_error,
+    } = harness;
+    let mut lines = Vec::new();
+    match app.selected_route() {
+        Ok(route) => {
+            lines.push(field("Route", route.label.clone()));
+        }
+        Err(error) => lines.push(Line::from(vec![
+            Span::styled(format!("{:<WIDTH$}", "Route"), theme.muted),
+            Span::styled(error, theme.warn),
+        ])),
+    }
+    if !available {
+        lines.push(Line::styled(
+            "Not detected. You can prepare settings and install the harness later.",
+            theme.warn,
+        ));
+    }
+    // The current settings summary of the destination, or why there is none, and its style.
+    let (current, style) = match &app.destination {
+        Destination::Harness => {
+            let files: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+            lines.push(field("Install to", "The harness's own settings".into()));
+            lines.push(field("Files", files.join(", ")));
+            (status.clone(), Style::new())
+        }
+        Destination::Account(name) => {
+            match account_details.iter().find(|account| account.name == *name) {
+                Some(account) => {
+                    lines.push(field("Install to", format!("Account {name}")));
+                    lines.push(field("Folder", account.path.display().to_string()));
+                    (account.status.clone(), Style::new())
+                }
+                None => (
+                    format!(
+                        "Account {name} is no longer listed. Press a to choose another \
+                         destination."
+                    ),
+                    theme.warn,
+                ),
+            }
+        }
+        Destination::File(path) => {
+            lines.push(field("Install to", "Custom file".into()));
+            lines.push(field("File", path.clone()));
+            ("Press p to read it.".into(), theme.muted)
+        }
+    };
+    lines.extend([Line::default(), heading("CURRENT SETTINGS")]);
+    // A summary spans several lines, and Paragraph does not start a new line at '\n'.
+    lines.extend(
+        current
+            .lines()
+            .map(|line| Line::styled(line.to_string(), style)),
+    );
+    lines.extend([
+        Line::default(),
+        heading("SAVED ACCOUNTS · a folder does not confirm a completed login"),
+    ]);
+    if let Some(error) = discovery_error {
+        lines.push(Line::styled(error.clone(), theme.error));
+    }
+    for account in account_details {
+        // This destructuring has no `..`, so adding an account field breaks the build until
+        // this page shows it.
+        let AccountInfo {
+            name,
+            path,
+            login_status,
+            status: _, // CURRENT SETTINGS shows it for the selected account
+        } = account;
+        let selected = matches!(&app.destination, Destination::Account(chosen) if chosen == name);
+        lines.push(Line::from(vec![
+            Span::styled(if selected { "› " } else { "  " }, theme.key),
+            Span::raw(name.clone()),
+            Span::styled(
+                format!(" · login status {login_status} · {}", path.display()),
+                theme.muted,
+            ),
+        ]));
+    }
+    if account_details.is_empty() {
+        lines.push(Line::styled(
+            "None. Press n to sign in to another account.",
+            theme.muted,
+        ));
+    }
+    lines.extend([
+        Line::default(),
+        Line::styled(
+            "Login opens in a new terminal window, and account folders open in $VISUAL or \
+             $EDITOR. Native account limits still apply. Switchyard does not rotate login \
+             tokens.",
+            theme.muted,
+        ),
+    ]);
+    lines
 }
 
 /// This function lists the server key variables from the last `ServerKeys` reply.
@@ -3476,9 +3837,16 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines.push(Line::default());
             lines
         }
+        FormKind::SettingsFile => vec![
+            Line::from(
+                "The harness must load a custom file itself. Pi reads settings.json from the \
+                 folder of models.json.",
+            ),
+            Line::default(),
+        ],
         FormKind::Preferences
         | FormKind::Update(_)
-        | FormKind::Save(_)
+        | FormKind::Confirm(..)
         | FormKind::Remove { .. } => Vec::new(),
     }
 }
@@ -3584,6 +3952,7 @@ fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
         ("While filtering calls or routes", FILTER_KEYS, None),
         ("Models", MODELS_KEYS, Some(Tab::Models)),
         ("Routes", ROUTES_KEYS, Some(Tab::Routes)),
+        ("Harnesses", HARNESSES_KEYS, Some(Tab::Harnesses)),
         ("Settings", SETTINGS_KEYS, Some(Tab::Settings)),
     ] {
         if !lines.is_empty() {
@@ -3821,8 +4190,12 @@ mod tests {
     }
 
     fn screen(app: &mut App, tab: Tab) -> String {
+        screen_sized(app, tab, 140, 40)
+    }
+
+    fn screen_sized(app: &mut App, tab: Tab, width: u16, height: u16) -> String {
         app.tab = tab;
-        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
         let buffer = terminal.backend().buffer();
         buffer
@@ -3911,6 +4284,7 @@ mod tests {
                 Tab::Calls => &['/', 's'],
                 Tab::Models => &['p', '[', ']'],
                 Tab::Routes => &['/'],
+                Tab::Harnesses => &['t', 'a', 'x'],
                 Tab::Overview | Tab::Settings => &[],
             }
         };

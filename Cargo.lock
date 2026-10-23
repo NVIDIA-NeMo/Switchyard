@@ -5401,6 +5401,8 @@ dependencies = [
  "image",
  "libc",
  "mslnk",
+ "objc2-app-kit",
+ "objc2-foundation",
  "plist",
  "ratatui",
  "security-framework",
@@ -5419,6 +5421,7 @@ dependencies = [
  "toml_edit 0.25.13+spec-1.1.0",
  "url",
  "uuid",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
