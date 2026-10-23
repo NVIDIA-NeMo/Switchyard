@@ -169,6 +169,94 @@ esac
         port
     }
 
+    #[test]
+    fn fresh_install_defers_setup_and_reinstalls_reuse_saved_configuration() {
+        let f = Fixture::new();
+        let server = f.s.sy_home.join("composite.toml");
+        fs::remove_file(&server).expect("fresh state");
+        write(&f.profile(), "invalid [");
+        write(&f.s.prices_file(), "invalid prices");
+        f.ok("install");
+        assert!(!server.exists());
+        assert!(!f.s.desktop_settings().exists());
+        assert_eq!(read(&f.profile()), "invalid [");
+        assert_eq!(read(&f.s.prices_file()), "invalid prices");
+        fs::remove_file(f.profile()).expect("unrelated profile");
+        assert!(
+            switchyard_desktop::config::needs_setup(&f.s.desktop_settings()).expect("fresh setup")
+        );
+        let config =
+            switchyard_desktop::config::Config::load(&f.s.desktop_settings()).expect("defaults");
+        switchyard_desktop::config::save_configuration(&f.s.desktop_settings(), &config, true)
+            .expect("save setup");
+        let mut selected = config.clone();
+        selected.config_file = f.s.sy_home.join("selected-server.toml");
+        selected.routing_log = f.s.sy_home.join("selected-log.jsonl");
+        selected.prices_file = Some(f.s.sy_home.join("selected-prices.toml"));
+        fs::copy(&server, &selected.config_file).expect("selected config");
+        write(
+            selected.prices_file.as_ref().expect("price path"),
+            "[model]\ninput=1\noutput=2\ncache_read=0\ncache_write=0\n",
+        );
+        switchyard_desktop::config::save_configuration(&f.s.desktop_settings(), &selected, false)
+            .expect("change selected files");
+        let command = f.s.server_command().expect("selected server command");
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--config", selected.config_file.to_str().expect("path")])
+        );
+        assert!(args.windows(2).any(|pair| pair
+            == [
+                "--routing-log-file",
+                selected.routing_log.to_str().expect("path")
+            ]));
+        assert!(args.windows(2).any(|pair| {
+            pair == [
+                "--pricing-file",
+                selected
+                    .prices_file
+                    .as_ref()
+                    .expect("price")
+                    .to_str()
+                    .expect("path"),
+            ]
+        }));
+        for host in ["localhost", "0.0.0.0"] {
+            selected.server_url = format!("http://{host}:{}", f.s.port);
+            switchyard_desktop::config::save_configuration(
+                &f.s.desktop_settings(),
+                &selected,
+                false,
+            )
+            .expect("selected server address");
+            let command = f.s.server_command().expect("loopback command");
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy())
+                .collect();
+            assert!(args.windows(2).any(|pair| pair == ["--host", "127.0.0.1"]));
+        }
+        selected.server_url = format!("http://localhost:{}", health_server());
+        switchyard_desktop::config::save_configuration(&f.s.desktop_settings(), &selected, false)
+            .expect("restore server address");
+        let saved = fs::read(f.s.desktop_settings()).expect("saved settings");
+        f.ok("install");
+        f.ok("install");
+        assert!(
+            !switchyard_desktop::config::needs_setup(&f.s.desktop_settings()).expect("reinstall")
+        );
+        assert_eq!(fs::read(f.s.desktop_settings()).expect("preserved"), saved);
+        assert_eq!(read(&server), install::BUNDLED_CONFIG);
+        assert_eq!(
+            toml(&f.profile())["model_providers"]["sy"]["base_url"].as_str(),
+            Some(format!("{}/v1", selected.server_url).as_str())
+        );
+    }
+
     struct Fixture {
         dir: tempfile::TempDir,
         s: Settings,
@@ -202,6 +290,8 @@ esac
             };
             let file = dir.path().join("install.toml");
             let f = Self { dir, s, file };
+            // Most cases exercise an installation with an existing server configuration.
+            write(&f.s.sy_home.join("composite.toml"), install::BUNDLED_CONFIG);
             f.save();
             f
         }
@@ -423,6 +513,7 @@ esac
 
         // The helper rejects malformed commands and settings before it writes anything.
         let f = Fixture::new();
+        let unchanged = f.files();
         let bad = "key;key set;key status --config;install --dryrun;install --dry-run extra;\
                    uninstall extra;validate --server relative --config /config;\
                    validate --server /server --config /config\n";
@@ -449,7 +540,7 @@ esac
             let names_profile = String::from_utf8_lossy(&output.stdout).contains("team-dev");
             assert_eq!(names_profile, args.contains("FILE"), "{args}");
         }
-        assert!(f.files().is_empty());
+        assert_eq!(f.files(), unchanged);
         write(&f.file, &format!("{}\nunknown = true\n", read(&f.file)));
         assert!(Settings::load(&f.file).is_err());
     }

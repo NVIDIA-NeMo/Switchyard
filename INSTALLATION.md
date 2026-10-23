@@ -39,10 +39,15 @@ configuration reference.
 ## Desktop installer
 
 From a source checkout, run `cargo desktop --help` for the commands and
-`cargo desktop install --dry-run` to preview installation. This checkout has
-the installer helper but does not yet build the desktop app executable, so
-full installation cannot complete. Uninstall keeps settings, history, and
-recovery copies.
+`cargo desktop install --dry-run` to preview installation. Run
+`cargo desktop install` to build and install the app and server.
+
+The app opens setup on its first launch before creating app and server config files.
+Existing app settings or a default server config skip setup, including after
+reinstall. Settings lets you change the selected files or remove app preferences.
+On Linux, open the installed app with `~/.switchyard/bin/switchyard-desktop --tui`.
+See [Desktop setup](crates/switchyard-desktop/SETUP.md) for these steps.
+Uninstall keeps settings, history, and recovery copies.
 
 The installer requires the repository's Rust toolchain. macOS uses LaunchAgents;
 Linux requires a systemd user session. Windows requires MSVC build tools,

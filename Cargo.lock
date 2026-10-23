@@ -4674,6 +4674,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "rfd"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
+dependencies = [
+ "block2",
+ "dispatch2",
+ "js-sys",
+ "libc",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "percent-encoding",
+ "raw-window-handle",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5398,13 +5421,17 @@ version = "0.3.0"
 dependencies = [
  "chrono",
  "dbus-secret-service",
+ "dispatch2",
  "image",
  "libc",
  "mslnk",
+ "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "objc2-quartz-core",
  "plist",
  "ratatui",
+ "rfd",
  "security-framework",
  "self-replace",
  "serde",

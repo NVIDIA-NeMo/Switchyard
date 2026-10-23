@@ -40,7 +40,7 @@ pub fn executable_name(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
 }
 
-const BUNDLED_CONFIG: &str = include_str!("../../../scripts/config/composite.toml");
+pub const BUNDLED_CONFIG: &str = include_str!("../../../scripts/config/composite.toml");
 const UPDATE_LOCK: &str = ".switchyard-desktop-update.lock";
 const PORT_ERROR: &str = "SY_PORT must be a number from 1 to 65535.";
 
@@ -210,23 +210,24 @@ impl Settings {
     }
     /// This method builds the installed server command with any existing price override.
     /// The caller configures and starts the process.
-    pub fn server_command(&self) -> Command {
+    pub fn server_command(&self) -> Result<Command, String> {
+        let config = Config::load(&self.desktop_settings())?;
         let mut command = Command::new(self.binary("switchyard-server"));
-        command
-            .arg("--config")
-            .arg(self.sy_home.join(SERVER_CONFIG));
+        command.arg("--config").arg(&config.config_file);
+        let url = crate::health::validate_url(&config.server_url)?;
         command.args(["--host", "127.0.0.1"]);
-        command.arg("--port").arg(self.port.to_string());
-        command
-            .arg("--routing-log-file")
-            .arg(self.sy_home.join(ROUTING_LOG));
-
-        let prices = self.prices_file();
-        if prices.exists() {
+        command.arg("--port").arg(
+            url.port_or_known_default()
+                .ok_or("Missing server port.")?
+                .to_string(),
+        );
+        command.arg("--routing-log-file").arg(&config.routing_log);
+        if let Some(prices) = &config.prices_file {
             command.arg("--pricing-file").arg(prices);
         }
-        command
+        Ok(command)
     }
+
     fn profile_file(&self) -> PathBuf {
         self.codex_home
             .join(format!("{}.config.toml", self.profile))
@@ -450,6 +451,7 @@ pub fn preview_update(settings_file: &Path) -> Result<serde_json::Value, String>
 }
 fn installation_plan(s: &Settings, action: &str) -> String {
     let removing = action == "uninstall";
+    let needs_setup = !removing && matches!(config::needs_setup(&s.desktop_settings()), Ok(true));
     let pick = |remove, install| if removing { remove } else { install };
     let app = if cfg!(target_os = "macos") {
         "macOS desktop app"
@@ -461,6 +463,8 @@ fn installation_plan(s: &Settings, action: &str) -> String {
     let profile = s.profile_file();
     let profile_action = if removing {
         "Preserve recovery copy, then remove"
+    } else if needs_setup {
+        "Defer until after setup:"
     } else if !profile.exists() {
         "Create"
     } else if action == "update" {
@@ -486,7 +490,11 @@ fn installation_plan(s: &Settings, action: &str) -> String {
             "{} service definitions in {}. The server {}.",
             pick("Remove", "Replace"),
             s.service_dir.display(),
-            pick("will stop", "will restart after build and validation")
+            if needs_setup {
+                "will wait for setup before starting"
+            } else {
+                pick("will stop", "will restart after build and validation")
+            }
         ),
     ];
     for (path, label) in [
@@ -494,7 +502,9 @@ fn installation_plan(s: &Settings, action: &str) -> String {
         (s.sy_home.join(SERVER_CONFIG), "server config"),
         (s.sy_home.join(ROUTING_LOG), "usage history"),
     ] {
-        let verb = if removing || path.exists() {
+        let verb = if needs_setup {
+            "Defer until setup"
+        } else if removing || path.exists() {
             "Preserve"
         } else {
             "Create"
@@ -590,8 +600,32 @@ fn wait_for_health(port: u16) -> bool {
             )
             .is_ok()
             {
-                let mut response = String::new();
-                if stream.take(8192).read_to_string(&mut response).is_ok()
+                let mut bytes = [0; 8192];
+                let mut used = 0;
+                let mut complete = false;
+                while used < bytes.len() {
+                    let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                        break;
+                    };
+                    if remaining.is_zero()
+                        || stream
+                            .set_read_timeout(Some(remaining.min(Duration::from_millis(300))))
+                            .is_err()
+                    {
+                        break;
+                    }
+                    match stream.read(&mut bytes[used..]) {
+                        Ok(0) => {
+                            complete = true;
+                            break;
+                        }
+                        Ok(count) => used += count,
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+                if (complete || used == bytes.len())
+                    && let Ok(response) = std::str::from_utf8(&bytes[..used])
                     && let Some((headers, body)) = response.split_once("\r\n\r\n")
                     && headers
                         .lines()
@@ -700,6 +734,7 @@ fn remove(path: &Path) -> Result<(), String> {
 
 /// What an install gathers and checks before it changes the installation.
 struct Prepared {
+    needs_setup: bool,
     /// The Codex profile to save.
     profile: String,
     /// App settings rewritten for a new port, when the port changes.
@@ -719,8 +754,17 @@ fn install(s: &Settings, preserve_profile: bool) -> Result<Option<String>, Strin
         "install",
         "Build and config validation passed. Replacing the installation.",
     )?;
-    replace_installation(s, prepared.desktop_settings.as_deref())?;
-    platform::install(s, prepared.missing_keys.is_empty())?;
+    replace_installation(
+        s,
+        prepared.desktop_settings.as_deref(),
+        prepared.needs_setup,
+    )?;
+    platform::install(s, !prepared.needs_setup && prepared.missing_keys.is_empty())?;
+    if prepared.needs_setup {
+        let message = "Installed. Open Switchyard to choose your configuration. Existing files will skip setup on later installs.".to_string();
+        println!("{message}");
+        return Ok(Some(message));
+    }
     if !preserve_profile || !present(&s.profile_file())? {
         save_profile(s, &prepared.profile)?;
     }
@@ -728,24 +772,49 @@ fn install(s: &Settings, preserve_profile: bool) -> Result<Option<String>, Strin
 }
 
 fn prepare(s: &Settings, preserve_profile: bool) -> Result<Prepared, String> {
+    let needs_setup = config::needs_setup(&s.desktop_settings())?;
     let profile = s.profile_file();
-    let context_window = route_context_window(s)?;
-    let profile_text = if profile.exists() && !preserve_profile {
-        let current = fs::read_to_string(&profile).map_err(err)?;
-        merge_codex_profile(s, &current, context_window)?
+    let desktop_settings = reconcile_desktop_port(s)?;
+    let server_url = if desktop_settings.is_some() || !present(&s.desktop_settings())? {
+        config::server_url(s.port)
     } else {
-        codex_profile(s, context_window)
+        Config::load(&s.desktop_settings())?.server_url
+    };
+    let profile_text = if needs_setup {
+        String::new()
+    } else {
+        let context_window = route_context_window(s)?;
+        if profile.exists() && !preserve_profile {
+            let current = fs::read_to_string(&profile).map_err(err)?;
+            merge_codex_profile(s, &current, context_window, &server_url)?
+        } else {
+            codex_profile(s, context_window, &server_url)
+        }
     };
     #[cfg(not(windows))]
     platform::preflight()?;
-    let desktop_settings = reconcile_desktop_port(s)?;
-    let prices = s.prices_file();
-    if present(&prices)? {
+    let prices = if needs_setup {
+        None
+    } else {
+        Config::load(&s.desktop_settings())?
+            .prices_file
+            .or_else(|| {
+                // An installation with only a server config still imports its adjacent price override.
+                (!s.desktop_settings().exists() && s.prices_file().exists())
+                    .then(|| s.prices_file())
+            })
+    };
+    if let Some(prices) = prices {
         Pricing::load(&prices).map_err(|e| format!("{e}. Fix this file before installing."))?;
     }
     build(s)?;
-    let missing_keys = check_server_config(s, !preserve_profile || !profile.exists())?;
+    let missing_keys = if needs_setup {
+        Vec::new()
+    } else {
+        check_server_config(s, !preserve_profile || !profile.exists())?
+    };
     Ok(Prepared {
+        needs_setup,
         profile: profile_text,
         desktop_settings,
         missing_keys,
@@ -776,7 +845,7 @@ fn build(s: &Settings) -> Result<(), String> {
 /// Checks the server config that the install keeps, or the bundled one on a first install, and
 /// returns the API key variables that have no saved key.
 fn check_server_config(s: &Settings, require_route: bool) -> Result<Vec<String>, String> {
-    let config = s.sy_home.join(SERVER_CONFIG);
+    let config = Config::load(&s.desktop_settings())?.config_file;
     let existing = present(&config)?;
     let staged = tempfile::NamedTempFile::new().map_err(err)?;
     let checked = if existing {
@@ -806,7 +875,11 @@ fn check_server_config(s: &Settings, require_route: bool) -> Result<Vec<String>,
 
 /// Stops the services and replaces the app files. The macOS app bundle is staged and signed
 /// before the services stop.
-fn replace_installation(s: &Settings, desktop_settings: Option<&str>) -> Result<(), String> {
+fn replace_installation(
+    s: &Settings,
+    desktop_settings: Option<&str>,
+    needs_setup: bool,
+) -> Result<(), String> {
     let metadata = toml::to_string(s).map_err(err)?;
     #[cfg(target_os = "macos")]
     let bundle = platform::stage_bundle(s, &metadata)?;
@@ -830,11 +903,12 @@ fn replace_installation(s: &Settings, desktop_settings: Option<&str>) -> Result<
         let bytes = fs::read(s.release(binary)).map_err(err)?;
         write(&s.binary(binary), &bytes, true)?;
     }
-    write_once(&s.sy_home.join(SERVER_CONFIG), BUNDLED_CONFIG)?;
-    if let Some(text) = desktop_settings {
-        write(&s.desktop_settings(), text.as_bytes(), false)?;
-    } else {
-        write_once(&s.desktop_settings(), &desktop_config(s)?)?;
+    if !needs_setup {
+        if let Some(text) = desktop_settings {
+            write(&s.desktop_settings(), text.as_bytes(), false)?;
+        } else {
+            write_once(&s.desktop_settings(), &desktop_config(s)?)?;
+        }
     }
     for record in [s.sy_home.join("install.toml"), s.install_record()] {
         write(&record, metadata.as_bytes(), false)?;
@@ -860,9 +934,10 @@ fn save_profile(s: &Settings, text: &str) -> Result<(), String> {
 
 /// Returns the warning to record when the server cannot start yet or does not answer /health.
 fn report_readiness(s: &Settings, missing_keys: &[String]) -> Result<Option<String>, String> {
+    let config = Config::load(&s.desktop_settings())?;
     println!(
-        "Installed. Server: http://127.0.0.1:{}\nSettings: {}\nUse: codex -p {}",
-        s.port,
+        "Installed. Server: {}\nSettings: {}\nUse: codex -p {}",
+        config.server_url,
         s.desktop_settings().display(),
         s.profile
     );
@@ -891,7 +966,10 @@ fn report_readiness(s: &Settings, missing_keys: &[String]) -> Result<Option<Stri
         println!("{message}");
         return Ok(Some(message));
     }
-    if wait_for_health(s.port) {
+    let port = crate::health::validate_url(&config.server_url)?
+        .port_or_known_default()
+        .ok_or("Missing server port.")?;
+    if wait_for_health(port) {
         return Ok(None);
     }
     let message = format!(
@@ -980,7 +1058,7 @@ fn reconcile_desktop_port(s: &Settings) -> Result<Option<String>, String> {
 // config or, on a new install, the bundled one. A missing route returns `None` here;
 // check_public_route rejects it later with the list of valid route IDs.
 fn route_context_window(s: &Settings) -> Result<Option<i64>, String> {
-    let path = s.sy_home.join(SERVER_CONFIG);
+    let path = Config::load(&s.desktop_settings())?.config_file;
     let text = read_optional(&path).map_err(|e| format!("Read {}: {e}", path.display()))?;
     let document: toml::Value = toml::from_str(text.as_deref().unwrap_or(BUNDLED_CONFIG))
         .map_err(|e| format!("Parse {}: {e}", path.display()))?;
@@ -992,7 +1070,7 @@ fn route_context_window(s: &Settings) -> Result<Option<i64>, String> {
 // Codex compacts a thread when its usage nears the model's context window. Codex does not
 // know a Switchyard route ID, so the profile names the route's window. Without it, Codex
 // never compacts on the route, and a long thread fails when the upstream rejects it.
-fn codex_profile(s: &Settings, context_window: Option<i64>) -> String {
+fn codex_profile(s: &Settings, context_window: Option<i64>, server_url: &str) -> String {
     let mut value: toml::Value = toml::from_str(
         include_str!("../../../scripts/config/codex.sy.toml")
             .replace("@SY_PORT@", &s.port.to_string())
@@ -1000,6 +1078,8 @@ fn codex_profile(s: &Settings, context_window: Option<i64>) -> String {
     )
     .expect("bundled profile is valid TOML");
     value["model"] = s.model.clone().into();
+    value["model_providers"]["sy"]["base_url"] =
+        format!("{}/v1", server_url.trim_end_matches('/')).into();
     if let (Some(window), Some(table)) = (context_window, value.as_table_mut()) {
         table.insert("model_context_window".into(), window.into());
     }
@@ -1009,11 +1089,12 @@ fn merge_codex_profile(
     s: &Settings,
     current: &str,
     context_window: Option<i64>,
+    server_url: &str,
 ) -> Result<String, String> {
     let mut document: toml_edit::DocumentMut = current
         .parse()
         .map_err(|e| format!("Read Codex profile: {e}"))?;
-    let template: toml_edit::DocumentMut = codex_profile(s, context_window)
+    let template: toml_edit::DocumentMut = codex_profile(s, context_window, server_url)
         .parse()
         .expect("generated profile is valid TOML");
     for key in ["model", "model_provider"] {

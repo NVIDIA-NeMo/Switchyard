@@ -32,8 +32,11 @@ shlex = "2"
 strum = { version = "0.28", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CALayer"] }
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWorkspace", "NSAccessibility", "NSApplication", "NSPanel", "NSColor", "NSWindow", "NSView", "NSScreen", "NSEvent", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSResponder", "objc2-quartz-core"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSString", "NSURL", "NSProcessInfo"] }
 security-framework = "3"
 
 [target.'cfg(unix)'.dependencies]
@@ -50,7 +53,8 @@ windows = { version = "0.62.2", features = ["Management_Deployment", "Applicatio
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Credentials", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
-tauri = { version = "2", features = ["custom-protocol"] }
+rfd = { version = "0.17", default-features = false }
+tauri = { version = "2", features = ["tray-icon", "custom-protocol", "macos-private-api"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.build-dependencies]
 tauri-build = "2"
