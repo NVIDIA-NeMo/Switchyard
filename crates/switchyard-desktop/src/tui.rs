@@ -125,6 +125,13 @@ const FORM_KEYS: &[Key] = &[
     ("tab", "next field", ""),
     ("esc", "cancel", ""),
 ];
+/// The status bar shows these keys while the selected form field has a list of choices.
+const CHOICE_KEYS: &[Key] = &[
+    ("⏎", "submit", ""),
+    ("↑↓", "choose", ""),
+    ("tab", "next field", ""),
+    ("esc", "cancel", ""),
+];
 const REVIEW_KEYS: &[Key] = &[
     ("⏎", "confirm", ""),
     ("↑↓", "scroll", ""),
@@ -140,6 +147,20 @@ const CONFIRM_KEYS: &[Key] = &[("y", "confirm", ""), ("n", "cancel", "")];
 /// and `every_controller_action_has_a_key` fails until a row's flow includes it.
 type ActionRow = (Tab, char, &'static str, &'static str, &'static [ActionKind]);
 const ACTIONS: &[ActionRow] = &[
+    (
+        Tab::Routes,
+        'm',
+        "models",
+        "Loads the model IDs that an endpoint offers.",
+        &[ActionKind::Models],
+    ),
+    (
+        Tab::Routes,
+        'k',
+        "model key",
+        "Saves an API key that lets the app load an endpoint's model IDs, then loads them.",
+        &[ActionKind::Models],
+    ),
     (
         Tab::Settings,
         'o',
@@ -386,6 +407,12 @@ enum FormKind {
     RemoveKey,
     /// The token comes from the update preview that the user read.
     Update(Option<String>),
+    Models,
+    ModelKey,
+}
+/// Choices names the list that ↑ and ↓ cycle through in a form field.
+enum Choices {
+    Endpoints,
 }
 /// Submit is what a form sends: a controller action.
 enum Submit {
@@ -476,6 +503,28 @@ impl Form {
     fn value(&self, index: usize) -> String {
         self.fields[index].1.trim().to_string()
     }
+    /// This function names the list that the selected field chooses from, if any.
+    fn options(&self) -> Option<Choices> {
+        match self.kind {
+            FormKind::Models | FormKind::ModelKey if self.index == 0 => Some(Choices::Endpoints),
+            _ => None,
+        }
+    }
+    /// This function replaces the selected field with the next or previous name in `names`.
+    fn choose<'a>(&mut self, mut names: impl Iterator<Item = &'a str> + Clone, forward: bool) {
+        let count = names.clone().count();
+        if count == 0 {
+            return;
+        }
+        let field = &mut self.fields[self.index].1;
+        let next = match names.clone().position(|name| name == field.trim()) {
+            Some(index) if forward => (index + 1) % count,
+            Some(index) => (index + count - 1) % count,
+            None => 0,
+        };
+        *field = names.nth(next).unwrap_or_default().to_string();
+        self.cursor = field.chars().count();
+    }
     /// This function builds what the form submits.
     fn action(&self) -> Result<Submit, String> {
         let confirm = |word: &str, error: &str| {
@@ -513,6 +562,16 @@ impl Form {
                     preview_token: preview_token.clone(),
                 }
             }
+            FormKind::Models => Action::Models {
+                client: self.value(0),
+                refresh: true,
+                key: None,
+            },
+            FormKind::ModelKey => Action::Models {
+                client: self.value(0),
+                refresh: true,
+                key: Some(self.value(1)),
+            },
         }))
     }
     fn label(&self) -> &'static str {
@@ -522,6 +581,9 @@ impl Form {
             FormKind::ImportKey => "Importing the server key",
             FormKind::RemoveKey => "Removing the server key",
             FormKind::Update(_) => "Starting the update",
+
+            FormKind::Models => "Loading models",
+            FormKind::ModelKey => "Saving the key and loading models",
         }
     }
 }
@@ -856,6 +918,24 @@ impl App {
                     "Type UPDATE to start",
                 ));
             }
+            (Some(ActionKind::Models), Ok(reply)) => {
+                let models: Vec<&str> = reply.data["models"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let list = if models.is_empty() {
+                    "No model IDs found.".to_string()
+                } else {
+                    models.join("\n")
+                };
+                let client = reply.data["client"].as_str().unwrap_or_default();
+                self.popup = Some(Popup::Message {
+                    title: "Models",
+                    text: format!("{}\n\nModel IDs on {client}:\n{list}", reply.message),
+                    tone: Tone::of(&reply),
+                    scroll: 0,
+                });
+            }
             (Some(ActionKind::ServerKeys), Ok(reply)) => {
                 self.server_keys = Some(reply.data);
                 self.notify("Checked the saved server keys.".into(), Tone::Done);
@@ -938,7 +1018,7 @@ impl App {
         match (&self.popup, self.filtering, self.tab) {
             (Some(Popup::Restart), _, _) => CONFIRM_KEYS,
             (Some(Popup::Review { .. }), _, _) => REVIEW_KEYS,
-
+            (Some(Popup::Form(form)), _, _) if form.options().is_some() => CHOICE_KEYS,
             (Some(Popup::Form(_)), _, _) => FORM_KEYS,
             (Some(_), _, _) => POPUP_KEYS,
             (None, true, _) => FILTER_KEYS,
@@ -1136,10 +1216,28 @@ impl App {
     /// adding a controller action breaks the build until the terminal app can run it. Only the
     /// arms of actions that several keys start read `key`, and they return an error for a key
     /// that they do not know, so a new row must also be added to its arm.
-    fn start_action(&mut self, kind: ActionKind, _key: char) -> Result<Option<Request>, String> {
+    fn start_action(&mut self, kind: ActionKind, key: char) -> Result<Option<Request>, String> {
         let request = |action, label| Ok(Some(Request::run(action, label)));
 
         match kind {
+            ActionKind::Models => {
+                let client = self.data.clients.first();
+                let client = client.map(|c| c.name.clone()).unwrap_or_default();
+                let form = match key {
+                    'm' => Form::new(
+                        FormKind::Models,
+                        "Load an endpoint's models",
+                        vec![("Endpoint name", client)],
+                    ),
+                    'k' => Form::new(
+                        FormKind::ModelKey,
+                        "Save a model-list key",
+                        vec![("Endpoint name", client), ("API key", String::new())],
+                    ),
+                    _ => return Err(format!("The {key} key does not load models.")),
+                };
+                self.open(form)
+            }
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
                 request(Action::CheckConfig {}, "Checking the server config")
@@ -1218,13 +1316,23 @@ impl App {
                         Ok(Submit::Run(action)) => return Some(Request::run(action, form.label())),
                         Err(error) => form.error = error,
                     },
-                    // Only the review window scrolls; text fields ignore these keys.
+                    // A field with choices cycles through them. Otherwise only the review
+                    // window scrolls; text fields ignore these keys.
                     KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
-                        if let Some(scroll) = popup.scroll_mut()
-                            && let Some(next) =
-                                step(key.code, usize::from(*scroll), usize::from(u16::MAX))
-                        {
-                            *scroll = next as u16;
+                        let forward = key.code == KeyCode::Down;
+                        match (form.options(), key.code) {
+                            (Some(Choices::Endpoints), KeyCode::Up | KeyCode::Down) => {
+                                let names = self.data.clients.iter().map(|c| c.name.as_str());
+                                form.choose(names, forward);
+                            }
+                            _ => {
+                                if let Some(scroll) = popup.scroll_mut()
+                                    && let Some(next) =
+                                        step(key.code, usize::from(*scroll), usize::from(u16::MAX))
+                                {
+                                    *scroll = next as u16;
+                                }
+                            }
                         }
                     }
                     _ => form.edit(key),
@@ -2707,7 +2815,7 @@ fn form_lines(theme: Theme, form: &Form) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(index, (label, value))| {
             // The key field shows one bullet per character, so the key never appears on screen.
-            let masked = matches!(form.kind, FormKind::SaveKey);
+            let masked = matches!(form.kind, FormKind::SaveKey | FormKind::ModelKey);
             let mut value = if masked && index == 1 {
                 "•".repeat(value.chars().count())
             } else {
@@ -2867,6 +2975,7 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 /// that ↑ and ↓ cycle through.
 fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
     let theme = app.theme;
+    let data = &app.data;
     match &form.kind {
         FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey => {
             let mut lines = vec![Line::styled("Server keys", theme.muted)];
@@ -2875,6 +2984,27 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines
         }
 
+        FormKind::Models | FormKind::ModelKey => {
+            let key = matches!(form.kind, FormKind::ModelKey);
+            let mut lines: Vec<Line> = data
+                .clients
+                .iter()
+                .map(|client| {
+                    let mut spans = vec![
+                        Span::raw(client.name.clone()),
+                        Span::styled(format!(" · {}", client.host), theme.muted),
+                    ];
+                    if key && client.accepts_key {
+                        spans.push(Span::styled(" · accepts a model-list key", theme.ok));
+                    } else if key {
+                        spans.push(Span::styled(" · no model-list key", theme.warn));
+                    }
+                    Line::from(spans)
+                })
+                .collect();
+            lines.push(Line::default());
+            lines
+        }
         FormKind::Preferences | FormKind::Update(_) => Vec::new(),
     }
 }
