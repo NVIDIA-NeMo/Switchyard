@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app shows recorded usage and server status on the Overview page.
+//! The terminal app shows recorded usage and server status on the Overview and Models pages.
 //!
 //! One worker thread owns the controller and refreshes its snapshots while the UI thread
 //! draws and reads input.
 
 use crate::controller::{Availability, Controller, Snapshot};
 use crate::pricing::Estimate;
+use crate::rollup::{ModelTokens, Totals, Usage};
 use crate::summary::{money, tokens};
 use ratatui::{
     Frame,
@@ -15,9 +16,12 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Bar, BarChart, Block, BorderType, Clear, Padding, Paragraph, Tabs, Wrap},
+    widgets::{
+        Bar, BarChart, Block, BorderType, Cell, Clear, Padding, Paragraph, Row, Table, Tabs, Wrap,
+    },
 };
 use std::{
+    collections::BTreeMap,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -33,9 +37,9 @@ const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '�
 type Key = (&'static str, &'static str, &'static str);
 const GLOBAL_KEYS: &[Key] = &[
     (
-        "1",
+        "1-2",
         "page",
-        "Show Overview. Tab, Shift-Tab, ← and → also select Overview.",
+        "Switch pages. Tab, Shift-Tab, ← and → also switch pages.",
     ),
     (
         "r",
@@ -49,7 +53,15 @@ const GLOBAL_KEYS: &[Key] = &[
         "Quit the app. The server keeps running. Ctrl-C also quits.",
     ),
 ];
+const MODELS_KEYS: &[Key] = &[(
+    "p",
+    "period",
+    "Switch the period: today, the past 7 days, or the whole log. The [ and ] keys also work.",
+)];
 const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
+
+/// Column is a table heading, its width, and whether its values are right-aligned.
+type Column = (&'static str, Constraint, bool);
 
 /// Theme maps each kind of text to one style. NO_COLOR keeps the text modifiers.
 #[derive(Clone, Copy)]
@@ -100,12 +112,14 @@ fn color_enabled() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Overview,
+    Models,
 }
-const TABS: [Tab; 1] = [Tab::Overview];
+const TABS: [Tab; 2] = [Tab::Overview, Tab::Models];
 impl Tab {
     fn name(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
+            Tab::Models => "Models",
         }
     }
     fn index(self) -> usize {
@@ -117,12 +131,31 @@ impl Tab {
 enum Period {
     Today,
     Week,
+    All,
 }
 impl Period {
     fn name(self) -> &'static str {
         match self {
             Period::Today => "Today",
             Period::Week => "Past 7 days",
+            Period::All => "Whole log",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            Period::Today => Period::Week,
+            Period::Week => Period::All,
+            Period::All => Period::Today,
+        }
+    }
+    fn previous(self) -> Self {
+        self.next().next()
+    }
+    fn totals(self, usage: &Usage) -> &Totals {
+        match self {
+            Period::Today => &usage.today,
+            Period::Week => &usage.week,
+            Period::All => &usage.all,
         }
     }
     /// The estimate is `None` when the usage log could not be read.
@@ -130,6 +163,7 @@ impl Period {
         let key = match self {
             Period::Today => "today",
             Period::Week => "week",
+            Period::All => "all",
         };
         snapshot.estimates.get(key).copied().flatten()
     }
@@ -194,6 +228,7 @@ struct App {
     theme: Theme,
     data: Snapshot,
     tab: Tab,
+    period: Period,
     popup: Option<Popup>,
     toast: Option<Toast>,
     busy: Option<Busy>,
@@ -210,6 +245,7 @@ impl App {
             theme,
             data: Snapshot::default(),
             tab: Tab::Overview,
+            period: Period::Week,
             popup: None,
             toast: None,
             busy: None,
@@ -305,6 +341,7 @@ impl App {
         match (&self.popup, self.tab) {
             (Some(_), _) => POPUP_KEYS,
             (None, Tab::Overview) => &[],
+            (None, Tab::Models) => MODELS_KEYS,
         }
     }
 
@@ -319,7 +356,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
-            KeyCode::Char(digit @ '1'..='1') => {
+            KeyCode::Char(digit @ '1'..='2') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
             KeyCode::Tab | KeyCode::Right => self.tab = TABS[(self.tab.index() + 1) % TABS.len()],
@@ -328,7 +365,14 @@ impl App {
             }
             KeyCode::Char('r') | KeyCode::F(5) => return Some(Request::refresh(false)),
             KeyCode::Esc => self.toast = None,
-            _ => {}
+            code => match self.tab {
+                Tab::Overview => {}
+                Tab::Models => match code {
+                    KeyCode::Char('p' | ']') => self.period = self.period.next(),
+                    KeyCode::Char('[') => self.period = self.period.previous(),
+                    _ => {}
+                },
+            },
         }
         None
     }
@@ -374,6 +418,10 @@ fn count(value: u64) -> String {
     text
 }
 
+fn plural(value: u64, one: &str, many: &str) -> String {
+    format!("{} {}", count(value), if value == 1 { one } else { many })
+}
+
 /// This function shows a total only when every call has a cost. Otherwise it shows the known
 /// part as a lower bound, or "unknown", so a missing cost never reads as $0.
 fn cost(theme: Theme, total: Option<f64>, known: f64) -> Span<'static> {
@@ -407,11 +455,56 @@ fn saved(theme: Theme, estimate: &Estimate, baseline: bool) -> Vec<Span<'static>
     spans
 }
 
+/// This function explains why `Estimate::savings` has no figure, in the order that
+/// `summary::build` checks the reasons. Call it only when the savings are hidden.
+fn hidden_savings(estimate: &Estimate, baseline: &str) -> String {
+    if estimate.baseline.is_none() {
+        format!("the price table has no rates for {baseline}")
+    } else if estimate.unknown_calls > 0 {
+        format!(
+            "{} no recorded cost",
+            plural(estimate.unknown_calls, "call has", "calls have")
+        )
+    } else {
+        format!(
+            "{} no token counts",
+            plural(estimate.uncounted_answers, "answer has", "answers have")
+        )
+    }
+}
+
 fn server_state(theme: Theme, running: bool) -> [Span<'static>; 2] {
     [
         Span::styled("● ", if running { theme.ok } else { theme.error }),
         Span::raw(if running { "running" } else { "not responding" }),
     ]
+}
+
+fn right<'a>(line: impl Into<Line<'a>>) -> Cell<'a> {
+    Cell::from(line.into().right_aligned())
+}
+
+/// Model tables end with the share column. Narrow terminals drop it so model IDs stay readable;
+/// `Table` ignores the extra cell in each row.
+fn share_columns(columns: &[Column], area: Rect) -> &[Column] {
+    let keep = if area.width >= 80 {
+        columns.len()
+    } else {
+        columns.len() - 1
+    };
+    &columns[..keep]
+}
+
+fn table<'a>(theme: Theme, columns: &[Column], rows: Vec<Row<'a>>) -> Table<'a> {
+    let header = columns.iter().map(|&(title, _, align_right)| {
+        if align_right {
+            right(title)
+        } else {
+            Cell::from(title)
+        }
+    });
+    Table::new(rows, columns.iter().map(|column| column.1))
+        .header(Row::new(header).style(theme.muted))
 }
 
 fn block(theme: Theme, title: &str) -> Block<'static> {
@@ -424,14 +517,16 @@ fn block(theme: Theme, title: &str) -> Block<'static> {
 fn draw(frame: &mut Frame, app: &mut App) {
     // This exhaustive destructuring requires an update when Snapshot gains a field.
     let Snapshot {
-        data_state: _,
-        metrics: _,
-        today: _,
-        estimates: _,
-        activity: _,
-        limited: _,
-        errors: _,
-        refresh_seconds: _,
+        data_state: _,      // draw_overview shows health; draw_models checks usage
+        metrics: _,         // draw_header and the Overview cards
+        today: _,           // the Overview "Today" card title
+        analytics: _,       // draw_top_models and draw_models
+        estimates: _,       // the Overview cards, draw_top_models, and draw_models
+        baseline_model: _,  // draw_top_models and draw_models
+        activity: _,        // draw_activity
+        limited: _,         // draw_activity
+        errors: _,          // draw_errors
+        refresh_seconds: _, // App::refresh_due
     } = &app.data;
     let area = frame.area();
     app.width = area.width;
@@ -448,6 +543,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     draw_header(frame, app, header);
     match app.tab {
         Tab::Overview => draw_overview(frame, app, body),
+        Tab::Models => draw_models(frame, app, body),
     }
     draw_status(frame, app, status);
     draw_popup(frame, app, body);
@@ -525,36 +621,43 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(status), status_area);
 }
 
-fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
+/// This function draws the Data errors panel at the top of `area` and returns the rest.
+fn draw_errors(frame: &mut Frame, app: &App, area: Rect) -> Rect {
     let theme = app.theme;
-    let data = &app.data;
-    let lines: Vec<Line> = data
-        .errors
+    let errors = &app.data.errors;
+    let lines: Vec<Line> = errors
         .iter()
         .flat_map(|error| error.lines())
         .map(|line| Line::styled(line, theme.error))
         .collect();
-    let errors = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let error_height = if data.errors.is_empty() {
+    let panel = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let height = if errors.is_empty() {
         0
     } else {
         // The panel needs rows for wrapped text as well as its top and bottom borders.
-        errors
+        panel
             .line_count(area.width.saturating_sub(2))
             .saturating_add(2)
             .min(usize::from(area.height / 2)) as u16
     };
     let [errors_area, rest] =
-        Layout::vertical([Constraint::Length(error_height), Constraint::Fill(1)]).areas(area);
-    if error_height > 0 {
+        Layout::vertical([Constraint::Length(height), Constraint::Fill(1)]).areas(area);
+    if height > 0 {
         frame.render_widget(
-            errors.block(block(theme, "Data errors").border_style(theme.error)),
+            panel.block(block(theme, "Data errors").border_style(theme.error)),
             errors_area,
         );
     }
+    rest
+}
+
+fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let data = &app.data;
+    let rest = draw_errors(frame, app, area);
     let usage = data.data_state.usage.state == Availability::Available;
     let chart = if usage && rest.height >= 24 { 9 } else { 0 };
-    let [cards, chart_area, _] = Layout::vertical([
+    let [cards, chart_area, models] = Layout::vertical([
         Constraint::Length(5),
         Constraint::Length(chart),
         Constraint::Fill(1),
@@ -594,6 +697,7 @@ fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     if chart > 0 {
         draw_activity(frame, app, chart_area);
     }
+    draw_top_models(frame, app, models);
 }
 
 fn draw_card(frame: &mut Frame, theme: Theme, title: &str, lines: Vec<Line>, area: Rect) {
@@ -657,6 +761,251 @@ fn draw_activity(frame: &mut Frame, app: &App, area: Rect) {
             .bar_style(theme.bar),
         chart,
     );
+}
+
+/// Models are ordered by their share of the period's tokens; the model ID breaks ties.
+fn by_tokens(models: &BTreeMap<String, ModelTokens>) -> Vec<(&str, &ModelTokens)> {
+    let mut rows: Vec<_> = models
+        .iter()
+        .map(|(name, usage)| (name.as_str(), usage))
+        .collect();
+    rows.sort_by(|left, right| {
+        right
+            .1
+            .total()
+            .cmp(&left.1.total())
+            .then(left.0.cmp(right.0))
+    });
+    rows
+}
+
+/// This function builds a model row. With `kind`, the row also names the answer or routing kind.
+fn model_row(
+    theme: Theme,
+    model: &str,
+    usage: &ModelTokens,
+    total: f64,
+    routing: bool,
+    kind: bool,
+) -> Row<'static> {
+    let share = usage.total() as f64 / total;
+    let filled = ((share * 10.0).round() as usize).min(10);
+    let mut cells = vec![Cell::from(Span::styled(
+        model.to_string(),
+        if routing { theme.muted } else { Style::new() },
+    ))];
+    if kind {
+        cells.push(Cell::from(Span::styled(
+            if routing { "routing" } else { "answer" },
+            theme.muted,
+        )));
+    }
+    cells.extend([
+        right(count(usage.requests)),
+        right(tokens(usage.total())),
+        right(cost(theme, usage.cost.total_usd, usage.cost.known_usd)),
+        Cell::from(Line::from(vec![
+            Span::styled(
+                format!("{}{}", "█".repeat(filled), "░".repeat(10 - filled)),
+                theme.bar,
+            ),
+            Span::styled(format!(" {:>3.0}%", share * 100.0), theme.muted),
+        ])),
+    ]);
+    Row::new(cells)
+}
+
+fn draw_top_models(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let week = &app.data.analytics.week;
+    let mut notes = Vec::new();
+    if !app.data.baseline_model.is_empty() {
+        notes.push(Line::styled(
+            format!(
+                "Savings compare answer calls with {} prices.",
+                app.data.baseline_model
+            ),
+            theme.muted,
+        ));
+    }
+    for period in [Period::Today, Period::Week] {
+        if let Some(estimate) = period.estimate(&app.data)
+            && estimate.savings().is_none()
+        {
+            notes.push(Line::styled(
+                format!(
+                    "{}: savings hidden because {}.",
+                    period.name(),
+                    hidden_savings(&estimate, &app.data.baseline_model)
+                ),
+                theme.warn,
+            ));
+        }
+    }
+    let outer = block(theme, "Models · past 7 days");
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let total = week.tokens().max(1) as f64;
+    let mut rows: Vec<Row> = by_tokens(&week.routed)
+        .into_iter()
+        .map(|(model, usage)| model_row(theme, model, usage, total, false, false))
+        .collect();
+    if !week.classifier.is_empty() {
+        let mut routing = ModelTokens::default();
+        for usage in week.classifier.values() {
+            routing.add(usage);
+        }
+        rows.push(model_row(
+            theme,
+            "routing calls",
+            &routing,
+            total,
+            true,
+            false,
+        ));
+    }
+    let height = if week.is_empty() { 1 } else { rows.len() + 1 };
+    let [table_area, _, notes_area] = Layout::vertical([
+        Constraint::Length(height as u16),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    frame.render_widget(Paragraph::new(notes).wrap(Wrap { trim: false }), notes_area);
+    if week.is_empty() {
+        let text = if app.data.analytics.all.is_empty() {
+            "No calls recorded yet."
+        } else {
+            "No calls recorded in the past 7 days."
+        };
+        frame.render_widget(Paragraph::new(text).style(theme.muted), table_area);
+        return;
+    }
+    let columns = [
+        ("MODEL", Constraint::Fill(1), false),
+        ("CALLS", Constraint::Length(8), true),
+        ("TOKENS", Constraint::Length(8), true),
+        ("COST", Constraint::Length(10), true),
+        ("SHARE", Constraint::Length(17), false),
+    ];
+    frame.render_widget(
+        table(theme, share_columns(&columns, inner), rows),
+        table_area,
+    );
+}
+
+fn draw_models(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let area = draw_errors(frame, app, area);
+    if app.data.data_state.usage.state == Availability::Unavailable {
+        return;
+    }
+    let totals = app.period.totals(&app.data.analytics);
+    let mut summary = vec![
+        Span::styled(count(totals.requests()), Modifier::BOLD),
+        Span::styled(" answer calls · ", theme.muted),
+        Span::styled(tokens(totals.tokens()), Modifier::BOLD),
+        Span::styled(" tokens", theme.muted),
+    ];
+    if let Some(estimate) = app.period.estimate(&app.data) {
+        summary.push(Span::styled(" · spent ", theme.muted));
+        summary.push(cost(theme, estimate.actual, estimate.known).bold());
+        summary.push(Span::styled(" · saved ", theme.muted));
+        summary.extend(saved(theme, &estimate, true));
+        if estimate.savings().is_none() {
+            summary.push(Span::styled(
+                format!(
+                    " because {}",
+                    hidden_savings(&estimate, &app.data.baseline_model)
+                ),
+                theme.warn,
+            ));
+        }
+    }
+    let outer = block(theme, &format!("Models · {}", app.period.name())).title_top(
+        Line::from(vec![
+            Span::styled(" p ", theme.key),
+            Span::styled("period ", theme.muted),
+        ])
+        .right_aligned(),
+    );
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+    let total = totals.tokens().max(1) as f64;
+    let rows: Vec<Row> = by_tokens(&totals.routed)
+        .into_iter()
+        .map(|(model, usage)| model_row(theme, model, usage, total, false, true))
+        .chain(
+            by_tokens(&totals.classifier)
+                .into_iter()
+                .map(|(model, usage)| model_row(theme, model, usage, total, true, true)),
+        )
+        .collect();
+    // The models table stops early enough to leave the routes heading and one route visible.
+    let routes_height = (totals.routes.len() as u16 + 1).min(2);
+    let models_height = (rows.len() as u16 + 1).min(inner.height.saturating_sub(3 + routes_height));
+    let [summary_area, models_area, _, routes_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(models_height),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(summary)).wrap(Wrap { trim: false }),
+        summary_area,
+    );
+    if totals.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "No calls recorded in this period.",
+                theme.muted,
+            )),
+            models_area,
+        );
+        return;
+    }
+    let columns = [
+        ("MODEL", Constraint::Fill(1), false),
+        ("KIND", Constraint::Length(8), false),
+        ("CALLS", Constraint::Length(8), true),
+        ("TOKENS", Constraint::Length(8), true),
+        ("COST", Constraint::Length(10), true),
+        ("SHARE OF TOKENS", Constraint::Length(17), false),
+    ];
+    frame.render_widget(
+        table(theme, share_columns(&columns, inner), rows),
+        models_area,
+    );
+    let routes: Vec<Row> = by_tokens(&totals.routes)
+        .into_iter()
+        .map(|(route, usage)| {
+            Row::new(vec![
+                Cell::from(
+                    if route.is_empty() {
+                        "Not recorded"
+                    } else {
+                        route
+                    }
+                    .to_string(),
+                ),
+                right(count(usage.requests)),
+                right(tokens(usage.total())),
+                right(cost(theme, usage.cost.total_usd, usage.cost.known_usd)),
+            ])
+        })
+        .collect();
+    let columns = [
+        (
+            "ROUTE (answer and routing calls)",
+            Constraint::Fill(1),
+            false,
+        ),
+        ("CALLS", Constraint::Length(8), true),
+        ("TOKENS", Constraint::Length(8), true),
+        ("COST", Constraint::Length(10), true),
+    ];
+    frame.render_widget(table(theme, &columns, routes), routes_area);
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -796,7 +1145,7 @@ fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
     const KEY_WIDTH: usize = 8;
     let room = width.saturating_sub(KEY_WIDTH).max(20);
     let mut lines = Vec::new();
-    for (section, keys) in [("Every page", GLOBAL_KEYS)] {
+    for (section, keys) in [("Every page", GLOBAL_KEYS), ("Models", MODELS_KEYS)] {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
@@ -898,8 +1247,26 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Done, KeyCode, KeyEvent, KeyModifiers, Popup, Request, Theme, draw, mpsc};
+    use super::{
+        App, Availability, BTreeMap, Done, Estimate, KeyCode, KeyEvent, KeyModifiers, ModelTokens,
+        Popup, Request, Snapshot, Tab, Theme, Totals, Usage, draw, mpsc,
+    };
+    use crate::history::Entry;
     use ratatui::{Terminal, backend::TestBackend};
+    use serde_json::json;
+
+    fn screen(app: &mut App, tab: Tab) -> String {
+        app.tab = tab;
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     // Esc dismisses the status message while Overview keeps the refresh error.
     #[test]
@@ -999,5 +1366,53 @@ mod tests {
                 "{error}: {rows:?}"
             );
         }
+    }
+
+    // A call without a recorded cost must never add up to, or display as, $0.
+    #[test]
+    fn unknown_costs_do_not_render_as_zero() {
+        let entry: Entry = serde_json::from_value(json!({"ts": "2026-10-21T12:00:00Z",
+            "model": "gemini-4-argon", "route_id": "answer", "prompt_tokens": 10,
+            "completion_tokens": 2}))
+        .expect("entry");
+        let usage = ModelTokens::from(&entry);
+        let totals = Totals {
+            routed: [("gemini-4-argon".to_string(), usage.clone())].into(),
+            classifier: BTreeMap::new(),
+            routes: [("answer".to_string(), usage)].into(),
+        };
+        let estimate = Estimate {
+            actual: None,
+            known: 0.0,
+            has_known_cost: false,
+            unknown_calls: 1,
+            baseline: Some(0.00004),
+            uncounted_answers: 0,
+        };
+        let mut app = App::new(Theme::new(false));
+        app.data = Snapshot {
+            analytics: Usage {
+                today: totals.clone(),
+                week: totals.clone(),
+                all: totals,
+                ..Usage::default()
+            },
+            estimates: [
+                ("today", Some(estimate)),
+                ("week", Some(estimate)),
+                ("all", Some(estimate)),
+            ]
+            .into(),
+            baseline_model: "gemini-4-argon".into(),
+            ..Snapshot::default()
+        };
+        app.data.data_state.usage.state = Availability::Available;
+        for tab in [Tab::Overview, Tab::Models] {
+            let text = screen(&mut app, tab);
+            assert!(!text.contains("$0"), "{tab:?} shows a zero cost:\n{text}");
+        }
+        let overview = screen(&mut app, Tab::Overview);
+        assert!(overview.contains("Spent unknown"));
+        assert!(overview.contains("no recorded cost"));
     }
 }
