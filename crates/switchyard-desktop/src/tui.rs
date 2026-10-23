@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app shows usage, recent calls, routes, and harness settings from controller
-//! snapshots, and it runs server, route, harness, and account actions.
+//! The terminal app shows usage, recent calls, routes, harness settings, and worktree sessions
+//! from controller snapshots, and it runs server, route, harness, account, and session actions.
 //!
 //! The UI thread owns every view setting. One worker thread owns the controller and runs
 //! refreshes and actions, so moving around and filtering never wait for the log or a service.
@@ -54,7 +54,7 @@ const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '�
 type Key = (&'static str, &'static str, &'static str);
 const GLOBAL_KEYS: &[Key] = &[
     (
-        "1-6",
+        "1-7",
         "page",
         "Switch pages. Tab, Shift-Tab, ← and → also switch pages.",
     ),
@@ -114,8 +114,8 @@ const HARNESSES_KEYS: &[Key] = &[
     (
         "↑↓",
         "route",
-        "Choose the route to install. j, k, PgUp, PgDn, g, and G also move it. The Routes page \
-         selects the same route, and its filter limits the choices.",
+        "Choose the route to install. j, k, PgUp, PgDn, g, and G also move it. The Routes and \
+         Sessions pages select the same route, and the Routes filter limits the choices.",
     ),
     ("t", "harness", "Select the next harness."),
     (
@@ -129,6 +129,29 @@ const HARNESSES_KEYS: &[Key] = &[
         "custom file",
         "Install to or restore a custom settings file instead. Leave it empty to use the \
          detected settings again.",
+    ),
+];
+const SESSIONS_KEYS: &[Key] = &[
+    (
+        "↑↓",
+        "route",
+        "Choose the route for a new session. j, k, PgUp, PgDn, g, and G also move it. The \
+         Routes and Harnesses pages select the same route.",
+    ),
+    (
+        "t",
+        "harness",
+        "Select the next harness for a new session. The Harnesses page selects the same one.",
+    ),
+    (
+        "a",
+        "account",
+        "Select the next saved account for a new session, then the harness's own login again.",
+    ),
+    (
+        "s",
+        "session",
+        "Select the next recorded session. The open and remove keys use the selection.",
     ),
 ];
 const SETTINGS_KEYS: &[Key] = &[
@@ -286,6 +309,13 @@ const ACTIONS: &[ActionRow] = &[
         ],
     ),
     (
+        Tab::Sessions,
+        'n',
+        "add account",
+        "Creates a saved account and opens the harness's login in a new terminal window.",
+        &[ActionKind::AddAccount],
+    ),
+    (
         Tab::Settings,
         'o',
         "Open server config",
@@ -413,6 +443,15 @@ const HARNESS_COLUMNS: [(Column, bool); 4] = [
     (("CURRENT SETTINGS", Constraint::Fill(3), false), true),
     (("ACCOUNTS", Constraint::Length(8), true), false),
 ];
+/// The sessions table drops the columns marked `true` below 100 columns; the details still
+/// show them.
+const SESSION_COLUMNS: [(Column, bool); 5] = [
+    (("SESSION", Constraint::Length(39), false), false),
+    (("REPOSITORY", Constraint::Fill(2), false), true),
+    (("ROUTE", Constraint::Fill(1), false), false),
+    (("CREATED", Constraint::Length(8), true), true),
+    (("LAST CALL", Constraint::Length(9), true), false),
+];
 
 /// Theme maps each kind of text to one style. NO_COLOR keeps only bold, dim, and reverse.
 #[derive(Clone, Copy)]
@@ -467,14 +506,16 @@ enum Tab {
     Models,
     Routes,
     Harnesses,
+    Sessions,
     Settings,
 }
-const TABS: [Tab; 6] = [
+const TABS: [Tab; 7] = [
     Tab::Overview,
     Tab::Calls,
     Tab::Models,
     Tab::Routes,
     Tab::Harnesses,
+    Tab::Sessions,
     Tab::Settings,
 ];
 impl Tab {
@@ -485,6 +526,7 @@ impl Tab {
             Tab::Models => "Models",
             Tab::Routes => "Routes",
             Tab::Harnesses => "Harnesses",
+            Tab::Sessions => "Sessions",
             Tab::Settings => "Settings",
         }
     }
@@ -894,6 +936,7 @@ impl Form {
                 Action::Install { .. } => "Installing the harness settings",
                 Action::Restore { .. } => "Restoring the harness settings",
                 Action::ArchiveAccount { .. } => "Archiving the account",
+
                 _ => "Saving the route",
             },
             FormKind::Remove { .. } => "Deleting the route",
@@ -1035,6 +1078,7 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             name,
             preview_token,
         },
+
         _ => return None,
     })
 }
@@ -1165,7 +1209,8 @@ impl Tone {
     }
 }
 
-/// Destination is where the Harnesses page installs and restores settings.
+/// Destination is where the Harnesses page installs and restores settings. The Sessions page
+/// launches with its account, and with the harness's own login otherwise.
 enum Destination {
     /// The harness's own settings files.
     Harness,
@@ -1201,6 +1246,10 @@ struct App {
     /// This field holds the last install preview and the action that produced it. The
     /// Harnesses page shows it only while that action matches the selection.
     install_preview: Option<(Action, Value)>,
+    /// This field indexes `data.session_inventory`, newest first. It starts at the first
+    /// session, and it is `None` after a refresh stops listing the selected session, so no
+    /// action reaches another session.
+    managed: Option<usize>,
     /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys,
     /// and a failed check clears it so the page never shows outdated key states.
     server_keys: Option<Value>,
@@ -1235,6 +1284,7 @@ impl App {
             harness: 0,
             destination: Destination::Harness,
             install_preview: None,
+            managed: Some(0),
             server_keys: None,
             popup: None,
             toast: None,
@@ -1259,7 +1309,15 @@ impl App {
             .filter(|_| self.selected > 0)
             .map(|entry| (entry.ts.clone(), entry.model.clone(), entry.turn_id.clone()));
         let route = self.selected_route_key();
+        let managed = self.session_id().ok();
         self.data = data;
+        if let Some(id) = managed {
+            self.managed = self
+                .data
+                .session_inventory
+                .iter()
+                .position(|receipt| receipt["id"] == id);
+        }
         self.refreshed = Some(Instant::now());
         self.rebuild_calls();
         self.rebuild_routes(route);
@@ -1415,6 +1473,18 @@ impl App {
             && selected.key == *route
             && selected.id == *id;
         current.then_some(preview)
+    }
+
+    fn selected_session(&self) -> Option<&Value> {
+        self.data.session_inventory.get(self.managed?)
+    }
+
+    /// This function returns the ID of the session that the open and remove keys use.
+    fn session_id(&self) -> Result<String, String> {
+        self.selected_session()
+            .and_then(|receipt| receipt["id"].as_str())
+            .map(str::to_owned)
+            .ok_or_else(|| "Press s to select a recorded session first.".into())
     }
 
     /// Short messages appear in the status bar; long ones open a window so nothing is cut off.
@@ -1679,6 +1749,7 @@ impl App {
             (None, false, Tab::Models) => MODELS_KEYS,
             (None, false, Tab::Routes) => ROUTES_KEYS,
             (None, false, Tab::Harnesses) => HARNESSES_KEYS,
+            (None, false, Tab::Sessions) => SESSIONS_KEYS,
             (None, false, Tab::Settings) => SETTINGS_KEYS,
         }
     }
@@ -1728,7 +1799,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
-            KeyCode::Char(digit @ '1'..='6') => {
+            KeyCode::Char(digit @ '1'..='7') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
             KeyCode::Tab | KeyCode::Right => self.tab = TABS[(self.tab.index() + 1) % TABS.len()],
@@ -1748,7 +1819,11 @@ impl App {
                         self.route_filter.clear();
                         self.refilter();
                     }
-                    Tab::Overview | Tab::Models | Tab::Harnesses | Tab::Settings => {}
+                    Tab::Overview
+                    | Tab::Models
+                    | Tab::Harnesses
+                    | Tab::Sessions
+                    | Tab::Settings => {}
                 }
             }
             code => {
@@ -1773,6 +1848,7 @@ impl App {
                     },
                     Tab::Routes => self.routes_key(code),
                     Tab::Harnesses => self.harnesses_key(code),
+                    Tab::Sessions => self.sessions_key(code),
                     Tab::Settings => return self.settings_key(code),
                 }
             }
@@ -1818,8 +1894,8 @@ impl App {
 
     /// The arrows choose the route, which is the longer list; `t` cycles through the few
     /// harnesses. A new harness starts at its own settings, because accounts belong to one
-    /// harness.
-    fn harnesses_key(&mut self, code: KeyCode) {
+    /// harness. The Harnesses and Sessions pages share these keys and the selection.
+    fn selection_key(&mut self, code: KeyCode) {
         let last = self.route_visible.len().saturating_sub(1);
         if let Some(selected) = step(code, self.route_selected, last) {
             self.route_selected = selected;
@@ -1840,18 +1916,32 @@ impl App {
                 let next = names.get(current.map_or(0, |index| index + 1)).cloned();
                 self.destination = next.map_or(Destination::Harness, Destination::Account);
             }
-            KeyCode::Char('x') => {
-                self.popup = Some(Popup::Form(Form::new(
-                    FormKind::SettingsFile,
-                    "Custom settings file · leave empty to use the detected settings",
-                    vec![(
-                        "Absolute file path (Pi: models.json)",
-                        self.custom_file().unwrap_or_default(),
-                    )],
-                )));
-            }
             _ => {}
         }
+    }
+
+    fn harnesses_key(&mut self, code: KeyCode) {
+        if code != KeyCode::Char('x') {
+            return self.selection_key(code);
+        }
+        self.popup = Some(Popup::Form(Form::new(
+            FormKind::SettingsFile,
+            "Custom settings file · leave empty to use the detected settings",
+            vec![(
+                "Absolute file path (Pi: models.json)",
+                self.custom_file().unwrap_or_default(),
+            )],
+        )));
+    }
+
+    /// The `s` key selects the next recorded session. Without a selection, it selects the
+    /// newest one.
+    fn sessions_key(&mut self, code: KeyCode) {
+        if code != KeyCode::Char('s') {
+            return self.selection_key(code);
+        }
+        let count = self.data.session_inventory.len().max(1);
+        self.managed = Some(self.managed.map_or(0, |index| (index + 1) % count));
     }
 
     fn filter_key(&mut self, key: KeyEvent) {
@@ -2333,6 +2423,22 @@ fn age(ts: &str, now: DateTime<Utc>) -> String {
     }
 }
 
+/// This function shows a recorded time in local time with its age, or the recorded text when it
+/// is not an RFC 3339 time.
+fn local_time(ts: &str) -> String {
+    DateTime::parse_from_rfc3339(ts).map_or_else(
+        |_| ts.to_string(),
+        |time| {
+            format!(
+                "{} ({})",
+                time.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S"),
+                age(ts, Utc::now())
+            )
+        },
+    )
+}
+
 fn server_state(theme: Theme, running: bool) -> [Span<'static>; 2] {
     [
         Span::styled("● ", if running { theme.ok } else { theme.error }),
@@ -2412,6 +2518,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
         skipped: _,         // calls_block
         errors: _,          // draw_errors and draw_settings
         refresh_seconds: _, // App::refresh_due
+        // draw_session_table lists the inventory or shows the error that stopped reading it,
+        // and session_lines shows the selected session.
+        session_inventory: _,
+        session_inventory_error: _,
     } = &app.data;
     let area = frame.area();
     app.width = area.width;
@@ -2432,6 +2542,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Models => draw_models(frame, app, body),
         Tab::Routes => draw_routes(frame, app, body),
         Tab::Harnesses => draw_harnesses(frame, app, body),
+        Tab::Sessions => draw_sessions(frame, app, body),
         Tab::Settings => draw_settings(frame, app, body),
     }
     draw_status(frame, app, status);
@@ -2996,24 +3107,13 @@ fn draw_call_table(frame: &mut Frame, app: &mut App, area: Rect) {
 fn detail_lines(theme: Theme, entry: &Entry) -> Vec<Line<'static>> {
     let usage = ModelTokens::from(entry);
     let field = |name: &str, value: String| labeled(theme, name, 9, value);
-    let time = DateTime::parse_from_rfc3339(&entry.ts).map_or_else(
-        |_| entry.ts.clone(),
-        |time| {
-            format!(
-                "{} ({})",
-                time.with_timezone(&chrono::Local)
-                    .format("%Y-%m-%d %H:%M:%S"),
-                age(&entry.ts, Utc::now())
-            )
-        },
-    );
     let kind = if entry.tier == CLASSIFIER_TIER {
         "Routing call (classifier or judge)"
     } else {
         "Answer call"
     };
     let mut lines = vec![
-        field("Time", time),
+        field("Time", local_time(&entry.ts)),
         field("Model", entry.model.clone()),
         field("Kind", kind.into()),
         field("Route", entry.route_id.clone()),
@@ -3658,6 +3758,211 @@ fn harness_lines(app: &App, harness: &ToolInfo) -> Vec<Line<'static>> {
         ),
     ]);
     lines
+}
+
+fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let launch = Paragraph::new(new_session_lines(app)).wrap(Wrap { trim: false });
+    // The borders take two rows.
+    let rows = launch.line_count(area.width.saturating_sub(4)) as u16 + 2;
+    let [launch_area, inventory] = Layout::vertical([
+        Constraint::Length(rows.min(area.height / 2)),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    frame.render_widget(
+        launch.block(block(theme, "New session").padding(Padding::horizontal(1))),
+        launch_area,
+    );
+    let Some(receipt) = app.selected_session() else {
+        draw_session_table(frame, app, inventory);
+        return;
+    };
+    let detail = Paragraph::new(session_lines(app, receipt)).wrap(Wrap { trim: false });
+    // The details go below the list at full width, because worktree paths are long. The list
+    // keeps its borders, header, and the selected row; the details get the rest.
+    let rows = detail.line_count(inventory.width.saturating_sub(4)) as u16 + 2;
+    let [list, detail_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(rows.min(inventory.height.saturating_sub(4))),
+    ])
+    .areas(inventory);
+    draw_session_table(frame, app, list);
+    let title = text(receipt, "id");
+    frame.render_widget(
+        detail.block(block(theme, &title).padding(Padding::horizontal(1))),
+        detail_area,
+    );
+}
+
+fn draw_session_table(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let sessions = &app.data.session_inventory;
+    let outer = block(theme, &format!("Recorded sessions [{}]", sessions.len()));
+    // A failed read lists no sessions, so its error replaces the empty-list text.
+    let empty = match &app.data.session_inventory_error {
+        Some(error) => Some(Line::styled(error.clone(), theme.error)),
+        None if sessions.is_empty() => Some(Line::styled(
+            "Switchyard has not recorded any managed sessions.",
+            theme.muted,
+        )),
+        None => None,
+    };
+    if let Some(line) = empty {
+        let paragraph = Paragraph::new(line).centered().wrap(Wrap { trim: false });
+        frame.render_widget(paragraph.block(outer), area);
+        return;
+    }
+    let wide = area.width >= 100;
+    let shown = |column: &(Column, bool)| wide || !column.1;
+    let now = Utc::now();
+    let rows: Vec<Row> = sessions
+        .iter()
+        .map(|receipt| {
+            let id = text(receipt, "id");
+            let last = last_call(&app.data, &id).map_or_else(|| "—".into(), |e| age(&e.ts, now));
+            let created = age(&text(receipt, "created_at"), now);
+            let cells = [
+                Cell::from(id),
+                Cell::from(Span::styled(text(receipt, "repository"), theme.muted)),
+                Cell::from(text(receipt, "route")),
+                right(Span::styled(created, theme.muted)),
+                right(last),
+            ];
+            Row::new(
+                cells
+                    .into_iter()
+                    .zip(&SESSION_COLUMNS)
+                    .filter(|(_, column)| shown(column))
+                    .map(|(cell, _)| cell),
+            )
+        })
+        .collect();
+    let columns: Vec<Column> = SESSION_COLUMNS
+        .iter()
+        .filter(|column| shown(column))
+        .map(|column| column.0)
+        .collect();
+    let selected = app.managed.filter(|&index| index < sessions.len());
+    let mut state = TableState::default().with_selected(selected);
+    frame.render_stateful_widget(
+        table(theme, &columns, rows)
+            .row_highlight_style(theme.selected)
+            .highlight_symbol("› ")
+            .block(outer),
+        area,
+        &mut state,
+    );
+}
+
+/// This function shows what the l key launches: the harness, the account, the route, and
+/// whether the harness can use the route.
+fn new_session_lines(app: &App) -> Vec<Line<'static>> {
+    const WIDTH: usize = 9;
+    let theme = app.theme;
+    let field = |name: &str, value: Span<'static>| {
+        Line::from(vec![
+            Span::styled(format!("{name:<WIDTH$}"), theme.muted),
+            value,
+        ])
+    };
+    let mut lines = Vec::new();
+    match app.harness() {
+        Ok(harness) => {
+            let (state, style) = if harness.available {
+                ("Detected", theme.ok)
+            } else {
+                ("Not detected", theme.warn)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<WIDTH$}", "Harness"), theme.muted),
+                Span::raw(format!("{} · ", harness.label)),
+                Span::styled(state, style),
+            ]));
+            if harness.tool == Harness::CodexApp {
+                lines.push(Line::styled(
+                    "Codex app workspaces are managed in the Codex app. Press t to choose a \
+                     command line harness.",
+                    theme.warn,
+                ));
+            }
+            let account = match &app.destination {
+                Destination::Account(name) => {
+                    match harness.account_details.iter().find(|a| a.name == *name) {
+                        Some(account) => Span::raw(format!(
+                            "{name} · login status {} · {}",
+                            account.login_status,
+                            account.path.display()
+                        )),
+                        None => Span::styled(
+                            format!("{name} is no longer listed. Press a to choose another."),
+                            theme.warn,
+                        ),
+                    }
+                }
+                Destination::Harness | Destination::File(_) => Span::raw("Current login"),
+            };
+            lines.push(field("Account", account));
+            match app.selected_route() {
+                Ok(route) => {
+                    lines.push(field("Route", Span::raw(route.label.clone())));
+                    match route.compatibility.get(&harness.tool) {
+                        Some(Some(reason)) => lines.push(Line::styled(reason.clone(), theme.warn)),
+                        Some(None) => {
+                            lines.push(Line::styled("This harness can use the route.", theme.ok));
+                        }
+                        None => {}
+                    }
+                }
+                Err(error) => lines.push(field("Route", Span::styled(error, theme.warn))),
+            }
+        }
+        Err(error) => lines.push(Line::styled(error, theme.warn)),
+    }
+    lines.extend([
+        Line::default(),
+        Line::styled(
+            "Each session is a new Git worktree from the project's committed HEAD, on its own \
+             branch. Uncommitted changes stay in the original checkout.",
+            theme.muted,
+        ),
+    ]);
+    lines
+}
+
+/// This function shows where the selected session lives and its newest recorded call.
+fn session_lines(app: &App, receipt: &Value) -> Vec<Line<'static>> {
+    let theme = app.theme;
+    let field = |name: &str, value: String| labeled(theme, name, 11, value);
+    let last = last_call(&app.data, receipt["id"].as_str().unwrap_or_default());
+    vec![
+        field("Repository", text(receipt, "repository")),
+        field("Branch", text(receipt, "branch")),
+        field("Route", text(receipt, "route")),
+        field("Worktree", text(receipt, "worktree")),
+        field("Created", local_time(&text(receipt, "created_at"))),
+        field(
+            "Last call",
+            last.map_or_else(
+                || "No recent recorded call".into(),
+                |entry| local_time(&entry.ts),
+            ),
+        ),
+        Line::default(),
+        Line::styled(
+            "Recorded calls do not establish that a process is running.",
+            theme.muted,
+        ),
+    ]
+}
+
+/// This function returns the session's newest call among the calls that the app loaded.
+fn last_call<'a>(data: &'a Snapshot, id: &str) -> Option<&'a Entry> {
+    let session = Some(id);
+    data.entries
+        .iter()
+        .rev()
+        .find(|entry| entry.session_id.as_deref() == session)
 }
 
 /// This function lists the server key variables from the last `ServerKeys` reply.
@@ -4355,6 +4660,7 @@ fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
         ("Models", MODELS_KEYS, Some(Tab::Models)),
         ("Routes", ROUTES_KEYS, Some(Tab::Routes)),
         ("Harnesses", HARNESSES_KEYS, Some(Tab::Harnesses)),
+        ("Sessions", SESSIONS_KEYS, Some(Tab::Sessions)),
         ("Settings", SETTINGS_KEYS, Some(Tab::Settings)),
     ] {
         if !lines.is_empty() {
@@ -4687,6 +4993,8 @@ mod tests {
                 Tab::Models => &['p', '[', ']'],
                 Tab::Routes => &['/'],
                 Tab::Harnesses => &['t', 'a', 'x'],
+                // The arrows choose the route here, so k must keep moving it.
+                Tab::Sessions => &['t', 'a', 's', 'k'],
                 Tab::Overview | Tab::Settings => &[],
             }
         };

@@ -12,6 +12,7 @@ use crate::{
     harness::{self, Harness},
     history, models, pricing, rollup, server,
     server_config::{ALGORITHMS, Choice, Route, ServerConfig},
+    sessions,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -150,6 +151,12 @@ pub enum Action {
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub update_status: Value,
+    /// Each value is the `session.json` file that `sessions::launch` wrote for a managed
+    /// worktree session, plus `process_status`. The snapshot passes these files through as JSON.
+    pub session_inventory: Vec<Value>,
+    /// This field holds the error that stopped the inventory read. `session_inventory` is empty
+    /// when this field is set.
+    pub session_inventory_error: Option<String>,
     /// This field is `None` only in the terminal app's placeholder snapshot, which it shows
     /// when the app settings cannot be loaded.
     pub settings: Option<AppSettings>,
@@ -411,6 +418,7 @@ pub struct Controller {
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
     tool_review: Option<Review>,
+
     account_archive: Option<(Harness, String, String)>,
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
@@ -425,6 +433,7 @@ impl Controller {
             generation: 0,
             route_reviews: Default::default(),
             tool_review: None,
+
             account_archive: None,
             route_change: None,
             update_review: None,
@@ -638,6 +647,10 @@ impl Controller {
         let update_status = install_metadata(&self.settings)
             .and_then(|path| switchyard_desktop::install::update_status(&path))
             .unwrap_or_else(|error| json!({"state":"unavailable","message":error}));
+        let (session_inventory, session_inventory_error) = match sessions::inventory() {
+            Ok(inventory) => (inventory, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
         let sessions = history.sessions();
         let Config {
             server_url,
@@ -650,6 +663,8 @@ impl Controller {
         } = self.config.clone();
         Ok(Snapshot {
             update_status,
+            session_inventory,
+            session_inventory_error,
             data_state: DataState {
                 usage: Source {
                     state: usage_state,
@@ -728,9 +743,10 @@ impl Controller {
             }
             Action::OpenUpdateLog {} => self.update_log().map(Some),
             Action::OpenLogs {} => logs_dir().map(Some),
-            // An account folder opens in the editor too, because a terminal may run over SSH,
-            // where `open` would start a file manager on another screen.
+            // Account and session folders open in the editor too, because a terminal may run
+            // over SSH, where `open` would start a file manager on another screen.
             Action::OpenAccount { tool, name } => account_path(*tool, Some(name)),
+
             _ => Ok(None),
         }
     }
