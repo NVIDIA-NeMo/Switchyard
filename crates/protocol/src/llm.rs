@@ -240,7 +240,7 @@ pub struct ToolDefinition {
 pub enum Tool {
     /// A remote MCP server and the tools it exposes.
     Mcp(McpToolset),
-    /// Reserved for tools effectively built into a provider, such as Anthropic's `web_search_20250305`.
+    /// Reserved for tools specific to a provider, such as Anthropic's `web_search_20250305`.
     Provider {
         /// Source wire format; this definition is only replayed in that format.
         provider: FormatId,
