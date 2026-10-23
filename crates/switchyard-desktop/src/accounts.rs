@@ -192,3 +192,44 @@ pub fn archive(tool: Harness, path: &Path) -> Result<String, String> {
         archived.display()
     ))
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    // The subprocess isolates HOME so parallel tests keep their own settings.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_account_roots_are_not_listed_or_used_for_login() {
+        if std::env::var_os("SWITCHYARD_ACCOUNT_FIXTURE").is_some() {
+            assert!(list(Harness::CodexCli).is_empty());
+            assert!(discover(Harness::CodexCli).is_err());
+            assert!(add(Harness::CodexCli, "new").is_err());
+            let path = crate::config::expand_home(Path::new("~/.switchyard/accounts/codex/named"))
+                .expect("home");
+            assert!(validate(Harness::CodexCli, &path).is_err());
+            return;
+        }
+        let dir = tempfile::tempdir().expect("fixture");
+        let home = dir.path().join("home");
+        let target = dir.path().join("target");
+        std::fs::create_dir(&home).expect("home");
+        std::fs::create_dir_all(target.join("accounts/codex/named")).expect("accounts");
+        std::os::unix::fs::symlink(&target, home.join(".switchyard")).expect("symlink");
+        let output = std::process::Command::new(std::env::current_exe().expect("runner"))
+            .args([
+                "--exact",
+                "accounts::tests::symlinked_account_roots_are_not_listed_or_used_for_login",
+            ])
+            .env("SWITCHYARD_ACCOUNT_FIXTURE", "1")
+            .env("HOME", &home)
+            .output()
+            .expect("child");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!target.join("accounts/codex/new").exists());
+    }
+}
