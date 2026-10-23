@@ -1233,6 +1233,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#verification-and-cloud-outages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification and cloud outages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#serving-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1750,6 +1761,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#verification-and-cloud-outages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification and cloud outages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#serving-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1816,7 +1838,7 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b2e9386545e41e023c6d7c6fbe5e462e09b5abbe/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/424ae6be3302aa144934e5b9bd6ae5b85a229d8f/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -1861,6 +1883,14 @@ must stay the same throughout a conversation; each conversation needs its own ID
 automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 <code>x-session-id</code> is also accepted as a session-header alias.</p>
+<h2 id="verification-and-cloud-outages">Verification and cloud outages<a class="headerlink" href="#verification-and-cloud-outages" title="Permanent link">&para;</a></h2>
+<p>Coding without tool history can commit locally on a clean readout of at least
+0.6, or a readout of at least 0.2 plus cloud-judge affirmation. Other final-answer
+branches can use a separate scored verdict after local deliberation.</p>
+<p>In <code>active</code> mode, an unavailable cloud tier can fall back to an unverified local
+answer. That call receives the original request without the cloud handoff note.
+Fallback is disabled by the kill switch, an open local circuit breaker, or an
+image request the local tier cannot serve.</p>
 <h2 id="serving-modes">Serving modes<a class="headerlink" href="#serving-modes" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>off</code> skips candidate generation and serves cloud. This is the default.</li>
