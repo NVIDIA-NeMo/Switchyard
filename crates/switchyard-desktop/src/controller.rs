@@ -17,6 +17,13 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    PreviewRoute {
+        generation: u64,
+        route: String,
+        algorithm: String,
+        choices: Vec<Choice>,
+        revision: Option<String>,
+    },
     Models {
         client: String,
         refresh: bool,
@@ -60,7 +67,9 @@ pub struct Snapshot {
     pub update_status: Value,
     pub settings: Option<AppSettings>,
     pub data_state: DataState,
-
+    /// The controller increases this number when the app settings select another server
+    /// config file. Route actions send it back, so a draft cannot change the new file.
+    pub generation: u64,
     pub routes: Vec<RouteInfo>,
     pub clients: Vec<ClientInfo>,
     pub algorithms: Vec<AlgorithmInfo>,
@@ -211,11 +220,11 @@ impl Reply {
 // Only the UUID token goes to the frontend; reviewed files can contain credentials.
 struct Review {
     token: String,
-
+    inputs: Value,
     files: Vec<(PathBuf, Option<std::sync::Arc<[u8]>>)>,
 }
 impl Review {
-    fn capture(paths: Vec<PathBuf>) -> Result<Self, String> {
+    fn capture(inputs: Value, paths: Vec<PathBuf>) -> Result<Self, String> {
         let files = paths
             .into_iter()
             .map(|path| {
@@ -229,6 +238,7 @@ impl Review {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             token: uuid::Uuid::now_v7().to_string(),
+            inputs,
             files,
         })
     }
@@ -246,6 +256,26 @@ impl Review {
                 path.display()
             )
         })
+    }
+    // Decoded settings omit comments and unrelated fields, so this check compares raw bytes.
+    fn check(&self, token: Option<&str>, inputs: &Value) -> Result<(), String> {
+        if token != Some(self.token.as_str()) || inputs != &self.inputs {
+            return Err("Review these changes again before applying them.".into());
+        }
+        for (path, bytes) in &self.files {
+            let current = match std::fs::read(path) {
+                Ok(bytes) => Some(std::sync::Arc::<[u8]>::from(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            if &current != bytes {
+                return Err(format!(
+                    "{} changed since your review. Review it again; your draft is preserved.",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -281,6 +311,12 @@ impl Controller {
 
         Ok(())
     }
+    fn check_generation(&self, generation: u64) -> Result<(), String> {
+        if generation != self.generation {
+            return Err("The route changed or was removed. Refresh and choose it again.".into());
+        }
+        Ok(())
+    }
     // Key actions accept only names that the server config declares.
     fn declared_key(&self, name: &str) -> Result<(), String> {
         if switchyard_desktop::install::credentials::variables(&self.config.config_file)?
@@ -314,7 +350,7 @@ impl Controller {
     /// route's targets, so the Routes page shows every model the server would call. The editor
     /// fields come from the same text and do not limit which models the page shows.
     fn server_config(&mut self, errors: &mut Vec<String>) -> (Vec<RouteInfo>, Vec<ClientInfo>) {
-        let review = match Review::capture(vec![self.config.config_file.clone()]) {
+        let review = match Review::capture(json!({}), vec![self.config.config_file.clone()]) {
             Ok(review) => review,
             Err(error) => {
                 errors.push(error);
@@ -367,6 +403,7 @@ impl Controller {
                 &route.name,
                 Review {
                     token: uuid::Uuid::now_v7().to_string(),
+                    inputs: json!({"route": route.name}),
                     files: review.files.clone(),
                 },
             );
@@ -487,7 +524,7 @@ impl Controller {
                 },
                 health,
             },
-
+            generation: self.generation,
             routes,
             clients,
             algorithms: ALGORITHMS
@@ -623,6 +660,26 @@ impl Controller {
                     data: json!({"client":client.name,"count":models.len(),"models":models,"warning":warning,"source":source,"fetched_at":fetched_at}),
                 })
             }
+            Action::PreviewRoute {
+                generation,
+                route,
+                algorithm,
+                choices,
+                revision,
+            } => {
+                self.check_generation(generation)?;
+                self.route_reviews
+                    .get(&route)
+                    .ok_or("Open the route editor before reviewing it.")?
+                    .check(revision.as_deref(), &json!({"route":route}))?;
+                let edited = self
+                    .routes()?
+                    .edit(&route, algorithm_by_id(&algorithm)?, &choices)?;
+                Ok(Reply {
+                    message: String::new(),
+                    data: json!({"notes":edited.notes,"revision":revision,"file":self.config.config_file}),
+                })
+            }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
@@ -746,6 +803,12 @@ fn role_info(role: &crate::server_config::Role) -> RoleInfo {
     }
 }
 
+fn algorithm_by_id(kind: &str) -> Result<&'static crate::server_config::Algorithm, String> {
+    ALGORITHMS
+        .iter()
+        .find(|a| a.kind == kind)
+        .ok_or_else(|| "Unknown routing algorithm.".into())
+}
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let bundle = switchyard_desktop::install::bundle_metadata(&executable);
