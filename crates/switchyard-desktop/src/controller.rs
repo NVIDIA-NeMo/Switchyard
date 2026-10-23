@@ -7,7 +7,7 @@
 use crate::{
     config::Config,
     history, models, pricing, rollup, server,
-    server_config::{ALGORITHMS, Choice, ServerConfig},
+    server_config::{ALGORITHMS, Choice, Route, ServerConfig},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -17,6 +17,18 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    Editor {
+        generation: u64,
+        route: String,
+        algorithm: String,
+    },
+    Apply {
+        generation: u64,
+        route: String,
+        algorithm: String,
+        choices: Vec<Choice>,
+        revision: Option<String>,
+    },
     PreviewRoute {
         generation: u64,
         route: String,
@@ -196,6 +208,13 @@ pub struct Reply {
     pub data: Value,
 }
 impl Reply {
+    fn saved_edit(result: server::SaveResult) -> Self {
+        Self {
+            message: result.message,
+            data: json!({"warning": result.warning, "details": result.details}),
+        }
+    }
+
     fn message(message: String) -> Self {
         Self {
             message,
@@ -553,6 +572,58 @@ impl Controller {
                 server::command("open", &[&logs_dir()?.display().to_string()])?;
                 Ok(Reply::message("Opened Switchyard logs.".into()))
             }
+            Action::Editor {
+                generation,
+                route,
+                algorithm,
+            } => {
+                self.check_generation(generation)?;
+                let review = Review::capture(
+                    json!({"route":route}),
+                    vec![self.config.config_file.clone()],
+                )?;
+                let config = self.routes()?;
+                review.check(Some(&review.token), &review.inputs)?;
+                current_route(&config, &route, None)?;
+                config
+                    .algorithm(&route)
+                    .ok_or("This route must be edited in the server config file.")?;
+                let algorithm = algorithm_by_id(&algorithm)?;
+                let roles = config.roles(&route, algorithm);
+                let revision = self.remember_route(&route, review);
+                let data = json!({"revision":revision,"roles": roles.iter().map(role_info).collect::<Vec<_>>(),"choices":config.choices(&route)});
+                Ok(Reply {
+                    message: algorithm.summary.into(),
+                    data,
+                })
+            }
+            Action::Apply {
+                generation,
+                route,
+                algorithm,
+                choices,
+                revision,
+            } => {
+                self.check_generation(generation)?;
+                let config = self.routes()?;
+                current_route(&config, &route, None)?;
+                config
+                    .algorithm(&route)
+                    .ok_or("This route must be edited in the server config file.")?;
+                let algorithm = algorithm_by_id(&algorithm)?;
+                self.route_reviews
+                    .get(&route)
+                    .ok_or("Open the route editor before saving.")?
+                    .check(revision.as_deref(), &json!({"route":route}))?;
+                server::apply(
+                    &self.config,
+                    &route,
+                    algorithm,
+                    &choices,
+                    self.route_reviews[&route].original()?,
+                )
+                .map(Reply::saved_edit)
+            }
             Action::Models {
                 client,
                 refresh,
@@ -749,6 +820,13 @@ fn algorithm_by_id(kind: &str) -> Result<&'static crate::server_config::Algorith
         .iter()
         .find(|a| a.kind == kind)
         .ok_or_else(|| "Unknown routing algorithm.".into())
+}
+fn current_route(config: &ServerConfig, key: &str, id: Option<&str>) -> Result<Route, String> {
+    config
+        .routes()
+        .into_iter()
+        .find(|r| r.key == key && id.is_none_or(|id| id == r.id))
+        .ok_or_else(|| "The route changed or was removed. Refresh and choose it again.".into())
 }
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
