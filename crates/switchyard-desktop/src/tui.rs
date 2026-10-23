@@ -325,6 +325,21 @@ const ACTIONS: &[ActionRow] = &[
         &[ActionKind::AddAccount],
     ),
     (
+        Tab::Sessions,
+        'o',
+        "open session",
+        "Opens the selected session folder in $VISUAL or $EDITOR.",
+        &[ActionKind::OpenSession],
+    ),
+    (
+        Tab::Sessions,
+        'd',
+        "remove",
+        "Shows what cleanup deletes, including Git-ignored files, then removes the clean \
+         worktree and its session branch after you type REMOVE.",
+        &[ActionKind::PreviewSessionCleanup, ActionKind::RemoveSession],
+    ),
+    (
         Tab::Settings,
         'o',
         "Open server config",
@@ -965,7 +980,7 @@ impl Form {
                 Action::Restore { .. } => "Restoring the harness settings",
                 Action::ArchiveAccount { .. } => "Archiving the account",
                 Action::Launch { .. } => "Launching the session",
-
+                Action::RemoveSession { .. } => "Removing the session",
                 _ => "Saving the route",
             },
             FormKind::Remove { .. } => "Deleting the route",
@@ -1122,7 +1137,7 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             id,
             project,
         },
-
+        Action::PreviewSessionCleanup { id } => Action::RemoveSession { id, preview_token },
         _ => return None,
     })
 }
@@ -1698,6 +1713,17 @@ impl App {
                     ));
                 }
             }
+            (Some(ActionKind::PreviewSessionCleanup), Ok(reply)) => {
+                if let Some(remove) = action.and_then(|action| reviewed(action, &reply.data)) {
+                    self.popup = Some(Popup::review(
+                        cleanup_lines(self.theme, &reply.data),
+                        "Remove",
+                        FormKind::Confirm("REMOVE".into(), Box::new(remove)),
+                        "Remove the session worktree?",
+                        "Type REMOVE to delete it",
+                    ));
+                }
+            }
             (Some(ActionKind::Models), Ok(reply)) => {
                 let models: Vec<&str> = reply.data["models"]
                     .as_array()
@@ -2234,6 +2260,19 @@ impl App {
                     title,
                     vec![("Git project folder", String::new())],
                 ))
+            }
+            // Controller::editor_target returns the session worktree, so it opens in the editor.
+            ActionKind::OpenSession => {
+                let id = self.session_id()?;
+                request(Action::OpenSession { id }, "Opening the session folder")
+            }
+            // The review window lists the Git-ignored files that cleanup deletes and submits
+            // RemoveSession. The controller rejects the removal when the worktree changed after
+            // the review.
+            ActionKind::PreviewSessionCleanup | ActionKind::RemoveSession => {
+                let id = self.session_id()?;
+                let cleanup = Action::PreviewSessionCleanup { id };
+                request(cleanup, "Reviewing the session cleanup")
             }
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
@@ -4736,6 +4775,54 @@ fn launch_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
     let settings = text(preview, "settings_notice");
     if !settings.is_empty() {
         lines.extend([Line::default(), Line::from(settings)]);
+    }
+    lines
+}
+
+/// This function shows a cleanup preview: the worktree, whether it has uncommitted changes,
+/// and the Git-ignored files that cleanup deletes. Like the desktop app, it names at most 20
+/// files and counts the rest.
+fn cleanup_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    const NAMED: usize = 20;
+    let field = |name: &str, value: String| labeled(theme, name, 11, value);
+    let mut lines = vec![
+        Line::from(text(preview, "cleanup_notice")),
+        Line::default(),
+        field("Directory", text(preview, "worktree")),
+        field(
+            "Branch",
+            text_or(preview, "current_branch", "Detached HEAD"),
+        ),
+        field("Revision", text(preview, "current_revision")),
+        Line::default(),
+        if preview["dirty"] == true {
+            Line::styled(
+                "This worktree has uncommitted changes. Cleanup will refuse to remove it.",
+                theme.warn,
+            )
+        } else {
+            Line::styled("The worktree has no uncommitted changes.", theme.ok)
+        },
+    ];
+    let ignored: Vec<&str> = preview["ignored"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !ignored.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from("Cleanup also deletes these Git-ignored files:"));
+        lines.extend(
+            ignored
+                .iter()
+                .take(NAMED)
+                .map(|file| Line::from(file.to_string())),
+        );
+        if ignored.len() > NAMED {
+            let more = format!("…and {} more", ignored.len() - NAMED);
+            lines.push(Line::styled(more, theme.muted));
+        }
     }
     lines
 }

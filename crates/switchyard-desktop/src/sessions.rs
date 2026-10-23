@@ -134,6 +134,114 @@ pub fn inventory() -> Result<Vec<serde_json::Value>, String> {
     Ok(sessions)
 }
 
+pub fn managed_session(id: &str) -> Result<serde_json::Value, String> {
+    let suffix = id.strip_prefix("sy-").ok_or("Choose a managed session.")?;
+    uuid::Uuid::parse_str(suffix).map_err(|_| "Choose a managed session.")?;
+    let root = session_root()?;
+    let private = root.join(format!("{id}-settings"));
+    let worktree = root.join(id);
+    for path in [&root, &private, &worktree] {
+        if std::fs::symlink_metadata(path)
+            .map_err(|error| error.to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("Session directories must not be symlinks.".into());
+        }
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(private.join("session.json")).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    if receipt["id"] != id || receipt["worktree"] != worktree.display().to_string() {
+        return Err("The session receipt does not match this worktree.".into());
+    }
+    Ok(receipt)
+}
+
+pub fn cleanup_preview(id: &str) -> Result<serde_json::Value, String> {
+    let mut receipt = managed_session(id)?;
+    let worktree = receipt["worktree"]
+        .as_str()
+        .ok_or("Missing session worktree.")?
+        .to_string();
+    let run = |args: &[&str]| -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .args(["-C", &worktree])
+            .args(args)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    // Plain `git worktree remove` deletes ignored files, so the review lists them.
+    let status = run(&["status", "--porcelain", "--ignored=matching"])?;
+    receipt["dirty"] = serde_json::json!(status.lines().any(|line| !line.starts_with("!! ")));
+    receipt["ignored"] = serde_json::json!(
+        status
+            .lines()
+            .filter_map(|line| line.strip_prefix("!! "))
+            .collect::<Vec<_>>()
+    );
+    receipt["current_revision"] = serde_json::json!(run(&["rev-parse", "HEAD"])?);
+    receipt["current_branch"] = serde_json::json!(run(&["branch", "--show-current"])?);
+    receipt["cleanup_notice"] = serde_json::json!(
+        "Cleanup removes a clean worktree and its unchanged session branch. \
+         It also deletes the Git-ignored files in the worktree, which the ignored list names. \
+         Recorded usage stays in the routing log. Unknown private files are preserved."
+    );
+    Ok(receipt)
+}
+
+pub fn cleanup(id: &str, reviewed: &serde_json::Value) -> Result<String, String> {
+    let current = cleanup_preview(id)?;
+    if &current != reviewed {
+        return Err("The session changed since review. Review cleanup again.".into());
+    }
+    if current["dirty"] != false
+        || current["current_revision"] != current["revision"]
+        || current["current_branch"] != id
+    {
+        return Err("Save or move the session’s work before cleanup. \
+                    Cleanup requires a clean worktree with its original commit and branch."
+            .into());
+    }
+    let repository = current["repository"]
+        .as_str()
+        .ok_or("Missing session repository.")?;
+    let worktree = current["worktree"]
+        .as_str()
+        .ok_or("Missing session worktree.")?;
+    let revision = current["revision"]
+        .as_str()
+        .ok_or("Missing session commit.")?;
+    // Receipt path resolution must succeed before cleanup removes the worktree.
+    let private = session_root()?.join(format!("{id}-settings"));
+    let output = std::process::Command::new("git")
+        .args(["-C", repository, "worktree", "remove", worktree])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+
+    // The worktree is gone, so the receipt goes too; otherwise the inventory keeps the session.
+    // Cleanup removes only the receipt because settings can contain later user edits.
+    std::fs::remove_file(private.join("session.json")).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_dir(&private);
+    if !delete_session_branch(Path::new(repository), id, revision) {
+        return Ok(format!(
+            "Removed the clean session worktree. Git kept the branch {id}; \
+             inspect it before deleting it. Retained private settings and recorded usage."
+        ));
+    }
+    Ok("Removed the clean session worktree and branch. \
+        Retained private settings and recorded usage."
+        .into())
+}
+
 pub fn launch(
     tool: Harness,
     project: &Path,
