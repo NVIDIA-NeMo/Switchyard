@@ -383,14 +383,30 @@ fn abort_replies_fail_runs_that_recover_from_errors() {
 
         let aborted = run(&router, judge_input());
         let id = next(&aborted)["id"].as_u64().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        next_async(&aborted, &sender).unwrap();
         let error =
             unsafe { sy_run_respond(&*aborted, id, c"{\"abort\":\"budget exhausted\"}".as_ptr()) };
         assert_eq!(
             error_message(error),
-            "host aborted routing: budget exhausted",
+            "host routing failed: budget exhausted",
             "{kind}"
         );
-        let (sender, _receiver) = mpsc::channel();
+        assert_eq!(
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err()
+                .to_str()
+                .unwrap(),
+            "routing failed"
+        );
+        assert_eq!(
+            error_message(unsafe {
+                sy_run_respond(&*aborted, id, c"{\"abort\":\"budget exhausted\"}".as_ptr())
+            }),
+            "routing failed"
+        );
         assert_eq!(next_async(&aborted, &sender).unwrap_err(), "routing failed");
     }
 }
