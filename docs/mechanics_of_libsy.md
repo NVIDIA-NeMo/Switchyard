@@ -34,11 +34,9 @@ request, ask a judge, inspect an answer, or compare results from several models.
 Returning responses through `call.respond` lets it continue that work. When a
 selection alone is enough, `Done` leaves the final model call to your application.
 
-This is the reason for the work-and-reply interface described in the
-[original design](https://github.com/NVIDIA-NeMo/Switchyard/pull/17).
-The [protocol separation](https://github.com/NVIDIA-NeMo/Switchyard/pull/76) also
-lets client implementations share the request and response contracts without
-depending on the routing algorithm implementation.
+The shared protocol crate lets clients and algorithms use the same request and
+response contracts. A client can implement those contracts without depending on
+the routing algorithm implementation.
 
 ## Start with a request
 
