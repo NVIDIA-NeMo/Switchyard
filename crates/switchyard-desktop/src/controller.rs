@@ -19,6 +19,13 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    PreviewRoute {
+        generation: u64,
+        route: String,
+        algorithm: String,
+        choices: Vec<Choice>,
+        revision: Option<String>,
+    },
     Models {
         client: String,
         refresh: bool,
@@ -61,7 +68,9 @@ pub struct Snapshot {
     /// when the app settings cannot be loaded.
     pub settings: Option<AppSettings>,
     pub data_state: DataState,
-
+    /// The controller increases this number when the app settings select another server
+    /// config file. Route actions send it back, so a draft cannot change the new file.
+    pub generation: u64,
     pub routes: Vec<RouteInfo>,
     pub clients: Vec<ClientInfo>,
     pub algorithms: Vec<AlgorithmInfo>,
@@ -205,11 +214,11 @@ impl Reply {
 // Only the UUID token goes to the frontend; reviewed files can contain credentials.
 struct Review {
     token: String,
-
+    inputs: Value,
     files: Vec<(PathBuf, Option<std::sync::Arc<[u8]>>)>,
 }
 impl Review {
-    fn capture(paths: Vec<PathBuf>) -> Result<Self, String> {
+    fn capture(inputs: Value, paths: Vec<PathBuf>) -> Result<Self, String> {
         let files = paths
             .into_iter()
             .map(|path| {
@@ -223,6 +232,7 @@ impl Review {
             .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             token: uuid::Uuid::now_v7().to_string(),
+            inputs,
             files,
         })
     }
@@ -234,6 +244,26 @@ impl Review {
                 .ok_or("The reviewed server config is missing.")?,
         )
         .map_err(|error| error.to_string())
+    }
+    // Decoded settings omit comments and unrelated fields, so this check compares raw bytes.
+    fn check(&self, token: Option<&str>, inputs: &Value) -> Result<(), String> {
+        if token != Some(self.token.as_str()) || inputs != &self.inputs {
+            return Err("Review these changes again before applying them.".into());
+        }
+        for (path, bytes) in &self.files {
+            let current = match std::fs::read(path) {
+                Ok(bytes) => Some(std::sync::Arc::<[u8]>::from(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            if &current != bytes {
+                return Err(format!(
+                    "{} changed since your review. Review it again; your draft is preserved.",
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -267,6 +297,12 @@ impl Controller {
         }
         self.config = config;
 
+        Ok(())
+    }
+    fn check_generation(&self, generation: u64) -> Result<(), String> {
+        if generation != self.generation {
+            return Err("The route changed or was removed. Refresh and choose it again.".into());
+        }
         Ok(())
     }
     // Key actions accept only names that the server config declares.
@@ -341,7 +377,7 @@ impl Controller {
         let summary = crate::summary::build(server_status, &usage, &self.config, &rates);
         let mut routes = Vec::new();
         let mut clients = Vec::new();
-        let route_review = Review::capture(vec![self.config.config_file.clone()]);
+        let route_review = Review::capture(json!({}), vec![self.config.config_file.clone()]);
         let route_config = route_review
             .as_ref()
             .map_err(Clone::clone)
@@ -360,7 +396,7 @@ impl Controller {
                     let original = route_review.as_ref().map_err(Clone::clone)?;
                     let review = Review {
                         token: uuid::Uuid::now_v7().to_string(),
-
+                        inputs: json!({"route":route.key}),
                         files: original.files.clone(),
                     };
                     let revision = self.remember_route(&route.key, review);
@@ -443,7 +479,7 @@ impl Controller {
                 },
                 health,
             },
-
+            generation: self.generation,
             routes,
             clients,
             algorithms: ALGORITHMS
@@ -582,6 +618,26 @@ impl Controller {
                     data: json!({"client":client.name,"count":models.len(),"models":models,"warning":warning,"source":source,"fetched_at":fetched_at}),
                 })
             }
+            Action::PreviewRoute {
+                generation,
+                route,
+                algorithm,
+                choices,
+                revision,
+            } => {
+                self.check_generation(generation)?;
+                self.route_reviews
+                    .get(&route)
+                    .ok_or("Open the route editor before reviewing it.")?
+                    .check(revision.as_deref(), &json!({"route":route}))?;
+                let edited = self
+                    .routes()?
+                    .edit(&route, algorithm_by_id(&algorithm)?, &choices)?;
+                Ok(Reply {
+                    message: String::new(),
+                    data: json!({"notes":edited.notes,"revision":revision,"file":self.config.config_file}),
+                })
+            }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
@@ -695,6 +751,12 @@ fn role_info(role: &crate::server_config::Role) -> RoleInfo {
     }
 }
 
+fn algorithm_by_id(kind: &str) -> Result<&'static crate::server_config::Algorithm, String> {
+    ALGORITHMS
+        .iter()
+        .find(|a| a.kind == kind)
+        .ok_or_else(|| "Unknown routing algorithm.".into())
+}
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let bundle = switchyard_desktop::install::bundle_metadata(&executable);
