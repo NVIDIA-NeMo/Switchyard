@@ -6,25 +6,30 @@
 //! The UI thread owns every view setting. One worker thread owns the controller and runs
 //! refreshes and actions, so moving around and filtering never wait for the log or a service.
 
-use crate::controller::{Availability, Controller, Snapshot};
+use crate::controller::{
+    Action, ActionKind, AppSettings, Availability, Controller, Reply, Snapshot,
+};
 use crate::history::Entry;
 use crate::pricing::Estimate;
 use crate::rollup::{CLASSIFIER_TIER, ModelTokens, Totals, Usage};
 use crate::summary::{money, tokens};
 use chrono::{DateTime, Utc};
 use ratatui::{
-    Frame,
+    DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Bar, BarChart, Block, BorderType, Cell, Clear, Padding, Paragraph, Row, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Table, TableState, Tabs, Wrap,
+        Bar, BarChart, Block, BorderType, Cell, Clear, List, ListItem, ListState, Padding,
+        Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, TableState, Tabs,
+        Wrap,
     },
 };
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    path::{Path, PathBuf},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -44,7 +49,7 @@ const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '�
 type Key = (&'static str, &'static str, &'static str);
 const GLOBAL_KEYS: &[Key] = &[
     (
-        "1-3",
+        "1-4",
         "page",
         "Switch pages. Tab, Shift-Tab, ← and → also switch pages.",
     ),
@@ -85,12 +90,69 @@ const MODELS_KEYS: &[Key] = &[(
     "period",
     "Switch the period: today, the past 7 days, or the whole log. The [ and ] keys also work.",
 )];
+const SETTINGS_KEYS: &[Key] = &[
+    ("↑↓", "select", "Select an action. j, g, and G also move."),
+    (
+        "⏎",
+        "run",
+        "Run the selected action. The letter beside each action also runs it.",
+    ),
+];
 const FILTER_KEYS: &[Key] = &[
     ("⏎", "keep", "Keep the filter and go back to the list."),
     ("esc", "clear", "Clear the filter."),
     ("ctrl-u", "erase", "Erase the filter text."),
 ];
 const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
+
+/// The Settings page lists one entry per controller action. A new controller action breaks the
+/// build until `App::start_action` runs it, and `every_controller_action_has_a_settings_key`
+/// fails until it has an entry here.
+const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
+    (
+        'o',
+        "Open server config",
+        "Opens the server config in $VISUAL or $EDITOR. Restart the server after you save it.",
+        ActionKind::OpenConfig,
+    ),
+    (
+        'c',
+        "Check server config",
+        "Runs the installed server's config check. The running server keeps running.",
+        ActionKind::CheckConfig,
+    ),
+    (
+        'a',
+        "Open app settings",
+        "Opens this app's settings file in $VISUAL or $EDITOR.",
+        ActionKind::OpenSettings,
+    ),
+    (
+        'p',
+        "Open model prices",
+        "Opens the custom price file in $VISUAL or $EDITOR. With bundled prices, this explains \
+         how to set a custom file.",
+        ActionKind::OpenPrices,
+    ),
+    (
+        'k',
+        "Check server keys",
+        "Lists the API key variables that the server config names and whether each is saved.",
+        ActionKind::ServerKeys,
+    ),
+    (
+        'l',
+        "Open update log",
+        "Opens the log of the last source update in $VISUAL or $EDITOR.",
+        ActionKind::OpenUpdateLog,
+    ),
+    (
+        'v',
+        "Open server logs",
+        "Opens the Switchyard server logs folder in $VISUAL or $EDITOR.",
+        ActionKind::OpenLogs,
+    ),
+];
 
 /// Column is a table heading, its width, and whether its values are right-aligned.
 type Column = (&'static str, Constraint, bool);
@@ -157,14 +219,16 @@ enum Tab {
     Overview,
     Calls,
     Models,
+    Settings,
 }
-const TABS: [Tab; 3] = [Tab::Overview, Tab::Calls, Tab::Models];
+const TABS: [Tab; 4] = [Tab::Overview, Tab::Calls, Tab::Models, Tab::Settings];
 impl Tab {
     fn name(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
             Tab::Calls => "Calls",
             Tab::Models => "Models",
+            Tab::Settings => "Settings",
         }
     }
     fn index(self) -> usize {
@@ -240,9 +304,12 @@ impl Popup {
 
 enum Job {
     Refresh,
+    Run(Action),
 }
 enum Done {
+    Editor(PathBuf),
     Finished {
+        reply: Option<Result<Reply, String>>,
         /// The box keeps this message small; a snapshot holds every model and route total.
         snapshot: Result<Box<Snapshot>, String>,
     },
@@ -253,6 +320,12 @@ struct Request {
     label: &'static str,
 }
 impl Request {
+    fn run(action: Action, label: &'static str) -> Self {
+        Self {
+            job: Job::Run(action),
+            label,
+        }
+    }
     fn refresh() -> Self {
         Self {
             job: Job::Refresh,
@@ -262,6 +335,8 @@ impl Request {
 }
 struct Busy {
     label: &'static str,
+    /// This field names the running action, so its reply can update the right view.
+    kind: Option<ActionKind>,
     started: Instant,
 }
 struct Toast {
@@ -282,6 +357,10 @@ struct App {
     visible: Vec<usize>,
     selected: usize,
     offset: usize,
+    action: usize,
+    /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys,
+    /// and a failed check clears it so the page never shows outdated key states.
+    server_keys: Option<Value>,
     popup: Option<Popup>,
     toast: Option<Toast>,
     busy: Option<Busy>,
@@ -305,6 +384,8 @@ impl App {
             visible: Vec::new(),
             selected: 0,
             offset: 0,
+            action: 0,
+            server_keys: None,
             popup: None,
             toast: None,
             busy: None,
@@ -385,9 +466,42 @@ impl App {
         }
     }
 
-    fn finish(&mut self, snapshot: Result<Box<Snapshot>, String>) {
-        self.busy = None;
+    /// This function applies a finished job. It returns the follow-up request, if any.
+    fn finish(
+        &mut self,
+        reply: Option<Result<Reply, String>>,
+        snapshot: Result<Box<Snapshot>, String>,
+    ) -> Option<Request> {
+        let kind = self.busy.take().and_then(|busy| busy.kind);
         self.apply_snapshot(snapshot.map(|snapshot| *snapshot));
+        match (kind, reply?) {
+            (Some(ActionKind::ServerKeys), Err(error)) => {
+                self.server_keys = None;
+                self.notify(error, true);
+            }
+            (_, Err(error)) => self.notify(error, true),
+            (Some(ActionKind::ServerKeys), Ok(reply)) => {
+                self.server_keys = Some(reply.data);
+                self.notify("Checked the saved server keys.".into(), false);
+            }
+            (_, Ok(reply)) => {
+                let details: Vec<&str> = reply.data["details"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                if details.is_empty() {
+                    self.notify(reply.message, false);
+                } else {
+                    self.popup = Some(Popup::Message {
+                        title: "Details",
+                        text: format!("{}\n\n{}", reply.message, details.join("\n")),
+                        error: false,
+                        scroll: 0,
+                    });
+                }
+            }
+        }
+        None
     }
 
     fn refresh_due(&self) -> bool {
@@ -405,10 +519,17 @@ impl App {
             self.notify(text, true);
             return Ok(());
         }
-        self.last_refresh = Instant::now();
+        let kind = match &request.job {
+            Job::Refresh => {
+                self.last_refresh = Instant::now();
+                None
+            }
+            Job::Run(action) => Some(ActionKind::from(action)),
+        };
         jobs.send(request.job).map_err(|error| error.to_string())?;
         self.busy = Some(Busy {
             label: request.label,
+            kind,
             started: Instant::now(),
         });
         Ok(())
@@ -421,6 +542,7 @@ impl App {
             (None, false, Tab::Overview) => &[],
             (None, false, Tab::Calls) => CALLS_KEYS,
             (None, false, Tab::Models) => MODELS_KEYS,
+            (None, false, Tab::Settings) => SETTINGS_KEYS,
         }
     }
 
@@ -447,7 +569,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
-            KeyCode::Char(digit @ '1'..='3') => {
+            KeyCode::Char(digit @ '1'..='4') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
             KeyCode::Tab | KeyCode::Right => self.tab = TABS[(self.tab.index() + 1) % TABS.len()],
@@ -471,6 +593,7 @@ impl App {
                     KeyCode::Char('[') => self.period = self.period.previous(),
                     _ => {}
                 },
+                Tab::Settings => return self.settings_key(code),
             },
         }
         None
@@ -530,6 +653,45 @@ impl App {
         }
         self.selected = 0;
         self.rebuild_calls();
+    }
+
+    /// Action letters come first, so `k` checks the server keys here instead of moving up.
+    fn settings_key(&mut self, code: KeyCode) -> Option<Request> {
+        if let KeyCode::Char(letter) = code
+            && let Some(index) = ACTIONS.iter().position(|action| action.0 == letter)
+        {
+            self.action = index;
+            return self.start_action(ACTIONS[index].3);
+        }
+        if let Some(action) = step(code, self.action, ACTIONS.len() - 1) {
+            self.action = action;
+            return None;
+        }
+        if code == KeyCode::Enter {
+            return self.start_action(ACTIONS[self.action].3);
+        }
+        None
+    }
+
+    /// This function starts a Settings action. The match has no wildcard arm, so adding a
+    /// controller action breaks the build until the terminal app can run it.
+    fn start_action(&mut self, kind: ActionKind) -> Option<Request> {
+        let request = |action, label| Some(Request::run(action, label));
+        match kind {
+            ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
+            ActionKind::CheckConfig => {
+                request(Action::CheckConfig {}, "Checking the server config")
+            }
+            ActionKind::OpenSettings => {
+                request(Action::OpenSettings {}, "Opening the app settings")
+            }
+            ActionKind::OpenPrices => request(Action::OpenPrices {}, "Opening the model prices"),
+            ActionKind::ServerKeys => request(Action::ServerKeys {}, "Checking the server keys"),
+            ActionKind::OpenUpdateLog => {
+                request(Action::OpenUpdateLog {}, "Opening the update log")
+            }
+            ActionKind::OpenLogs => request(Action::OpenLogs {}, "Opening the server logs"),
+        }
     }
 
     fn popup_key(&mut self, key: KeyEvent) -> Option<Request> {
@@ -770,6 +932,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Overview => draw_overview(frame, app, body),
         Tab::Calls => draw_calls(frame, app, body),
         Tab::Models => draw_models(frame, app, body),
+        Tab::Settings => draw_settings(frame, app, body),
     }
     draw_status(frame, app, status);
     draw_popup(frame, app, body);
@@ -1479,6 +1642,138 @@ fn draw_models(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(table(theme, &columns, routes), routes_area);
 }
 
+/// This function lists the server key variables from the last `ServerKeys` reply.
+fn key_lines(theme: Theme, keys: Option<&Value>) -> Vec<Line<'static>> {
+    let Some(data) = keys else {
+        return vec![Line::styled(
+            "Press k to check which keys are saved.",
+            theme.muted,
+        )];
+    };
+    let keys = data["keys"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if keys.is_empty() {
+        return vec![Line::from(
+            "The server config names no keys with api_key_env.",
+        )];
+    }
+    let mut lines = vec![Line::styled(
+        format!(
+            "Stored in {}",
+            data["store"].as_str().unwrap_or("Not recorded")
+        ),
+        theme.muted,
+    )];
+    lines.extend(keys.iter().map(|key| {
+        let saved = key["saved"] == true;
+        Line::from(vec![
+            Span::raw(format!("{} ", key["name"].as_str().unwrap_or_default())),
+            if saved {
+                Span::styled("saved", theme.ok)
+            } else {
+                Span::styled("not saved", theme.warn)
+            },
+        ])
+    }));
+    lines
+}
+
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let [list_area, info_area] =
+        Layout::horizontal([Constraint::Length(30), Constraint::Fill(1)]).areas(area);
+    let items: Vec<ListItem> = ACTIONS
+        .iter()
+        .map(|(letter, name, ..)| {
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{letter} "), theme.key),
+                Span::raw(*name),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(app.action));
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_style(theme.selected)
+            .highlight_symbol("› ")
+            .block(block(theme, "Actions")),
+        list_area,
+        &mut state,
+    );
+    let row = |name: &str, value: String| labeled(theme, name, 15, value);
+    let heading = |text: &'static str| Line::styled(text, theme.muted.bold());
+    let mut lines = vec![Line::from(ACTIONS[app.action].2), Line::default()];
+    if !app.data.errors.is_empty() {
+        lines.extend(
+            app.data
+                .errors
+                .iter()
+                .map(|error| Line::styled(error.clone(), theme.error)),
+        );
+        lines.push(Line::default());
+    }
+    // This destructuring has no `..`, so adding an app setting breaks the build until the
+    // Settings page shows it.
+    match &app.data.settings {
+        Some(AppSettings {
+            path,
+            server_url,
+            routing_log,
+            config_file,
+            launchd_label,
+            refresh_seconds,
+            baseline_model,
+            prices_file,
+        }) => lines.extend([
+            heading("APP SETTINGS"),
+            row("Settings file", path.display().to_string()),
+            row("Server URL", server_url.clone()),
+            row("Server config", config_file.display().to_string()),
+            row("Routing log", routing_log.display().to_string()),
+            row("Service label", launchd_label.clone()),
+            row("Baseline model", baseline_model.clone()),
+            row(
+                "Refresh",
+                format!("every {}", plural(*refresh_seconds, "second", "seconds")),
+            ),
+            row(
+                "Model prices",
+                prices_file
+                    .as_ref()
+                    .map_or("Bundled rates".into(), |file| file.display().to_string()),
+            ),
+            row("Editor", editor()),
+        ]),
+        None => lines.push(Line::styled(
+            "App settings could not be loaded. Press a to open them, then r to check them again.",
+            theme.warn,
+        )),
+    }
+    let update = &app.data.update_status;
+    let update = ["state", "stage", "message"]
+        .into_iter()
+        .filter_map(|field| update[field].as_str())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    lines.extend([Line::default(), heading("UPDATE FROM SOURCE")]);
+    lines.push(Line::from(if update.is_empty() {
+        "No update has run".to_string()
+    } else {
+        update
+    }));
+    lines.extend([Line::default(), heading("SERVER KEYS")]);
+    lines.extend(key_lines(theme, app.server_keys.as_ref()));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block(theme, ACTIONS[app.action].1).padding(Padding::horizontal(1))),
+        info_area,
+    );
+}
+
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
     let left = if app.filtering {
@@ -1646,6 +1941,7 @@ fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
         ("Calls", CALLS_KEYS),
         ("While filtering calls", FILTER_KEYS),
         ("Models", MODELS_KEYS),
+        ("Settings", SETTINGS_KEYS),
     ] {
         if !lines.is_empty() {
             lines.push(Line::default());
@@ -1683,12 +1979,79 @@ impl Drop for PasteMode {
     }
 }
 
+/// This function returns $VISUAL, then $EDITOR, then the platform default.
+fn editor() -> String {
+    ["VISUAL", "EDITOR"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| if cfg!(windows) { "notepad" } else { "vi" }.into())
+}
+
+/// This function runs the editor on an absolute path. The caller restores normal terminal input
+/// first. The path stays one literal argument, even if its name starts with '-'.
+fn edit_file(path: &Path) -> Result<(), String> {
+    let editor = editor();
+    let parts = shlex::split(&editor).ok_or("The editor command has an unmatched quote.")?;
+    let (program, arguments) = parts
+        .split_first()
+        .ok_or("Set VISUAL or EDITOR to an editor command.")?;
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(path)
+    };
+    let status = std::process::Command::new(program)
+        .args(arguments)
+        .arg(path)
+        .status()
+        .map_err(|error| format!("Could not start the editor {program}: {error}"))?;
+    if !status.success() {
+        return Err(format!("The editor {program} exited with {status}."));
+    }
+    Ok(())
+}
+
+/// This function gives the terminal to the editor and takes it back afterward. The outer error
+/// means the terminal could not be switched; the inner result comes from the editor.
+fn edit_in_foreground(
+    terminal: &mut DefaultTerminal,
+    path: &Path,
+) -> std::io::Result<Result<(), String>> {
+    use ratatui::crossterm::{
+        execute,
+        terminal::{EnterAlternateScreen, enable_raw_mode},
+    };
+    execute!(std::io::stdout(), event::DisableBracketedPaste)?;
+    terminal.show_cursor()?;
+    ratatui::try_restore()?;
+    let edited = edit_file(path);
+    enable_raw_mode()?;
+    execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        event::EnableBracketedPaste
+    )?;
+    terminal.clear()?;
+    Ok(edited)
+}
+
 pub fn run(mut controller: Controller) -> Result<(), String> {
-    let snapshot = controller.snapshot().unwrap_or_else(|error| Snapshot {
-        errors: vec![error],
-        ..Snapshot::default()
-    });
+    let (snapshot, tab) = match controller.snapshot() {
+        Ok(snapshot) => (snapshot, Tab::Overview),
+        // Settings shows the error and the actions that can fix the app settings.
+        Err(error) => (
+            Snapshot {
+                errors: vec![error],
+                ..Snapshot::default()
+            },
+            Tab::Settings,
+        ),
+    };
     let mut app = App::new(Theme::new(color_enabled()), snapshot);
+    app.tab = tab;
     ratatui::crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)
         .map_err(|e| e.to_string())?;
     let _paste_mode = PasteMode;
@@ -1696,9 +2059,19 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
     let (done, results) = mpsc::channel::<Done>();
     // One worker owns the controller while the terminal continues to draw and read input.
     let worker = thread::spawn(move || {
-        while let Ok(Job::Refresh) = inbox.recv() {
-            let finished = Done::Finished {
-                snapshot: controller.snapshot().map(Box::new),
+        while let Ok(job) = inbox.recv() {
+            let finished = match job {
+                Job::Refresh => Done::Finished {
+                    reply: None,
+                    snapshot: controller.snapshot().map(Box::new),
+                },
+                Job::Run(action) => match controller.editor_target(&action) {
+                    Ok(Some(path)) => Done::Editor(path),
+                    target => Done::Finished {
+                        reply: Some(target.and_then(|_| controller.dispatch(action))),
+                        snapshot: controller.snapshot().map(Box::new),
+                    },
+                },
             };
             if done.send(finished).is_err() {
                 break;
@@ -1707,8 +2080,29 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
     });
     let result = ratatui::run(|terminal| -> Result<(), String> {
         loop {
-            while let Ok(Done::Finished { snapshot }) = results.try_recv() {
-                app.finish(snapshot);
+            while let Ok(finished) = results.try_recv() {
+                match finished {
+                    Done::Finished { reply, snapshot } => {
+                        if let Some(request) = app.finish(reply, snapshot)
+                            && !app.quit
+                        {
+                            app.start(&jobs, request)?;
+                        }
+                    }
+                    // A quit request made while the editor target loaded skips the editor.
+                    Done::Editor(_) if app.quit => app.busy = None,
+                    Done::Editor(path) => {
+                        app.busy = None;
+                        match edit_in_foreground(terminal, &path).map_err(|e| e.to_string())? {
+                            Ok(()) => app.notify(
+                                format!("Closed the editor for {}.", path.display()),
+                                false,
+                            ),
+                            Err(error) => app.notify(error, true),
+                        }
+                        app.start(&jobs, Request::refresh())?;
+                    }
+                }
             }
             if app.quit && app.busy.is_none() {
                 return Ok(());
