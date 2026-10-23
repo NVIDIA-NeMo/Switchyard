@@ -7,7 +7,9 @@
 //! build until the terminal app can run it.
 
 use crate::{
+    accounts,
     config::Config,
+    harness::{self, Harness},
     history, models, pricing, rollup, server,
     server_config::{ALGORITHMS, Choice, Route, ServerConfig},
 };
@@ -110,6 +112,7 @@ pub struct Snapshot {
     pub generation: u64,
     pub routes: Vec<RouteInfo>,
     pub clients: Vec<ClientInfo>,
+    pub tools: Vec<ToolInfo>,
     pub algorithms: Vec<AlgorithmInfo>,
     pub summary: Vec<String>,
     pub metrics: Metrics,
@@ -161,6 +164,32 @@ pub struct RouteInfo {
     /// This field holds the marker of the generated block that contains the route. The tool
     /// that wrote the block replaces the route the next time it runs.
     pub generated: Option<String>,
+}
+
+/// ToolInfo describes one harness whose settings the apps can change.
+#[derive(Clone, Serialize)]
+pub struct ToolInfo {
+    pub tool: Harness,
+    pub label: &'static str,
+    /// This field is true when the settings files resolve and the harness program is installed.
+    pub available: bool,
+    pub files: Vec<PathBuf>,
+    /// This field summarizes the current settings, or holds the error that stopped the read.
+    pub status: String,
+    pub accounts: Vec<String>,
+    pub account_details: Vec<AccountInfo>,
+    pub discovery_error: Option<String>,
+}
+
+/// AccountInfo describes one saved account folder of a harness.
+#[derive(Clone, Serialize)]
+pub struct AccountInfo {
+    pub name: String,
+    pub path: PathBuf,
+    /// The apps cannot ask a harness whether a login finished, so this field is `unknown`.
+    pub login_status: &'static str,
+    /// This field summarizes the account's settings, or holds the error that stopped the read.
+    pub status: String,
 }
 
 /// ClientInfo describes one endpoint under `[llm_clients]` in the server config.
@@ -259,7 +288,7 @@ impl Reply {
 struct Review {
     token: String,
     inputs: Value,
-    files: Vec<(PathBuf, Option<std::sync::Arc<[u8]>>)>,
+    files: Vec<harness::ReviewedFile>,
 }
 impl Review {
     fn capture(inputs: Value, paths: Vec<PathBuf>) -> Result<Self, String> {
@@ -319,6 +348,7 @@ pub struct Controller {
     // The generation ties a draft to the server config file selected by the settings.
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
+
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
 }
@@ -331,6 +361,7 @@ impl Controller {
             reader: rollup::Reader::default(),
             generation: 0,
             route_reviews: Default::default(),
+
             route_change: None,
             update_review: None,
         }
@@ -340,6 +371,7 @@ impl Controller {
         if config.config_file != self.config.config_file {
             self.generation += 1;
             self.route_reviews.clear();
+
             self.route_change = None;
         }
         self.config = config;
@@ -463,6 +495,7 @@ impl Controller {
                                 .map(|r| r.tier.map(|t| format!("{t:?}")))
                                 .collect()
                         }),
+
                         editable: algorithm.is_some(),
                         generated: config
                             .generated_by("routes", &route.key)
@@ -498,6 +531,42 @@ impl Controller {
             history::History::default()
         });
         let activity = history::hourly_calls(&history.entries, chrono::Utc::now());
+        let tools = harness::HARNESSES
+            .iter()
+            .map(|&(tool, label)| {
+                let discovered = accounts::discover(tool);
+                let discovery_error = discovered.as_ref().err().cloned();
+                let discovered = discovered.unwrap_or_default();
+                let account_details = discovered
+                    .iter()
+                    .map(|(name, path)| AccountInfo {
+                        name: name.clone(),
+                        path: path.clone(),
+                        login_status: "unknown",
+                        status: accounts::config_paths(tool, Some(path))
+                            .and_then(|files| harness::inspect(tool, &files))
+                            .unwrap_or_else(|error| error),
+                    })
+                    .collect();
+                // A path error stays in status; files remains an array and the tool is unavailable.
+                let files = harness::paths(tool);
+                let status = files
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|files| harness::inspect(tool, files))
+                    .unwrap_or_else(|error| error);
+                ToolInfo {
+                    tool,
+                    label,
+                    available: files.is_ok() && harness::binary(tool).is_some(),
+                    files: files.unwrap_or_default(),
+                    status,
+                    accounts: discovered.into_iter().map(|(name, _)| name).collect(),
+                    account_details,
+                    discovery_error,
+                }
+            })
+            .collect();
         let update_status = install_metadata(&self.settings)
             .and_then(|path| switchyard_desktop::install::update_status(&path))
             .unwrap_or_else(|error| json!({"state":"unavailable","message":error}));
@@ -529,6 +598,7 @@ impl Controller {
             generation: self.generation,
             routes,
             clients,
+            tools,
             algorithms: ALGORITHMS
                 .iter()
                 .map(|a| AlgorithmInfo {
@@ -574,7 +644,7 @@ impl Controller {
             }),
         })
     }
-    /// The TUI uses these file paths to run an editor in the foreground.
+    /// The TUI uses these file and folder paths to run an editor in the foreground.
     pub fn editor_target(&mut self, action: &Action) -> Result<Option<PathBuf>, String> {
         match action {
             Action::OpenSettings {} => Ok(Some(self.settings.clone())),
@@ -590,6 +660,7 @@ impl Controller {
             }
             Action::OpenUpdateLog {} => self.update_log().map(Some),
             Action::OpenLogs {} => logs_dir().map(Some),
+
             _ => Ok(None),
         }
     }
@@ -918,6 +989,7 @@ impl Controller {
 fn logs_dir() -> Result<PathBuf, String> {
     crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
 }
+
 fn role_info(role: &crate::server_config::Role) -> RoleInfo {
     RoleInfo {
         label: role.label.clone(),
@@ -939,6 +1011,7 @@ fn current_route(config: &ServerConfig, key: &str, id: Option<&str>) -> Result<R
         .find(|r| r.key == key && id.is_none_or(|id| id == r.id))
         .ok_or_else(|| "The route changed or was removed. Refresh and choose it again.".into())
 }
+
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let bundle = switchyard_desktop::install::bundle_metadata(&executable);

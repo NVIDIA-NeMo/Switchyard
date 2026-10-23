@@ -10,9 +10,11 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use switchyard_desktop::{config, health, history, rollup};
+mod accounts;
 mod controller;
 #[cfg(any(target_os = "macos", windows))]
 mod gui;
+mod harness;
 mod models;
 mod pricing;
 mod server;
@@ -30,7 +32,7 @@ use config::Config;
 const USAGE: &str = "\
 Usage: switchyard-desktop [--tui | --print | --validate-toml] [FILE]
 
-This app manages routes and usage.
+This app manages routes, harness settings, and usage.
 
   FILE            The app reads settings from FILE.
   --tui           Run the terminal app.
