@@ -8,6 +8,38 @@ Follow one request through that exchange below. The snippets show parts of an
 integration; the [Rust quickstart](getting_started.md) has a complete program,
 imports, and matching development-API dependencies.
 
+## Why execution stays with your application
+
+Libsy separates routing policy from model execution. The algorithm decides which
+models to use and how their results affect the next step. Your application decides
+how those models are called.
+
+```text
+Libsy algorithm              Your gateway or harness
+    CallModel  ------------> Execute with your model client
+               <------------ Return a Response
+    Read the result
+    Request more work, or
+    Done       ------------> Use the final routing outcome
+```
+
+A gateway can fulfill these calls through its existing dispatch, credentials,
+retries, and observability. That includes calls to judges used during routing.
+An agent harness can supply its conversation and tool history, then use its model
+clients to execute the requested work. Both adapt their inputs and outputs to the
+shared protocol types.
+
+Routing can require more than choosing a model ID. An algorithm may change a
+request, ask a judge, inspect an answer, or compare results from several models.
+Returning responses through `call.respond` lets it continue that work. When a
+selection alone is enough, `Done` leaves the final model call to your application.
+
+This is the reason for the work-and-reply interface described in the
+[original design](https://github.com/NVIDIA-NeMo/Switchyard/pull/17).
+The [protocol separation](https://github.com/NVIDIA-NeMo/Switchyard/pull/76) also
+lets client implementations share the request and response contracts without
+depending on the routing algorithm implementation.
+
 ## Start with a request
 
 Your application supplies a
