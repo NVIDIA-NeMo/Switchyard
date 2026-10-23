@@ -590,6 +590,15 @@ impl ServerConfig {
         ALGORITHMS.iter().find(|algorithm| algorithm.kind == kind)
     }
 
+    /// This function returns the route's `context_window`, the largest request in tokens
+    /// that the route accepts, or `None` when the route does not set it.
+    pub fn context_window(&self, route: &str) -> Option<u64> {
+        self.route(route)?
+            .get("context_window")?
+            .as_integer()
+            .and_then(|window| u64::try_from(window).ok())
+    }
+
     /// This function returns the roles that `algorithm` needs on `route`. A random route
     /// keeps its number of targets, and has at least two.
     pub fn roles(&self, route: &str, algorithm: &Algorithm) -> Vec<Role> {
