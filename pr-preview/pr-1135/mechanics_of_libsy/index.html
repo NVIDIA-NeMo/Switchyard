@@ -463,38 +463,44 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#fulfill-a-model-call" class="md-nav__link">
+    <nav class="md-nav" aria-label="Read the next Step">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stepcallmodel" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Fulfill a model call
+        Step::CallModel
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#return-a-typed-decision" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepcalldecision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Return a typed decision
+        Step::CallDecision
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#receive-the-final-outcome" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepdone" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Receive the final outcome
+        Step::Done
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1808,38 +1814,44 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#fulfill-a-model-call" class="md-nav__link">
+    <nav class="md-nav" aria-label="Read the next Step">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#stepcallmodel" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Fulfill a model call
+        Step::CallModel
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#return-a-typed-decision" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepcalldecision" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Return a typed decision
+        Step::CallDecision
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#receive-the-final-outcome" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#stepdone" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Receive the final outcome
+        Step::Done
       
     </span>
   </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2000,7 +2012,7 @@ ask your client to call a judge:</p>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>Judge-based routing:  CallModel(call) -&gt; your response -&gt; Done(outcome)
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Decision routing:     CallDecision(call) -&gt; your typed response -&gt; Done(outcome)
 </span></code></pre></div>
-<h2 id="fulfill-a-model-call">Fulfill a model call<a class="headerlink" href="#fulfill-a-model-call" title="Permanent link">&para;</a></h2>
+<h3 id="stepcallmodel"><code>Step::CallModel</code><a class="headerlink" href="#stepcallmodel" title="Permanent link">&para;</a></h3>
 <p>Suppose the next step is <code>CallModel</code>. The
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html"><code>CallModel</code></a>
 object describes the operation:</p>
@@ -2039,7 +2051,7 @@ completion first.</p>
 Its async <code>call(Request)</code> returns a <code>Response</code> or <code>LlmClientError</code>; the
 <a href="../reference/host_integration/#serve-routing-time-calls">host guide</a> shows the error
 adapter. Using your own adapter method, as above, also works.</p>
-<h2 id="return-a-typed-decision">Return a typed decision<a class="headerlink" href="#return-a-typed-decision" title="Permanent link">&para;</a></h2>
+<h3 id="stepcalldecision"><code>Step::CallDecision</code><a class="headerlink" href="#stepcalldecision" title="Permanent link">&para;</a></h3>
 <p>An algorithm can ask a decision model to evaluate a question through
 <code>Step::CallDecision(call)</code>. This time, <code>call</code> holds a
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallDecision.html"><code>CallDecision</code></a>.
@@ -2093,7 +2105,7 @@ request like this in <code>call.request</code>:</p>
 </span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="p">};</span>
 </span></code></pre></div>
 </details>
-<h2 id="receive-the-final-outcome">Receive the final outcome<a class="headerlink" href="#receive-the-final-outcome" title="Permanent link">&para;</a></h2>
+<h3 id="stepdone"><code>Step::Done</code><a class="headerlink" href="#stepdone" title="Permanent link">&para;</a></h3>
 <p>Once the algorithm has enough information, it emits <code>Step::Done(outcome)</code> with a
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.RoutingOutcome.html"><code>RoutingOutcome</code></a>.
 Inside that match arm, check whether routing has already produced an answer:</p>
