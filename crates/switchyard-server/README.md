@@ -148,7 +148,9 @@ cache_write = 2
 ```
 
 The `.toml` extension check ignores case. Other filenames are read as JSON, so existing
-JSON overrides still work.
+JSON overrides still work. TOML and JSON also accept groups of exact IDs that share
+one set of rates, as shown in the [pi guide](../../docs/integrations/pi.md#estimate-the-cost).
+The bundled table uses this grouped format and can be supplied to `--pricing-file`.
 
 Session stats include cost totals. Missing usage or rates leave cost unknown; `known_usd`
 keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rates load once

@@ -53,6 +53,56 @@ struct Rates {
     cache_write_1h: Option<f64>,
 }
 
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum PricingFile {
+    Grouped { prices: Vec<PriceGroup> },
+    Keyed(Pricing),
+}
+
+// These explicit rate fields let Serde reject unknown and repeated fields.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PriceGroup {
+    models: Vec<String>,
+    input: f64,
+    output: f64,
+    cache_read: f64,
+    cache_write: f64,
+    cache_write_1h: Option<f64>,
+}
+
+impl PricingFile {
+    /// This method expands groups once so cost calculations keep using exact model lookups.
+    fn into_pricing(self) -> Result<Pricing, String> {
+        let pricing = match self {
+            Self::Keyed(pricing) => pricing,
+            Self::Grouped { prices } => {
+                let mut rates = HashMap::new();
+                for group in prices {
+                    if group.models.is_empty() {
+                        return Err("a pricing group must contain at least one model ID".into());
+                    }
+                    let rate = Rates {
+                        input: group.input,
+                        output: group.output,
+                        cache_read: group.cache_read,
+                        cache_write: group.cache_write,
+                        cache_write_1h: group.cache_write_1h,
+                    };
+                    for model in group.models {
+                        if rates.insert(model.clone(), rate.clone()).is_some() {
+                            return Err(format!("duplicate pricing model {model:?}"));
+                        }
+                    }
+                }
+                Pricing(rates)
+            }
+        };
+        pricing.validate()
+    }
+}
+
 /// This value identifies how a saved monetary amount was obtained.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,16 +151,17 @@ impl Pricing {
         pricing.map_err(|error| format!("invalid pricing file {}: {error}", path.display()))
     }
 
-    /// This function reads a pricing file's JSON and checks every model ID and rate.
+    /// This function reads JSON with model-keyed rates or a `prices` array of model groups.
+    /// This function checks every model ID and rate before returning the table.
     pub fn parse(json: &[u8]) -> Result<Self, String> {
-        let pricing: Self = serde_json::from_slice(json).map_err(|error| error.to_string())?;
-        pricing.validate()
+        let file: PricingFile = serde_json::from_slice(json).map_err(|error| error.to_string())?;
+        file.into_pricing()
     }
 
     /// TOML rates use the same typed fields and validation as JSON rates.
     fn parse_toml(text: &str) -> Result<Self, String> {
-        let pricing: Self = toml::from_str(text).map_err(|error| error.to_string())?;
-        pricing.validate()
+        let file: PricingFile = toml::from_str(text).map_err(|error| error.to_string())?;
+        file.into_pricing()
     }
 
     /// Both parsers use this check so model IDs and rate limits agree across formats.
