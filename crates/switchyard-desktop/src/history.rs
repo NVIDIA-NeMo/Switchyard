@@ -42,6 +42,7 @@ pub struct Entry {
 pub struct History {
     pub entries: Vec<Entry>,
     pub limited: bool,
+    pub skipped: usize,
 }
 
 // `hourly_calls` uses bounded recent history, so its buckets may omit calls from a busy day.
@@ -110,11 +111,24 @@ fn parse(bytes: &[u8], truncated: bool) -> History {
                 }
                 entries.push_back(entry);
             }
-            _ => {}
+            _ => result.skipped += 1,
         }
     }
     result.entries = entries.into();
     result
+}
+
+impl History {
+    pub fn sessions(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.session_id.as_deref())
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
 }
 
 #[cfg(test)]
