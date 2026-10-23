@@ -59,6 +59,15 @@ pub enum LibsyError {
         #[source]
         source: Box<dyn StdError + Send + Sync>,
     },
+
+    /// The host refused a model or decision call. The run stops, even when the
+    /// algorithm would recover from a failed call.
+    #[error("host aborted routing: {source}")]
+    HostAbort {
+        /// Reason supplied by the host.
+        #[source]
+        source: Box<dyn StdError + Send + Sync>,
+    },
 }
 
 impl LibsyError {
@@ -77,6 +86,13 @@ impl LibsyError {
     ) -> Self {
         Self::External {
             operation,
+            source: Box::new(source),
+        }
+    }
+
+    /// Stop the run because the host refused a call.
+    pub fn host_abort(source: impl StdError + Send + Sync + 'static) -> Self {
+        Self::HostAbort {
             source: Box::new(source),
         }
     }

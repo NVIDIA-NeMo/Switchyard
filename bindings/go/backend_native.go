@@ -150,17 +150,7 @@ func (backend *nativeBackend) route(ctx context.Context, input Input, call HostC
 				return Outcome{}, err
 			}
 		case reply := <-replies:
-			envelope := struct {
-				Response    json.RawMessage `json:"response,omitempty"`
-				ServedModel string          `json:"served_model,omitempty"`
-				Error       *string         `json:"error,omitempty"`
-			}{Response: reply.reply.Response, ServedModel: reply.reply.ServedModel}
-			if reply.err != nil {
-				envelope.Response = nil
-				message := reply.err.Error()
-				envelope.Error = &message
-			}
-			data, err := json.Marshal(envelope)
+			data, err := hostReplyJSON(reply.reply, reply.err)
 			if err != nil {
 				return Outcome{}, err
 			}
@@ -170,6 +160,9 @@ func (backend *nativeBackend) route(ctx context.Context, input Input, call HostC
 			value := C.CString(string(data))
 			err = nativeError(C.sy_run_respond(run, C.uint64_t(reply.id), value))
 			C.free(unsafe.Pointer(value))
+			if abort := hostAbort(reply.err); abort != nil {
+				return Outcome{}, abort
+			}
 			if err != nil {
 				return Outcome{}, err
 			}
