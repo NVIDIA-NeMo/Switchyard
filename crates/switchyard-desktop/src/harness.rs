@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use toml_edit::DocumentMut;
+use toml_edit::{DocumentMut, value};
 
 pub type ReviewedFile = (PathBuf, Option<std::sync::Arc<[u8]>>);
 
@@ -169,6 +169,393 @@ fn object(text: &str) -> Result<Value, String> {
         return Err("Settings must be a JSON object.".into());
     }
     Ok(doc)
+}
+
+fn map<'a>(doc: &'a mut Value, key: &str) -> Result<&'a mut Value, String> {
+    if doc.get(key).is_none() {
+        doc[key] = json!({});
+    }
+    if !doc[key].is_object() {
+        return Err(format!("{key} must be a JSON object."));
+    }
+    Ok(&mut doc[key])
+}
+
+pub fn validate(tool: Harness, root: &str, model: &str, login: bool) -> Result<String, String> {
+    let url = url::Url::parse(root).map_err(|e| e.to_string())?;
+    if url.scheme() != "http"
+        || !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(
+            "Install requires a local HTTP server URL, such as http://127.0.0.1:4123.".into(),
+        );
+    }
+    if model.trim().is_empty() {
+        return Err("Pick a route first.".into());
+    }
+    if tool == Harness::Pi && login {
+        return Err(
+            "Pi's custom provider needs a route with server API credentials. \
+             Use Codex or Claude for subscription login forwarding."
+                .into(),
+        );
+    }
+    // validate returns the parsed URL without a trailing slash so callers can append API paths.
+    Ok(url.to_string().trim_end_matches('/').to_owned())
+}
+
+fn codex_settings(
+    text: &str,
+    root: &str,
+    model: &str,
+    context_window: Option<u64>,
+    login: bool,
+) -> Result<String, String> {
+    let mut doc = text
+        .parse::<DocumentMut>()
+        .map_err(|e| e.message().to_owned())?;
+    if doc
+        .get("model_providers")
+        .is_some_and(|item| item.as_table_like().is_none())
+    {
+        return Err("model_providers must be a TOML table.".into());
+    }
+    if doc
+        .get("model_providers")
+        .and_then(|v| v.get("sy"))
+        .is_some_and(|item| item.as_table_like().is_none())
+    {
+        return Err("sy must be a TOML provider table.".into());
+    }
+    doc["model"] = value(model);
+    doc["model_provider"] = value("sy");
+    // Codex does not know a route ID, so it compacts only when the settings name the
+    // route's window. A window kept from another route would compact at the wrong size.
+    match context_window.and_then(|window| i64::try_from(window).ok()) {
+        Some(window) => doc["model_context_window"] = value(window),
+        None => {
+            doc.remove("model_context_window");
+        }
+    }
+    doc["model_providers"]["sy"]["name"] = value("Switchyard");
+    doc["model_providers"]["sy"]["base_url"] = value(format!("{root}/v1"));
+    doc["model_providers"]["sy"]["wire_api"] = value("responses");
+    doc["model_providers"]["sy"]["requires_openai_auth"] = value(login);
+    // A stale env_key would make Codex require a local API key even when the
+    // server owns the credentials or forwards the harness’s subscription login.
+    doc["model_providers"]["sy"]
+        .as_table_like_mut()
+        .ok_or("sy must be a provider table")?
+        .remove("env_key");
+    Ok(doc.to_string())
+}
+
+fn claude_settings(text: &str, root: &str, model: &str, login: bool) -> Result<String, String> {
+    let mut doc = object(text)?;
+    let env = map(&mut doc, "env")?;
+    let role_models = [
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ];
+    // The complete installation signature distinguishes our placeholder from a user credential.
+    let prior_switchyard = env["ANTHROPIC_BASE_URL"].as_str() == Some(root)
+        && env["ANTHROPIC_AUTH_TOKEN"].as_str() == Some("switchyard-local")
+        && env["ANTHROPIC_API_KEY"].as_str() == Some("")
+        && env["ANTHROPIC_MODEL"]
+            .as_str()
+            .is_some_and(|model| !model.is_empty())
+        && role_models
+            .iter()
+            .all(|key| env[*key] == env["ANTHROPIC_MODEL"]);
+    env["ANTHROPIC_BASE_URL"] = json!(root);
+    env["ANTHROPIC_MODEL"] = json!(model);
+    // All model roles use the selected public route, including subagents.
+    for key in role_models {
+        env[key] = json!(model);
+    }
+    if login {
+        if prior_switchyard {
+            let values = env.as_object_mut().ok_or("env must be a JSON object.")?;
+            values.remove("ANTHROPIC_AUTH_TOKEN");
+            values.remove("ANTHROPIC_API_KEY");
+        }
+        for key in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+            if env.get(key).is_some_and(|value| value.as_str() != Some("")) {
+                return Err(format!(
+                    "{key} overrides subscription login. \
+                     Remove it from Claude settings before installing this route."
+                ));
+            }
+        }
+    } else {
+        env["ANTHROPIC_AUTH_TOKEN"] = json!("switchyard-local");
+        env["ANTHROPIC_API_KEY"] = json!("");
+    }
+    Ok(serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n")
+}
+
+// The preview uses the installation transformations without creating files or backups.
+pub fn preview(
+    tool: Harness,
+    files: &[PathBuf],
+    root: &str,
+    model: &str,
+    context_window: Option<u64>,
+    login: bool,
+) -> Result<Value, String> {
+    let root = validate(tool, root, model, login)?;
+    for path in files {
+        if read_file(&restore_pending_path(path))?.is_some() {
+            return Err("A previous restore still needs backup cleanup. \
+                        Retry Restore before connecting another route."
+                .into());
+        }
+    }
+    let originals = files
+        .iter()
+        .map(|path| read_file(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let incoming = configured(tool, &originals, &root, model, context_window, login)?;
+    let current = originals
+        .iter()
+        .map(|text| text.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "changes": settings_changes(tool, files, &current, &incoming)?,
+        "current": inspect_settings(tool, files, &current)?,
+        "proposed": inspect_settings(tool, files, &incoming)?,
+        "authentication": if login {
+            "This route uses the harness’s subscription login."
+        } else {
+            "This route uses the API credentials configured on the Switchyard server."
+        },
+        "files": files.iter().map(|path| path.display().to_string()).collect::<Vec<_>>(),
+        "file_actions": files.iter().zip(originals.iter().zip(&incoming)).map(|(path,(before,after))|json!({"file":path,"action":if before.as_deref()==Some(after.as_str()) {"preserve"} else if before.is_none() {"create"} else {"update"}})).collect::<Vec<_>>()
+    }))
+}
+
+// PreviewModel and its nested types omit unknown fields that could contain credentials.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewModel {
+    id: Option<String>,
+    name: Option<String>,
+    reasoning: Option<bool>,
+    input: Option<Vec<PreviewInput>>,
+    context_window: Option<u64>,
+    max_tokens: Option<u64>,
+    cost: Option<PreviewCosts>,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PreviewInput {
+    Text,
+    Image,
+}
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewCosts {
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+}
+
+// settings_changes compares supported routing fields and hides credential values before display.
+fn settings_changes(
+    tool: Harness,
+    files: &[PathBuf],
+    before: &[String],
+    after: &[String],
+) -> Result<Vec<Value>, String> {
+    let mut changes = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let decode = |text: &str| -> Result<Value, String> {
+            if matches!(tool, Harness::CodexCli | Harness::CodexApp) {
+                let doc: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+                serde_json::to_value(doc).map_err(|e| e.to_string())
+            } else {
+                object(text)
+            }
+        };
+        let old = decode(&before[index])?;
+        let new = decode(&after[index])?;
+        let keys: &[&str] = match tool {
+            Harness::CodexCli | Harness::CodexApp => &[
+                "/model",
+                "/model_provider",
+                "/model_context_window",
+                "/model_providers/sy/name",
+                "/model_providers/sy/env_key",
+                "/model_providers/sy/base_url",
+                "/model_providers/sy/requires_openai_auth",
+                "/model_providers/sy/wire_api",
+            ],
+            Harness::Claude => &[
+                "/model",
+                "/env/ANTHROPIC_MODEL",
+                "/env/ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "/env/ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "/env/ANTHROPIC_BASE_URL",
+                "/env/ANTHROPIC_AUTH_TOKEN",
+                "/env/ANTHROPIC_API_KEY",
+            ],
+            Harness::Pi if index == 0 => &[
+                "/providers/switchyard/baseUrl",
+                "/providers/switchyard/api",
+                "/providers/switchyard/apiKey",
+                "/providers/switchyard/headers",
+                "/providers/switchyard/models",
+            ],
+            Harness::Pi => &["/defaultModel", "/defaultProvider"],
+        };
+        for key in keys {
+            let left = old.pointer(key);
+            let right = new.pointer(key);
+            if left == right {
+                continue;
+            }
+            let display = |value: Option<&Value>| -> String {
+                let Some(value) = value else {
+                    return "(unset)".into();
+                };
+                match *key {
+                    "/env/ANTHROPIC_AUTH_TOKEN"
+                    | "/env/ANTHROPIC_API_KEY"
+                    | "/providers/switchyard/apiKey" => if value.as_str() == Some("") {
+                        "(empty)"
+                    } else {
+                        "(set; hidden)"
+                    }
+                    .into(),
+                    "/providers/switchyard/headers" => value
+                        .as_object()
+                        .map(|headers| {
+                            headers
+                                .keys()
+                                .map(|name| format!("{name}: (set; hidden)"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_else(|| "(configured headers; values hidden)".into()),
+                    "/providers/switchyard/models" => value
+                        .as_array()
+                        .map(|models| {
+                            models
+                                .iter()
+                                .map(|model| {
+                                    serde_json::from_value::<PreviewModel>(model.clone())
+                                        .and_then(serde_json::to_value)
+                                        .unwrap_or_else(|_| {
+                                            json!("(unsupported model metadata; hidden)")
+                                        })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .map(|models| Value::Array(models).to_string())
+                        .unwrap_or_default(),
+                    "/env/ANTHROPIC_BASE_URL"
+                    | "/model_providers/sy/base_url"
+                    | "/providers/switchyard/baseUrl" => value
+                        .as_str()
+                        .and_then(|v| url::Url::parse(v).ok())
+                        .map(|mut url| {
+                            let _ = url.set_username("");
+                            let _ = url.set_password(None);
+                            url.set_query(None);
+                            url.set_fragment(None);
+                            url.to_string()
+                        })
+                        .unwrap_or_else(|| "(configured endpoint)".into()),
+                    _ => match value {
+                        Value::String(value) => value.clone(),
+                        Value::Bool(value) => value.to_string(),
+                        Value::Number(value) => value.to_string(),
+                        _ => "(set; hidden)".into(),
+                    },
+                }
+            };
+            changes.push(json!({"file":file.display().to_string(),"key":key.trim_start_matches('/').replace('/',"."),"before":display(left),"after":display(right)}));
+        }
+    }
+    Ok(changes)
+}
+
+// Both preview and installation use these transformations so the proposed settings match the saved settings.
+fn configured(
+    tool: Harness,
+    originals: &[Option<String>],
+    root: &str,
+    model: &str,
+    context_window: Option<u64>,
+    login: bool,
+) -> Result<Vec<String>, String> {
+    let mut incoming = Vec::new();
+    match tool {
+        Harness::CodexCli | Harness::CodexApp => incoming.push(codex_settings(
+            originals[0].as_deref().unwrap_or_default(),
+            root,
+            model,
+            context_window,
+            login,
+        )?),
+        Harness::Claude => incoming.push(claude_settings(
+            originals[0].as_deref().unwrap_or_default(),
+            root,
+            model,
+            login,
+        )?),
+        Harness::Pi => {
+            let mut doc = object(originals[0].as_deref().unwrap_or_default())?;
+            let providers = map(&mut doc, "providers")?;
+            providers["switchyard"] = json!({"baseUrl":format!("{root}/v1"), "api":"openai-completions", "apiKey":"switchyard-local", "headers":{"x-switchyard-origin":"pi"}, "models":[{"id":model,"name":model,"reasoning":true,"input":["text"],"contextWindow":context_window.unwrap_or(128000),"maxTokens":16384,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}]});
+            incoming.push(serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n");
+            let mut settings = object(originals[1].as_deref().unwrap_or_default())?;
+            settings["defaultProvider"] = json!("switchyard");
+            settings["defaultModel"] = json!(model);
+            incoming
+                .push(serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())? + "\n");
+        }
+    }
+    Ok(incoming)
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    path.with_file_name(format!(
+        "{}.switchyard-original",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+// The marker distinguishes an originally missing file from an empty file.
+// Restore removes installed settings only when the original file was missing.
+fn absent_path(path: &Path) -> PathBuf {
+    backup_path(path).with_extension("switchyard-original-missing")
+}
+
+fn restore_pending_path(path: &Path) -> PathBuf {
+    backup_path(path).with_extension("switchyard-restore-pending")
+}
+
+pub fn review_files(files: &[PathBuf]) -> Vec<PathBuf> {
+    files
+        .iter()
+        .flat_map(|path| {
+            [
+                path.clone(),
+                backup_path(path),
+                absent_path(path),
+                restore_pending_path(path),
+            ]
+        })
+        .collect()
 }
 
 pub fn binary(tool: Harness) -> Option<PathBuf> {

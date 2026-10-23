@@ -229,6 +229,14 @@ const ACTIONS: &[ActionRow] = &[
         &[ActionKind::Models],
     ),
     (
+        Tab::Harnesses,
+        'p',
+        "preview",
+        "Shows the settings diff that installing the selected route would make. Nothing is \
+         saved.",
+        &[ActionKind::PreviewInstall],
+    ),
+    (
         Tab::Settings,
         'o',
         "Open server config",
@@ -1101,6 +1109,9 @@ struct App {
     /// This field indexes `data.tools`, which lists every harness in a fixed order.
     harness: usize,
     destination: Destination,
+    /// This field holds the last install preview and the action that produced it. The
+    /// Harnesses page shows it only while that action matches the selection.
+    install_preview: Option<(Action, Value)>,
     /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys,
     /// and a failed check clears it so the page never shows outdated key states.
     server_keys: Option<Value>,
@@ -1134,7 +1145,7 @@ impl App {
             route_offset: 0,
             harness: 0,
             destination: Destination::Harness,
-
+            install_preview: None,
             server_keys: None,
             popup: None,
             toast: None,
@@ -1250,11 +1261,63 @@ impl App {
             .ok_or_else(|| "No harness is listed. Fix the app settings, then press r.".into())
     }
 
+    /// This function returns the selected account's name, or `None` when the harness's own
+    /// settings or a custom settings file is the destination.
+    fn account(&self) -> Option<String> {
+        match &self.destination {
+            Destination::Account(name) => Some(name.clone()),
+            Destination::Harness | Destination::File(_) => None,
+        }
+    }
+
     fn custom_file(&self) -> Option<String> {
         match &self.destination {
             Destination::File(path) => Some(path.clone()),
             Destination::Harness | Destination::Account(_) => None,
         }
+    }
+
+    /// This function builds the install preview of the selected route for the selected
+    /// harness and destination.
+    fn install_action(&self) -> Result<Action, String> {
+        let tool = self.harness()?.tool;
+        let route = self.selected_route()?;
+        Ok(Action::PreviewInstall {
+            tool,
+            account: self.account(),
+            route: route.key.clone(),
+            id: route.id.clone(),
+            settings_file: self.custom_file(),
+        })
+    }
+
+    /// This function returns the last install preview while it still describes the selection.
+    fn install_preview(&self) -> Option<&Value> {
+        let (
+            Action::PreviewInstall {
+                tool,
+                account,
+                route,
+                id,
+                settings_file,
+            },
+            preview,
+        ) = self.install_preview.as_ref()?
+        else {
+            return None;
+        };
+        let selected = self.selected_route().ok()?;
+        let destination = match (&self.destination, account, settings_file) {
+            (Destination::Harness, None, None) => true,
+            (Destination::Account(name), Some(previewed), None) => name == previewed,
+            (Destination::File(path), None, Some(previewed)) => path == previewed,
+            _ => false,
+        };
+        let current = destination
+            && self.harness().is_ok_and(|harness| harness.tool == *tool)
+            && selected.key == *route
+            && selected.id == *id;
+        current.then_some(preview)
     }
 
     /// Short messages appear in the status bar; long ones open a window so nothing is cut off.
@@ -1294,7 +1357,12 @@ impl App {
         };
         self.apply_snapshot(snapshot.map(|snapshot| *snapshot));
         let reply = reply?;
-
+        if matches!(
+            (&action, reply.is_ok()),
+            (Some(Action::PreviewInstall { .. }), false)
+        ) {
+            self.install_preview = None;
+        }
         match (action.as_ref().map(ActionKind::from), reply) {
             (Some(ActionKind::ServerKeys), Err(error)) => {
                 self.server_keys = None;
@@ -1314,6 +1382,17 @@ impl App {
                     "Update from source?",
                     "Type UPDATE to start",
                 ));
+            }
+            // The Harnesses page shows the diff while the selection still matches it.
+            (Some(ActionKind::PreviewInstall), Ok(reply)) => {
+                let previewed = action?;
+                let changed = reply.data["changes"]
+                    .as_array()
+                    .is_some_and(|changes| !changes.is_empty());
+                if !changed {
+                    self.notify("The settings already match this route.".into(), Tone::Done);
+                }
+                self.install_preview = Some((previewed, reply.data));
             }
             (Some(ActionKind::Editor), Ok(reply)) => {
                 if let Some(Action::Editor {
@@ -1793,6 +1872,13 @@ impl App {
                     _ => return Err(format!("The {key} key does not load models.")),
                 };
                 self.open(form)
+            }
+            ActionKind::PreviewInstall => {
+                let label = match key {
+                    'p' => "Previewing the settings",
+                    _ => return Err(format!("The {key} key does not preview harness settings.")),
+                };
+                request(self.install_action()?, label)
             }
 
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
@@ -3070,6 +3156,7 @@ fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'st
         tiers: _, // route_models_form keeps each role's model by tier
         editable,
         generated,
+        compatibility: _, // harness_lines explains it for the selected harness
     } = route;
     let field = |name: &str, value: String| labeled(theme, name, WIDTH, value);
     let algorithm = data.algorithms.iter().find(|known| known.kind == *kind);
@@ -3192,7 +3279,21 @@ fn draw_harnesses(frame: &mut Frame, app: &App, area: Rect) {
     let detail = Paragraph::new(harness_lines(app, harness))
         .wrap(Wrap { trim: false })
         .block(block(theme, harness.label).padding(Padding::horizontal(1)));
-    frame.render_widget(detail, rest);
+    let Some(preview) = app.install_preview() else {
+        frame.render_widget(detail, rest);
+        return;
+    };
+    let diff = Paragraph::new(install_lines(theme, preview))
+        .wrap(Wrap { trim: false })
+        .block(block(theme, "Settings diff").padding(Padding::horizontal(1)));
+    // Wide terminals put the diff beside the details; others put it below them.
+    let [details_area, diff_area] = if rest.width >= SIDE_DETAIL_WIDTH {
+        Layout::horizontal([Constraint::Fill(1); 2]).areas(rest)
+    } else {
+        Layout::vertical([Constraint::Fill(1); 2]).areas(rest)
+    };
+    frame.render_widget(detail, details_area);
+    frame.render_widget(diff, diff_area);
 }
 
 fn draw_harness_table(frame: &mut Frame, app: &App, area: Rect) {
@@ -3262,7 +3363,7 @@ fn harness_lines(app: &App, harness: &ToolInfo) -> Vec<Line<'static>> {
     // This destructuring has no `..`, so adding a harness field breaks the build until this
     // page shows it.
     let ToolInfo {
-        tool: _,
+        tool,
         label: _, // draw_harnesses titles these details with it
         available,
         files,
@@ -3275,6 +3376,11 @@ fn harness_lines(app: &App, harness: &ToolInfo) -> Vec<Line<'static>> {
     match app.selected_route() {
         Ok(route) => {
             lines.push(field("Route", route.label.clone()));
+            match route.compatibility.get(tool) {
+                Some(Some(reason)) => lines.push(Line::styled(reason.clone(), theme.warn)),
+                Some(None) => lines.push(Line::styled("This harness can use the route.", theme.ok)),
+                None => {}
+            }
         }
         Err(error) => lines.push(Line::from(vec![
             Span::styled(format!("{:<WIDTH$}", "Route"), theme.muted),
@@ -3898,6 +4004,50 @@ fn remove_lines(
     lines.push(Line::from(
         "Switchyard validates the config, saves a backup, and restarts the server.",
     ));
+    lines
+}
+
+/// This function returns a text field of a controller reply, or nothing when it is missing.
+fn text(value: &Value, key: &str) -> String {
+    value[key].as_str().unwrap_or_default().to_string()
+}
+
+/// This function lists each setting that a harness preview changes: the file and setting, the
+/// current value, and the value afterward.
+fn diff_lines(theme: Theme, preview: &Value, after: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        format!("SETTINGS DIFF · − current / + {after}"),
+        theme.muted.bold(),
+    )];
+    for change in preview["changes"].as_array().into_iter().flatten() {
+        lines.extend([
+            Line::default(),
+            Line::styled(
+                format!("{} · {}", text(change, "file"), text(change, "key")),
+                theme.muted,
+            ),
+            Line::styled(format!("− {}", text(change, "before")), theme.error),
+            Line::styled(format!("+ {}", text(change, "after")), theme.ok),
+        ]);
+    }
+    lines
+}
+
+/// This function shows an install preview: the settings afterward, each changed setting, what
+/// happens to each file, and how the harness signs in.
+fn install_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled("AFTER APPLYING ROUTING", theme.muted.bold())];
+    let proposed = text(preview, "proposed");
+    lines.extend(proposed.lines().map(|line| Line::from(line.to_string())));
+    lines.push(Line::default());
+    lines.extend(diff_lines(theme, preview, "proposed"));
+    lines.push(Line::default());
+    for file in preview["file_actions"].as_array().into_iter().flatten() {
+        let (action, file) = (text(file, "action"), text(file, "file"));
+        lines.push(Line::from(format!("Will {action}: {file}")));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(text(preview, "authentication")));
     lines
 }
 

@@ -70,6 +70,13 @@ pub enum Action {
         refresh: bool,
         key: Option<String>,
     },
+    PreviewInstall {
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+        settings_file: Option<String>,
+    },
     Restart {},
     PreviewUpdate {},
     Update {
@@ -164,6 +171,9 @@ pub struct RouteInfo {
     /// This field holds the marker of the generated block that contains the route. The tool
     /// that wrote the block replaces the route the next time it runs.
     pub generated: Option<String>,
+    /// This field maps each harness to the reason it cannot use the route, or to `None`
+    /// when it can.
+    pub compatibility: BTreeMap<Harness, Option<String>>,
 }
 
 /// ToolInfo describes one harness whose settings the apps can change.
@@ -348,6 +358,7 @@ pub struct Controller {
     // The generation ties a draft to the server config file selected by the settings.
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
+    tool_review: Option<Review>,
 
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
@@ -361,6 +372,7 @@ impl Controller {
             reader: rollup::Reader::default(),
             generation: 0,
             route_reviews: Default::default(),
+            tool_review: None,
 
             route_change: None,
             update_review: None,
@@ -371,7 +383,7 @@ impl Controller {
         if config.config_file != self.config.config_file {
             self.generation += 1;
             self.route_reviews.clear();
-
+            self.tool_review = None;
             self.route_change = None;
         }
         self.config = config;
@@ -495,6 +507,10 @@ impl Controller {
                                 .map(|r| r.tier.map(|t| format!("{t:?}")))
                                 .collect()
                         }),
+                        compatibility: harness::HARNESSES
+                            .iter()
+                            .map(|&(tool, _)| (tool, login_mode(tool, &config, &route).err()))
+                            .collect(),
 
                         editable: algorithm.is_some(),
                         generated: config
@@ -884,6 +900,36 @@ impl Controller {
                     data: json!({"notes":edited.notes,"revision":revision,"file":self.config.config_file}),
                 })
             }
+            Action::PreviewInstall {
+                tool,
+                account,
+                route,
+                id,
+                settings_file,
+            } => {
+                let files = install_paths(tool, account.as_deref(), settings_file.as_deref())?;
+                let inputs = json!({"tool":tool,"account":account,"route":route,"id":id,"settings_file":settings_file,"server_url":self.config.server_url});
+                let mut paths = harness::review_files(&files);
+                paths.push(self.config.config_file.clone());
+                let review = Review::capture(inputs, paths)?;
+                let config = self.routes()?;
+                let selected = current_route(&config, &route, Some(&id))?;
+                let mut data = harness::preview(
+                    tool,
+                    &files,
+                    &self.config.server_url,
+                    &selected.id,
+                    config.context_window(&selected.key),
+                    login_mode(tool, &config, &selected)?,
+                )?;
+                review.check(Some(&review.token), &review.inputs)?;
+                data["preview_token"] = json!(review.token);
+                self.tool_review = Some(review);
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
@@ -1010,6 +1056,89 @@ fn current_route(config: &ServerConfig, key: &str, id: Option<&str>) -> Result<R
         .into_iter()
         .find(|r| r.key == key && id.is_none_or(|id| id == r.id))
         .ok_or_else(|| "The route changed or was removed. Refresh and choose it again.".into())
+}
+// A custom file selects one settings location; saved accounts select their own folders.
+fn install_paths(
+    tool: Harness,
+    account: Option<&str>,
+    file: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
+    if let Some(file) = file {
+        if account.is_some() {
+            return Err("Choose a saved account or a custom settings file, not both.".into());
+        }
+        let path = PathBuf::from(file);
+        if !path.is_absolute() || file.trim().is_empty() || file.contains(['\n', '\r']) {
+            return Err("Enter an absolute settings file path without line breaks.".into());
+        }
+        if path.is_dir() {
+            return Err("Choose a settings file, not a folder.".into());
+        }
+        if tool == Harness::Pi {
+            if path.file_name().is_none_or(|name| name != "models.json") {
+                return Err("Choose Pi’s models.json; settings.json is read beside it.".into());
+            }
+            return Ok(vec![path.clone(), path.with_file_name("settings.json")]);
+        }
+        return Ok(vec![path]);
+    }
+    let account = account_path(tool, account)?;
+    accounts::config_paths(tool, account.as_deref())
+}
+
+fn account_path(tool: Harness, name: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let path = accounts::list(tool)
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, p)| p)
+        .ok_or("Unknown account. Refresh and choose an existing account.")?;
+    accounts::validate(tool, &path)?;
+    Ok(Some(path))
+}
+fn login_mode(
+    tool: Harness,
+    config: &ServerConfig,
+    route: &crate::server_config::Route,
+) -> Result<bool, String> {
+    let clients = config.clients();
+    let choices = config.choices(&route.key);
+    if choices.is_empty() {
+        return Err(
+            "This route cannot be installed by the app. Choose a route with models.".into(),
+        );
+    }
+    let mut login = false;
+    for choice in choices {
+        let client = clients
+            .iter()
+            .find(|c| c.name == choice.client)
+            .ok_or("The route has an unknown endpoint.")?;
+        if client.forward_auth {
+            let url = url::Url::parse(&client.base_url)
+                .map_err(|_| "The route has an invalid endpoint URL.")?;
+            let host = url
+                .host_str()
+                .ok_or("The route has an invalid endpoint URL.")?;
+            let supported = url.scheme() == "https"
+                && url.port().is_none_or(|port| port == 443)
+                && match tool {
+                    Harness::CodexCli | Harness::CodexApp => host == "chatgpt.com",
+                    Harness::Claude => host == "api.anthropic.com",
+                    Harness::Pi => false,
+                };
+            if !supported {
+                return Err(format!(
+                    "This route forwards the caller's login to {host}. \
+                     Pick a matching harness or a route with server API credentials."
+                ));
+            }
+            login = true;
+        }
+    }
+    Ok(login)
 }
 
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
