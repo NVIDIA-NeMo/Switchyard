@@ -97,6 +97,9 @@ enum CallReply {
     Error {
         error: String,
     },
+    Abort {
+        abort: String,
+    },
     Response {
         response: serde_json::Value,
         served_model: Option<ModelId>,
@@ -623,6 +626,7 @@ pub unsafe extern "C" fn sy_run_next(run: *const SyRun, out_json: *mut *mut c_ch
 }
 
 /// Delivers a buffered host reply to its pending call.
+/// An `abort` reply fails the run, even when the algorithm recovers from `error` replies.
 /// # Safety
 /// The run must remain live and JSON must be NUL-terminated. May overlap an async read.
 /// Do not call from a completion callback or Tokio task.
@@ -648,6 +652,9 @@ pub unsafe extern "C" fn sy_run_respond(
                         "host model call",
                         std::io::Error::other(error),
                     ))),
+                    CallReply::Abort { abort } => {
+                        Ok(Err(LibsyError::host_abort(std::io::Error::other(abort))))
+                    }
                     CallReply::Response {
                         response,
                         served_model,
@@ -679,6 +686,9 @@ pub unsafe extern "C" fn sy_run_respond(
                         "host decision call",
                         std::io::Error::other(error),
                     ))),
+                    CallReply::Abort { abort } => {
+                        Ok(Err(LibsyError::host_abort(std::io::Error::other(abort))))
+                    }
                     CallReply::Response { response, .. } => {
                         serde_json::from_value(response).map(Ok)
                     }

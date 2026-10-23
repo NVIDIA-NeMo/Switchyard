@@ -35,6 +35,8 @@ char *sy_run_new(const SyRouter *router, const char *input_json, SyRun **out);
 // Callbacks must return promptly, not unwind, and not call sy_run_respond or free handles.
 char *sy_run_next_async(const SyRun *run, SyNextCallback callback, uintptr_t user_data);
 #endif
+// reply_json is {"response": ...}, {"error": "..."} for the algorithm's error policy,
+// or {"abort": "..."} to fail the run.
 char *sy_run_respond(const SyRun *run, uint64_t call_id, const char *reply_json);
 
 char *sy_decode_request(const char *input_json, char **out_json);

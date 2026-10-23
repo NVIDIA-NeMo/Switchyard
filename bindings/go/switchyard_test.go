@@ -200,6 +200,22 @@ func TestHostFailureUsesAlgorithmPolicy(t *testing.T) {
 	}
 }
 
+// An aborted host call stops routing even when the algorithm recovers from host errors.
+func TestHostAbortStopsRouting(t *testing.T) {
+	errBudget := errors.New("budget exhausted")
+	for _, algorithm := range []string{composite, decision} {
+		router := newRouter(t, strings.Replace(algorithm, `"fail_open":false`, `"fail_open":true`, 1))
+		calls := 0
+		_, err := router.Route(context.Background(), input(), func(context.Context, Work) (Reply, error) {
+			calls++
+			return Reply{}, Abort(fmt.Errorf("judge call refused: %w", errBudget))
+		})
+		if calls != 1 || !errors.Is(err, errBudget) || err.Error() != "judge call refused: budget exhausted" {
+			t.Fatalf("calls=%d err=%v", calls, err)
+		}
+	}
+}
+
 // Cancellation releases routing work even if a host ignores its context and replies later.
 func TestCancellationAndLateHostReply(t *testing.T) {
 	router := newRouter(t, composite)

@@ -59,7 +59,48 @@ type Reply struct {
 }
 
 // HostCall executes model or decision work. It must honor ctx and may run concurrently.
+// Return an error to let the algorithm apply its error policy, or Abort(err) to stop routing.
 type HostCall func(context.Context, Work) (Reply, error)
+
+type abortError struct{ err error }
+
+func (e abortError) Error() string { return e.err.Error() }
+func (e abortError) Unwrap() error { return e.err }
+
+// Abort marks a host call refusal. Route stops and returns err, even when the
+// algorithm would recover from a failed call.
+func Abort(err error) error {
+	return abortError{err}
+}
+
+// hostReplyJSON encodes a host result for sy_run_respond.
+func hostReplyJSON(reply Reply, err error) ([]byte, error) {
+	envelope := struct {
+		Response    json.RawMessage `json:"response,omitempty"`
+		ServedModel string          `json:"served_model,omitempty"`
+		Error       *string         `json:"error,omitempty"`
+		Abort       *string         `json:"abort,omitempty"`
+	}{Response: reply.Response, ServedModel: reply.ServedModel}
+	if err != nil {
+		envelope.Response = nil
+		message := err.Error()
+		if errors.As(err, new(abortError)) {
+			envelope.Abort = &message
+		} else {
+			envelope.Error = &message
+		}
+	}
+	return json.Marshal(envelope)
+}
+
+// hostAbort returns the host's original error when it aborted the call.
+func hostAbort(err error) error {
+	var abort abortError
+	if errors.As(err, &abort) {
+		return abort.err
+	}
+	return nil
+}
 
 // Outcome retains the ordered candidates, prepared requests, and any routing-produced answer.
 type Outcome struct {
@@ -97,7 +138,7 @@ func (router *Router) Close() {
 }
 
 // Route waits for an outcome while the host services model and decision calls.
-// Host errors follow the algorithm's configured error policy.
+// Host errors follow the algorithm's configured error policy. Aborted calls stop routing.
 func (router *Router) Route(ctx context.Context, input Input, call HostCall) (Outcome, error) {
 	if router == nil || router.state == nil {
 		return Outcome{}, errors.New("Switchyard router is closed")

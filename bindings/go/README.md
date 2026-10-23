@@ -81,6 +81,11 @@ Random and signal-only Stage need no host callback. For Composite, supply a
 - `call_decision`: send `Work.Request` to `Work.Model` and return its normalized
   decision response. `ServedModel` does not apply to decision calls.
 
+A `HostCall` error is a failed call. The algorithm's error policy decides what
+happens next, so a `fail_open` classifier can still route. Return `Abort(err)`
+when the host refuses the call, such as for a budget or authorization check.
+`Route` then stops and returns `err`, which keeps its Go error type.
+
 Requests and replies use Switchyard's protocol JSON. `DecodeRequest`,
 `EncodeRequest`, and `DecodeResponse` use the existing translation codecs for
 `openai_chat`, `openai_responses`, and `anthropic_messages`. Typed decision
@@ -114,6 +119,7 @@ stops routing and cancels the host context, but cannot forcibly stop Go code tha
 ignores it. WASM checks cancellation between guest calls. Late host results cannot
 access a freed run.
 Host errors cross the boundary as messages, not concrete Go error types.
+Only an aborted call returns the host's original error from `Route`.
 
 `Close` prevents new runs; existing runs retain their algorithm and finish under
 their own contexts. Cancel those contexts to stop them. Router value copies
