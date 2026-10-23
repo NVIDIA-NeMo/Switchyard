@@ -66,7 +66,7 @@ impl Config {
     /// Adjacent `install.toml` selects the installation directory and port.
     /// Missing metadata uses the file's parent directory and port 4123.
     /// Invalid metadata returns an error.
-    /// The terminal app uses these defaults while the user repairs invalid app settings.
+    /// Callers can use these defaults while the user repairs invalid app settings.
     pub fn defaults_for(path: &Path) -> Result<Self, String> {
         let directory = path.parent().unwrap_or(Path::new("."));
         let metadata = directory.join("install.toml");
