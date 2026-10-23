@@ -2018,7 +2018,7 @@ message. When routing picks another target on the next turn, pi treats the chang
 model switch: it drops thinking signatures and turns off overflow compaction. pi's OpenAI
 clients keep the local id <code>switchyard</code> instead.</p>
 <p>Set <code>cost</code> on the model entry if you want pi to show a non-zero cost.
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9bb001c19b1b8bbb01a80a591fbefa166455b0db/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3a947dc8ca8773a3c8c648ee4451b4f3a9092078/benchmark/README.md"><code>benchmark/run-baseline.sh</code></a> runs Terminal-Bench tasks with
 pi through Switchyard when you pass <code>--agent pi</code>.</p>
 <h2 id="claude-through-an-llm-gateway">Claude through an LLM gateway<a class="headerlink" href="#claude-through-an-llm-gateway" title="Permanent link">&para;</a></h2>
 <p>An LLM gateway, such as a LiteLLM proxy, can serve Claude on three endpoints:
@@ -2133,16 +2133,33 @@ record's <code>model</code> value. This example uses Anthropic's list prices for
 <p>Put each quoted model ID in a top-level table, as shown above. Quotes keep dots
 within the ID. The <code>.toml</code> extension check ignores case; other filenames are read
 as JSON, so existing JSON overrides still work.</p>
-<p>For your own models, copy the entry for each model and replace the key with its exact
-<code>model</code> value from the routing log. Use the served model ID rather than the routing alias,
-and replace the example's numbers with your provider's rates. List recorded model IDs with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.model&#39;</span><span class="w"> </span>PATH<span class="w"> </span><span class="p">|</span><span class="w"> </span>sort<span class="w"> </span>-u
+<p>To maintain one set of rates for several exact IDs, list them in a group:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">[[prices]]</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;claude-haiku-4-5&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;anthropic/claude-haiku-4.5&quot;</span><span class="p">]</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">input</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">output</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">cache_read</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.1</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="n">cache_write</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">1.25</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="n">cache_write_1h</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span>
+</span></code></pre></div>
+<p>Use one <code>[[prices]]</code> record per group, with at least one ID in <code>models</code>. JSON accepts
+the same records in a top-level <code>prices</code> array. Each file uses either grouped records
+or model-keyed tables. The bundled table uses groups and can also be loaded with
+<code>--pricing-file</code>.</p>
+<p>All IDs in a group share every rate, including <code>cache_write_1h</code> when present. Keep
+separate groups when provider prices differ. The loader rejects duplicate IDs within
+or across groups, invalid IDs or rates, and unknown fields before using the table.</p>
+<p>For your own models, use each exact <code>model</code> value from the routing log as a table key
+or an ID in a group. Use the served model ID rather than the routing alias, and replace
+the example's numbers with your provider's rates. List recorded model IDs with:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.model&#39;</span><span class="w"> </span>PATH<span class="w"> </span><span class="p">|</span><span class="w"> </span>sort<span class="w"> </span>-u
 </span></code></pre></div>
 <p>Every entry requires <code>input</code>, <code>output</code>, <code>cache_read</code>, and <code>cache_write</code>. Set a rate to zero
 only when that usage is free. Each rate must be a finite number from 0 to 10000 USD per
 million tokens.</p>
-<p>The example's <code>cache_write</code> price is for a 5-minute cache. A 1-hour cache costs 2 times
-the input price instead of 1.25 times; set <code>cache_write_1h</code> to <code>4.00</code> for that example.
+<p>The Claude Sonnet 5 example uses the 5-minute <code>cache_write</code> price. A 1-hour cache
+costs 2 times the input price instead of 1.25 times; set <code>cache_write_1h</code> to <code>4.00</code>
+for that example.
 Include that rate to estimate reported one-hour cache writes; without it, the estimate
 remains unknown.</p>
 <p>To use your file, start the server with <code>--pricing-file prices.toml</code> as well as
@@ -2150,7 +2167,7 @@ remains unknown.</p>
 The server records the gateway's reported charge when available, even without rates.
 Otherwise it uses bundled rates or your override file to estimate the cost. If usage
 is missing or the model has no rates, the estimate is unknown. Read each request's cost with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, model, cost}&#39;</span><span class="w"> </span>PATH
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>jq<span class="w"> </span>-c<span class="w"> </span><span class="s1">&#39;{route_id, model, cost}&#39;</span><span class="w"> </span>PATH
 </span></code></pre></div>
 <h3 id="thinking">Thinking<a class="headerlink" href="#thinking" title="Permanent link">&para;</a></h3>
 <p>With <code>reasoning: true</code> on the model entry, pi sends a thinking level on every request,
@@ -2159,7 +2176,7 @@ target in OpenAI form: <code>reasoning_effort</code> on <code>openai_chat</code>
 <code>openai_responses</code>. The tested gateway turned either field into Anthropic's older
 <code>thinking: {type: "enabled"}</code>. Claude Opus 5.5 and Sonnet 5 refuse that form, so the
 gateway returned HTTP 400:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>&quot;thinking.type.enabled&quot; is not supported for this model. Use &quot;thinking.type.adaptive&quot; and &quot;output_config.effort&quot; to control thinking behavior.
+<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>&quot;thinking.type.enabled&quot; is not supported for this model. Use &quot;thinking.type.adaptive&quot; and &quot;output_config.effort&quot; to control thinking behavior.
 </span></code></pre></div>
 <p>For an <code>anthropic_messages</code> target, Switchyard sends the level in the form that Claude
 accepts: <code>thinking: {type: "adaptive"}</code> with <code>output_config.effort</code>. pi's thinking level
@@ -2167,10 +2184,10 @@ then takes effect.</p>
 <p>If a Claude target must stay on an OpenAI format, remove the effort field from its
 requests with <a href="../../reference/toml_schema/#targetsname"><code>omit_body_fields</code></a>. Claude then
 thinks at its default effort, and pi's thinking level has no effect on that target:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">[targets.claude]</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_chat&quot;</span><span class="w">  </span><span class="c1"># format = &quot;openai_chat&quot;</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning_effort&quot;</span><span class="p">]</span><span class="w">  </span><span class="c1"># use &quot;reasoning&quot; on openai_responses</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">[targets.claude]</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;claude-opus-5-5&quot;</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;gateway_chat&quot;</span><span class="w">  </span><span class="c1"># format = &quot;openai_chat&quot;</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reasoning_effort&quot;</span><span class="p">]</span><span class="w">  </span><span class="c1"># use &quot;reasoning&quot; on openai_responses</span>
 </span></code></pre></div>
 <p>Switchyard applies the target's <code>extra_body</code> and <code>reasoning_effort</code> after the removal, so
 either can set the field again.</p>
