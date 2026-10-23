@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app shows usage, recent calls, and server actions from controller snapshots.
+//! The terminal app shows usage, recent calls, and routes from controller snapshots, and it
+//! runs server and route actions.
 //!
 //! The UI thread owns every view setting. One worker thread owns the controller and runs
 //! refreshes and actions, so moving around and filtering never wait for the log or a service.
@@ -28,6 +29,7 @@ use ratatui::{
 };
 use serde_json::Value;
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::mpsc,
@@ -108,100 +110,120 @@ const FORM_KEYS: &[Key] = &[
     ("tab", "next field", ""),
     ("esc", "cancel", ""),
 ];
-const UPDATE_KEYS: &[Key] = &[
-    ("⏎", "start", ""),
+const REVIEW_KEYS: &[Key] = &[
+    ("⏎", "confirm", ""),
     ("↑↓", "scroll", ""),
     ("esc", "cancel", ""),
 ];
 const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
 const CONFIRM_KEYS: &[Key] = &[("y", "confirm", ""), ("n", "cancel", "")];
 
-/// The Settings page lists one entry per controller action. A new controller action breaks the
-/// build until `App::start_action` runs it, and `every_controller_action_has_a_settings_key`
-/// fails until it has an entry here.
-const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
+/// Each row is a page, a key, a short label, a help sentence, and the actions that the key's
+/// flow can run. `App::start_action` receives the first action. Settings lists its rows and
+/// runs the selected one with Enter; other pages run a row's flow on the selected item when its
+/// key is pressed. A new controller action breaks the build until `App::start_action` runs it,
+/// and `every_controller_action_has_a_key` fails until a row's flow includes it.
+type ActionRow = (Tab, char, &'static str, &'static str, &'static [ActionKind]);
+const ACTIONS: &[ActionRow] = &[
     (
+        Tab::Settings,
         'o',
         "Open server config",
         "Opens the server config in $VISUAL or $EDITOR. Restart the server after you save it.",
-        ActionKind::OpenConfig,
+        &[ActionKind::OpenConfig],
     ),
     (
+        Tab::Settings,
         'c',
         "Check server config",
         "Runs the installed server's config check. The running server keeps running.",
-        ActionKind::CheckConfig,
+        &[ActionKind::CheckConfig],
     ),
     (
+        Tab::Settings,
         'b',
         "Restart server",
         "Checks the server config, then restarts the Switchyard service after you confirm. \
          Requests in progress fail.",
-        ActionKind::Restart,
+        &[ActionKind::Restart],
     ),
     (
+        Tab::Settings,
         'a',
         "Open app settings",
         "Opens this app's settings file in $VISUAL or $EDITOR.",
-        ActionKind::OpenSettings,
+        &[ActionKind::OpenSettings],
     ),
     (
+        Tab::Settings,
         'e',
         "Change preferences",
         "Changes the baseline model that prices savings and the refresh interval.",
-        ActionKind::SavePreferences,
+        &[ActionKind::SavePreferences],
     ),
     (
+        Tab::Settings,
         'p',
         "Open model prices",
         "Opens the custom price file in $VISUAL or $EDITOR. With bundled prices, this explains \
          how to set a custom file.",
-        ActionKind::OpenPrices,
+        &[ActionKind::OpenPrices],
     ),
     (
+        Tab::Settings,
         'k',
         "Check server keys",
         "Lists the API key variables that the server config names and whether each is saved.",
-        ActionKind::ServerKeys,
+        &[ActionKind::ServerKeys],
     ),
     (
+        Tab::Settings,
         's',
         "Save a server key",
         "Saves an API key for a variable that the server config names. Restart the server to \
          use it.",
-        ActionKind::SaveServerKey,
+        &[ActionKind::SaveServerKey],
     ),
     (
+        Tab::Settings,
         'i',
         "Import a server key",
         "Saves an API key from your login shell's environment. Restart the server to use it.",
-        ActionKind::ImportServerKey,
+        &[ActionKind::ImportServerKey],
     ),
     (
+        Tab::Settings,
         'x',
         "Remove a server key",
         "Removes a saved API key. The server does not start until the key is saved again.",
-        ActionKind::RemoveServerKey,
+        &[ActionKind::RemoveServerKey],
     ),
     (
+        Tab::Settings,
         'u',
         "Update from source",
         "Shows what the saved source checkout would install. Type UPDATE to start it.",
-        ActionKind::PreviewUpdate,
+        &[ActionKind::PreviewUpdate, ActionKind::Update],
     ),
     (
+        Tab::Settings,
         'l',
         "Open update log",
         "Opens the log of the last source update in $VISUAL or $EDITOR.",
-        ActionKind::OpenUpdateLog,
+        &[ActionKind::OpenUpdateLog],
     ),
     (
+        Tab::Settings,
         'v',
         "Open server logs",
         "Opens the Switchyard server logs folder in $VISUAL or $EDITOR.",
-        ActionKind::OpenLogs,
+        &[ActionKind::OpenLogs],
     ),
 ];
+/// This function lists one page's rows in `ACTIONS` order.
+fn rows(tab: Tab) -> impl Iterator<Item = &'static ActionRow> + Clone {
+    ACTIONS.iter().filter(move |row| row.0 == tab)
+}
 
 /// Column is a table heading, its width, and whether its values are right-aligned.
 type Column = (&'static str, Constraint, bool);
@@ -277,6 +299,7 @@ impl Tab {
             Tab::Overview => "Overview",
             Tab::Calls => "Calls",
             Tab::Models => "Models",
+
             Tab::Settings => "Settings",
         }
     }
@@ -327,19 +350,23 @@ impl Period {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
 enum FormKind {
     Preferences,
     SaveKey,
     ImportKey,
     RemoveKey,
-    Update,
+    /// The token comes from the update preview that the user read.
+    Update(Option<String>),
+}
+/// Submit is what a form sends: a controller action.
+enum Submit {
+    Run(Action),
 }
 /// Form holds the text fields for an action that needs input.
 struct Form {
     kind: FormKind,
-    title: &'static str,
-    fields: Vec<(&'static str, String)>,
+    title: Cow<'static, str>,
+    fields: Vec<(Cow<'static, str>, String)>,
     index: usize,
     /// This field counts characters, not bytes, from the start of the selected field.
     cursor: usize,
@@ -347,11 +374,19 @@ struct Form {
     error: String,
 }
 impl Form {
-    fn new(kind: FormKind, title: &'static str, fields: Vec<(&'static str, String)>) -> Self {
+    fn new<L: Into<Cow<'static, str>>>(
+        kind: FormKind,
+        title: impl Into<Cow<'static, str>>,
+        fields: Vec<(L, String)>,
+    ) -> Self {
+        let fields: Vec<_> = fields
+            .into_iter()
+            .map(|(label, value)| (label.into(), value))
+            .collect();
         let cursor = fields.first().map_or(0, |field| field.1.chars().count());
         Self {
             kind,
-            title,
+            title: title.into(),
             fields,
             index: 0,
             cursor,
@@ -412,10 +447,16 @@ impl Form {
     fn value(&self, index: usize) -> String {
         self.fields[index].1.trim().to_string()
     }
-    /// This function builds the controller action that the form submits. An update needs the
-    /// token from the preview that the user read.
-    fn action(&self, preview: Option<&Value>) -> Result<Action, String> {
-        Ok(match self.kind {
+    /// This function builds what the form submits.
+    fn action(&self) -> Result<Submit, String> {
+        let confirm = |word: &str, error: &str| {
+            if self.value(0) == word {
+                Ok(())
+            } else {
+                Err(error.to_string())
+            }
+        };
+        Ok(Submit::Run(match &self.kind {
             FormKind::Preferences => Action::SavePreferences {
                 baseline_model: self.value(0),
                 refresh_seconds: self.value(1).parse().map_err(|_| {
@@ -437,25 +478,21 @@ impl Form {
             FormKind::RemoveKey => Action::RemoveServerKey {
                 name: self.value(0),
             },
-            FormKind::Update => {
-                if self.value(0) != "UPDATE" {
-                    return Err("Type UPDATE to start the reviewed source update.".into());
-                }
+            FormKind::Update(preview_token) => {
+                confirm("UPDATE", "Type UPDATE to start the reviewed source update.")?;
                 Action::Update {
-                    preview_token: preview
-                        .and_then(|preview| preview["preview_token"].as_str())
-                        .map(str::to_owned),
+                    preview_token: preview_token.clone(),
                 }
             }
-        })
+        }))
     }
     fn label(&self) -> &'static str {
-        match self.kind {
+        match &self.kind {
             FormKind::Preferences => "Saving the preferences",
             FormKind::SaveKey => "Saving the server key",
             FormKind::ImportKey => "Importing the server key",
             FormKind::RemoveKey => "Removing the server key",
-            FormKind::Update => "Starting the update",
+            FormKind::Update(_) => "Starting the update",
         }
     }
 }
@@ -469,15 +506,18 @@ enum Popup {
     },
     Restart,
     Form(Form),
-    Update {
-        preview: Value,
+    /// The user reads the preview lines, then types the confirmation word into `confirm`.
+    Review {
+        lines: Vec<Line<'static>>,
+        /// This field names what Enter does, such as Save or Delete.
+        verb: &'static str,
         scroll: u16,
         confirm: Form,
     },
     Message {
         title: &'static str,
         text: String,
-        error: bool,
+        tone: Tone,
         scroll: u16,
     },
 }
@@ -486,15 +526,30 @@ impl Popup {
         match self {
             Popup::Help { scroll }
             | Popup::Detail { scroll }
-            | Popup::Update { scroll, .. }
+            | Popup::Review { scroll, .. }
             | Popup::Message { scroll, .. } => Some(scroll),
             Popup::Restart | Popup::Form(_) => None,
         }
     }
     fn form_mut(&mut self) -> Option<&mut Form> {
         match self {
-            Popup::Form(form) | Popup::Update { confirm: form, .. } => Some(form),
+            Popup::Form(form) | Popup::Review { confirm: form, .. } => Some(form),
             _ => None,
+        }
+    }
+    /// This function opens a review window whose one field takes the confirmation word.
+    fn review(
+        lines: Vec<Line<'static>>,
+        verb: &'static str,
+        kind: FormKind,
+        title: impl Into<Cow<'static, str>>,
+        field: &'static str,
+    ) -> Self {
+        Popup::Review {
+            lines,
+            verb,
+            scroll: 0,
+            confirm: Form::new(kind, title, vec![(field, String::new())]),
         }
     }
 }
@@ -532,14 +587,34 @@ impl Request {
 }
 struct Busy {
     label: &'static str,
-    /// This field names the running action, so its reply can update the right view.
-    kind: Option<ActionKind>,
+    /// This field holds the running action, so its reply can update the right view and a
+    /// preview's review window can submit exactly what the controller reviewed.
+    action: Option<Action>,
     started: Instant,
 }
 struct Toast {
     text: String,
-    error: bool,
+    tone: Tone,
     shown: Instant,
+}
+/// Tone tells the user how an action went. A warning means the action did only part of its
+/// work, such as saving a route when the server could not restart. Warnings and errors stay in
+/// the status bar until Esc, because the user must act on them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Done,
+    Warning,
+    Error,
+}
+impl Tone {
+    /// The controller marks a reply as a warning when the action did only part of its work.
+    fn of(reply: &Reply) -> Self {
+        if reply.data["warning"] == true {
+            Tone::Warning
+        } else {
+            Tone::Done
+        }
+    }
 }
 
 struct App {
@@ -555,6 +630,7 @@ struct App {
     selected: usize,
     offset: usize,
     action: usize,
+
     /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys,
     /// and a failed check clears it so the page never shows outdated key states.
     server_keys: Option<Value>,
@@ -582,6 +658,7 @@ impl App {
             selected: 0,
             offset: 0,
             action: 0,
+
             server_keys: None,
             popup: None,
             toast: None,
@@ -598,16 +675,18 @@ impl App {
     fn apply_snapshot(&mut self, snapshot: Result<Snapshot, String>) {
         let data = match snapshot {
             Ok(data) => data,
-            Err(error) => return self.notify(error, true),
+            Err(error) => return self.notify(error, Tone::Error),
         };
         // A refresh keeps the same call selected unless the newest call was selected.
         let anchor = self
             .selected_entry()
             .filter(|_| self.selected > 0)
             .map(|entry| (entry.ts.clone(), entry.model.clone(), entry.turn_id.clone()));
+
         self.data = data;
         self.refreshed = Some(Instant::now());
         self.rebuild_calls();
+
         if let Some((ts, model, turn)) = anchor
             && let Some(position) = self.visible.iter().position(|&index| {
                 let entry = &self.data.entries[index];
@@ -643,21 +722,25 @@ impl App {
     }
 
     /// Short messages appear in the status bar; long ones open a window so nothing is cut off.
-    fn notify(&mut self, text: String, error: bool) {
+    fn notify(&mut self, text: String, tone: Tone) {
         if text.is_empty() {
             return;
         }
         if text.contains('\n') || text.chars().count() + 8 > usize::from(self.width) * 2 / 3 {
             self.popup = Some(Popup::Message {
-                title: if error { "Error" } else { "Done" },
+                title: match tone {
+                    Tone::Done => "Done",
+                    Tone::Warning => "Attention",
+                    Tone::Error => "Error",
+                },
                 text,
-                error,
+                tone,
                 scroll: 0,
             });
         } else {
             self.toast = Some(Toast {
                 text,
-                error,
+                tone,
                 shown: Instant::now(),
             });
         }
@@ -669,32 +752,31 @@ impl App {
         reply: Option<Result<Reply, String>>,
         snapshot: Result<Box<Snapshot>, String>,
     ) -> Option<Request> {
-        let kind = self.busy.take().and_then(|busy| busy.kind);
+        let action = self.busy.take().and_then(|busy| busy.action);
         self.apply_snapshot(snapshot.map(|snapshot| *snapshot));
-        match (kind, reply?) {
+        match (action.as_ref().map(ActionKind::from), reply?) {
             (Some(ActionKind::ServerKeys), Err(error)) => {
                 self.server_keys = None;
-                self.notify(error, true);
+                self.notify(error, Tone::Error);
             }
             // A form stays open with the error, so the user can fix the input and submit again.
             (_, Err(error)) => match self.popup.as_mut().and_then(Popup::form_mut) {
                 Some(form) => form.error = error,
-                None => self.notify(error, true),
+                None => self.notify(error, Tone::Error),
             },
             (Some(ActionKind::PreviewUpdate), Ok(reply)) => {
-                self.popup = Some(Popup::Update {
-                    preview: reply.data,
-                    scroll: 0,
-                    confirm: Form::new(
-                        FormKind::Update,
-                        "Update from source?",
-                        vec![("Type UPDATE to start", String::new())],
-                    ),
-                });
+                let token = reply.data["preview_token"].as_str().map(str::to_owned);
+                self.popup = Some(Popup::review(
+                    update_lines(self.theme, &reply.data),
+                    "Start",
+                    FormKind::Update(token),
+                    "Update from source?",
+                    "Type UPDATE to start",
+                ));
             }
             (Some(ActionKind::ServerKeys), Ok(reply)) => {
                 self.server_keys = Some(reply.data);
-                self.notify("Checked the saved server keys.".into(), false);
+                self.notify("Checked the saved server keys.".into(), Tone::Done);
             }
             (
                 Some(
@@ -705,27 +787,32 @@ impl App {
                 Ok(reply),
             ) => {
                 self.popup = None;
-                self.notify(reply.message, false);
+                self.notify(reply.message, Tone::Done);
                 return Some(Request::run(
                     Action::ServerKeys {},
                     "Checking the server keys",
                 ));
             }
             (_, Ok(reply)) => {
-                if matches!(self.popup, Some(Popup::Form(_) | Popup::Update { .. })) {
+                if matches!(self.popup, Some(Popup::Form(_) | Popup::Review { .. })) {
                     self.popup = None;
                 }
+                let tone = Tone::of(&reply);
                 let details: Vec<&str> = reply.data["details"]
                     .as_array()
                     .map(|items| items.iter().filter_map(Value::as_str).collect())
                     .unwrap_or_default();
                 if details.is_empty() {
-                    self.notify(reply.message, false);
+                    self.notify(reply.message, tone);
                 } else {
                     self.popup = Some(Popup::Message {
-                        title: "Details",
+                        title: if tone == Tone::Warning {
+                            "Attention"
+                        } else {
+                            "Details"
+                        },
                         text: format!("{}\n\n{}", reply.message, details.join("\n")),
-                        error: false,
+                        tone,
                         scroll: 0,
                     });
                 }
@@ -746,20 +833,20 @@ impl App {
     fn start(&mut self, jobs: &mpsc::Sender<Job>, request: Request) -> Result<(), String> {
         if let Some(busy) = &self.busy {
             let text = format!("Wait for \"{}\" to finish.", busy.label);
-            self.notify(text, true);
+            self.notify(text, Tone::Error);
             return Ok(());
         }
-        let kind = match &request.job {
+        let action = match &request.job {
             Job::Refresh => {
                 self.last_refresh = Instant::now();
                 None
             }
-            Job::Run(action) => Some(ActionKind::from(action)),
+            Job::Run(action) => Some(action.clone()),
         };
         jobs.send(request.job).map_err(|error| error.to_string())?;
         self.busy = Some(Busy {
             label: request.label,
-            kind,
+            action,
             started: Instant::now(),
         });
         Ok(())
@@ -768,24 +855,36 @@ impl App {
     fn keys(&self) -> &'static [Key] {
         match (&self.popup, self.filtering, self.tab) {
             (Some(Popup::Restart), _, _) => CONFIRM_KEYS,
-            (Some(Popup::Update { .. }), _, _) => UPDATE_KEYS,
+            (Some(Popup::Review { .. }), _, _) => REVIEW_KEYS,
+
             (Some(Popup::Form(_)), _, _) => FORM_KEYS,
             (Some(_), _, _) => POPUP_KEYS,
             (None, true, _) => FILTER_KEYS,
             (None, false, Tab::Overview) => &[],
             (None, false, Tab::Calls) => CALLS_KEYS,
             (None, false, Tab::Models) => MODELS_KEYS,
+
             (None, false, Tab::Settings) => SETTINGS_KEYS,
         }
+    }
+
+    /// The Calls and Routes pages each keep their own filter; `/` edits the current page's.
+    fn filter_mut(&mut self) -> &mut String {
+        &mut self.filter
+    }
+
+    fn refilter(&mut self) {
+        self.selected = 0;
+        self.rebuild_calls();
     }
 
     fn paste(&mut self, text: &str) {
         if let Some(form) = self.popup.as_mut().and_then(Popup::form_mut) {
             form.insert(text);
         } else if self.filtering && self.popup.is_none() {
-            self.filter.extend(text.chars().filter(|c| !c.is_control()));
-            self.selected = 0;
-            self.rebuild_calls();
+            self.filter_mut()
+                .extend(text.chars().filter(|c| !c.is_control()));
+            self.refilter();
         }
     }
 
@@ -814,22 +913,40 @@ impl App {
             KeyCode::Char('r') | KeyCode::F(5) => return Some(Request::refresh()),
             KeyCode::Esc => {
                 self.toast = None;
-                if self.tab == Tab::Calls {
-                    self.filter.clear();
-                    self.session = None;
-                    self.rebuild_calls();
+                match self.tab {
+                    Tab::Calls => {
+                        self.filter.clear();
+                        self.session = None;
+                        self.rebuild_calls();
+                    }
+
+                    Tab::Overview | Tab::Models | Tab::Settings => {}
                 }
             }
-            code => match self.tab {
-                Tab::Overview => {}
-                Tab::Calls => self.calls_key(code),
-                Tab::Models => match code {
-                    KeyCode::Char('p' | ']') => self.period = self.period.next(),
-                    KeyCode::Char('[') => self.period = self.period.previous(),
-                    _ => {}
-                },
-                Tab::Settings => return self.settings_key(code),
-            },
+            code => {
+                // Action letters come before the page's own keys, so `k` runs an action on
+                // Routes and Settings instead of moving up.
+                if let KeyCode::Char(letter) = code
+                    && let Some((index, &(_, key, _, _, flow))) =
+                        rows(self.tab).enumerate().find(|(_, row)| row.1 == letter)
+                {
+                    if self.tab == Tab::Settings {
+                        self.action = index;
+                    }
+                    return self.run_row(flow[0], key);
+                }
+                match self.tab {
+                    Tab::Overview => {}
+                    Tab::Calls => self.calls_key(code),
+                    Tab::Models => match code {
+                        KeyCode::Char('p' | ']') => self.period = self.period.next(),
+                        KeyCode::Char('[') => self.period = self.period.previous(),
+                        _ => {}
+                    },
+
+                    Tab::Settings => return self.settings_key(code),
+                }
+            }
         }
         None
     }
@@ -867,52 +984,57 @@ impl App {
             KeyCode::Enter => self.filtering = false,
             KeyCode::Esc => {
                 self.filtering = false;
-                self.filter.clear();
+                self.filter_mut().clear();
             }
             KeyCode::Backspace => {
-                self.filter.pop();
+                self.filter_mut().pop();
             }
-            KeyCode::Char('u') if control => self.filter.clear(),
+            KeyCode::Char('u') if control => self.filter_mut().clear(),
             KeyCode::Char('w') if control => {
-                let kept = self
-                    .filter
-                    .trim_end()
-                    .rfind(' ')
-                    .map_or(0, |index| index + 1);
-                self.filter.truncate(kept);
+                let filter = self.filter_mut();
+                let kept = filter.trim_end().rfind(' ').map_or(0, |index| index + 1);
+                filter.truncate(kept);
             }
             KeyCode::Char(c) if !control && !key.modifiers.contains(KeyModifiers::ALT) => {
-                self.filter.push(c);
+                self.filter_mut().push(c);
             }
             _ => return,
         }
-        self.selected = 0;
-        self.rebuild_calls();
+        self.refilter();
     }
 
-    /// Action letters come first, so `k` checks the server keys here instead of moving up.
     fn settings_key(&mut self, code: KeyCode) -> Option<Request> {
-        if let KeyCode::Char(letter) = code
-            && let Some(index) = ACTIONS.iter().position(|action| action.0 == letter)
-        {
-            self.action = index;
-            return self.start_action(ACTIONS[index].3);
-        }
-        if let Some(action) = step(code, self.action, ACTIONS.len() - 1) {
+        if let Some(action) = step(code, self.action, rows(Tab::Settings).count() - 1) {
             self.action = action;
             return None;
         }
-        if code == KeyCode::Enter {
-            return self.start_action(ACTIONS[self.action].3);
+        if code == KeyCode::Enter
+            && let Some(&(_, key, _, _, flow)) = rows(Tab::Settings).nth(self.action)
+        {
+            return self.run_row(flow[0], key);
         }
         None
     }
 
-    /// This function starts a Settings action. The match has no wildcard arm, so adding a
-    /// controller action breaks the build until the terminal app can run it.
-    fn start_action(&mut self, kind: ActionKind) -> Option<Request> {
-        let form = |kind, title, fields| Some(Popup::Form(Form::new(kind, title, fields)));
-        let request = |action, label| Some(Request::run(action, label));
+    fn run_row(&mut self, kind: ActionKind, key: char) -> Option<Request> {
+        self.start_action(kind, key).unwrap_or_else(|error| {
+            self.notify(error, Tone::Error);
+            None
+        })
+    }
+
+    fn open(&mut self, form: Form) -> Result<Option<Request>, String> {
+        self.popup = Some(Popup::Form(form));
+        Ok(None)
+    }
+
+    /// This function starts the flow of an `ACTIONS` row. The match has no wildcard arm, so
+    /// adding a controller action breaks the build until the terminal app can run it. Only the
+    /// arms of actions that several keys start read `key`, and they return an error for a key
+    /// that they do not know, so a new row must also be added to its arm.
+    fn start_action(&mut self, kind: ActionKind, _key: char) -> Result<Option<Request>, String> {
+        let request = |action, label| Ok(Some(Request::run(action, label)));
+
         match kind {
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
@@ -920,7 +1042,7 @@ impl App {
             }
             ActionKind::Restart => {
                 self.popup = Some(Popup::Restart);
-                None
+                Ok(None)
             }
             ActionKind::OpenSettings => {
                 request(Action::OpenSettings {}, "Opening the app settings")
@@ -932,43 +1054,33 @@ impl App {
                     .as_ref()
                     .map(|s| (s.baseline_model.clone(), s.refresh_seconds.to_string()))
                     .unwrap_or_default();
-                self.popup = form(
+                self.open(Form::new(
                     FormKind::Preferences,
                     "Change preferences",
                     vec![
                         ("Baseline model ID", baseline),
                         ("Refresh interval in seconds", refresh),
                     ],
-                );
-                None
+                ))
             }
             ActionKind::OpenPrices => request(Action::OpenPrices {}, "Opening the model prices"),
             ActionKind::ServerKeys => request(Action::ServerKeys {}, "Checking the server keys"),
-            ActionKind::SaveServerKey => {
-                self.popup = form(
-                    FormKind::SaveKey,
-                    "Save a server key",
-                    vec![("Key name", String::new()), ("Key", String::new())],
-                );
-                None
-            }
-            ActionKind::ImportServerKey => {
-                self.popup = form(
-                    FormKind::ImportKey,
-                    "Import a server key from your login shell",
-                    vec![("Key name", String::new())],
-                );
-                None
-            }
-            ActionKind::RemoveServerKey => {
-                self.popup = form(
-                    FormKind::RemoveKey,
-                    "Remove a saved server key",
-                    vec![("Key name", String::new())],
-                );
-                None
-            }
-            // The update window submits Update after the user reads this preview.
+            ActionKind::SaveServerKey => self.open(Form::new(
+                FormKind::SaveKey,
+                "Save a server key",
+                vec![("Key name", String::new()), ("Key", String::new())],
+            )),
+            ActionKind::ImportServerKey => self.open(Form::new(
+                FormKind::ImportKey,
+                "Import a server key from your login shell",
+                vec![("Key name", String::new())],
+            )),
+            ActionKind::RemoveServerKey => self.open(Form::new(
+                FormKind::RemoveKey,
+                "Remove a saved server key",
+                vec![("Key name", String::new())],
+            )),
+            // The review window submits Update after the user reads this preview.
             ActionKind::PreviewUpdate | ActionKind::Update => {
                 request(Action::PreviewUpdate {}, "Reading the source checkout")
             }
@@ -995,28 +1107,14 @@ impl App {
                 }
                 return None;
             }
-            Popup::Form(form) | Popup::Update { confirm: form, .. } => {
+            Popup::Form(form) | Popup::Review { confirm: form, .. } => {
                 match key.code {
                     KeyCode::Esc => self.popup = None,
-                    KeyCode::Enter => {
-                        let preview = match &self.popup {
-                            Some(Popup::Update { preview, .. }) => Some(preview),
-                            _ => None,
-                        };
-                        let form = match &self.popup {
-                            Some(Popup::Form(form) | Popup::Update { confirm: form, .. }) => form,
-                            _ => return None,
-                        };
-                        match form.action(preview) {
-                            Ok(action) => return Some(Request::run(action, form.label())),
-                            Err(error) => {
-                                if let Some(form) = self.popup.as_mut().and_then(Popup::form_mut) {
-                                    form.error = error;
-                                }
-                            }
-                        }
-                    }
-                    // Only the update window scrolls; its text field ignores the arrow keys.
+                    KeyCode::Enter => match form.action() {
+                        Ok(Submit::Run(action)) => return Some(Request::run(action, form.label())),
+                        Err(error) => form.error = error,
+                    },
+                    // Only the review window scrolls; text fields ignore these keys.
                     KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
                         if let Some(scroll) = popup.scroll_mut()
                             && let Some(next) =
@@ -1059,8 +1157,7 @@ fn step(code: KeyCode, current: usize, last: usize) -> Option<usize> {
     })
 }
 
-/// Every word must appear in one of the call's IDs. A word with a capital letter matches case
-/// exactly; other words ignore ASCII case, which covers model, route, and session IDs.
+/// Every word must appear in one of the call's IDs.
 fn matches_filter(entry: &Entry, filter: &str) -> bool {
     let fields = [
         entry.model.as_str(),
@@ -1068,6 +1165,12 @@ fn matches_filter(entry: &Entry, filter: &str) -> bool {
         entry.session_id.as_deref().unwrap_or_default(),
         entry.turn_id.as_deref().unwrap_or_default(),
     ];
+    matches_words(&fields, filter)
+}
+
+/// Every word must appear in one of the fields. A word with a capital letter matches case
+/// exactly; other words ignore ASCII case, which covers model, route, and session IDs.
+fn matches_words(fields: &[&str], filter: &str) -> bool {
     filter.split_whitespace().all(|word| {
         let exact = word.chars().any(char::is_uppercase);
         fields.iter().any(|field| {
@@ -1234,21 +1337,22 @@ fn draw(frame: &mut Frame, app: &mut App) {
     // This destructuring has no `..`, so adding a snapshot field breaks the build until a page
     // shows it. Each comment names the place that shows the field.
     let Snapshot {
-        update_status: _,   // draw_settings
-        settings: _,        // draw_settings
-        data_state: _,      // every page checks availability; draw_overview shows health
-        summary: _,         // --print shows these rows; draw_top_models builds the same notes
-        metrics: _,         // draw_header and the Overview cards
-        today: _,           // the Overview "Today" card title
-        analytics: _,       // draw_top_models and draw_models
-        estimates: _,       // the Overview cards and draw_models
-        baseline_model: _,  // draw_top_models; draw_settings shows the saved setting
-        activity: _,        // draw_activity
-        sessions: _,        // the calls table title and the `s` key
-        entries: _,         // draw_call_table and the call details
-        limited: _,         // calls_block and draw_activity
-        skipped: _,         // calls_block
-        errors: _,          // draw_errors and draw_settings
+        update_status: _, // draw_settings
+        settings: _,      // draw_settings
+        data_state: _,    // every page checks availability; draw_overview shows health
+
+        summary: _,   // --print shows these rows; draw_top_models builds the same notes
+        metrics: _,   // draw_header and the Overview cards
+        today: _,     // the Overview "Today" card title
+        analytics: _, // draw_top_models and draw_models
+        estimates: _, // the Overview cards and draw_models
+        baseline_model: _, // draw_top_models; draw_settings shows the saved setting
+        activity: _,  // draw_activity
+        sessions: _,  // the calls table title and the `s` key
+        entries: _,   // draw_call_table and the call details
+        limited: _,   // calls_block and draw_activity
+        skipped: _,   // calls_block
+        errors: _,    // draw_errors and draw_settings
         refresh_seconds: _, // App::refresh_due
     } = &app.data;
     let area = frame.area();
@@ -1268,6 +1372,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Overview => draw_overview(frame, app, body),
         Tab::Calls => draw_calls(frame, app, body),
         Tab::Models => draw_models(frame, app, body),
+
         Tab::Settings => draw_settings(frame, app, body),
     }
     draw_status(frame, app, status);
@@ -1316,11 +1421,16 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         None => " · no data yet ".into(),
     };
     let url = format!(" · {}", app.data.metrics.server_url);
-    // Narrow terminals drop the URL first, then the update time, so the tabs stay readable.
+    // Narrow terminals drop the URL first, then the update time, then shorten the server state.
+    // The narrowest ones drop the server state too, which the Overview page still shows, so the
+    // tabs stay readable.
     let room = usize::from(area.width).saturating_sub(tabs_width);
     let base = status.iter().map(Span::width).sum::<usize>();
     if base > room {
         status[1] = Span::raw(if running { "up" } else { "down" });
+        if status.iter().map(Span::width).sum::<usize>() > room {
+            status.clear();
+        }
     }
     if !app.data.metrics.server_url.is_empty()
         && base + url.chars().count() + updated.chars().count() <= room
@@ -1701,15 +1811,46 @@ fn calls_block(app: &App) -> Block<'static> {
     outer
 }
 
+/// This function returns the first shown row of a list, moved only as far as needed to keep
+/// the selection inside the `height` rows that fit.
+fn keep_visible(selected: usize, offset: usize, len: usize, height: usize) -> usize {
+    let offset = if selected < offset {
+        selected
+    } else if selected >= offset + height {
+        selected + 1 - height
+    } else {
+        offset
+    };
+    offset.min(len.saturating_sub(height))
+}
+
+/// This function draws a scrollbar over a bordered table's data rows, below the top border
+/// and the header row, when the rows do not fit.
+fn draw_scrollbar(frame: &mut Frame, theme: Theme, area: Rect, len: usize, position: usize) {
+    if len <= usize::from(area.height.saturating_sub(3)) {
+        return;
+    }
+    let mut scroll = ScrollbarState::new(len).position(position);
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_style(theme.key)
+            .track_symbol(Some("│"))
+            .track_style(theme.border),
+        Rect {
+            y: area.y + 2,
+            height: area.height.saturating_sub(3),
+            ..area
+        },
+        &mut scroll,
+    );
+}
+
 fn draw_call_table(frame: &mut Frame, app: &mut App, area: Rect) {
     // The table shows this many calls; the borders and the header row take three rows.
     let height = usize::from(area.height.saturating_sub(3)).max(1);
-    if app.selected < app.offset {
-        app.offset = app.selected;
-    } else if app.selected >= app.offset + height {
-        app.offset = app.selected + 1 - height;
-    }
-    app.offset = app.offset.min(app.visible.len().saturating_sub(height));
+    app.offset = keep_visible(app.selected, app.offset, app.visible.len(), height);
     let app = &*app;
     let theme = app.theme;
     let outer = calls_block(app);
@@ -1777,24 +1918,7 @@ fn draw_call_table(frame: &mut Frame, app: &mut App, area: Rect) {
         area,
         &mut state,
     );
-    if app.visible.len() > height {
-        let mut scroll = ScrollbarState::new(app.visible.len()).position(app.selected);
-        frame.render_stateful_widget(
-            Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                .begin_symbol(None)
-                .end_symbol(None)
-                .thumb_style(theme.key)
-                .track_symbol(Some("│"))
-                .track_style(theme.border),
-            // The scrollbar covers the data rows, below the top border and the header row.
-            Rect {
-                y: area.y + 2,
-                height: area.height.saturating_sub(3),
-                ..area
-            },
-            &mut scroll,
-        );
-    }
+    draw_scrollbar(frame, theme, area, app.visible.len(), app.selected);
 }
 
 fn detail_lines(theme: Theme, entry: &Entry) -> Vec<Line<'static>> {
@@ -2020,9 +2144,8 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
     let [list_area, info_area] =
         Layout::horizontal([Constraint::Length(30), Constraint::Fill(1)]).areas(area);
-    let items: Vec<ListItem> = ACTIONS
-        .iter()
-        .map(|(letter, name, ..)| {
+    let items: Vec<ListItem> = rows(Tab::Settings)
+        .map(|(_, letter, name, ..)| {
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{letter} "), theme.key),
                 Span::raw(*name),
@@ -2040,7 +2163,8 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     );
     let row = |name: &str, value: String| labeled(theme, name, 15, value);
     let heading = |text: &'static str| Line::styled(text, theme.muted.bold());
-    let mut lines = vec![Line::from(ACTIONS[app.action].2), Line::default()];
+    let (_, _, name, about, _) = rows(Tab::Settings).nth(app.action).unwrap_or(&ACTIONS[0]);
+    let mut lines = vec![Line::from(*about), Line::default()];
     if !app.data.errors.is_empty() {
         lines.extend(
             app.data
@@ -2105,7 +2229,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .block(block(theme, ACTIONS[app.action].1).padding(Padding::horizontal(1))),
+            .block(block(theme, name).padding(Padding::horizontal(1))),
         info_area,
     );
 }
@@ -2113,15 +2237,13 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
     let left = if app.filtering {
+        let (filter, matches) = (&app.filter, app.visible.len());
         Line::from(vec![
             Span::styled(" / ", theme.key),
-            Span::raw(app.filter.clone()),
+            Span::raw(filter.clone()),
             Span::styled("▏", theme.key),
             Span::styled(
-                format!(
-                    "  {} ",
-                    plural(app.visible.len() as u64, "match", "matches")
-                ),
+                format!("  {} ", plural(matches as u64, "match", "matches")),
                 theme.muted,
             ),
         ])
@@ -2136,18 +2258,24 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         Line::from(spans)
     } else if let Some(toast) = &app.toast {
-        let style = if toast.error { theme.error } else { theme.ok };
+        let (mark, style) = match toast.tone {
+            Tone::Done => (" ✓ ", theme.ok),
+            Tone::Warning => (" ! ", theme.warn),
+            Tone::Error => (" ✗ ", theme.error),
+        };
         Line::from(vec![
-            Span::styled(if toast.error { " ✗ " } else { " ✓ " }, style),
+            Span::styled(mark, style),
             Span::styled(toast.text.clone(), style),
         ])
     } else {
         Line::default()
     };
     let room = usize::from(area.width).saturating_sub(left.width() + 2);
-    // Page keys do nothing while a window is open or the filter takes the keyboard.
+    // Page keys do nothing while a window is open or the filter takes the keyboard. The
+    // Settings page lists its action letters beside its rows, so only other pages put them here.
     let global = app.popup.is_none() && !app.filtering;
-    let hints = fit_keys(theme, app.keys(), global, room);
+    let actions = rows(app.tab).filter(|_| global && app.tab != Tab::Settings);
+    let hints = fit_keys(theme, actions, app.keys(), global, room);
     let [left_area, right_area] =
         Layout::horizontal([Constraint::Length(left.width() as u16), Constraint::Fill(1)])
             .areas(area);
@@ -2155,10 +2283,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(hints.right_aligned()), right_area);
 }
 
-/// This function lists the page's keys, then the global keys, and stops before a hint would be
-/// cut. It keeps room for the help key, so the status bar always says how to find every key.
-fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'static> {
-    let hint = |key: &'static str, label: &str| {
+/// This function lists the page's action keys, its other keys, then the global keys, and stops
+/// before a hint would be cut. It keeps room for the help key, so the status bar always says how
+/// to find every key.
+fn fit_keys(
+    theme: Theme,
+    actions: impl Iterator<Item = &'static ActionRow>,
+    keys: &[Key],
+    global: bool,
+    room: usize,
+) -> Line<'static> {
+    let hint = |key: Cow<'static, str>, label: &str| {
         [
             Span::styled(key, theme.key),
             Span::styled(format!(" {label}  "), theme.muted),
@@ -2168,8 +2303,15 @@ fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'stat
     let mut spans = Vec::new();
     let mut used = if global { HELP_WIDTH } else { 0 };
     let globals = if global { GLOBAL_KEYS } else { &[] };
-    for (key, label, _) in keys.iter().chain(globals) {
-        if *key == "?" {
+    let hints = actions
+        .map(|&(_, key, label, ..)| (Cow::Owned(key.to_string()), label))
+        .chain(
+            keys.iter()
+                .chain(globals)
+                .map(|&(key, label, _)| (Cow::Borrowed(key), label)),
+        );
+    for (key, label) in hints {
+        if key == "?" {
             continue;
         }
         let width = key.chars().count() + label.chars().count() + 3;
@@ -2180,7 +2322,7 @@ fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'stat
         spans.extend(hint(key, label));
     }
     if global && room >= HELP_WIDTH {
-        spans.extend(hint("?", "help"));
+        spans.extend(hint(Cow::Borrowed("?"), "help"));
     }
     Line::from(spans)
 }
@@ -2193,7 +2335,8 @@ fn form_lines(theme: Theme, form: &Form) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(index, (label, value))| {
             // The key field shows one bullet per character, so the key never appears on screen.
-            let mut value = if form.kind == FormKind::SaveKey && index == 1 {
+            let masked = matches!(form.kind, FormKind::SaveKey);
+            let mut value = if masked && index == 1 {
                 "•".repeat(value.chars().count())
             } else {
                 value.clone()
@@ -2271,48 +2414,44 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
             64,
             footer(&[("y", "Restart"), ("n", "Cancel")]),
         ),
-        Popup::Form(form) => {
-            let mut lines = Vec::new();
-            if matches!(
-                form.kind,
-                FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey
-            ) {
-                lines.push(Line::styled("Server keys", theme.muted));
-                lines.extend(key_lines(theme, app.server_keys.as_ref()));
-                lines.push(Line::default());
-            }
-            (
-                form.title,
-                lines,
-                form_lines(theme, form),
-                theme.key,
-                72,
-                footer(&[("⏎", "Submit"), ("esc", "Cancel")]),
-            )
-        }
-        Popup::Update {
-            preview, confirm, ..
+        Popup::Form(form) => (
+            &*form.title,
+            form_notes(app, form),
+            form_lines(theme, form),
+            theme.key,
+            72,
+            footer(&[("⏎", "Submit"), ("esc", "Cancel")]),
+        ),
+        Popup::Review {
+            lines,
+            verb,
+            confirm,
+            ..
         } => {
             let mut pinned = vec![Line::default()];
             pinned.extend(form_lines(theme, confirm));
             (
-                confirm.title,
-                update_lines(theme, preview),
+                &*confirm.title,
+                lines.clone(),
                 pinned,
                 theme.warn,
                 84,
-                footer(&[("⏎", "Start"), ("esc", "Cancel")]),
+                footer(&[("⏎", *verb), ("esc", "Cancel")]),
             )
         }
         Popup::Message {
-            title, text, error, ..
+            title, text, tone, ..
         } => (
             *title,
             text.lines()
                 .map(|line| Line::from(line.to_string()))
                 .collect(),
             Vec::new(),
-            if *error { theme.error } else { theme.key },
+            match tone {
+                Tone::Done => theme.key,
+                Tone::Warning => theme.warn,
+                Tone::Error => theme.error,
+            },
             76,
             close,
         ),
@@ -2350,6 +2489,22 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(outer, rect);
     frame.render_widget(paragraph.scroll((scroll, 0)), text_area);
     frame.render_widget(pinned, pinned_area);
+}
+
+/// This function returns the text above a form's fields: what the fields accept and the lists
+/// that ↑ and ↓ cycle through.
+fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
+    let theme = app.theme;
+    match &form.kind {
+        FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey => {
+            let mut lines = vec![Line::styled("Server keys", theme.muted)];
+            lines.extend(key_lines(theme, app.server_keys.as_ref()));
+            lines.push(Line::default());
+            lines
+        }
+
+        FormKind::Preferences | FormKind::Update(_) => Vec::new(),
+    }
 }
 
 fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
@@ -2392,36 +2547,42 @@ fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
 }
 
 /// The help window indents wrapped descriptions under their first line, so keys stay in one column.
+/// Each page lists its other keys first, then its action keys from `ACTIONS`.
 fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
     const KEY_WIDTH: usize = 8;
     let room = width.saturating_sub(KEY_WIDTH).max(20);
     let mut lines = Vec::new();
-    for (section, keys) in [
-        ("Every page", GLOBAL_KEYS),
-        ("Calls", CALLS_KEYS),
-        ("While filtering calls", FILTER_KEYS),
-        ("Models", MODELS_KEYS),
-        ("Settings", SETTINGS_KEYS),
+    for (section, keys, page) in [
+        ("Every page", GLOBAL_KEYS, None),
+        ("Calls", CALLS_KEYS, Some(Tab::Calls)),
+        ("While filtering calls or routes", FILTER_KEYS, None),
+        ("Models", MODELS_KEYS, Some(Tab::Models)),
+        ("Settings", SETTINGS_KEYS, Some(Tab::Settings)),
     ] {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
         lines.push(Line::styled(format!(" {section} "), theme.selected.bold()));
-        for (key, _, about) in keys {
-            let mut rows = Vec::new();
+        let actions = page.into_iter().flat_map(rows);
+        let entries = keys
+            .iter()
+            .map(|&(key, _, about)| (Cow::Borrowed(key), about))
+            .chain(actions.map(|&(_, key, _, about, _)| (Cow::Owned(key.to_string()), about)));
+        for (key, about) in entries {
+            let mut wrapped = Vec::new();
             let mut row = String::new();
             for word in about.split_whitespace() {
                 if !row.is_empty() && row.chars().count() + 1 + word.chars().count() > room {
-                    rows.push(std::mem::take(&mut row));
+                    wrapped.push(std::mem::take(&mut row));
                 }
                 if !row.is_empty() {
                     row.push(' ');
                 }
                 row.push_str(word);
             }
-            rows.push(row);
-            for (index, row) in rows.into_iter().enumerate() {
-                let key = if index == 0 { *key } else { "" };
+            wrapped.push(row);
+            for (index, row) in wrapped.into_iter().enumerate() {
+                let key = if index == 0 { &*key } else { "" };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{key:<KEY_WIDTH$}"), theme.key),
                     Span::raw(row),
@@ -2556,9 +2717,9 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                         match edit_in_foreground(terminal, &path).map_err(|e| e.to_string())? {
                             Ok(()) => app.notify(
                                 format!("Closed the editor for {}.", path.display()),
-                                false,
+                                Tone::Done,
                             ),
-                            Err(error) => app.notify(error, true),
+                            Err(error) => app.notify(error, Tone::Error),
                         }
                         app.start(&jobs, Request::refresh())?;
                     }
@@ -2570,7 +2731,8 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
             if app
                 .toast
                 .as_ref()
-                .is_some_and(|toast| !toast.error && toast.shown.elapsed() > TOAST_TIME)
+                .filter(|toast| toast.tone == Tone::Done)
+                .is_some_and(|toast| toast.shown.elapsed() > TOAST_TIME)
             {
                 app.toast = None;
             }
@@ -2608,6 +2770,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::controller::Source;
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
@@ -2681,33 +2844,47 @@ mod tests {
     }
 
     #[test]
-    // Every controller action needs a Settings key, or the desktop app can do something
-    // that the terminal app cannot.
-    fn every_controller_action_has_a_settings_key() {
-        let mut keys: Vec<char> = ACTIONS.iter().map(|&(key, ..)| key).collect();
-        // The Settings page reads its letters before the global keys and the j, g, and G moves.
-        let reserved = ['q', 'r', '?', '1', '2', '3', '4', 'j', 'g', 'G'];
-        keys.extend(reserved);
-        keys.sort_unstable();
-        keys.dedup();
-        assert_eq!(
-            keys.len(),
-            ACTIONS.len() + reserved.len(),
-            "Settings keys must be unique and must not use a global or movement key"
+    // Every controller action needs a key, or the desktop app can do something that the
+    // terminal app cannot.
+    fn every_controller_action_has_a_key() {
+        let mut pairs: Vec<(usize, char)> = ACTIONS
+            .iter()
+            .map(|&(tab, key, ..)| (tab.index(), key))
+            .collect();
+        pairs.sort_unstable();
+        pairs.dedup();
+        assert_eq!(pairs.len(), ACTIONS.len(), "A page uses one key twice");
+
+        // App::key handles the global keys and the page digits before action letters, and
+        // j, g, and G must keep moving the selection. Each page's own keys come after its
+        // action letters, so a row with one of them would hide it.
+        let global = ['q', 'r', '?', 'j', 'g', 'G'];
+        let digits: Vec<char> = (1..=TABS.len() as u32)
+            .filter_map(|digit| char::from_digit(digit, 10))
+            .collect();
+        let page_keys = |tab| -> &[char] {
+            match tab {
+                Tab::Calls => &['/', 's'],
+                Tab::Models => &['p', '[', ']'],
+
+                Tab::Overview | Tab::Settings => &[],
+            }
+        };
+        let reserved: Vec<(Tab, char)> = ACTIONS
+            .iter()
+            .filter(|&&(tab, key, ..)| {
+                global.contains(&key) || digits.contains(&key) || page_keys(tab).contains(&key)
+            })
+            .map(|&(tab, key, ..)| (tab, key))
+            .collect();
+        assert!(
+            reserved.is_empty(),
+            "These rows use a reserved key: {reserved:?}"
         );
 
-        // Update is the only action without its own key: the u key reviews the update
-        // first, and the review window submits Update.
         let missing: Vec<ActionKind> = ActionKind::iter()
-            .filter(|&kind| kind != ActionKind::Update && !ACTIONS.iter().any(|&(.., k)| k == kind))
+            .filter(|kind| !ACTIONS.iter().any(|&(.., flow)| flow.contains(kind)))
             .collect();
-        assert!(missing.is_empty(), "No Settings key runs {missing:?}");
-        let mut review = Form::new(FormKind::Update, "", vec![("", "UPDATE".into())]);
-        assert!(matches!(
-            review.action(Some(&json!({"preview_token": "t"}))),
-            Ok(Action::Update { preview_token: Some(token) }) if token == "t"
-        ));
-        review.fields[0].1 = "update".into();
-        assert!(review.action(None).is_err());
+        assert!(missing.is_empty(), "No key runs {missing:?}");
     }
 }
