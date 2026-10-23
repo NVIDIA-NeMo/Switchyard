@@ -2,6 +2,9 @@
 
 Use this guide when embedding libsy algorithms that ask the host to serve model or decision calls. For a first routing result and model-client handoff, start with the [libsy quickstart](../getting_started.md).
 
+For an explanation of steps, call objects, and the request and response contracts,
+read [Mechanics of Libsy](../mechanics_of_libsy.md).
+
 ## Development API
 
 This page uses the development API, including its asynchronous `respond` method. The Rust examples pin the same revision as the [quickstart](../getting_started.md). The released `v0.3.0` callback API is synchronous. Use matching source-built [Python bindings](../../INSTALLATION.md#development) for this page's Python callback example.

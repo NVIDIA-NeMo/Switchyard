@@ -260,6 +260,7 @@ Your client returns `switchyard_protocol::Response` and adapts errors to `libsy:
 
 ## Next steps
 
+- **Understand the exchange:** [Mechanics of Libsy](mechanics_of_libsy.md) follows a request through steps, call objects, protocol types, and the final outcome.
 - **Explore the Rust API:** [libsy crate](../crates/libsy/README.md) and [generated API reference](reference/rust_api.md).
 - **Use a gateway integration:** [LiteLLM](../examples/litellm/README.md) or [NeMo Relay](integrations/nemo_relay.md). Check each guide's supported algorithms and versions.
 - **Choose another algorithm:** [routing overview](routing_algorithms/overview.md).

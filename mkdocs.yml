@@ -19,6 +19,7 @@ nav:
   - Home: index.md
   - Get Started:
       - Getting Started: getting_started.md
+      - Mechanics of Libsy: mechanics_of_libsy.md
       - Evaluate Locally: operations/local_evaluation.md
       - Known Issues: known_issues.md
   - Benchmarks: benchmarks.md
