@@ -1901,11 +1901,9 @@ shared protocol types.</p>
 request, ask a judge, inspect an answer, or compare results from several models.
 Returning responses through <code>call.respond</code> lets it continue that work. When a
 selection alone is enough, <code>Done</code> leaves the final model call to your application.</p>
-<p>This is the reason for the work-and-reply interface described in the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/pull/17">original design</a>.
-The <a href="https://github.com/NVIDIA-NeMo/Switchyard/pull/76">protocol separation</a> also
-lets client implementations share the request and response contracts without
-depending on the routing algorithm implementation.</p>
+<p>The shared protocol crate lets clients and algorithms use the same request and
+response contracts. A client can implement those contracts without depending on
+the routing algorithm implementation.</p>
 <h2 id="start-with-a-request">Start with a request<a class="headerlink" href="#start-with-a-request" title="Permanent link">&para;</a></h2>
 <p>Your application supplies a
 <a href="../rust/switchyard_protocol/envelope/struct.Request.html"><code>Request</code></a>.
