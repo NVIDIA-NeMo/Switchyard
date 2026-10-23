@@ -162,6 +162,38 @@ const ACTIONS: &[ActionRow] = &[
     ),
     (
         Tab::Routes,
+        'a',
+        "create",
+        "Creates a route from a public model ID, an algorithm, and its models. Type SAVE after \
+         the review.",
+        &[ActionKind::PreviewRouteChange, ActionKind::RouteChange],
+    ),
+    (
+        Tab::Routes,
+        'n',
+        "rename",
+        "Changes the selected route's public model ID. Harnesses that send the old ID must \
+         change too. Type SAVE after the review.",
+        &[ActionKind::PreviewRouteChange, ActionKind::RouteChange],
+    ),
+    (
+        Tab::Routes,
+        'c',
+        "duplicate",
+        "Copies the selected route under a new public model ID. The copy shares its targets. \
+         Type SAVE after the review.",
+        &[ActionKind::PreviewRouteChange, ActionKind::RouteChange],
+    ),
+    (
+        Tab::Routes,
+        'd',
+        "delete",
+        "Deletes the selected route after you type its public model ID. Its targets and \
+         endpoints stay, and the server config is backed up.",
+        &[ActionKind::Remove],
+    ),
+    (
+        Tab::Routes,
         'm',
         "models",
         "Loads the model IDs that an endpoint offers.",
@@ -433,8 +465,30 @@ enum FormKind {
         algorithm: String,
         revision: Option<String>,
     },
+    /// The fields hold a new route's public model ID, config name, and algorithm.
+    NewRoute {
+        generation: u64,
+    },
+    NewRouteModels {
+        generation: u64,
+        name: String,
+        id: String,
+        algorithm: String,
+    },
+    /// The operation is `rename` or `duplicate`, and `route` is the selected route's config name.
+    RouteIdentity {
+        generation: u64,
+        operation: &'static str,
+        route: String,
+    },
     /// The action is the one that the user reviewed. Typing SAVE submits it unchanged.
     Save(Box<Action>),
+    Remove {
+        generation: u64,
+        route: String,
+        id: String,
+        revision: String,
+    },
     Models,
     ModelKey,
 }
@@ -443,9 +497,11 @@ enum Choices {
     Algorithms,
     Endpoints,
 }
-/// Submit is what a form sends: a controller action.
+/// Submit is what a form sends: a controller action, or the next form of a flow that needs
+/// more input before the controller can review it.
 enum Submit {
     Run(Action),
+    Next(Form),
 }
 /// Form holds the text fields for an action that needs input.
 struct Form {
@@ -548,7 +604,10 @@ impl Form {
     fn options(&self) -> Option<Choices> {
         match self.kind {
             FormKind::Algorithm { .. } => Some(Choices::Algorithms),
-            FormKind::RouteModels { .. } if self.index.is_multiple_of(2) => {
+            FormKind::NewRoute { .. } if self.index == 2 => Some(Choices::Algorithms),
+            FormKind::RouteModels { .. } | FormKind::NewRouteModels { .. }
+                if self.index.is_multiple_of(2) =>
+            {
                 Some(Choices::Endpoints)
             }
             FormKind::Models | FormKind::ModelKey if self.index == 0 => Some(Choices::Endpoints),
@@ -570,8 +629,9 @@ impl Form {
         *field = names.nth(next).unwrap_or_default().to_string();
         self.cursor = field.chars().count();
     }
-    /// This function builds what the form submits.
-    fn action(&self) -> Result<Submit, String> {
+    /// This function builds what the form submits. The snapshot supplies the roles and
+    /// endpoints that a new route's models form starts with.
+    fn action(&self, data: &Snapshot) -> Result<Submit, String> {
         let confirm = |word: &str, error: &str| {
             if self.value(0) == word {
                 Ok(())
@@ -624,9 +684,85 @@ impl Form {
                 choices: self.choices(),
                 revision: revision.clone(),
             },
+            FormKind::NewRoute { generation } => {
+                let id = self.value(0);
+                let algorithm = self.value(2);
+                let roles = &data
+                    .algorithms
+                    .iter()
+                    .find(|known| known.kind == algorithm)
+                    .ok_or("Unknown routing algorithm. Press ↑ or ↓ to choose one.")?
+                    .roles;
+                let choice = Choice {
+                    client: data
+                        .clients
+                        .first()
+                        .map(|client| client.name.clone())
+                        .unwrap_or_default(),
+                    model: String::new(),
+                };
+                let fields = role_fields(roles.iter().map(|role| (&*role.label, choice.clone())));
+                let title = format!("Models for the new route {id}");
+                let kind = FormKind::NewRouteModels {
+                    generation: *generation,
+                    name: config_name(&id, &self.value(1)),
+                    id,
+                    algorithm,
+                };
+                return Ok(Submit::Next(Form::new(kind, title, fields)));
+            }
+            FormKind::NewRouteModels {
+                generation,
+                name,
+                id,
+                algorithm,
+            } => Action::PreviewRouteChange {
+                generation: *generation,
+                operation: "create".into(),
+                route: String::new(),
+                name: name.clone(),
+                id: id.clone(),
+                algorithm: Some(algorithm.clone()),
+                choices: self.choices(),
+            },
+            FormKind::RouteIdentity {
+                generation,
+                operation,
+                route,
+            } => {
+                let id = self.value(0);
+                // A rename keeps the config name, so its form has no config name field.
+                let name = match self.fields.get(1) {
+                    Some((_, typed)) => config_name(&id, typed.trim()),
+                    None => String::new(),
+                };
+                Action::PreviewRouteChange {
+                    generation: *generation,
+                    operation: operation.to_string(),
+                    route: route.clone(),
+                    name,
+                    id,
+                    algorithm: None,
+                    choices: Vec::new(),
+                }
+            }
             FormKind::Save(action) => {
                 confirm("SAVE", "Type SAVE to apply the reviewed changes.")?;
                 (**action).clone()
+            }
+            FormKind::Remove {
+                generation,
+                route,
+                id,
+                revision,
+            } => {
+                confirm(id, "Route name did not match. Nothing was deleted.")?;
+                Action::Remove {
+                    generation: *generation,
+                    route: route.clone(),
+                    id: id.clone(),
+                    revision: Some(revision.clone()),
+                }
             }
             FormKind::Models => Action::Models {
                 client: self.value(0),
@@ -649,7 +785,11 @@ impl Form {
             FormKind::Update(_) => "Starting the update",
             FormKind::Algorithm { .. } => "Opening the route editor",
             FormKind::RouteModels { .. } => "Reviewing the route",
+            FormKind::NewRoute { .. }
+            | FormKind::NewRouteModels { .. }
+            | FormKind::RouteIdentity { .. } => "Reviewing the route change",
             FormKind::Save(_) => "Saving the route",
+            FormKind::Remove { .. } => "Deleting the route",
             FormKind::Models => "Loading models",
             FormKind::ModelKey => "Saving the key and loading models",
         }
@@ -670,6 +810,22 @@ fn role_fields<'a>(roles: impl Iterator<Item = (&'a str, Choice)>) -> Vec<(Strin
                 (model, choice.model),
             ]
         })
+        .collect()
+}
+
+/// This function returns the typed config name, or one made from the public model ID the same
+/// way the desktop app fills a blank config name.
+fn config_name(id: &str, typed: &str) -> String {
+    if !typed.is_empty() {
+        return typed.to_string();
+    }
+    id.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .trim_matches('-')
+        .chars()
+        .take(64)
         .collect()
 }
 
@@ -706,7 +862,7 @@ fn route_models_form(
 
 /// This function returns the action that a preview's review window submits after the user
 /// types SAVE: the previewed inputs, plus the token for a route change.
-fn reviewed(previewed: Action) -> Option<Action> {
+fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
     Some(match previewed {
         Action::PreviewRoute {
             generation,
@@ -720,6 +876,24 @@ fn reviewed(previewed: Action) -> Option<Action> {
             algorithm,
             choices,
             revision,
+        },
+        Action::PreviewRouteChange {
+            generation,
+            operation,
+            route,
+            name,
+            id,
+            algorithm,
+            choices,
+        } => Action::RouteChange {
+            generation,
+            operation,
+            route,
+            name,
+            id,
+            algorithm,
+            choices,
+            preview_token: preview["preview_token"].as_str().map(str::to_owned),
         },
         _ => return None,
     })
@@ -1075,9 +1249,9 @@ impl App {
             }
             // The review window replaces the form that asked for the preview, so a form that
             // the user closed meanwhile stays closed.
-            (Some(ActionKind::PreviewRoute), Ok(reply)) => {
+            (Some(ActionKind::PreviewRoute | ActionKind::PreviewRouteChange), Ok(reply)) => {
                 if matches!(self.popup, Some(Popup::Form(_)))
-                    && let Some(reviewed) = action.and_then(reviewed)
+                    && let Some(reviewed) = action.and_then(|action| reviewed(action, &reply.data))
                 {
                     self.popup = Some(Popup::review(
                         change_lines(self.theme, &reply.data),
@@ -1402,6 +1576,73 @@ impl App {
                     fields,
                 ))
             }
+            // The route form submits PreviewRouteChange, and the review window submits
+            // RouteChange. A new route also needs a models form before the review.
+            ActionKind::PreviewRouteChange | ActionKind::RouteChange => {
+                const CONFIG_NAME: &str = "Config name (blank uses the public model ID)";
+                let form = match key {
+                    'a' => {
+                        let algorithm = self.data.algorithms.first().map(|a| a.kind);
+                        Form::new(
+                            FormKind::NewRoute { generation },
+                            "Create a route",
+                            vec![
+                                ("Public model ID", String::new()),
+                                (CONFIG_NAME, String::new()),
+                                ("Algorithm", algorithm.unwrap_or_default().to_string()),
+                            ],
+                        )
+                    }
+                    'n' => {
+                        let route = self.selected_route()?;
+                        Form::new(
+                            FormKind::RouteIdentity {
+                                generation,
+                                operation: "rename",
+                                route: route.key.clone(),
+                            },
+                            format!("Rename {}", route.id),
+                            vec![("Public model ID", route.id.clone())],
+                        )
+                    }
+                    'c' => {
+                        let route = self.selected_route()?;
+                        Form::new(
+                            FormKind::RouteIdentity {
+                                generation,
+                                operation: "duplicate",
+                                route: route.key.clone(),
+                            },
+                            format!("Duplicate {}", route.id),
+                            vec![
+                                ("Public model ID", String::new()),
+                                (CONFIG_NAME, String::new()),
+                            ],
+                        )
+                    }
+                    _ => return Err(format!("The {key} key does not start a route change.")),
+                };
+                self.open(form)
+            }
+            ActionKind::Remove => {
+                let route = self.selected_route()?;
+                let lines = remove_lines(self.theme, route, self.data.settings.as_ref());
+                let title = format!("Delete route {}?", route.id);
+                let kind = FormKind::Remove {
+                    generation,
+                    route: route.key.clone(),
+                    id: route.id.clone(),
+                    revision: route.revision.clone(),
+                };
+                self.popup = Some(Popup::review(
+                    lines,
+                    "Delete",
+                    kind,
+                    title,
+                    "Type the route name to delete",
+                ));
+                Ok(None)
+            }
             ActionKind::Models => {
                 let client = self.data.clients.first();
                 let client = client.map(|c| c.name.clone()).unwrap_or_default();
@@ -1494,8 +1735,9 @@ impl App {
             Popup::Form(form) | Popup::Review { confirm: form, .. } => {
                 match key.code {
                     KeyCode::Esc => self.popup = None,
-                    KeyCode::Enter => match form.action() {
+                    KeyCode::Enter => match form.action(&self.data) {
                         Ok(Submit::Run(action)) => return Some(Request::run(action, form.label())),
+                        Ok(Submit::Next(next)) => self.popup = Some(Popup::Form(next)),
                         Err(error) => form.error = error,
                     },
                     // A field with choices cycles through them. Otherwise only the review
@@ -2585,7 +2827,7 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .title(Line::from(title));
     if visible == 0 {
         let text = if app.data.routes.is_empty() {
-            "No routes in the server config."
+            "No routes in the server config. Press a to create one."
         } else {
             "No routes match the filter. Press Esc to clear it."
         };
@@ -3178,6 +3420,19 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
         lines.push(Line::default());
         lines
     };
+    let identity = |config_name: bool| {
+        let mut lines = vec![Line::from(
+            "Harnesses send the public model ID as the model. Each route needs its own ID.",
+        )];
+        if config_name {
+            lines.push(Line::from(
+                "The config name is the route's table name in the server config, as in \
+                 [routes.team-router]. It uses 1–64 letters, digits, hyphens, or underscores.",
+            ));
+        }
+        lines.push(Line::default());
+        lines
+    };
     match &form.kind {
         FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey => {
             let mut lines = vec![Line::styled("Server keys", theme.muted)];
@@ -3186,7 +3441,13 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines
         }
         FormKind::Algorithm { .. } => algorithms(&form.fields[0].1),
-        FormKind::RouteModels { .. } => {
+        FormKind::NewRoute { .. } => {
+            let mut lines = identity(true);
+            lines.extend(algorithms(&form.fields[2].1));
+            lines
+        }
+        FormKind::RouteIdentity { operation, .. } => identity(*operation != "rename"),
+        FormKind::RouteModels { .. } | FormKind::NewRouteModels { .. } => {
             let names: Vec<&str> = data.clients.iter().map(|c| c.name.as_str()).collect();
             vec![
                 Line::styled(format!("Endpoints: {}", names.join(", ")), theme.muted),
@@ -3215,7 +3476,10 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines.push(Line::default());
             lines
         }
-        FormKind::Preferences | FormKind::Update(_) | FormKind::Save(_) => Vec::new(),
+        FormKind::Preferences
+        | FormKind::Update(_)
+        | FormKind::Save(_)
+        | FormKind::Remove { .. } => Vec::new(),
     }
 }
 
@@ -3227,6 +3491,40 @@ fn change_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
     for note in notes.unwrap_or_default().iter().filter_map(Value::as_str) {
         lines.push(Line::default());
         lines.push(Line::from(note.to_string()));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(
+        "Switchyard validates the config, saves a backup, and restarts the server.",
+    ));
+    lines
+}
+
+/// This function explains what deleting a route keeps and who must change.
+fn remove_lines(
+    theme: Theme,
+    route: &RouteInfo,
+    settings: Option<&AppSettings>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(format!(
+        "This removes the public model ID from the server. Targets and harness settings are \
+         kept. Any harness using {} must choose another route.",
+        route.id
+    ))];
+    if let Some(generated) = &route.generated {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            format!("Generated by {generated}. That tool can add the route back."),
+            theme.warn,
+        ));
+    }
+    if let Some(settings) = settings {
+        lines.push(Line::default());
+        lines.push(labeled(
+            theme,
+            "Changed file",
+            13,
+            settings.config_file.display().to_string(),
+        ));
     }
     lines.push(Line::default());
     lines.push(Line::from(
