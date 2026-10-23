@@ -52,6 +52,23 @@ impl ModelTokens {
         self.cost.merge(&other.cost);
         self.uncounted += other.uncounted;
     }
+
+    /// This function returns the token counts as usage that a price table can price.
+    pub fn usage(&self) -> switchyard_protocol::Usage {
+        let mut cache = switchyard_protocol::Usage::cache_details(
+            Some(self.cached_input),
+            Some(self.cache_write),
+        );
+        if let Some(cache) = cache.as_mut() {
+            cache.cache_creation_1h_input_tokens = Some(self.cache_write_1h);
+        }
+        switchyard_protocol::Usage {
+            input_tokens: Some(self.input),
+            output_tokens: Some(self.output),
+            cache,
+            ..Default::default()
+        }
+    }
 }
 
 /// Totals separates caller-facing calls from classifier calls for a period.
