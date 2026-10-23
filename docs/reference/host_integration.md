@@ -60,7 +60,7 @@ Python `respond` cancels and awaits the supplied provider work before returning.
 
 ## Metadata and telemetry
 
-The [final outcome](../mechanics_of_libsy.md#receive-the-final-outcome) carries
+The [final outcome](../mechanics_of_libsy.md#stepdone) carries
 routing metadata. In Python, read `outcome.metadata.outcome_id`,
 `outcome.metadata.algorithm`, and `outcome.metadata.evidence` after checking that
 `outcome.metadata` is present. Evidence is a normal Python value, usually a

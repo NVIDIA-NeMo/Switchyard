@@ -161,7 +161,7 @@ Judge-based routing:  CallModel(call) -> your response -> Done(outcome)
 Decision routing:     CallDecision(call) -> your typed response -> Done(outcome)
 ```
 
-## Fulfill a model call
+### `Step::CallModel`
 
 Suppose the next step is `CallModel`. The
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html"><code>CallModel</code></a>
@@ -212,7 +212,7 @@ Its async `call(Request)` returns a `Response` or `LlmClientError`; the
 [host guide](reference/host_integration.md#serve-routing-time-calls) shows the error
 adapter. Using your own adapter method, as above, also works.
 
-## Return a typed decision
+### `Step::CallDecision`
 
 An algorithm can ask a decision model to evaluate a question through
 `Step::CallDecision(call)`. This time, `call` holds a
@@ -279,7 +279,7 @@ let response = DecisionResponse {
 
 </details>
 
-## Receive the final outcome
+### `Step::Done`
 
 Once the algorithm has enough information, it emits `Step::Done(outcome)` with a
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.RoutingOutcome.html"><code>RoutingOutcome</code></a>.
