@@ -1335,3 +1335,57 @@ fn responses_custom_tool_call_output_round_trips_with_request_extensions() -> Te
     assert_eq!(call["function"]["arguments"], "{\"input\":\"ls -la\"}");
     Ok(())
 }
+
+// A top-level tool that shares its bare name with a namespaced tool must keep its calls. Codex
+// dispatches on the name and namespace, so adding the namespace sends the call to the MCP server.
+#[test]
+fn responses_top_level_tool_call_is_not_given_a_namespace() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let function = |name: &str| json!({"type": "function", "name": name, "parameters": {}});
+    let request = json!({
+        "input": "hi",
+        "tools": [
+            function("search"),
+            {"type": "namespace", "name": "mcp__docs", "tools": [function("search")]}
+        ]
+    });
+    let decoded_request = engine.decode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    let call = |id: &str, name: &str| {
+        json!({
+            "id": id,
+            "type": "function",
+            "function": {"name": name, "arguments": "{}"}
+        })
+    };
+    let response = json!({
+        "id": "chatcmpl_1",
+        "model": "switchyard",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "tool_calls": [call("call_1", "search"), call("call_2", "mcp__docs__search")]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    });
+
+    let ir = engine
+        .decode_response(WireFormat::OpenAiChat, &response, &policy)?
+        .response;
+    let encoded = engine
+        .encode_response_with_extensions(
+            WireFormat::OpenAiResponses,
+            &ir,
+            &decoded_request.request.extensions,
+            &policy,
+        )?
+        .body;
+    let output = &encoded["output"];
+    assert_eq!(output[0]["name"], "search");
+    assert!(output[0].get("namespace").is_none(), "{encoded}");
+    assert_eq!(output[1]["name"], "search");
+    assert_eq!(output[1]["namespace"], "mcp__docs");
+    Ok(())
+}
