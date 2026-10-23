@@ -1885,13 +1885,20 @@ imports, and matching development-API dependencies.</p>
 <p>Libsy separates routing policy from model execution. The algorithm decides which
 models to use and how their results affect the next step. Your application decides
 how those models are called.</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Libsy algorithm              Your gateway or harness
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    CallModel  ------------&gt; Execute with your model client
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>               &lt;------------ Return a Response
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    Read the result
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    Request more work, or
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    Done       ------------&gt; Use the final routing outcome
-</span></code></pre></div>
+<pre class="mermaid"><code>flowchart TD
+    route["Libsy algorithm&lt;br/&gt;Choose the next Step"]
+    execute["Your application&lt;br/&gt;Run your model or decision client"]
+    done["Your application&lt;br/&gt;Use the routing outcome"]
+
+    route --&gt;|"CallModel or CallDecision"| execute
+    execute --&gt;|"call.respond(...)"| route
+    route --&gt;|"Done"| done
+
+    classDef algorithm fill:#eef6df,stroke:#76b900,color:#24350b
+    classDef application fill:#f5f6f7,stroke:#6b7280,color:#1f2937
+    class route algorithm
+    class execute,done application</code></pre>
+<p>A run can finish with <code>Done</code> immediately or request several calls before finishing.</p>
 <p>A gateway can fulfill these calls through its existing dispatch, credentials,
 retries, and observability. That includes calls to judges used during routing.
 An agent harness can supply its conversation and tool history, then use its model
@@ -1906,64 +1913,87 @@ response contracts. A client can implement those contracts without depending on
 the routing algorithm implementation.</p>
 <h2 id="start-with-a-request">Start with a request<a class="headerlink" href="#start-with-a-request" title="Permanent link">&para;</a></h2>
 <p>Your application supplies a
-<a href="../rust/switchyard_protocol/envelope/struct.Request.html"><code>Request</code></a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/envelope/struct.Request.html"><code>Request</code></a>.
 Its <code>llm_request</code> field holds the
-<a href="../rust/switchyard_protocol/llm/struct.LlmRequest.html"><code>LlmRequest</code></a>:
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/llm/struct.LlmRequest.html"><code>LlmRequest</code></a>:
 the conversation, instructions, tools, and generation settings. These
 provider-neutral types come from <code>switchyard-protocol</code>.</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Request</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="n">llm_request</span><span class="p">:</span><span class="w"> </span><span class="nc">LlmRequest</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">        </span><span class="n">messages</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">Message</span><span class="p">::</span><span class="n">text</span><span class="p">(</span><span class="n">Role</span><span class="p">::</span><span class="n">User</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">)],</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="p">},</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="n">metadata</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">Metadata</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">        </span><span class="n">session_id</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;session-42&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="p">}),</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="p">};</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Request</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span><span class="n">llm_request</span><span class="p">:</span><span class="w"> </span><span class="nc">LlmRequest</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">        </span><span class="n">messages</span><span class="p">:</span><span class="w"> </span><span class="nc">vec</span><span class="o">!</span><span class="p">[</span><span class="n">Message</span><span class="p">::</span><span class="n">text</span><span class="p">(</span><span class="n">Role</span><span class="p">::</span><span class="n">User</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">)],</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="p">},</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="n">metadata</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">Metadata</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">        </span><span class="n">session_id</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;session-42&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">        </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="p">}),</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">    </span><span class="o">..</span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">()</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">};</span>
 </span></code></pre></div>
-<p><a href="../rust/switchyard_protocol/metadata/struct.Metadata.html"><code>Metadata</code></a>
+<p><a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/metadata/struct.Metadata.html"><code>Metadata</code></a>
 holds the session ID above, which algorithms can use to retain session decisions.
 It can also include a correlation ID for your logs. The optional <code>raw_request</code>
 field holds data your application retains; libsy does not read it.</p>
 <p>Next, supply the models the algorithm can use.
-<a href="../rust/switchyard_libsy/struct.RuntimeModels.html"><code>RuntimeModels</code></a>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.RuntimeModels.html"><code>RuntimeModels</code></a>
 groups model IDs by
-<a href="../rust/switchyard_protocol/category/enum.Category.html"><code>Category</code></a>,
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/category/enum.Category.html"><code>Category</code></a>,
 such as <code>Efficient</code>, <code>Capable</code>, or <code>Judge</code>:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">RuntimeModels</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">HashMap</span><span class="p">::</span><span class="n">from</span><span class="p">([</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Efficient</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Efficient&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Capable</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Judge</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Any</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Efficient&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span><span class="w"> </span><span class="s">&quot;Capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">])));</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">models</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">RuntimeModels</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">HashMap</span><span class="p">::</span><span class="n">from</span><span class="p">([</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Efficient</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Efficient&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Capable</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Judge</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="p">(</span><span class="n">Category</span><span class="p">::</span><span class="n">Any</span><span class="p">,</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="s">&quot;Efficient&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span><span class="w"> </span><span class="s">&quot;Capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()]),</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="p">])));</span>
 </span></code></pre></div>
 <p>These are local example IDs. Within a category, models are ordered best-first. A
-<a href="../rust/switchyard_protocol/model_id/struct.ModelId.html"><code>ModelId</code></a>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/model_id/struct.ModelId.html"><code>ModelId</code></a>
 names a destination; your application decides which client serves it.</p>
 <p>With an algorithm, request, model pool, and initial
-<a href="../rust/switchyard_libsy/struct.State.html"><code>State</code></a>, start a run:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">State</span><span class="p">::</span><span class="n">default</span><span class="p">();</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">steps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">algorithm</span><span class="p">.</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">models</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">);</span>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.State.html"><code>State</code></a>, start a run:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">State</span><span class="p">::</span><span class="n">default</span><span class="p">();</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">steps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">algorithm</span><span class="p">.</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span><span class="w"> </span><span class="n">models</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">);</span>
 </span></code></pre></div>
-<p><a href="../rust/switchyard_libsy/trait.Algorithm.html#method.run_stream"><code>run_stream</code></a>
+<p><a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/trait.Algorithm.html#method.run_stream"><code>run_stream</code></a>
 returns a
-<a href="../rust/switchyard_libsy/type.StepStream.html"><code>StepStream</code></a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/type.StepStream.html"><code>StepStream</code></a>.
 Each item is a <code>Result&lt;Step&gt;</code>: either the next step or an error that ends the run.</p>
 <h2 id="read-the-next-step">Read the next Step<a class="headerlink" href="#read-the-next-step" title="Permanent link">&para;</a></h2>
-<p>A <a href="../rust/switchyard_libsy/enum.Step.html"><code>Step</code></a> describes
+<p>A <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/enum.Step.html"><code>Step</code></a> describes
 one unit of work for your application, or reports that routing has finished.
 Its three variants are:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">Step</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span><span class="n">CallModel</span><span class="p">(</span><span class="nb">Box</span><span class="o">&lt;</span><span class="n">CallModel</span><span class="o">&gt;</span><span class="p">),</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="n">CallDecision</span><span class="p">(</span><span class="nb">Box</span><span class="o">&lt;</span><span class="n">CallDecision</span><span class="o">&gt;</span><span class="p">),</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="n">Done</span><span class="p">(</span><span class="nb">Box</span><span class="o">&lt;</span><span class="n">RoutingOutcome</span><span class="o">&gt;</span><span class="p">),</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="p">}</span>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">Step</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="n">CallModel</span><span class="p">(</span><span class="nb">Box</span><span class="o">&lt;</span><span class="n">CallModel</span><span class="o">&gt;</span><span class="p">),</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="n">CallDecision</span><span class="p">(</span><span class="nb">Box</span><span class="o">&lt;</span><span class="n">CallDecision</span><span class="o">&gt;</span><span class="p">),</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="n">Done</span><span class="p">(</span><span class="nb">Box</span><span class="o">&lt;</span><span class="n">RoutingOutcome</span><span class="o">&gt;</span><span class="p">),</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>When you write <code>Step::CallModel(call)</code> in a match, <code>call</code> is the <code>Box&lt;CallModel&gt;</code>
 stored in that variant. It is an object describing a requested operation, with a
 way to return its result to the waiting algorithm.</p>
+<p>Reuse <code>steps</code> from above to read those operations. Here, <code>client</code> and
+<code>decision_client</code> are your async adapters; the next sections explain their inputs
+and results:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">step</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">steps</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span><span class="k">match</span><span class="w"> </span><span class="n">step</span><span class="o">?</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">        </span><span class="n">Step</span><span class="p">::</span><span class="n">CallModel</span><span class="p">(</span><span class="n">call</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">            </span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">        </span><span class="n">Step</span><span class="p">::</span><span class="n">CallDecision</span><span class="p">(</span><span class="n">call</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">            </span><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">            </span><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">decision_client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">        </span><span class="n">Step</span><span class="p">::</span><span class="n">Done</span><span class="p">(</span><span class="n">outcome</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">            </span><span class="c1">// Inspect the result; final-answer handling is shown below.</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">            </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;Selected: {}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">selected_model_id</span><span class="p">()</span><span class="o">?</span><span class="p">);</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">            </span><span class="k">break</span><span class="p">;</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>This loop serves one call at a time. <a href="#control-how-work-runs">Concurrent execution</a>
+keeps reading steps while calls are running.</p>
 <p>For example, a signal-only router can finish locally. A classifier might first
 ask your client to call a judge:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Signal-only routing:  Done(outcome)
@@ -1972,7 +2002,7 @@ ask your client to call a judge:</p>
 </span></code></pre></div>
 <h2 id="fulfill-a-model-call">Fulfill a model call<a class="headerlink" href="#fulfill-a-model-call" title="Permanent link">&para;</a></h2>
 <p>Suppose the next step is <code>CallModel</code>. The
-<a href="../rust/switchyard_libsy/struct.CallModel.html"><code>CallModel</code></a>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html"><code>CallModel</code></a>
 object describes the operation:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1">// The model has already been set to the first candidate.</span>
 </span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
@@ -1983,7 +2013,7 @@ object describes the operation:</p>
 the attempts and must update the request's model before trying a later candidate.
 <code>call.algorithm</code> names the requesting algorithm for your own telemetry.</p>
 <p>Your application returns the result through
-<a href="../rust/switchyard_libsy/struct.CallModel.html#method.respond"><code>call.respond</code></a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallModel.html#method.respond"><code>call.respond</code></a>.
 Inside the <code>Step::CallModel(call)</code> arm, the exchange looks like this:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="c1">// Pass the work future to respond; it returns the result to the algorithm.</span>
@@ -1994,9 +2024,9 @@ Inside the <code>Step::CallModel(call)</code> arm, the exchange looks like this:
 conversion, as in the <a href="../getting_started/#use-libsy-with-your-client">OpenRouter adapter</a>.
 <code>respond</code> consumes the call, allowing the algorithm to continue with its result.</p>
 <p>The returned
-<a href="../rust/switchyard_protocol/envelope/struct.Response.html"><code>Response</code></a>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/envelope/struct.Response.html"><code>Response</code></a>
 contains an
-<a href="../rust/switchyard_protocol/stream/enum.LlmResponse.html"><code>LlmResponse</code></a>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/stream/enum.LlmResponse.html"><code>LlmResponse</code></a>
 in its <code>llm_response</code> field:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">LlmResponse</span><span class="w"> </span><span class="p">{</span>
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span><span class="n">Stream</span><span class="p">(</span><span class="n">LlmResponseStream</span><span class="p">),</span><span class="w"> </span><span class="c1">// Live response events.</span>
@@ -2004,71 +2034,77 @@ in its <code>llm_response</code> field:</p>
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>The
-<a href="../rust/switchyard_protocol/stream/struct.LlmResponseStreamEvent.html"><code>event type</code></a>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/stream/struct.LlmResponseStreamEvent.html"><code>LlmResponseStreamEvent</code></a>
 provides access to provider-neutral text, tool-call updates, and usage information.</p>
 <p><code>StepStream</code> carries work and the routing outcome. <code>LlmResponse::Stream</code> carries
 model output. Your client can return that live stream without reading it to
 completion first.</p>
 <p>If you want a shared client interface, <code>switchyard-protocol</code> defines
-<a href="../rust/switchyard_protocol/client/trait.RoutedLlmClient.html"><code>RoutedLlmClient</code></a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/client/trait.RoutedLlmClient.html"><code>RoutedLlmClient</code></a>.
 Its async <code>call(Request)</code> returns a <code>Response</code> or <code>LlmClientError</code>; the
 <a href="../reference/host_integration/#serve-routing-time-calls">host guide</a> shows the error
 adapter. Using your own adapter method, as above, also works.</p>
 <h2 id="return-a-typed-decision">Return a typed decision<a class="headerlink" href="#return-a-typed-decision" title="Permanent link">&para;</a></h2>
 <p>An algorithm can ask a decision model to evaluate a question through
 <code>Step::CallDecision(call)</code>. This time, <code>call</code> holds a
-<a href="../rust/switchyard_libsy/struct.CallDecision.html"><code>CallDecision</code></a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.CallDecision.html"><code>CallDecision</code></a>.
 It has one <code>model</code> and a
-<a href="../rust/switchyard_protocol/decision/struct.DecisionRequest.html"><code>DecisionRequest</code></a>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/decision/struct.DecisionRequest.html"><code>DecisionRequest</code></a>
 in <code>request</code>.</p>
-<p>A decision request contains shared <code>context</code> and named questions. For example:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionRequest</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="n">context</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">}),</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="n">questions</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">        </span><span class="n">DecisionQuestion</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">            </span><span class="n">instructions</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;Does this task need Capable?&quot;</span><span class="p">),</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">            </span><span class="n">kind</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionKind</span><span class="p">::</span><span class="n">Boolean</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">                </span><span class="n">true_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">                </span><span class="n">false_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">            </span><span class="p">},</span>
-</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">        </span><span class="p">},</span>
-</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">    </span><span class="p">)]),</span>
-</span><span id="__span-9-14"><a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="p">};</span>
-</span></code></pre></div>
-<p>Each
-<a href="../rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>question</code></a>
-declares its expected answer shape: Boolean, choice among options, or score on a
-rubric. Your client returns a
-<a href="../rust/switchyard_protocol/decision/struct.DecisionResponse.html"><code>DecisionResponse</code></a>,
-with matching question IDs. One possible answer to the question above is:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionResponse</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="n">answers</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
-</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">        </span><span class="n">DecisionAnswer</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">            </span><span class="n">value</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionValue</span><span class="p">::</span><span class="n">Boolean</span><span class="p">(</span><span class="n">BooleanEstimate</span><span class="p">::</span><span class="n">Value</span><span class="p">(</span><span class="kc">true</span><span class="p">)),</span>
-</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">            </span><span class="n">provider_confidence</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
-</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">        </span><span class="p">},</span>
-</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">    </span><span class="p">)]),</span>
-</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">    </span><span class="n">usage</span><span class="p">:</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
-</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="p">};</span>
-</span></code></pre></div>
-<p>The reply follows the same pattern as a model call. Inside the decision-call arm:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">decision_client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+<p>The algorithm creates the question. Your application sends the supplied request
+through its decision client and returns the typed answer:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">call</span><span class="p">.</span><span class="n">request</span><span class="p">.</span><span class="n">clone</span><span class="p">();</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">call</span><span class="p">.</span><span class="n">respond</span><span class="p">(</span><span class="n">decision_client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">request</span><span class="p">)).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </span></code></pre></div>
 <p>The adapter returns <code>switchyard_libsy::Result&lt;DecisionResponse&gt;</code>. The optional
 shared interface is
-<a href="../rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>.
 The algorithm applies its routing policy to the answer. The decision response is
 distinct from the final conversational answer.</p>
+<p>A decision request contains shared <code>context</code> and named questions. Each
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>question</code></a>
+declares its expected answer shape: Boolean, choice among options, or score on a
+rubric. The client's
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/decision/struct.DecisionResponse.html"><code>DecisionResponse</code></a>
+uses the same question IDs.</p>
+<details>
+<summary>Example payloads: a Boolean question and its answer</summary>
+<p>These values illustrate what crosses the boundary. The algorithm supplies a
+request like this in <code>call.request</code>:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionRequest</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="n">context</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">}),</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="n">questions</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">        </span><span class="n">DecisionQuestion</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">            </span><span class="n">instructions</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;Does this task need Capable?&quot;</span><span class="p">),</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="w">            </span><span class="n">kind</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionKind</span><span class="p">::</span><span class="n">Boolean</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-10-9"><a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="w">                </span><span class="n">true_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-10-10"><a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="w">                </span><span class="n">false_description</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-10-11"><a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="w">            </span><span class="p">},</span>
+</span><span id="__span-10-12"><a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="w">        </span><span class="p">},</span>
+</span><span id="__span-10-13"><a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="w">    </span><span class="p">)]),</span>
+</span><span id="__span-10-14"><a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="p">};</span>
+</span></code></pre></div>
+<p>The client might return this answer to <code>needs_capable</code>:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionResponse</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">    </span><span class="n">id</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="n">answers</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="w">        </span><span class="n">DecisionAnswer</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-11-7"><a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="w">            </span><span class="n">value</span><span class="p">:</span><span class="w"> </span><span class="nc">DecisionValue</span><span class="p">::</span><span class="n">Boolean</span><span class="p">(</span><span class="n">BooleanEstimate</span><span class="p">::</span><span class="n">Value</span><span class="p">(</span><span class="kc">true</span><span class="p">)),</span>
+</span><span id="__span-11-8"><a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="w">            </span><span class="n">provider_confidence</span><span class="p">:</span><span class="w"> </span><span class="nb">None</span><span class="p">,</span>
+</span><span id="__span-11-9"><a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">        </span><span class="p">},</span>
+</span><span id="__span-11-10"><a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="w">    </span><span class="p">)]),</span>
+</span><span id="__span-11-11"><a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="w">    </span><span class="n">usage</span><span class="p">:</span><span class="w"> </span><span class="nb">Default</span><span class="p">::</span><span class="n">default</span><span class="p">(),</span>
+</span><span id="__span-11-12"><a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="p">};</span>
+</span></code></pre></div>
+</details>
 <h2 id="receive-the-final-outcome">Receive the final outcome<a class="headerlink" href="#receive-the-final-outcome" title="Permanent link">&para;</a></h2>
 <p>Once the algorithm has enough information, it emits <code>Step::Done(outcome)</code> with a
-<a href="../rust/switchyard_libsy/struct.RoutingOutcome.html"><code>RoutingOutcome</code></a>.
-Your application checks whether routing has already produced an answer:</p>
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.RoutingOutcome.html"><code>RoutingOutcome</code></a>.
+Inside that match arm, check whether routing has already produced an answer:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="n">outcome</span><span class="p">.</span><span class="n">response</span><span class="w"> </span><span class="p">{</span>
 </span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">    </span><span class="nb">Some</span><span class="p">(</span><span class="n">response</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">response</span><span class="p">,</span><span class="w"> </span><span class="c1">// Reuse the answer obtained during routing.</span>
 </span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">    </span><span class="nb">None</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="n">client</span><span class="p">.</span><span class="n">call</span><span class="p">(</span><span class="n">outcome</span><span class="p">.</span><span class="n">request</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">,</span><span class="w"> </span><span class="c1">// Make the final call.</span>
@@ -2085,33 +2121,41 @@ buffered answer:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">answer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="p">.</span><span class="n">into_agg</span><span class="p">().</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
 </span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">));</span>
 </span></code></pre></div>
-<p>For live text instead, poll response events as they arrive:</p>
-<div class="language-rust highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Stream</span><span class="p">(</span><span class="k">mut</span><span class="w"> </span><span class="n">events</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">event</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">events</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="w">        </span><span class="k">for</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">event</span><span class="o">?</span><span class="p">.</span><span class="n">normalized</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponseChunk</span><span class="p">::</span><span class="n">TextDelta</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="p">{</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">                </span><span class="fm">print!</span><span class="p">(</span><span class="s">&quot;{text}&quot;</span><span class="p">);</span>
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">            </span><span class="p">}</span>
-</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">        </span><span class="p">}</span>
-</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">    </span><span class="p">}</span>
-</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="p">}</span>
+<p>For live text, set <code>stream: true</code> in the initial <code>LlmRequest</code> before starting the
+run. Use a streaming-capable adapter; the quickstart's OpenRouter adapter returns
+buffered responses. Handle both response forms so a buffered answer is still shown:</p>
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">io</span><span class="p">::</span><span class="n">Write</span><span class="p">;</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="k">match</span><span class="w"> </span><span class="n">response</span><span class="p">.</span><span class="n">llm_response</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="w">    </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Stream</span><span class="p">(</span><span class="k">mut</span><span class="w"> </span><span class="n">events</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a><span class="w">        </span><span class="k">while</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">event</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">events</span><span class="p">.</span><span class="n">next</span><span class="p">().</span><span class="k">await</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">            </span><span class="k">for</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">event</span><span class="o">?</span><span class="p">.</span><span class="n">normalized</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">                </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="n">LlmResponseChunk</span><span class="p">::</span><span class="n">TextDelta</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="o">..</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="w">                    </span><span class="fm">print!</span><span class="p">(</span><span class="s">&quot;{text}&quot;</span><span class="p">);</span>
+</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a><span class="w">                    </span><span class="n">std</span><span class="p">::</span><span class="n">io</span><span class="p">::</span><span class="n">stdout</span><span class="p">().</span><span class="n">flush</span><span class="p">()</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-14-10"><a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="w">                </span><span class="p">}</span>
+</span><span id="__span-14-11"><a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a><span class="w">            </span><span class="p">}</span>
+</span><span id="__span-14-12"><a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="w">        </span><span class="p">}</span>
+</span><span id="__span-14-13"><a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-14-14"><a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a><span class="w">    </span><span class="n">LlmResponse</span><span class="p">::</span><span class="n">Agg</span><span class="p">(</span><span class="n">answer</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="fm">println!</span><span class="p">(</span><span class="s">&quot;{}&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">completion_text</span><span class="p">(</span><span class="o">&amp;</span><span class="n">answer</span><span class="p">)),</span>
+</span><span id="__span-14-15"><a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>These are alternative ways to consume a response. The text-only loop omits tool
 and usage events; handle those chunks too when your application needs them.</p>
 <p><code>outcome.state</code> lets supporting algorithms retain caller-managed state between
 turns. See <a href="../routing_algorithms/composite_routing/#sessions">Composite sessions</a>
-for how this differs from a session ID. Outcome
-<a href="../rust/switchyard_libsy/struct.OutcomeMetadata.html"><code>metadata</code></a>
+for how this differs from a session ID.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/struct.OutcomeMetadata.html"><code>OutcomeMetadata</code></a>
 identifies the run and algorithm and may include evidence for the decision.</p>
 <h2 id="control-how-work-runs">Control how work runs<a class="headerlink" href="#control-how-work-runs" title="Permanent link">&para;</a></h2>
 <p>Each call has its own reply channel. Awaiting calls one at a time in the step loop
 serves them sequentially. To run calls concurrently, your application must keep
 reading steps while polling their work.</p>
 <p>For concurrent execution, use
-<a href="../rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>.
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>.
 It polls your call handlers concurrently and returns the <code>RoutingOutcome</code>. Your
 handler receives
-<a href="../rust/switchyard_libsy/enum.Call.html"><code>Call::Model</code> or <code>Call::Decision</code></a>;
+<a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/enum.Call.html"><code>Call::Model</code> or <code>Call::Decision</code></a>;
 <code>drive</code> handles <code>Done</code> itself:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1">// Borrow the adapters so every call can use them.</span>
 </span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">&amp;</span><span class="n">client</span><span class="p">;</span>
