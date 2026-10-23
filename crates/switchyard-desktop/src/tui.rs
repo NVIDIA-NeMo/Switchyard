@@ -149,6 +149,14 @@ type ActionRow = (Tab, char, &'static str, &'static str, &'static [ActionKind]);
 const ACTIONS: &[ActionRow] = &[
     (
         Tab::Routes,
+        'e',
+        "preview",
+        "Checks the selected route's current algorithm and models against the server \
+         config and shows the notes. Nothing is saved.",
+        &[ActionKind::PreviewRoute],
+    ),
+    (
+        Tab::Routes,
         'm',
         "models",
         "Loads the model IDs that an endpoint offers.",
@@ -918,6 +926,19 @@ impl App {
                     "Type UPDATE to start",
                 ));
             }
+            (Some(ActionKind::PreviewRoute), Ok(reply)) => {
+                let notes: Vec<&str> = reply.data["notes"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let file = reply.data["file"].as_str().unwrap_or_default();
+                self.popup = Some(Popup::Message {
+                    title: "Route preview",
+                    text: format!("Nothing was saved to {file}.\n\n{}", notes.join("\n")),
+                    tone: Tone::Done,
+                    scroll: 0,
+                });
+            }
             (Some(ActionKind::Models), Ok(reply)) => {
                 let models: Vec<&str> = reply.data["models"]
                     .as_array()
@@ -1218,8 +1239,21 @@ impl App {
     /// that they do not know, so a new row must also be added to its arm.
     fn start_action(&mut self, kind: ActionKind, key: char) -> Result<Option<Request>, String> {
         let request = |action, label| Ok(Some(Request::run(action, label)));
-
+        let generation = self.data.generation;
         match kind {
+            ActionKind::PreviewRoute => {
+                let route = self.selected_route()?.clone();
+                request(
+                    Action::PreviewRoute {
+                        generation,
+                        route: route.key,
+                        algorithm: route.kind,
+                        choices: route.choices,
+                        revision: Some(route.revision),
+                    },
+                    "Previewing the route",
+                )
+            }
             ActionKind::Models => {
                 let client = self.data.clients.first();
                 let client = client.map(|c| c.name.clone()).unwrap_or_default();
@@ -1552,6 +1586,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         update_status: _,   // draw_settings
         settings: _,        // draw_settings
         data_state: _,      // every page checks availability; draw_overview shows health
+        generation: _,      // every route form sends it back with its action
         routes: _,          // draw_routes and the route details
         clients: _,         // draw_endpoints, the endpoint fields, and the endpoint forms
         algorithms: _,      // draw_routes, the route details, and the algorithm fields
