@@ -13,6 +13,7 @@ use crate::controller::{
 use crate::history::Entry;
 use crate::pricing::Estimate;
 use crate::rollup::{CLASSIFIER_TIER, ModelTokens, Totals, Usage};
+use crate::server_config::Choice;
 use crate::summary::{money, tokens};
 use chrono::{DateTime, Utc};
 use ratatui::{
@@ -150,10 +151,14 @@ const ACTIONS: &[ActionRow] = &[
     (
         Tab::Routes,
         'e',
-        "preview",
-        "Checks the selected route's current algorithm and models against the server \
-         config and shows the notes. Nothing is saved.",
-        &[ActionKind::PreviewRoute],
+        "edit",
+        "Changes the selected route's algorithm and models. Enter reviews the change, and \
+         typing SAVE saves it and restarts the server.",
+        &[
+            ActionKind::Editor,
+            ActionKind::PreviewRoute,
+            ActionKind::Apply,
+        ],
     ),
     (
         Tab::Routes,
@@ -415,11 +420,27 @@ enum FormKind {
     RemoveKey,
     /// The token comes from the update preview that the user read.
     Update(Option<String>),
+    /// The route is the snapshot's copy from when the user opened the editor. The models form
+    /// keeps its revision and choices, so a server config that changed since then fails the
+    /// review instead of mixing old choices into the new file.
+    Algorithm {
+        generation: u64,
+        route: Box<RouteInfo>,
+    },
+    RouteModels {
+        generation: u64,
+        route: String,
+        algorithm: String,
+        revision: Option<String>,
+    },
+    /// The action is the one that the user reviewed. Typing SAVE submits it unchanged.
+    Save(Box<Action>),
     Models,
     ModelKey,
 }
 /// Choices names the list that ↑ and ↓ cycle through in a form field.
 enum Choices {
+    Algorithms,
     Endpoints,
 }
 /// Submit is what a form sends: a controller action.
@@ -511,9 +532,25 @@ impl Form {
     fn value(&self, index: usize) -> String {
         self.fields[index].1.trim().to_string()
     }
+    /// This function reads the choices from fields that alternate endpoint and model.
+    fn choices(&self) -> Vec<Choice> {
+        self.fields
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| Choice {
+                client: pair[0].1.trim().into(),
+                model: pair[1].1.trim().into(),
+            })
+            .collect()
+    }
     /// This function names the list that the selected field chooses from, if any.
     fn options(&self) -> Option<Choices> {
         match self.kind {
+            FormKind::Algorithm { .. } => Some(Choices::Algorithms),
+            FormKind::RouteModels { .. } if self.index.is_multiple_of(2) => {
+                Some(Choices::Endpoints)
+            }
             FormKind::Models | FormKind::ModelKey if self.index == 0 => Some(Choices::Endpoints),
             _ => None,
         }
@@ -570,6 +607,27 @@ impl Form {
                     preview_token: preview_token.clone(),
                 }
             }
+            FormKind::Algorithm { generation, route } => Action::Editor {
+                generation: *generation,
+                route: route.key.clone(),
+                algorithm: self.value(0),
+            },
+            FormKind::RouteModels {
+                generation,
+                route,
+                algorithm,
+                revision,
+            } => Action::PreviewRoute {
+                generation: *generation,
+                route: route.clone(),
+                algorithm: algorithm.clone(),
+                choices: self.choices(),
+                revision: revision.clone(),
+            },
+            FormKind::Save(action) => {
+                confirm("SAVE", "Type SAVE to apply the reviewed changes.")?;
+                (**action).clone()
+            }
             FormKind::Models => Action::Models {
                 client: self.value(0),
                 refresh: true,
@@ -589,11 +647,82 @@ impl Form {
             FormKind::ImportKey => "Importing the server key",
             FormKind::RemoveKey => "Removing the server key",
             FormKind::Update(_) => "Starting the update",
-
+            FormKind::Algorithm { .. } => "Opening the route editor",
+            FormKind::RouteModels { .. } => "Reviewing the route",
+            FormKind::Save(_) => "Saving the route",
             FormKind::Models => "Loading models",
             FormKind::ModelKey => "Saving the key and loading models",
         }
     }
+}
+
+/// This function returns an endpoint field and a model field for each role and its choice.
+fn role_fields<'a>(roles: impl Iterator<Item = (&'a str, Choice)>) -> Vec<(String, String)> {
+    roles
+        .flat_map(|(label, choice)| {
+            let model = if label == "Model" {
+                label.to_string()
+            } else {
+                format!("{label} model")
+            };
+            [
+                (format!("{label} endpoint"), choice.client),
+                (model, choice.model),
+            ]
+        })
+        .collect()
+}
+
+/// This function opens the models form after the controller returns the roles of `algorithm`.
+fn route_models_form(
+    generation: u64,
+    route: &RouteInfo,
+    algorithm: String,
+    editor: &Value,
+) -> Result<Form, String> {
+    let roles = editor["roles"].as_array().ok_or("No roles returned.")?;
+    let fields = role_fields(roles.iter().enumerate().map(|(index, role)| {
+        // A role keeps its model by tier when the new algorithm changes the role order.
+        let matching = route.tiers.as_ref().and_then(|tiers| {
+            let tier = role["tier"].as_str()?;
+            tiers.iter().position(|t| t.as_deref() == Some(tier))
+        });
+        let choice = matching
+            .and_then(|index| route.choices.get(index))
+            .or_else(|| (algorithm == route.kind).then(|| route.choices.get(index))?)
+            .or_else(|| route.choices.first())
+            .cloned()
+            .unwrap_or_default();
+        (role["label"].as_str().unwrap_or_default(), choice)
+    }));
+    let kind = FormKind::RouteModels {
+        generation,
+        route: route.key.clone(),
+        algorithm,
+        revision: Some(route.revision.clone()),
+    };
+    Ok(Form::new(kind, format!("Models for {}", route.id), fields))
+}
+
+/// This function returns the action that a preview's review window submits after the user
+/// types SAVE: the previewed inputs, plus the token for a route change.
+fn reviewed(previewed: Action) -> Option<Action> {
+    Some(match previewed {
+        Action::PreviewRoute {
+            generation,
+            route,
+            algorithm,
+            choices,
+            revision,
+        } => Action::Apply {
+            generation,
+            route,
+            algorithm,
+            choices,
+            revision,
+        },
+        _ => return None,
+    })
 }
 
 enum Popup {
@@ -926,18 +1055,38 @@ impl App {
                     "Type UPDATE to start",
                 ));
             }
+            // The reply lists the roles of the chosen algorithm. The models form replaces the
+            // algorithm form only while that form is still open for the same route.
+            (Some(ActionKind::Editor), Ok(reply)) => {
+                if let Some(Action::Editor {
+                    route: key,
+                    algorithm,
+                    ..
+                }) = action
+                    && let Some(Popup::Form(form)) = &self.popup
+                    && let FormKind::Algorithm { generation, route } = &form.kind
+                    && route.key == key
+                {
+                    match route_models_form(*generation, route, algorithm, &reply.data) {
+                        Ok(next) => self.popup = Some(Popup::Form(next)),
+                        Err(error) => self.notify(error, Tone::Error),
+                    }
+                }
+            }
+            // The review window replaces the form that asked for the preview, so a form that
+            // the user closed meanwhile stays closed.
             (Some(ActionKind::PreviewRoute), Ok(reply)) => {
-                let notes: Vec<&str> = reply.data["notes"]
-                    .as_array()
-                    .map(|items| items.iter().filter_map(Value::as_str).collect())
-                    .unwrap_or_default();
-                let file = reply.data["file"].as_str().unwrap_or_default();
-                self.popup = Some(Popup::Message {
-                    title: "Route preview",
-                    text: format!("Nothing was saved to {file}.\n\n{}", notes.join("\n")),
-                    tone: Tone::Done,
-                    scroll: 0,
-                });
+                if matches!(self.popup, Some(Popup::Form(_)))
+                    && let Some(reviewed) = action.and_then(reviewed)
+                {
+                    self.popup = Some(Popup::review(
+                        change_lines(self.theme, &reply.data),
+                        "Save",
+                        FormKind::Save(Box::new(reviewed)),
+                        "Review route changes",
+                        "Type SAVE to apply",
+                    ));
+                }
             }
             (Some(ActionKind::Models), Ok(reply)) => {
                 let models: Vec<&str> = reply.data["models"]
@@ -1241,18 +1390,17 @@ impl App {
         let request = |action, label| Ok(Some(Request::run(action, label)));
         let generation = self.data.generation;
         match kind {
-            ActionKind::PreviewRoute => {
-                let route = self.selected_route()?.clone();
-                request(
-                    Action::PreviewRoute {
-                        generation,
-                        route: route.key,
-                        algorithm: route.kind,
-                        choices: route.choices,
-                        revision: Some(route.revision),
-                    },
-                    "Previewing the route",
-                )
+            // The algorithm form submits Editor, the models form submits PreviewRoute, and the
+            // review window submits Apply.
+            ActionKind::Editor | ActionKind::PreviewRoute | ActionKind::Apply => {
+                let route = Box::new(self.selected_route()?.clone());
+                let title = format!("Routing algorithm for {}", route.id);
+                let fields = vec![("Algorithm", route.kind.clone())];
+                self.open(Form::new(
+                    FormKind::Algorithm { generation, route },
+                    title,
+                    fields,
+                ))
             }
             ActionKind::Models => {
                 let client = self.data.clients.first();
@@ -1355,6 +1503,9 @@ impl App {
                     KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
                         let forward = key.code == KeyCode::Down;
                         match (form.options(), key.code) {
+                            (Some(Choices::Algorithms), KeyCode::Up | KeyCode::Down) => {
+                                form.choose(self.data.algorithms.iter().map(|a| a.kind), forward);
+                            }
                             (Some(Choices::Endpoints), KeyCode::Up | KeyCode::Down) => {
                                 let names = self.data.clients.iter().map(|c| c.name.as_str());
                                 form.choose(names, forward);
@@ -3011,6 +3162,22 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
     let theme = app.theme;
     let data = &app.data;
+    let algorithms = |selected: &str| {
+        let names: Vec<String> = data
+            .algorithms
+            .iter()
+            .map(|known| format!("{} ({})", known.title, known.kind))
+            .collect();
+        let mut lines = vec![Line::styled(
+            format!("Algorithms: {}", names.join(" · ")),
+            theme.muted,
+        )];
+        if let Some(known) = data.algorithms.iter().find(|a| a.kind == selected.trim()) {
+            lines.push(Line::from(known.summary));
+        }
+        lines.push(Line::default());
+        lines
+    };
     match &form.kind {
         FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey => {
             let mut lines = vec![Line::styled("Server keys", theme.muted)];
@@ -3018,7 +3185,15 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines.push(Line::default());
             lines
         }
-
+        FormKind::Algorithm { .. } => algorithms(&form.fields[0].1),
+        FormKind::RouteModels { .. } => {
+            let names: Vec<&str> = data.clients.iter().map(|c| c.name.as_str()).collect();
+            vec![
+                Line::styled(format!("Endpoints: {}", names.join(", ")), theme.muted),
+                Line::from("Use the endpoint name and a model ID. Unlisted model IDs are allowed."),
+                Line::default(),
+            ]
+        }
         FormKind::Models | FormKind::ModelKey => {
             let key = matches!(form.kind, FormKind::ModelKey);
             let mut lines: Vec<Line> = data
@@ -3040,8 +3215,24 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines.push(Line::default());
             lines
         }
-        FormKind::Preferences | FormKind::Update(_) => Vec::new(),
+        FormKind::Preferences | FormKind::Update(_) | FormKind::Save(_) => Vec::new(),
     }
+}
+
+/// This function shows the file and notes of a route preview before the user types SAVE.
+fn change_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let file = preview["file"].as_str().unwrap_or_default().to_string();
+    let mut lines = vec![labeled(theme, "Changed file", 13, file)];
+    let notes = preview["notes"].as_array().map(Vec::as_slice);
+    for note in notes.unwrap_or_default().iter().filter_map(Value::as_str) {
+        lines.push(Line::default());
+        lines.push(Line::from(note.to_string()));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(
+        "Switchyard validates the config, saves a backup, and restarts the server.",
+    ));
+    lines
 }
 
 fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {

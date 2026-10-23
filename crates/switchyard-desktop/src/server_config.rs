@@ -378,6 +378,8 @@ impl Algorithm {
 /// Edited stores the result of [`ServerConfig::edit`].
 #[derive(Debug)]
 pub struct Edited {
+    /// This field stores the new config text.
+    pub text: String,
     /// This field stores user-facing notes about the edit.
     pub notes: Vec<String>,
 }
@@ -637,7 +639,10 @@ impl ServerConfig {
                 set_at(table, path, setting.value());
             }
         }
-        Ok(Edited { notes })
+        Ok(Edited {
+            text: doc.to_string(),
+            notes,
+        })
     }
 
     fn table(&self, name: &str) -> Option<&dyn TableLike> {
