@@ -4,16 +4,19 @@
 //! The terminal app manages a local Switchyard server.
 //!
 //! It shows recorded traffic and compares list-price estimates with the
-//! configured baseline model.
+//! configured baseline model. Its Routes view edits the server config and
+//! restarts the server.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use switchyard_desktop::{config, health, history, rollup};
 mod controller;
+
 #[cfg(any(target_os = "macos", windows))]
 mod gui;
 mod pricing;
 mod server;
+mod server_config;
 mod summary;
 mod tui;
 #[cfg(windows)]
@@ -27,7 +30,7 @@ use config::Config;
 const USAGE: &str = "\
 Usage: switchyard-desktop [--tui | --print | --validate-toml] [FILE]
 
-This app shows usage and manages the server.
+This app manages routes and usage.
 
   FILE            The app reads settings from FILE.
   --tui           Run the terminal app.
