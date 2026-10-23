@@ -45,6 +45,43 @@ fn branch(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Bran
 }
 
 #[test]
+fn tool_trajectory_respects_the_current_request_initiator() {
+    for (finished, initiator, expected) in [
+        (true, Some("agent"), true),
+        (true, Some("user"), false),
+        (true, None, false),
+        (false, Some("agent"), true),
+        (false, Some("user"), false),
+        (false, None, true),
+    ] {
+        let mut messages = vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ];
+        if finished {
+            messages.push(Message::text(Role::Assistant, "done"));
+        }
+        messages.push(Message::text(Role::User, "verify the change"));
+        let mut request = request(messages);
+        if let Some(initiator) = initiator {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("x-initiator", initiator.parse().expect("header"));
+            request.metadata = Some(switchyard_protocol::Metadata {
+                http_headers: Some(headers),
+                ..Default::default()
+            });
+        }
+        assert_eq!(
+            super::text::turn_has_tool_trajectory(&request),
+            expected,
+            "finished={finished}, initiator={initiator:?}"
+        );
+    }
+    assert!(!super::text::turn_has_tool_trajectory(&Request::default()));
+}
+
+#[test]
 // Router typing selects a branch; tool history takes precedence over coding.
 fn router_typing_selects_the_verification_regime() {
     let single = request(vec![Message::text(Role::User, "Help with this task")]);

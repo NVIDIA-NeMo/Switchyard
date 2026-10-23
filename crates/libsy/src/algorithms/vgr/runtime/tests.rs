@@ -507,6 +507,12 @@ async fn latched_sessions_do_not_repeat_the_handoff_on_later_user_turns() -> Res
 
 #[tokio::test]
 async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing() -> Result<()> {
+    let previous = vec![
+        Message::text(Role::User, "inspect the repository"),
+        call("old"),
+        result("old", "previous output"),
+        Message::text(Role::Assistant, "inspection complete"),
+    ];
     for compact_handoff in [None, Some(false), Some(true)] {
         let route = route(|config| {
             config.agentic_handoff = true;
@@ -517,7 +523,13 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
         assert_eq!(
             drive(
                 &route,
-                session(vec![Message::text(Role::User, "fix the build")]),
+                session(
+                    previous
+                        .iter()
+                        .cloned()
+                        .chain([Message::text(Role::User, "fix the build")])
+                        .collect(),
+                ),
                 Arc::new(Calls::default()),
                 complete_call,
                 0.0,
@@ -528,11 +540,12 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
         let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let local_calls = Arc::new(AtomicUsize::new(0));
         for follow_up in [false, true] {
-            let mut messages = vec![
+            let mut messages = previous.clone();
+            messages.extend([
                 Message::text(Role::User, "fix the build"),
                 call("c1"),
                 result("c1", "ok"),
-            ];
+            ]);
             if follow_up {
                 messages.extend([call("cloud-1"), result("cloud-1", "cloud output")]);
             }
@@ -568,25 +581,28 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
         let sent = sent.lock();
         assert_eq!(sent.len(), 2);
         if compact_handoff == Some(true) {
-            assert_eq!(sent[0].len(), 1);
-            assert_eq!(sent[1].len(), 3);
-            assert_eq!(sent[0][0], sent[1][0]);
-            let digest = sent[0][0].text_content("").unwrap_or_default();
+            assert_eq!(sent[0].len(), 5);
+            assert_eq!(&sent[0][..4], previous.as_slice());
+            assert_eq!(sent[1].len(), 7);
+            assert_eq!(sent[0], sent[1][..5]);
+            let digest = sent[0][4].text_content("").unwrap_or_default();
+            assert!(digest.starts_with("fix the build"));
             assert!(digest.contains("<condensed_history>"));
             assert!(digest.contains("the build passes"));
             assert!(digest.contains("Routing notice"));
-            assert_eq!(sent[1][1], call("cloud-1"));
-            assert_eq!(sent[1][2], result("cloud-1", "cloud output"));
+            assert_eq!(sent[1][5], call("cloud-1"));
+            assert_eq!(sent[1][6], result("cloud-1", "cloud output"));
         } else {
-            let original = vec![
+            let mut original = previous.clone();
+            original.extend([
                 Message::text(Role::User, "fix the build"),
                 call("c1"),
                 result("c1", "ok"),
-            ];
-            assert_eq!(&sent[0][..3], original.as_slice());
-            assert_eq!(sent[0].len(), 4);
+            ]);
+            assert_eq!(&sent[0][..7], original.as_slice());
+            assert_eq!(sent[0].len(), 8);
             assert!(
-                sent[0][3]
+                sent[0][7]
                     .text_content("")
                     .unwrap_or_default()
                     .contains("Routing notice")

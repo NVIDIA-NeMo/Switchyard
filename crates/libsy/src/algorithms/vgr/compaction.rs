@@ -12,7 +12,7 @@ use std::hash::{Hash, Hasher};
 use async_trait::async_trait;
 use switchyard_protocol::{ContentBlock, Message, Request, Response, Role, ToolCall, ToolResult};
 
-use super::text::clip_mid;
+use super::text::{clip_mid, turn_start};
 use crate::Result;
 use crate::algorithms::util::affinity::{has_new_user_turn, initiated_by_user};
 use crate::algorithms::util::prompts::drop_exact_replay;
@@ -48,10 +48,11 @@ const RECENT_USER_TEXTS: usize = 2;
 /// message with local work after it.
 pub(super) fn compact(request: &mut Request, state: &mut State, note: &str) -> bool {
     let messages = &request.llm_request.messages;
-    let Some(task) = messages.iter().position(is_task_message) else {
+    let start = turn_start(request);
+    let Some(task) = messages[start..].iter().position(is_task_message) else {
         return false;
     };
-    let head = task + 1;
+    let head = start + task + 1;
     let cut = messages.len();
     if cut <= head {
         return false;
@@ -368,6 +369,30 @@ mod tests {
         let before = edited.llm_request.messages.clone();
         reapply(&mut state, &mut edited).await;
         assert_eq!(edited.llm_request.messages, before);
+    }
+
+    #[test]
+    fn compaction_keeps_agent_nudges_in_the_current_turn() {
+        let mut request = session(4);
+        request
+            .llm_request
+            .messages
+            .push(Message::text(Role::Assistant, "done"));
+        request
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "verify the change"));
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-initiator", "agent".parse().expect("header"));
+        request.metadata = Some(switchyard_protocol::Metadata {
+            http_headers: Some(headers),
+            ..Default::default()
+        });
+        assert!(compact(&mut request, &mut State::default(), "NOTE"));
+        assert_eq!(request.llm_request.messages.len(), 1);
+        let digest = request.llm_request.messages[0].text_content("").unwrap();
+        assert!(digest.starts_with("build the thing"));
+        assert!(digest.contains("verify the change"));
     }
 
     #[tokio::test]

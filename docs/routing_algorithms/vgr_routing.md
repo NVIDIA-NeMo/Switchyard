@@ -87,9 +87,10 @@ reuse a digest only when their original history prefix matches; a new user turn
 clears it. An `x-initiator: agent` message keeps the digest, while
 `x-initiator: user` clears it.
 
-The digest is lossy: user updates and tool output are clipped, and non-text
-content is replaced with a marker. Cache savings and task-success effects have
-not been measured in a matched evaluation.
+The digest is lossy: user updates and tool output are clipped. Non-text tool
+results become `[non-text content]`; non-text user updates, including images,
+are omitted without a marker. Cache savings and task-success effects have not
+been measured in a matched evaluation.
 
 The notice covers the current request and asks the cloud tier to preserve earlier
 work, inspect its effects, and repeat or undo steps only when needed.
