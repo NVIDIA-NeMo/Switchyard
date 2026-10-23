@@ -55,6 +55,32 @@ pub fn apply(
     save_edit(settings, &text, edited, "Updated the route.")
 }
 
+pub fn remove(
+    settings: &Config,
+    route: &str,
+    id: &str,
+    expected: &str,
+) -> Result<SaveResult, String> {
+    let text = std::fs::read_to_string(&settings.config_file).map_err(|error| error.to_string())?;
+    check_original(&text, expected)?;
+    let config = ServerConfig::parse(&text)?;
+    if !config.routes().iter().any(|r| r.key == route && r.id == id) {
+        return Err("The route changed or was removed. Refresh and choose it again.".into());
+    }
+    let edited = config.remove(route)?;
+    save_edit(settings, &text, edited, "Removed the route.")
+}
+
+pub fn save_route_change(
+    settings: &Config,
+    expected: &str,
+    edited: crate::server_config::Edited,
+) -> Result<SaveResult, String> {
+    let text = std::fs::read_to_string(&settings.config_file).map_err(|error| error.to_string())?;
+    check_original(&text, expected)?;
+    save_edit(settings, &text, edited, "Changed the routes.")
+}
+
 fn check_original(text: &str, expected: &str) -> Result<(), String> {
     if text != expected {
         return Err("The server config changed since the editor loaded. \

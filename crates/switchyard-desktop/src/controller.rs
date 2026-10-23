@@ -29,12 +29,37 @@ pub enum Action {
         choices: Vec<Choice>,
         revision: Option<String>,
     },
+    Remove {
+        generation: u64,
+        route: String,
+        id: String,
+        revision: Option<String>,
+    },
     PreviewRoute {
         generation: u64,
         route: String,
         algorithm: String,
         choices: Vec<Choice>,
         revision: Option<String>,
+    },
+    PreviewRouteChange {
+        generation: u64,
+        operation: String,
+        route: String,
+        name: String,
+        id: String,
+        algorithm: Option<String>,
+        choices: Vec<Choice>,
+    },
+    RouteChange {
+        generation: u64,
+        operation: String,
+        route: String,
+        name: String,
+        id: String,
+        algorithm: Option<String>,
+        choices: Vec<Choice>,
+        preview_token: Option<String>,
     },
     Models {
         client: String,
@@ -306,6 +331,7 @@ pub struct Controller {
     // The generation ties a draft to the server config file selected by the settings.
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
+    route_change: Option<Review>,
     update_review: Option<(String, Value)>,
 }
 impl Controller {
@@ -317,6 +343,7 @@ impl Controller {
             reader: rollup::Reader::default(),
             generation: 0,
             route_reviews: Default::default(),
+            route_change: None,
             update_review: None,
         }
     }
@@ -325,6 +352,7 @@ impl Controller {
         if config.config_file != self.config.config_file {
             self.generation += 1;
             self.route_reviews.clear();
+            self.route_change = None;
         }
         self.config = config;
 
@@ -669,6 +697,82 @@ impl Controller {
                     self.route_reviews[&route].original()?,
                 )
                 .map(Reply::saved_edit)
+            }
+            Action::Remove {
+                generation,
+                route,
+                id,
+                revision,
+            } => {
+                self.check_generation(generation)?;
+                current_route(&self.routes()?, &route, Some(&id))?;
+                self.route_reviews
+                    .get(&route)
+                    .ok_or("Open the route editor before removing it.")?
+                    .check(revision.as_deref(), &json!({"route":route}))?;
+                server::remove(
+                    &self.config,
+                    &route,
+                    &id,
+                    self.route_reviews[&route].original()?,
+                )
+                .map(Reply::saved_edit)
+            }
+            Action::PreviewRouteChange {
+                generation,
+                operation,
+                route,
+                name,
+                id,
+                algorithm,
+                choices,
+            } => {
+                self.check_generation(generation)?;
+                let inputs = json!({"operation":operation,"route":route,"name":name,"id":id,"algorithm":algorithm,"choices":choices});
+                let review = Review::capture(inputs, vec![self.config.config_file.clone()])?;
+                let edited = self.routes()?.change_route(
+                    &operation,
+                    &route,
+                    &name,
+                    &id,
+                    algorithm.as_deref().map(algorithm_by_id).transpose()?,
+                    &choices,
+                )?;
+                review.check(Some(&review.token), &review.inputs)?;
+                let data = json!({"notes":edited.notes,"file":self.config.config_file,"preview_token":review.token});
+                self.route_change = Some(review);
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
+            Action::RouteChange {
+                generation,
+                operation,
+                route,
+                name,
+                id,
+                algorithm,
+                choices,
+                preview_token,
+            } => {
+                self.check_generation(generation)?;
+                let inputs = json!({"operation":operation,"route":route,"name":name,"id":id,"algorithm":algorithm,"choices":choices});
+                let review = self
+                    .route_change
+                    .as_ref()
+                    .ok_or("Review the route change first.")?;
+                review.check(preview_token.as_deref(), &inputs)?;
+                let edited = self.routes()?.change_route(
+                    &operation,
+                    &route,
+                    &name,
+                    &id,
+                    algorithm.as_deref().map(algorithm_by_id).transpose()?,
+                    &choices,
+                )?;
+                server::save_route_change(&self.config, review.original()?, edited)
+                    .map(Reply::saved_edit)
             }
             Action::Models {
                 client,
