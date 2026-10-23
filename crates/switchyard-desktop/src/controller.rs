@@ -4,7 +4,11 @@
 //! The terminal controller reloads settings and combines usage and server health into snapshots.
 //! It retains the log reader and health probe across refreshes.
 
-use crate::{config::Config, history, pricing, rollup, server};
+use crate::{
+    config::Config,
+    history, pricing, rollup, server,
+    server_config::{Choice, ServerConfig},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
@@ -48,6 +52,9 @@ pub struct Snapshot {
     pub update_status: Value,
     pub settings: Option<AppSettings>,
     pub data_state: DataState,
+
+    pub routes: Vec<RouteInfo>,
+
     pub metrics: Metrics,
     pub today: chrono::NaiveDate,
     pub analytics: rollup::Usage,
@@ -75,6 +82,19 @@ pub struct AppSettings {
     pub refresh_seconds: u64,
     pub baseline_model: String,
     pub prices_file: Option<PathBuf>,
+}
+
+/// RouteInfo describes one entry under `[routes]` in the server config.
+#[derive(Clone, Default, Serialize)]
+pub struct RouteInfo {
+    /// This field names the route's table in the server config.
+    pub key: String,
+    /// This field holds the public model ID that harnesses send.
+    pub id: String,
+    pub kind: String,
+
+    pub label: String,
+    pub choices: Vec<Choice>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -131,10 +151,13 @@ impl Reply {
 }
 
 pub struct Controller {
+    health_probe: crate::health::Probe,
     settings: PathBuf,
     config: Config,
     reader: rollup::Reader,
-    health_probe: crate::health::Probe,
+    // The generation ties a draft to the server config file selected by the settings.
+    generation: u64,
+
     update_review: Option<(String, Value)>,
 }
 impl Controller {
@@ -142,13 +165,20 @@ impl Controller {
         Self {
             config,
             settings,
-            reader: rollup::Reader::default(),
             health_probe: crate::health::Probe::default(),
+            reader: rollup::Reader::default(),
+            generation: 0,
+
             update_review: None,
         }
     }
     fn reload(&mut self) -> Result<(), String> {
-        self.config = Config::load(&self.settings)?;
+        let config = Config::load(&self.settings)?;
+        if config.config_file != self.config.config_file {
+            self.generation += 1;
+        }
+        self.config = config;
+
         Ok(())
     }
     // Key actions accept only names that the server config declares.
@@ -203,6 +233,35 @@ impl Controller {
         } else {
             crate::health::ServerStatus::Stopped
         };
+        let mut routes = Vec::new();
+        match std::fs::read_to_string(&self.config.config_file)
+            .map_err(|e| format!("Read {}: {e}", self.config.config_file.display()))
+            .and_then(|text| {
+                ServerConfig::parse(&text).map_err(|_| {
+                    "The server config contains invalid TOML. Open it in Settings to fix it."
+                        .to_string()
+                })
+            }) {
+            Ok(config) => {
+                for route in config.routes() {
+                    let choices = config.choices(&route.key);
+                    let models = choices
+                        .iter()
+                        .map(|c| format!("{} / {}", c.client, c.model))
+                        .collect::<Vec<_>>()
+                        .join(" → ");
+                    routes.push(RouteInfo {
+                        label: format!("{} · {} · {}", route.id, route.kind, models),
+                        key: route.key,
+                        id: route.id,
+                        kind: route.kind,
+                        choices,
+                    });
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+
         let mut history_state = Availability::Available;
         let history = history::load(&self.config.routing_log).unwrap_or_else(|error| {
             history_state = Availability::Unavailable;
@@ -247,6 +306,8 @@ impl Controller {
                 },
                 health,
             },
+
+            routes,
             metrics: Metrics {
                 server_url: server_url.clone(),
                 running: server_status == crate::health::ServerStatus::Running,
