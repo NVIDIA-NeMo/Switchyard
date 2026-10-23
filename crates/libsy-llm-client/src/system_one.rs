@@ -12,8 +12,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
     BooleanEstimate, DecisionAnswer, DecisionKind, DecisionRequest, DecisionResponse,
-    DecisionValue, ModelId, Probability, ProviderConfidence, RoutedDecisionClient, ScoreValue,
-    Usage,
+    DecisionValue, ImageSource, ModelId, Probability, ProviderConfidence, RoutedDecisionClient,
+    ScoreValue, Usage,
 };
 
 use crate::client::convert_reqwest_error;
@@ -207,7 +207,26 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
             }),
         );
     }
-    Ok(json!({"model": model, "state": request.context, "questions": questions}))
+    let mut body = json!({"model": model, "state": request.context, "questions": questions});
+    if !request.images.is_empty() {
+        let images = request
+            .images
+            .iter()
+            .map(|source| match source {
+                ImageSource::Url { url, .. } => Ok(url.clone()),
+                ImageSource::Base64 {
+                    media_type: Some(media_type),
+                    data,
+                } => Ok(format!("data:{media_type};base64,{data}")),
+                _ => Err(LlmClientError::InvalidRequest {
+                    message: "System One images require a URL or base64 data with a MIME type"
+                        .into(),
+                }),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        body["images"] = json!(images);
+    }
+    Ok(body)
 }
 
 #[derive(Deserialize)]
@@ -240,4 +259,69 @@ enum WireValue {
         score: ScoreValue,
         probabilities: Option<BTreeMap<String, Probability>>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_decision_media_as_inputs() -> Result<()> {
+        let request: DecisionRequest = serde_json::from_value(json!({
+            "model": "d3-edge", "context": "What happens in the clip?", "questions": {},
+            "images": [
+                {"type": "url", "data": {"url": "data:image/png;base64,aW1hZ2U="}},
+                {"type": "base64", "data": {"media_type": "image/jpeg", "data": "aW1hZ2U="}}
+            ]
+        }))
+        .unwrap();
+        let body = encode(&request)?;
+        assert_eq!(
+            body["images"],
+            json!([
+                "data:image/png;base64,aW1hZ2U=",
+                "data:image/jpeg;base64,aW1hZ2U="
+            ])
+        );
+        assert_eq!(body["state"], request.context);
+        Ok(())
+    }
+
+    #[test]
+    fn text_decisions_keep_the_existing_wire_shape() -> Result<()> {
+        let request: DecisionRequest = serde_json::from_value(json!({
+            "model": "judge", "context": "text", "questions": {}
+        }))
+        .unwrap();
+        assert_eq!(
+            encode(&request)?,
+            json!({
+                "model": "judge", "state": "text", "questions": {}
+            })
+        );
+        assert!(
+            serde_json::to_value(request)
+                .unwrap()
+                .get("images")
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unrepresentable_images() {
+        for source in [
+            json!({"type": "raw", "data": {"file_id": "provider-file"}}),
+            json!({"type": "base64", "data": {"data": "aW1hZ2U="}}),
+        ] {
+            let request: DecisionRequest = serde_json::from_value(json!({
+                "model": "judge", "context": "text", "questions": {}, "images": [source]
+            }))
+            .unwrap();
+            assert!(matches!(
+                encode(&request),
+                Err(LlmClientError::InvalidRequest { .. })
+            ));
+        }
+    }
 }
