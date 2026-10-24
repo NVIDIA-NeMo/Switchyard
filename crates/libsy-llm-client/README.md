@@ -269,6 +269,12 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `ModelConfig::with_responses_reasoning` controls Responses reasoning replay.
+  Every Responses model defaults to `PreserveEncrypted`: plaintext is removed,
+  encrypted provider state is retained. Stored reasoning IDs are retained unless
+  the request sets `store: false`. Switchyard's translated Anthropic reasoning is
+  removed. Set `Drop` for
+  a backend that cannot consume provider reasoning. Messages and tool history are retained.
 - `HttpBackendConfig::failure_cooldown` skips completion calls to a backend briefly
   after an exhausted transient failure. Zero disables it. State is shared per model
   within the client. Calls resume when the cooldown expires. Deployment TOML defaults
