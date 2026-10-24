@@ -1840,7 +1840,7 @@ read <a href="../../mechanics_of_libsy/">Mechanics of Libsy</a>.</p>
 <p>The callback examples use the development API, including its asynchronous
 <code>respond</code> method. Use the <a href="../../getting_started/#install">quickstart's dependencies</a>
 for the Rust snippets. The released <code>v0.3.0</code> callback API is synchronous. Use
-matching source-built <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/923eb13459212e3a55839059e8d1bce7fde296c0/INSTALLATION.md#development">Python bindings</a> for
+matching source-built <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7adbadcacbe03aafb91a8b2097959027d331f285/INSTALLATION.md#development">Python bindings</a> for
 the Python callback example below.</p>
 <h2 id="serve-routing-time-calls">Serve routing-time calls<a class="headerlink" href="#serve-routing-time-calls" title="Permanent link">&para;</a></h2>
 <p>The <a href="../../mechanics_of_libsy/#read-the-next-step">Step loop</a> uses adapters that
@@ -1873,7 +1873,7 @@ awaitable. Decision calls use the same pattern with their decision response type
 <h2 id="concurrent-calls-and-cancellation">Concurrent calls and cancellation<a class="headerlink" href="#concurrent-calls-and-cancellation" title="Permanent link">&para;</a></h2>
 <p>See <a href="../../mechanics_of_libsy/#control-how-work-runs">Control how work runs</a> for
 Rust execution, cancellation behavior, and upstream limits.</p>
-<p>Python <code>respond</code> cancels and awaits the supplied provider work before returning. For concurrent algorithms, the host creates handler tasks with <code>asyncio.create_task</code> and must cancel and await remaining handlers when the run ends; see the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/923eb13459212e3a55839059e8d1bce7fde296c0/examples/libsy.py">Python example</a>. Awaiting handlers one at a time inside the step loop serializes their execution.</p>
+<p>Python <code>respond</code> cancels and awaits the supplied provider work before returning. For concurrent algorithms, the host creates handler tasks with <code>asyncio.create_task</code> and must cancel and await remaining handlers when the run ends; see the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7adbadcacbe03aafb91a8b2097959027d331f285/examples/libsy.py">Python example</a>. Awaiting handlers one at a time inside the step loop serializes their execution.</p>
 <h2 id="metadata-and-telemetry">Metadata and telemetry<a class="headerlink" href="#metadata-and-telemetry" title="Permanent link">&para;</a></h2>
 <p>The <a href="../../mechanics_of_libsy/#stepdone">final outcome</a> carries
 routing metadata. In Python, read <code>outcome.metadata.outcome_id</code>,
@@ -1906,7 +1906,7 @@ and host export setup.</p>
 </span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
 </span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
 </span></code></pre></div>
-<p><code>uv run route.py</code> prints <code>Selected: Efficient</code> without making a network call. This routing-only example works with the released package. For the development API's host callbacks and cancellation, build the matching bindings from source as described at the top of this page, then see <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/923eb13459212e3a55839059e8d1bce7fde296c0/examples/libsy.py">the complete host example</a>.</p>
+<p><code>uv run route.py</code> prints <code>Selected: Efficient</code> without making a network call. This routing-only example works with the released package. For the development API's host callbacks and cancellation, build the matching bindings from source as described at the top of this page, then see <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7adbadcacbe03aafb91a8b2097959027d331f285/examples/libsy.py">the complete host example</a>.</p>
 
 
 
