@@ -1,42 +1,45 @@
-# Pi virtual model using Switchyard auto
+# Pi virtual model using Switchyard composite routing
 
-This example registers `switchyard/auto` and asks Switchyard to select a model on
-every request:
+This extension registers `switchyard/auto`. Pi calls a Decision classifier on
+user turns. Switchyard's composite algorithm uses that answer and recent tool
+activity to select a completion model. Thinking stays `medium`.
 
-- **Efficient:** Luna (`openai-codex/gpt-6-luna`).
-- **Capable:** Sol (`openai-codex/gpt-6.1-sol`).
-- **Thinking:** always `medium`.
-
-`auto` currently uses Switchyard's stage router with an efficient-first default
-and a confidence threshold of 0.5. It reads tool activity and results to choose a
-model. It can escalate to Sol during recovery and return to Luna as work proceeds.
-The same routing applies to user requests, continuations, retries, and direct
-requests such as compaction summaries.
+The fixed policy selects the capable tier when the classifier's `advantage`
+probability exceeds 0.4. Exactly 0.4 selects efficient. Stage routing then picks
+the model on every request, using the classifier's tier as its fallback. Its
+efficient-first and capable-first thresholds are 0.5 and 0.2. A tool failure can
+escalate to the capable model, with a two-request hold during recovery.
 
 ## Configuration
 
-`switchyard.toml` contains just the algorithm settings:
+Create `<agent-dir>/switchyard-router.json`. The agent directory defaults to
+`~/.pi/agent`; `PI_CODING_AGENT_DIR` overrides it.
 
-```toml
-type = "auto"
-efficient_target = "openai-codex/gpt-6-luna"
-capable_target = "openai-codex/gpt-6.1-sol"
+```json
+{
+  "decision_model": "openrouter/inception/mercury-decide:free",
+  "capable_model": "openai-codex/gpt-6.1-sol",
+  "efficient_model": "openai-codex/gpt-6-luna"
+}
 ```
 
-Set either target to a `provider/model` reference available in Pi's catalog, such
-as `openai-codex/gpt-6-astra`. The first slash separates the provider from the model
-ID; `openrouter/vendor/model` keeps `vendor/model` as the ID. Both providers and
-models come from this file. Thinking remains `medium`.
+Use `provider/model` references from Pi's catalog. The first slash separates the
+provider from the model ID, so `openrouter/vendor/model` keeps `vendor/model` as
+the ID. The Decision model must be registered as a classifier in Pi.
 
-The extension generates the runner's target entries, route ID, and credential-free
-placeholder client. Pi uses the selected model's catalog limits. Set
-`SWITCHYARD_CONFIG` to use another algorithm-settings file, and reload the
-extension after changing its configuration.
+The policy's evidence describes candidate a (capable) as a larger,
+reasoning-oriented model for complex work. Candidate b (efficient) is a smaller,
+fast model for simple questions, local reads and edits, routine tests, and
+straightforward fixes. Pick completion models that fit these roles.
+
+The extension reads the config on its first routing request and caches it.
+Reload the extension after editing the config. Pi owns credentials and all model
+calls, including classifier calls. Classifier and completion calls may cost money.
 
 ## Local setup
 
 Requires Node.js 22.19 or newer, the repository's Rust toolchain, and Pi with the
-virtual-model API. Development checks use Pi 1.0.4.
+virtual-model and classifier APIs. Development checks use Pi 1.0.4.
 
 From the repository root:
 
@@ -48,8 +51,8 @@ npm --prefix examples/pi run typecheck
 npm --prefix examples/pi test
 ```
 
-The tests exercise the actual auto algorithm locally, check message conversion,
-and load the extension through Pi's public resource loader.
+Tests run the real composite algorithm with a local classifier mock, check
+message conversion, and load the extension through Pi's public resource loader.
 
 Sign in to the configured providers through Pi's `/login` and confirm the models
 are in your catalog. Then:
@@ -58,23 +61,27 @@ are in your catalog. Then:
 pi -e ./examples/pi/switchyard-router.ts --model switchyard/auto
 ```
 
-Completion calls can incur provider charges. The auto routing decision runs
-locally; Pi owns completion credentials and connections.
-
 ## Conversation handling
 
 The extension passes visible text, tool-call arguments, paired tool results, and
 failure flags to Switchyard. Pi keeps the original images and reasoning for the
-chosen completion model. Each decision uses the current branch's transcript,
-including the history available after compaction or resume.
+chosen completion model. The classifier sees the opening user task and latest
+user message. Its instructions come from libsy and are sent to Pi as a JSON
+string.
 
-The binding uses fresh routing state for each request. Auto's cross-request
-capable hold requires session identity; this extension relies on the recent tool
-history for recovery signals instead. It keeps its routing decisions independent
-across branches.
+Pi stores routing state on the session branch. It follows forks and `/tree`, and
+survives compaction, resume, and extension reload. Tool continuations reuse the
+stored tier and capable hold while stage signals select the model. State is
+returned only when it changes.
 
-Routing errors and cancellation propagate to Pi. The extension checks target
-identities and resolves the selected model through Pi's catalog.
+Retries reuse stored state. Retrying a user-turn request calls the classifier
+again. Direct requests, such as compaction summaries, start with fresh state;
+Pi discards their returned state. They call the classifier when their last
+message contains user text. Image-only user messages retain the previous tier
+because routing uses text and tool activity.
 
-For the binding's API and configuration restrictions, see
+Classifier failures fail the request, and cancellation propagates to Pi. A valid
+answer without a usable `advantage` probability retains the previous tier.
+
+For the binding API, see
 [`bindings/typescript`](../../bindings/typescript/README.md).

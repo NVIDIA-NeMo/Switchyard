@@ -258,6 +258,10 @@ pub struct RoutingOutcome {
     pub selected_model_ids: Vec<ModelId>,
     /// The request after all routing-time rewrites, stamped with the selected model.
     pub request: Request,
+    /// The request the fallback candidates receive instead of `request`, when routing
+    /// rewrote `request` for the selected model only.
+    /// Content-policy denials do not advance to these fallback candidates.
+    pub fallback_request: Option<Request>,
     /// A response produced while routing, or `None` when the client must make the answer call.
     pub response: Option<Response>,
     /// Outcome identity and optional algorithm evidence.
@@ -291,6 +295,7 @@ impl RoutingOutcome {
         Self {
             selected_model_ids,
             request,
+            fallback_request: None,
             response: None,
             metadata: None,
             state: State::default(),
@@ -304,6 +309,7 @@ impl RoutingOutcome {
         Self {
             selected_model_ids: vec![selected_model_id],
             request,
+            fallback_request: None,
             response: Some(response),
             metadata: None,
             state: State::default(),

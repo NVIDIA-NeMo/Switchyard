@@ -5,7 +5,7 @@
 `switchyard-server`, which picks the target model for each call. pi does not read
 `OPENAI_BASE_URL`, so a provider entry is how you point pi at a proxy. This
 page was tested with pi 0.84.3 against the
-[Getting Started](../getting_started.md#server-path) server on `http://localhost:4000`
+[local evaluation](../operations/local_evaluation.md) server on `http://localhost:4000`
 with route id `switchyard`.
 
 ## Configure
@@ -70,7 +70,7 @@ pi -p --provider switchyard --model switchyard "List the files in this directory
 The command `curl -s localhost:4000/v1/stats | jq '.models | map_values({calls, prompt_tokens})'`
 lists each target model with its call count. For a step-by-step check with an
 escalating request, see
-[Verify routing is active](../getting_started.md#verify-routing-is-active). Every response carries the header
+[Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active). Every response carries the header
 `x-model-router-selected-model`. With `--routing-log-file PATH`, the server writes one
 record per call. In the record below, `session_id` is the value of pi's `x-session-id`
 header:
@@ -155,45 +155,85 @@ second shows `cached_tokens` close to `prompt_tokens`. If the second record show
 
 #### Estimate the cost
 
-The routing log records token counts, not prices. To estimate what a request cost,
-multiply each count in its record by the matching price and add the results:
+The server uses bundled rates by default. To use your provider's rates or add missing
+models, supply a TOML or JSON file with `--pricing-file`. It replaces the entire bundled table.
+An unreadable or invalid file stops startup; the server does not substitute bundled rates.
+The server matches each token count in the routing log to a rate:
 
-| Tokens in the record | Price |
+| Tokens in the record | Pricing-file key |
 |---|---|
-| `prompt_tokens - cached_tokens - cache_creation_tokens` | Input |
-| `cached_tokens` | Cache read |
-| `cache_creation_tokens` | Cache write |
-| `completion_tokens` | Output |
+| `prompt_tokens - cached_tokens - cache_creation_tokens` | `input` |
+| `cached_tokens` | `cache_read` |
+| `cache_creation_tokens - cache_creation_1h_tokens` | `cache_write` |
+| `cache_creation_1h_tokens`, when reported | `cache_write_1h` |
+| `completion_tokens` | `output` |
 
-Write the prices to `prices.json` in USD per million tokens, and key each entry by the
+Treat a missing `cache_creation_1h_tokens` count as zero. That count is part of
+`cache_creation_tokens`, so it must not be charged twice.
+
+Write the prices to `prices.toml` in USD per million tokens, and key each entry by the
 record's `model` value. This example uses Anthropic's list prices for Claude Sonnet 5 on
 2026-10-02:
 
-```json
-{
-  "claude-sonnet-5": {"input": 2.00, "cache_read": 0.20, "cache_write": 2.50, "output": 10.00}
-}
+```toml
+["claude-sonnet-5"]
+input = 2.00
+cache_read = 0.20
+cache_write = 2.50
+output = 10.00
 ```
 
-The example's `cache_write` price is for a 5-minute cache. A 1-hour cache costs 2 times
-the input price instead of 1.25 times. The routing log does not say which cache the
-gateway used. A gateway may also charge its own prices, so the result is an estimate, not
-the gateway's bill. This command prints one estimated cost per record, or a warning for a
-model that has no entry in `prices.json`:
+Put each quoted model ID in a top-level table, as shown above. Quotes keep dots
+within the ID. The `.toml` extension check ignores case; other filenames are read
+as JSON, so existing JSON overrides still work.
+
+To maintain one set of rates for several exact IDs, list them in a group:
+
+```toml
+[[prices]]
+models = ["claude-haiku-4-5", "anthropic/claude-haiku-4.5"]
+input = 1
+output = 5
+cache_read = 0.1
+cache_write = 1.25
+cache_write_1h = 2
+```
+
+Use one `[[prices]]` record per group, with at least one ID in `models`. JSON accepts
+the same records in a top-level `prices` array. Each file uses either grouped records
+or model-keyed tables. The bundled table uses groups and can also be loaded with
+`--pricing-file`.
+
+All IDs in a group share every rate, including `cache_write_1h` when present. Keep
+separate groups when provider prices differ. The loader rejects duplicate IDs within
+or across groups, invalid IDs or rates, and unknown fields before using the table.
+
+For your own models, use each exact `model` value from the routing log as a table key
+or an ID in a group. Use the served model ID rather than the routing alias, and replace
+the example's numbers with your provider's rates. List recorded model IDs with:
 
 ```bash
-jq -r --slurpfile prices prices.json '
-  . as $r
-  | ($prices[0][$r.model // ""]) as $p
-  | if $p == null then
-      "warning: no price for model \($r.model); add it to prices.json"
-    else
-      ((($r.prompt_tokens // 0) - ($r.cached_tokens // 0) - ($r.cache_creation_tokens // 0)) * $p.input
-       + ($r.cached_tokens // 0) * $p.cache_read
-       + ($r.cache_creation_tokens // 0) * $p.cache_write
-       + ($r.completion_tokens // 0) * $p.output) / 1000000
-      | "\($r.route_id) \($r.model) estimated $\(. * 1000000 | round / 1000000)"
-    end' PATH
+jq -r '.model' PATH | sort -u
+```
+
+Every entry requires `input`, `output`, `cache_read`, and `cache_write`. Set a rate to zero
+only when that usage is free. Each rate must be a finite number from 0 to 10000 USD per
+million tokens.
+
+The Claude Sonnet 5 example uses the 5-minute `cache_write` price. A 1-hour cache
+costs 2 times the input price instead of 1.25 times; set `cache_write_1h` to `4.00`
+for that example.
+Include that rate to estimate reported one-hour cache writes; without it, the estimate
+remains unknown.
+
+To use your file, start the server with `--pricing-file prices.toml` as well as
+`--routing-log-file PATH`.
+The server records the gateway's reported charge when available, even without rates.
+Otherwise it uses bundled rates or your override file to estimate the cost. If usage
+is missing or the model has no rates, the estimate is unknown. Read each request's cost with:
+
+```bash
+jq -c '{route_id, model, cost}' PATH
 ```
 
 ### Thinking

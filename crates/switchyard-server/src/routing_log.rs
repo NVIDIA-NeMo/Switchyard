@@ -16,6 +16,7 @@ use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
+use switchyard_costs::{CostTotals, Pricing, RecordedCost};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const ORIGIN_HEADER: &str = "x-switchyard-origin";
@@ -23,7 +24,10 @@ const TASK_HEADER: &str = "x-switchyard-intake-task";
 const TRIAL_ID_HEADER: &str = "x-switchyard-trial-id";
 
 /// Append-only writer for one routing JSONL file.
-pub(crate) struct RoutingLog(fs::File);
+pub(crate) struct RoutingLog {
+    file: fs::File,
+    pub(crate) pricing: Pricing,
+}
 
 impl RoutingLog {
     pub(crate) fn new(path: impl Into<PathBuf>) -> ServerResult<Self> {
@@ -39,9 +43,13 @@ impl RoutingLog {
             .append(true)
             .open(&path)
             .map_err(|error| routing_log_error(&path, error))?;
-        Ok(Self(file))
+        Ok(Self {
+            file,
+            pricing: Pricing::bundled().map_err(ServerError::new)?,
+        })
     }
 
+    /// Writes one record for a finished call as a single JSON line.
     pub(crate) fn append(
         &mut self,
         context: RoutingLogContext,
@@ -49,8 +57,15 @@ impl RoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) -> std::io::Result<()> {
+        let cost = self.pricing.cost(model, usage);
+        let cache_creation_1h_tokens = usage
+            .cache
+            .as_ref()
+            .and_then(|cache| cache.cache_creation_1h_input_tokens)
+            .unwrap_or(0);
         let usage = token_usage(usage);
         let record = RoutingRecord {
+            cost,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
             algorithm: context.algorithm.into(),
@@ -59,11 +74,18 @@ impl RoutingLog {
             trial_id: context.trial_id.map(Cow::Owned),
             session_id: context.session_id.map(Cow::Owned),
             turn_id: context.turn_id.map(Cow::Owned),
+            agent_id: context.agent.agent_id.map(Cow::Owned),
+            parent_agent_id: context.agent.parent_agent_id.map(Cow::Owned),
+            delegated: context.agent.delegated,
+            agent_kind: context.agent.kind.map(Cow::Owned),
+            agent_role: context.agent.role.map(Cow::Owned),
+            subagent_identity_unsupported: context.agent.identity_unsupported,
             model: model.into(),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
+            cache_creation_1h_tokens,
             completion_tokens: usage.completion_tokens,
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
@@ -71,7 +93,7 @@ impl RoutingLog {
         let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         line.push(b'\n');
 
-        self.0.write_all(&line)
+        self.file.write_all(&line)
     }
 }
 
@@ -82,7 +104,10 @@ pub(crate) fn snapshot(
 ) -> std::io::Result<Option<SessionStatsSnapshot>> {
     let mut reader = BufReader::with_capacity(64 * 1024, fs::File::open(path)?);
     let mut line = Vec::new();
-    let mut snapshot = SessionStatsSnapshot::new(session_id);
+    let mut snapshot = SessionStatsSnapshot {
+        session_id: session_id.to_string(),
+        ..Default::default()
+    };
     loop {
         line.clear();
         if reader.read_until(b'\n', &mut line)? == 0 {
@@ -100,6 +125,37 @@ pub(crate) fn snapshot(
     Ok((snapshot.total_calls > 0).then_some(snapshot))
 }
 
+/// Which agent made a call. A child agent can share its parent's session id, so
+/// the session alone cannot tell delegated work apart from the parent's turns.
+/// Every field is copied from the request metadata, never inferred.
+#[derive(Clone, Default)]
+pub(crate) struct AgentIdentity {
+    agent_id: Option<String>,
+    parent_agent_id: Option<String>,
+    /// [`Metadata::is_subagent_work`], the signal that sends a call to the
+    /// sub-agent route, rather than the weaker `is_subagent` hint.
+    delegated: bool,
+    kind: Option<String>,
+    role: Option<String>,
+    /// The harness cannot identify its children, so a reader should not take
+    /// a missing `delegated` flag to mean that no work was delegated.
+    identity_unsupported: bool,
+}
+
+impl AgentIdentity {
+    /// Copies the agent fields from the request metadata.
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            agent_id: metadata.agent_id.clone(),
+            parent_agent_id: metadata.parent_agent_id.clone(),
+            delegated: metadata.is_subagent_work(),
+            kind: metadata.agent_kind.clone(),
+            role: metadata.agent_role.clone(),
+            identity_unsupported: metadata.subagent_identity_unsupported,
+        }
+    }
+}
+
 /// Holds request metadata until route resolution attaches the durable route identity.
 #[derive(Clone)]
 pub(crate) struct RoutingLogContext {
@@ -110,6 +166,7 @@ pub(crate) struct RoutingLogContext {
     trial_id: Option<String>,
     session_id: Option<String>,
     turn_id: Option<String>,
+    agent: AgentIdentity,
 }
 
 impl RoutingLogContext {
@@ -134,6 +191,7 @@ impl RoutingLogContext {
                     .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
                     .map(str::to_string)
             }),
+            agent: AgentIdentity::from_metadata(metadata),
         }
     }
 
@@ -151,6 +209,8 @@ impl RoutingLogContext {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct RoutingRecord<'a> {
+    #[serde(default)]
+    cost: Option<RecordedCost>,
     ts: Cow<'a, str>,
     route_id: Cow<'a, str>,
     algorithm: Cow<'a, str>,
@@ -164,20 +224,44 @@ struct RoutingRecord<'a> {
     session_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     turn_id: Option<Cow<'a, str>>,
+    // Most calls carry no agent identity, so these fields are written only when
+    // set. Records without them still parse through `serde(default)`.
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    agent_id: Option<Cow<'a, str>>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    parent_agent_id: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "is_false")]
+    delegated: bool,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    agent_kind: Option<Cow<'a, str>>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    agent_role: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "is_false")]
+    subagent_identity_unsupported: bool,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,
     cached_tokens: u64,
     cache_creation_tokens: u64,
+    /// The part of `cache_creation_tokens` written at the one-hour rate, when reported.
+    #[serde(skip_serializing_if = "is_zero")]
+    cache_creation_1h_tokens: u64,
     completion_tokens: u64,
     reasoning_tokens: u64,
     total_tokens: u64,
 }
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// Session totals returned by the routing stats endpoint.
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
+    cost: CostTotals,
+    answer_cost: CostTotals,
+    routing_cost: CostTotals,
     total_calls: u64,
     total_prompt_tokens: u64,
     total_cached_tokens: u64,
@@ -188,6 +272,7 @@ pub(crate) struct SessionStatsSnapshot {
 
 #[derive(Default, Serialize)]
 struct SessionModelStats {
+    cost: CostTotals,
     calls: u64,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -196,18 +281,6 @@ struct SessionModelStats {
 }
 
 impl SessionStatsSnapshot {
-    fn new(session_id: &str) -> Self {
-        Self {
-            session_id: session_id.to_string(),
-            total_calls: 0,
-            total_prompt_tokens: 0,
-            total_cached_tokens: 0,
-            total_cache_creation_tokens: 0,
-            total_completion_tokens: 0,
-            models: BTreeMap::new(),
-        }
-    }
-
     fn add_record(&mut self, record: &RoutingRecord<'_>, session_id: &str) {
         if record.session_id.as_deref() != Some(session_id) {
             return;
@@ -217,6 +290,13 @@ impl SessionStatsSnapshot {
             model => model,
         };
         let stats = self.models.entry(ModelId::from(model)).or_default();
+        stats.cost.add(record.cost);
+        self.cost.add(record.cost);
+        if record.tier == "classifier" {
+            self.routing_cost.add(record.cost);
+        } else {
+            self.answer_cost.add(record.cost);
+        }
         stats.calls = stats.calls.saturating_add(1);
         stats.prompt_tokens = stats.prompt_tokens.saturating_add(record.prompt_tokens);
         stats.cached_tokens = stats.cached_tokens.saturating_add(record.cached_tokens);
@@ -245,6 +325,12 @@ impl SessionStatsSnapshot {
     }
 }
 
+/// Lets serde leave out a `false` flag, so it is written only when set.
+fn is_false(flag: &bool) -> bool {
+    !flag
+}
+
+/// Returns a header value only when it is present, non-empty, and valid text.
 fn nonempty_header<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(name)
@@ -290,6 +376,42 @@ mod tests {
                 .origin
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_delegated_call_records_its_agent_lineage() {
+        let metadata = Metadata {
+            session_id: Some("session-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            agent_id: Some("child-7".to_string()),
+            parent_agent_id: Some("thread-1".to_string()),
+            is_subagent: true,
+            is_delegated_work: true,
+            agent_kind: Some("review".to_string()),
+            agent_role: Some("reviewer".to_string()),
+            ..Metadata::default()
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("routing.jsonl");
+        let mut log = RoutingLog::new(&path).expect("routing log");
+        log.append(
+            RoutingLogContext::from_metadata(&metadata).with_route("model-router", "passthrough"),
+            "worker-model",
+            None,
+            &Usage::default(),
+        )
+        .expect("append");
+        let line = fs::read_to_string(&path).expect("read log");
+        let record: serde_json::Value = serde_json::from_str(line.trim()).expect("json record");
+
+        assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["turn_id"], "turn-1");
+        assert_eq!(record["agent_id"], "child-7");
+        assert_eq!(record["parent_agent_id"], "thread-1");
+        assert_eq!(record["delegated"], true);
+        assert_eq!(record["agent_kind"], "review");
+        assert_eq!(record["agent_role"], "reviewer");
+        assert!(record.get("subagent_identity_unsupported").is_none());
     }
 
     /// Only the requested session is counted, absent fields fall back to zero

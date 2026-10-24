@@ -456,6 +456,13 @@ async fn upstream_chat(
     } else {
         "ok".to_string()
     };
+    let logprobs = (body["logprobs"] == true).then(|| {
+        let yes = if content == "yes" { 0.9_f64 } else { 0.1_f64 };
+        json!({"content": [{"token": content, "logprob": 0.0, "top_logprobs": [
+            {"token": "yes", "logprob": yes.ln()},
+            {"token": "no", "logprob": (1.0 - yes).ln()}
+        ]}]})
+    });
     Json(json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -463,6 +470,7 @@ async fn upstream_chat(
         "choices": [{
             "index": 0,
             "message": {"role": "assistant", "content": content},
+            "logprobs": logprobs,
             "finish_reason": "stop"
         }],
         "usage": {
@@ -1847,6 +1855,125 @@ task_typing = false
                     .filter(|call| call["path"] == "/props")
                     .count(),
                 usize::from(probes)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_escalates_while_the_local_endpoint_is_down() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+
+[llm_clients.down]
+format = "openai_chat"
+base_url = "http://{closed}/v1"
+
+[targets.local]
+id = "model/vgr-local"
+llm_client = "down"
+
+[targets.cloud]
+id = "model/vgr-cloud"
+llm_client = "primary"
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#,
+        upstream.base_url
+    ))?);
+    // The second request meets the failed endpoint's cooldown rather than its socket.
+    for _ in 0..2 {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": "answer the question"}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_static("model/vgr-cloud"))
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_keeps_agent_nudges_in_their_session_and_releases_user_turns() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for session_header in ["x-switchyard-session-id", "x-session-id"] {
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+local = {{ id = "model/vgr-local", llm_client = "primary" }}
+cloud = {{ id = "model/vgr-cloud", llm_client = "primary" }}
+judge = {{ id = "model/vgr-judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+judge_target = "judge"
+mode = "evaluate"
+task_typing = false
+"#,
+            upstream.base_url
+        ))?);
+        let initial = json!([{"role": "user", "content": " "}]);
+        let nudge = json!([
+            {"role": "user", "content": " "},
+            {"role": "assistant", "content": "4"},
+            {"role": "user", "content": "Verify the answer before stopping."}
+        ]);
+        for (session, initiator, messages, served) in [
+            ("a", Some("user"), &initial, "model/vgr-cloud"),
+            ("a", Some("agent"), &nudge, "model/vgr-cloud"),
+            ("b", Some("agent"), &nudge, "model/vgr-local"),
+            ("a", Some("user"), &nudge, "model/vgr-local"),
+            ("a", Some("agent"), &nudge, "model/vgr-local"),
+            ("c", None, &initial, "model/vgr-cloud"),
+            ("c", None, &nudge, "model/vgr-local"),
+        ] {
+            let mut headers = vec![(session_header, session)];
+            if let Some(initiator) = initiator {
+                headers.push(("x-initiator", initiator));
+            }
+            let response = send_with_headers(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({"model": "switchyard/vgr", "messages": messages})),
+                &headers,
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+            assert_eq!(
+                response.headers.get("x-model-router-selected-model"),
+                Some(&HeaderValue::from_str(served)?),
+                "{session_header}: {session} {initiator:?}"
             );
         }
     }
@@ -4431,8 +4558,11 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
     let log_path = temp_dir.path().join("routing.jsonl");
-    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
-        .with_routing_log(&log_path)?;
+    let state = random_state(
+        &upstream.base_url,
+        &[(ROUTE_MODEL, &["anthropic/claude-haiku-4.5"])],
+    )?
+    .with_routing_log(&log_path)?;
     let app = build_switchyard_router(state);
 
     let request = HttpRequest::builder()
@@ -4462,7 +4592,10 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     assert_eq!(stats["total_calls"], 1);
     assert_eq!(stats["total_prompt_tokens"], 10);
     assert_eq!(stats["total_cached_tokens"], 7);
-    assert_eq!(stats["models"]["model/a"]["completion_tokens"], 2);
+    assert_eq!(
+        stats["models"]["anthropic/claude-haiku-4.5"]["completion_tokens"],
+        2
+    );
 
     let legacy = send(
         &app,
@@ -4500,6 +4633,9 @@ async fn routing_log_prefers_canonical_and_preserves_legacy_fallback() -> TestRe
     let first: Value =
         serde_json::from_str(records.lines().next().ok_or("routing log was empty")?)?;
     assert_eq!(first["session_id"], "canonical-session");
+    assert_eq!(first["model"], "anthropic/claude-haiku-4.5");
+    assert_eq!(first["cost"]["source"], "estimated");
+    assert!((first["cost"]["usd"].as_f64().ok_or("missing cost")? - 0.0000137).abs() < 1e-12);
     assert_eq!(first["turn_id"], "canonical-turn");
     assert_eq!(first["origin"], r#"custom-agent/"quoted"\path"#);
     let second: Value = serde_json::from_str(records.lines().nth(1).ok_or("missing record")?)?;
@@ -4594,8 +4730,11 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
     let upstream = MockUpstream::start().await?;
     let temp_dir = tempfile::tempdir()?;
     let log_path = temp_dir.path().join("routing.jsonl");
-    let state = random_state(&upstream.base_url, &[(ROUTE_MODEL, &["model/a"])])?
-        .with_routing_log(&log_path)?;
+    let state = random_state(
+        &upstream.base_url,
+        &[(ROUTE_MODEL, &["anthropic/claude-haiku-4.5"])],
+    )?
+    .with_routing_log(&log_path)?;
     let app = build_switchyard_router(state);
 
     // `send_with_headers` collects the response body, so the stream wrapper reaches
@@ -4636,6 +4775,9 @@ async fn routing_log_keeps_the_canonical_session_id_until_a_stream_drains() -> T
 
     let record: Value = serde_json::from_str(&std::fs::read_to_string(log_path)?)?;
     assert_eq!(record["route_id"], ROUTE_MODEL);
+    assert_eq!(record["model"], "anthropic/claude-haiku-4.5");
+    assert_eq!(record["cost"]["source"], "estimated");
+    assert!((record["cost"]["usd"].as_f64().ok_or("missing cost")? - 0.0000312).abs() < 1e-12);
     assert_eq!(record["turn_id"], "streaming-turn");
     assert_eq!(record["algorithm"], "random");
     assert_eq!(record["origin"], "codex-cli");
@@ -4769,10 +4911,16 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         .lines()
         .map(serde_json::from_str::<Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(records.len(), 3);
-    assert!(records.iter().all(|record| {
-        record["model"] == "model/strong" && record.get("fallback_reason").is_none()
-    }));
+    assert_eq!(records.len(), 6);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|record| {
+                record["model"] == "model/strong" && record.get("fallback_reason").is_none()
+            })
+            .count(),
+        3
+    );
 
     let previous_call_count = upstream.calls.lock().await.len();
     let response = send(

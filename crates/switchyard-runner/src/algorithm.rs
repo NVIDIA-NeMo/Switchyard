@@ -549,9 +549,15 @@ pub struct VgrRouteConfig {
     /// Tells the capable tier it inherits unverified tool-using work.
     #[serde(default)]
     pub agentic_handoff: bool,
+    /// Condenses local history at handoff. Requires `agentic_handoff`.
+    #[serde(default)]
+    pub compact_handoff: bool,
     /// Wall-clock budget for the local tier within one user turn.
     #[serde(default)]
     pub local_turn_budget_seconds: Option<f64>,
+    /// Holds escalations across later user turns.
+    #[serde(default)]
+    pub latch_escalation: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -598,7 +604,9 @@ pub struct StageClassifierConfig {
     /// for an uncertain verdict and twice for unsupported.
     #[serde(default)]
     pub threshold_step: Option<f64>,
-    /// How often the judge runs. `new_session` has no effect here.
+    /// How often the judge runs. Composite honors it. A standalone stage route
+    /// rejects any value other than `every_request`, because its fallback judge
+    /// runs on every ambiguous turn and retains no verdict.
     #[serde(default)]
     pub classify_trigger: ClassifyTrigger,
     /// Reuses the session's target by hashing the first user message when no
@@ -650,6 +658,13 @@ pub struct StageTierConfig {
     /// Notes handed to a tier when the router switches to it.
     #[serde(default)]
     pub handoff_notes: Option<HandoffNoteConfig>,
+}
+
+impl StageTierConfig {
+    /// Warns when both tiers name one target; see [`warn_identical_tiers`].
+    fn warn_identical_tiers(&self, route_name: &str) {
+        warn_identical_tiers(route_name, &self.capable_target, &self.efficient_target);
+    }
 }
 
 impl StageClassifierConfig {
@@ -733,21 +748,6 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
-    /// Whether this configuration only selects a model, with state owned by the caller.
-    pub(crate) fn supports_model_selection(&self) -> bool {
-        match self {
-            Self::Passthrough {
-                subagents: None, ..
-            }
-            | Self::Auto { .. } => true,
-            Self::LlmClassifier { config } => {
-                matches!(config.classifier_mode(), ClassifierMode::Capability)
-                    && config.classify_trigger == ClassifyTrigger::EveryRequest
-            }
-            _ => false,
-        }
-    }
-
     pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
         match self {
             Self::LlmClassifier { config, .. } => config
@@ -1262,15 +1262,22 @@ impl LlmClassifierRouteConfig {
                         "llm_classifier route {route_name} mode escalation cannot use classify_trigger"
                     )));
                 }
-                if mode.is_some()
-                    && (base_threshold.is_some()
-                        || threshold_step.is_some()
-                        || *message_hash_fallback
-                        || recent_turn_window.is_some())
-                {
+                let has_capability_settings = base_threshold.is_some()
+                    || threshold_step.is_some()
+                    || fail_open.is_some()
+                    || *message_hash_fallback
+                    || recent_turn_window.is_some();
+                if mode.is_some() && has_capability_settings {
                     return Err(AlgorithmConfigError::new(format!(
                         "llm_classifier route {route_name} mode escalation cannot use capability routing settings"
                     )));
+                }
+                if has_capability_settings {
+                    // Existing files that select escalation through the `escalation` table alone
+                    // keep loading, but their capability keys do nothing in this mode.
+                    tracing::warn!(
+                        "llm_classifier route {route_name} runs in escalation mode because it has an escalation table; base_threshold, threshold_step, fail_open, recent_turn_window and message_hash_fallback are ignored in this mode. Set mode = \"escalation\" and remove them."
+                    );
                 }
                 Ok(LlmClassifierModeConfig::Escalation(
                     EscalationClassifierRouteConfig {
@@ -1604,6 +1611,7 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
+            tiers.warn_identical_tiers(route_name);
             let threshold = confidence_threshold.ok_or_else(|| {
                 AlgorithmConfigError::new(format!(
                     "stage_router route {route_name}: confidence_threshold is required"
@@ -1636,7 +1644,11 @@ fn build_algorithm(
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
-        AlgorithmSpec::Auto { .. } => {
+        AlgorithmSpec::Auto {
+            capable_target,
+            efficient_target,
+        } => {
+            warn_identical_tiers(route_name, capable_target, efficient_target);
             let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
             let algorithm = StageRouter::new(config).map_err(|error| {
                 AlgorithmConfigError::with_source(
@@ -1651,6 +1663,7 @@ fn build_algorithm(
             stage,
             subagents,
         } => {
+            stage.warn_identical_tiers(route_name);
             let mut stage_config = StageRouterConfig::new(
                 PickerMode::EfficientFirst,
                 stage.confidence_threshold.unwrap_or(0.5),
@@ -1801,17 +1814,19 @@ fn build_vgr(
             approval: config.active_approval.clone().unwrap_or_default(),
         },
     };
-    runtime.deadline = duration(route_name, "deadline_seconds", config.deadline_seconds)?;
+    runtime.deadline = vgr_duration(route_name, "deadline_seconds", config.deadline_seconds)?;
     runtime.task_typing = config.task_typing;
     runtime.confirmed_recovery_min_clean_tail = config.confirmed_recovery_min_clean_tail;
     runtime.agentic_handoff = config.agentic_handoff;
+    runtime.compact_handoff = config.compact_handoff;
+    runtime.latch_escalation = config.latch_escalation;
     runtime.local_turn_budget = config
         .local_turn_budget_seconds
-        .map(|seconds| duration(route_name, "local_turn_budget_seconds", seconds))
+        .map(|seconds| vgr_duration(route_name, "local_turn_budget_seconds", seconds))
         .transpose()?;
     runtime.breaker = BreakerConfig {
         threshold: config.breaker_threshold,
-        cooldown: duration(
+        cooldown: vgr_duration(
             route_name,
             "breaker_cooldown_seconds",
             config.breaker_cooldown_seconds,
@@ -1824,13 +1839,14 @@ fn build_vgr(
         })
 }
 
-fn duration(route: &str, field: &str, seconds: f64) -> AlgorithmResult<std::time::Duration> {
-    std::time::Duration::try_from_secs_f64(seconds).map_err(|error| {
-        AlgorithmConfigError::with_source(
-            format!("vgr route {route}: {field} must be a non-negative number"),
-            error,
-        )
-    })
+fn vgr_duration(route: &str, field: &str, seconds: f64) -> AlgorithmResult<std::time::Duration> {
+    let message = || format!("vgr route {route}: {field} must be a positive number");
+    let duration = std::time::Duration::try_from_secs_f64(seconds)
+        .map_err(|error| AlgorithmConfigError::with_source(message(), error))?;
+    if duration.is_zero() {
+        return Err(AlgorithmConfigError::new(message()));
+    }
+    Ok(duration)
 }
 
 const fn default_max_reviews() -> u32 {
@@ -1857,6 +1873,19 @@ fn classifier_contract(prompt: Option<&str>) -> ClassifierContractConfig {
 
 fn default_classifier_max_output_tokens() -> u64 {
     LlmCapabilityConfig::default().max_output_tokens
+}
+
+/// Both tiers on one target leave the route nothing to choose between; every decision
+/// lands on the same model. The file still loads, since a single-model deployment can
+/// be a deliberate overhead measurement.
+fn warn_identical_tiers(route_name: &str, capable_target: &str, efficient_target: &str) {
+    if capable_target == efficient_target {
+        tracing::warn!(
+            route = route_name,
+            target = capable_target,
+            "capable_target and efficient_target name the same target, so every request goes to one model; use passthrough for a single model, or point the tiers at two targets"
+        );
+    }
 }
 
 fn warn_single_target_classifier(route_name: &str, models: &CategoryModelConfig) {

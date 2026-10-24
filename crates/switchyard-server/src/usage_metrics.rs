@@ -66,6 +66,10 @@ pub(crate) fn observe(
                             }
                         }
                     }
+                    if failed && !recorded
+                        && let Some((log, context)) = routing_log.as_ref() {
+                        log.append(context.clone(), &model, None, &Usage::default());
+                    }
                     if failed {
                         record_stream_error(&stats, &model);
                     }

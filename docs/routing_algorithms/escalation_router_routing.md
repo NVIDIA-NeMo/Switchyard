@@ -191,7 +191,7 @@ verdict without new evidence resets the streak to zero.
 ## Run the route
 
 After installing the Rust server, as described in
-[Getting Started](../getting_started.md#install-the-server), export the provider
+[Local Evaluation](../operations/local_evaluation.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash

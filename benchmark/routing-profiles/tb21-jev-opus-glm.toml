@@ -6,11 +6,11 @@
 # Switchyard uses its default advantage/no_advantage Choice question and sends
 # task messages and candidate metadata. Criteria below are part of the instructions.
 # The 0.05 cutoff is a starting value, not calibrated for this adapted question.
-# Completion endpoints use OpenRouter rather than the experiment's
-# Bedrock/Inference Hub baselines. Re-evaluate before comparing with the results.
-# Recorded replay results are shown in the repository README.
+# Jev and completion calls use OpenRouter. Completion endpoints differ from the
+# experiment's Bedrock/Inference Hub baselines. Re-evaluate before comparing with
+# the recorded replay results in docs/benchmarks.md#terminal-bench-21.
 #
-# Set TYPESAFE_API_KEY and OPENROUTER_API_KEY, then run from the repository root:
+# Set OPENROUTER_API_KEY, then run from the repository root:
 #   switchyard-server --config benchmark/routing-profiles/tb21-jev-opus-glm.toml
 # Send a unique x-switchyard-session-id per task.
 
@@ -23,12 +23,12 @@ api_key_env = "OPENROUTER_API_KEY"
 
 [decision_clients.jev]
 format = "system_one"
-endpoint = "https://api.typesafe.ai/v1/systemone"
-api_key_env = "TYPESAFE_API_KEY"
+endpoint = "https://openrouter.ai/api/alpha/decisions"
+api_key_env = "OPENROUTER_API_KEY"
 timeout_ms = 10000
 
 [decision_targets.judge]
-id = "jev-1.13.0"
+id = "typesafe/jev-1.13"
 decision_client = "jev"
 
 [targets.opus]
