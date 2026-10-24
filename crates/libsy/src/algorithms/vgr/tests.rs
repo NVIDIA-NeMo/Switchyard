@@ -45,6 +45,43 @@ fn branch(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Bran
 }
 
 #[test]
+fn tool_trajectory_respects_the_current_request_initiator() {
+    for (finished, initiator, expected) in [
+        (true, Some("agent"), true),
+        (true, Some("user"), false),
+        (true, None, false),
+        (false, Some("agent"), true),
+        (false, Some("user"), false),
+        (false, None, true),
+    ] {
+        let mut messages = vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ];
+        if finished {
+            messages.push(Message::text(Role::Assistant, "done"));
+        }
+        messages.push(Message::text(Role::User, "verify the change"));
+        let mut request = request(messages);
+        if let Some(initiator) = initiator {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("x-initiator", initiator.parse().expect("header"));
+            request.metadata = Some(switchyard_protocol::Metadata {
+                http_headers: Some(headers),
+                ..Default::default()
+            });
+        }
+        assert_eq!(
+            super::text::turn_has_tool_trajectory(&request),
+            expected,
+            "finished={finished}, initiator={initiator:?}"
+        );
+    }
+    assert!(!super::text::turn_has_tool_trajectory(&Request::default()));
+}
+
+#[test]
 // Router typing selects a branch; tool history takes precedence over coding.
 fn router_typing_selects_the_verification_regime() {
     let single = request(vec![Message::text(Role::User, "Help with this task")]);
@@ -329,14 +366,13 @@ mod decide {
     }
 
     #[test]
-    fn deliberation_commits_only_on_an_affirmative_verdict() {
+    fn deliberation_commits_only_on_an_affirmative_score() {
         for branch in [Branch::Chat, Branch::Agentic, Branch::DefaultVerified] {
             let mut caps = agentic(0, 1, 1);
             caps.branch = branch;
             for (verdict, expected) in [
-                (Some(Tri::Yes), Route::Local),
-                (Some(Tri::No), Route::Cloud),
-                (Some(Tri::Unknown), Route::Cloud),
+                (Some(0.5), Route::Local),
+                (Some(0.49), Route::Cloud),
                 (None, Route::Cloud),
             ] {
                 let signals = Signals {
@@ -350,5 +386,21 @@ mod decide {
                 );
             }
         }
+    }
+
+    #[test]
+    fn coding_commits_on_a_confident_readout_or_a_capable_tier_affirmation() {
+        let mut coding = agentic(0, 0, 0);
+        coding.branch = Branch::Coding;
+        let mut signals = readout(0.2);
+        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
+        signals.cloud_judge = Some(Tri::Unknown);
+        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
+        signals.cloud_judge = Some(Tri::Yes);
+        assert_eq!(decide(&coding, &signals, None), Route::Local);
+        signals.readout = Some(0.19);
+        assert_eq!(decide(&coding, &signals, None), Route::Cloud);
+        assert_eq!(decide(&coding, &readout(0.6), None), Route::Local);
+        assert_eq!(decide(&coding, &readout(0.59), None), Route::Cloud);
     }
 }

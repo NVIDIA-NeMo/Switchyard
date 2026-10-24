@@ -106,6 +106,31 @@ mod tests {
     }
 
     #[test]
+    fn settings_load_bundled_groups_for_baseline_estimates() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let config = crate::config::Config::load(&dir.path().join("menubar.toml"))?;
+        let mut totals = Totals::default();
+        totals.routed.insert(
+            "answer-model".to_string(),
+            ModelTokens {
+                requests: 1,
+                input: 1_000_000,
+                output: 1_000_000,
+                cached_input: 1_000_000,
+                cache_write: 2_000_000,
+                cache_write_1h: 1_000_000,
+            },
+        );
+        record_cost(&mut totals, 0.5);
+        for model in ["claude-haiku-4-5", "anthropic/claude-haiku-4.5"] {
+            let savings = estimate(&totals, &config.prices, model).ok_or("missing baseline")?;
+            assert!((savings.baseline - 9.35).abs() < 1e-9, "{model}");
+            assert!((savings.saved() - 8.85).abs() < 1e-9, "{model}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn classifier_overhead_counts_against_savings() {
         let mut totals = Totals::default();
         totals

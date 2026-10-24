@@ -44,10 +44,13 @@ The server and menubar use the same [bundled rates](../switchyard-costs/prices.t
 default. To override them, point the server's `--pricing-file` and the menubar's
 `pricing_file` at the same TOML or JSON file. The file replaces the entire bundled table.
 Bundled rates stay fixed until you install a version with updated rates. The table
-includes standard OpenAI and Claude text-token rates. Estimates exclude long-context
-and service-tier adjustments, OpenAI's 12-hour cache-write pricing, tool fees, and
-time-based cache storage. Entries with provider prefixes use list-rate estimates;
-billed charges may differ. Use an override when your provider charges different rates.
+includes text-token rates for OpenAI, Claude, Gemini, and DeepSeek models, plus OpenRouter
+rates for other popular models. Direct-provider and OpenRouter rates use separate model
+IDs, such as `gemini-3.8-flash` and `google/gemini-3.8-flash`. Estimates exclude
+long-context and service-tier adjustments, OpenAI's 12-hour cache-write pricing, tool
+fees, and time-based cache storage. Each model has one rate at all times of day. The
+provider that OpenRouter selects can change the charge. Some Gemini rates are promotions;
+the table lists their end dates. Use an override when your provider charges different rates.
 Key each entry by the model ID in the routing log. Rates are in USD per million tokens:
 
 ```toml
