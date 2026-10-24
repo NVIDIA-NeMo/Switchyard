@@ -17,12 +17,14 @@ use super::text::{Turn, char_len, clip_mid, content_text, redact};
 use crate::algorithms::util::transcript::message_text;
 
 pub(super) const DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 512;
-pub(super) const LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;
+const LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = 768;
 const TYPING_MAX_OUTPUT_TOKENS: u64 = 8;
 const TYPING_TASK_BUDGET: usize = 4000;
 
 // The condensed trajectory a turn judge sees.
 const TURN_RECENT_MESSAGES: usize = 28;
+// Advance in blocks to reuse the cached prefix.
+const TURN_WINDOW_STEP: usize = 8;
 const TURN_MESSAGE_CHARS: usize = 500;
 const TURN_SYSTEM_CHARS: usize = 1_000;
 const TURN_FIRST_USER_CHARS: usize = 2_000;
@@ -34,10 +36,9 @@ const ANSWER_VERIFIER: &str = include_str!("../../prompts/vgr/answer-verifier.md
 const EVIDENCE_VERIFIER_ROLE: &str = "You are a strict verifier.";
 const EVIDENCE_VERIFIER_TASK: &str = include_str!("../../prompts/vgr/evidence-verifier-task.md");
 const DIRECT_VERDICT: &str = " Reply with exactly one word: yes or no.";
-const BOUNDED_DELIBERATION: &str = " Think briefly: use no more than three short sentences of \
-private analysis, then give the verdict.";
-const COMPLETE_DELIBERATION: &str = " You must finish within the available token budget. Your \
-visible reply must be exactly one word: yes or no.";
+const DELIBERATION: &str = " Reason carefully about whether the evidence supports the result.";
+const GIVEN_ANALYSIS: &str = " You are also given a verifier's analysis of the record, which may \
+be cut off before its conclusion; weigh it, but judge the record yourself.";
 const TYPING_SYSTEM: &str = include_str!("../../prompts/vgr/typing-system.md");
 const TURN_JUDGE_SYSTEM: &str = include_str!("../../prompts/vgr/turn-judge-system.md");
 
@@ -47,8 +48,10 @@ pub(super) enum Question {
     Answer,
     /// Does this record show the work was completed?
     Evidence,
-    /// The evidence question, briefly reasoned.
+    /// The evidence question, reasoned through without a verdict.
     Deliberation,
+    /// The evidence question, answered given that reasoning.
+    Verdict,
     Typing,
     /// Is this proposed tool call part of a persistently bad trajectory?
     TurnTrajectory,
@@ -63,7 +66,11 @@ impl Question {
                 EVIDENCE_VERIFIER_TASK.trim_end()
             ),
             Self::Deliberation => format!(
-                "{EVIDENCE_VERIFIER_ROLE}{BOUNDED_DELIBERATION}{}{COMPLETE_DELIBERATION}{INJECTION_GUARD}",
+                "{EVIDENCE_VERIFIER_ROLE}{}{DELIBERATION}{INJECTION_GUARD}",
+                EVIDENCE_VERIFIER_TASK.trim_end()
+            ),
+            Self::Verdict => format!(
+                "{EVIDENCE_VERIFIER_ROLE}{}{GIVEN_ANALYSIS}{DIRECT_VERDICT}{INJECTION_GUARD}",
                 EVIDENCE_VERIFIER_TASK.trim_end()
             ),
             Self::Typing => TYPING_SYSTEM.trim_end().to_string(),
@@ -118,8 +125,52 @@ pub(super) fn build_typing_request(task_text: &str, metadata: Option<Metadata>) 
     request
 }
 
-/// The system and task anchors, the recent turns, and the proposed turn.
-pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> String {
+pub(super) fn build_deliberation_request(judged_text: &str, metadata: Option<Metadata>) -> Request {
+    build_request(
+        Question::Deliberation,
+        judged_text,
+        LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
+        metadata,
+    )
+}
+
+/// Asks for a scored verdict on the record given a deliberation, however it stopped.
+pub(super) fn build_verdict_request(
+    judged_text: &str,
+    deliberation: &AggLlmResponse,
+    metadata: Option<Metadata>,
+) -> Request {
+    let output = deliberation.first_output();
+    let analysis = output
+        .into_iter()
+        .flat_map(|output| &output.content)
+        .filter_map(|block| match block {
+            ContentBlock::Reasoning { text, .. } | ContentBlock::Text { text } => Some(text.trim()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cut_off = output
+        .and_then(|output| output.stop_reason)
+        .is_some_and(|reason| reason != StopReason::EndTurn);
+    let note = if cut_off {
+        "\n[analysis cut off at its token budget]"
+    } else {
+        ""
+    };
+    let view = format!("{judged_text}\n\n[verifier analysis]\n{analysis}{note}");
+    let mut request = build_request(
+        Question::Verdict,
+        &view,
+        super::readout::MAX_OUTPUT_TOKENS,
+        metadata,
+    );
+    super::readout::request_logprobs(&mut request);
+    request
+}
+
+/// Stable history messages let llama.cpp reuse its cache before the proposed turn.
+pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> Vec<Message> {
     let turns: Vec<Turn> = request
         .llm_request
         .instructions
@@ -144,16 +195,52 @@ pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> String 
         let task = clip_mid(&redact(&turns[index].text), TURN_FIRST_USER_CHARS, 0.5);
         anchors.push(format!("[task] {task}"));
     }
-    let mut window: Vec<String> = turns
+    let recent: Vec<&Turn> = turns
         .iter()
         .enumerate()
         .filter(|(index, _)| Some(*index) != system_index && Some(*index) != first_user_index)
-        .rev()
-        .take(TURN_RECENT_MESSAGES)
-        .map(|(_, turn)| turn_line(turn, TURN_MESSAGE_CHARS))
+        .map(|(_, turn)| turn)
         .collect();
-    window.reverse();
+    // Retain the prefix until the next window step.
+    let overflow = recent.len().saturating_sub(TURN_RECENT_MESSAGES);
+    let mut window: Vec<(Role, String)> = recent[overflow / TURN_WINDOW_STEP * TURN_WINDOW_STEP..]
+        .iter()
+        .map(|turn| {
+            let role = if turn.role == Role::Assistant {
+                Role::Assistant
+            } else {
+                Role::User
+            };
+            (role, turn_line(turn, TURN_MESSAGE_CHARS))
+        })
+        .collect();
 
+    let proposed = proposed_line(proposed);
+    let anchor_text = anchors.join("\n");
+    let total = |window: &[(Role, String)]| {
+        char_len(&anchor_text)
+            + window
+                .iter()
+                .map(|(_, line)| char_len(line) + 1)
+                .sum::<usize>()
+            + char_len(&proposed)
+    };
+    while !window.is_empty() && total(&window) > TURN_MAX_CHARS {
+        window.drain(..TURN_WINDOW_STEP.min(window.len()));
+    }
+
+    let mut messages = Vec::with_capacity(window.len() + 2);
+    messages.push(Message::text(Role::User, anchor_text));
+    for (role, line) in window {
+        messages.push(Message::text(role, line));
+    }
+    // Only this trailing message changes on each call.
+    messages.push(Message::text(Role::User, proposed));
+    messages
+}
+
+/// The proposed next turn, as the judge sees it.
+fn proposed_line(proposed: &AggLlmResponse) -> String {
     let mut fragments = Vec::new();
     for output in proposed
         .outputs
@@ -174,24 +261,21 @@ pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> String 
             }
         }
     }
-    let proposed = format!(
+    format!(
         "[proposed next turn] [assistant] {}",
         clip_mid(&fragments.join(" "), TURN_MESSAGE_CHARS, 0.5)
-    );
-    let joined = |window: &[String]| {
-        anchors
-            .iter()
-            .chain(window)
-            .map(|line| char_len(line) + 1)
-            .sum::<usize>()
-            + char_len(&proposed)
-    };
-    while !window.is_empty() && joined(&window) > TURN_MAX_CHARS {
-        window.remove(0);
-    }
-    anchors.extend(window);
-    anchors.push(proposed);
-    anchors.join("\n").chars().take(TURN_MAX_CHARS).collect()
+    )
+}
+
+/// A turn-judge call built from a message list.
+pub(super) fn build_turn_request(
+    messages: Vec<Message>,
+    max_output_tokens: u64,
+    metadata: Option<Metadata>,
+) -> Request {
+    let mut request = build_request(Question::TurnTrajectory, "", max_output_tokens, metadata);
+    request.llm_request.messages = messages;
+    request
 }
 
 fn turn_line(turn: &Turn, budget: usize) -> String {
@@ -317,6 +401,27 @@ mod tests {
         assert_eq!(request.llm_request.messages.len(), 1);
         assert!(request.llm_request.tools.is_empty());
         assert_eq!(request.llm_request.sampling.temperature, None);
+        let mut deliberation = replied("the dates check out", Some(StopReason::MaxTokens));
+        deliberation.outputs[0].content.insert(
+            0,
+            ContentBlock::Reasoning {
+                text: "Two stories are in the window.".into(),
+                signature: None,
+                details: Vec::new(),
+            },
+        );
+        let verdict = build_verdict_request("record", &deliberation, None);
+        assert_eq!(
+            verdict.llm_request.messages[0].text_content("").as_deref(),
+            Some(
+                "record\n\n[verifier analysis]\nTwo stories are in the window.\nthe dates check \
+                 out\n[analysis cut off at its token budget]"
+            )
+        );
+        assert_eq!(
+            verdict.llm_request.reasoning.effort.as_deref(),
+            Some("none")
+        );
         let typing = build_typing_request(&"x".repeat(5000), None);
         assert_eq!(typing.llm_request.sampling.temperature, Some(0.0));
         assert_eq!(typing.llm_request.reasoning.effort.as_deref(), Some("none"));
@@ -326,6 +431,13 @@ mod tests {
                 .map(|text| text.len()),
             Some(TYPING_TASK_BUDGET)
         );
+    }
+
+    fn flatten(view: &[Message]) -> String {
+        view.iter()
+            .filter_map(|message| message.text_content(""))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -338,13 +450,14 @@ mod tests {
             .extend((0..30).map(|index| Message::text(Role::Assistant, format!("turn {index}"))));
         let request = super::super::tests::request(messages);
         let view = turn_view(&request, &replied("next", None));
-        let mut expected = vec![
-            "[system] system rule".to_string(),
-            "[task] task".to_string(),
-        ];
-        expected.extend((2..30).map(|index| format!("[assistant] turn {index}")));
+        assert_eq!(view.len(), 32);
+        assert_eq!(view[1].role, Role::Assistant);
+        assert_eq!(view[31].role, Role::User);
+        let mut expected = vec!["[system] system rule\n[task] task".to_string()];
+        // Two past the recent window, but its start moves only in whole steps.
+        expected.extend((0..30).map(|index| format!("[assistant] turn {index}")));
         expected.push("[proposed next turn] [assistant] next".to_string());
-        assert_eq!(view, expected.join("\n"));
+        assert_eq!(flatten(&view), expected.join("\n"));
     }
 
     #[test]
@@ -373,7 +486,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let view = turn_view(&request, &proposed);
+        let view = flatten(&turn_view(&request, &proposed));
         assert!(view.contains(r#"[assistant] tool_call bash({"command":"echo [REDACTED]"})"#));
         assert!(view.contains("[tool] failed; contact [REDACTED]"));
         assert!(view.contains(
@@ -389,7 +502,7 @@ mod tests {
             Message::text(Role::User, "task"),
             super::super::tests::result("history", &format!("BEGIN{}END", "é".repeat(1000))),
         ]);
-        let view = turn_view(&request, &replied("next", None));
+        let view = flatten(&turn_view(&request, &replied("next", None)));
         assert!(view.contains("[tool] BEGIN"));
         assert!(view.contains("chars omitted]..."));
         assert!(view.contains("END\n[proposed next turn]"));

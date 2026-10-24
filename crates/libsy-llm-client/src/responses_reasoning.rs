@@ -10,7 +10,7 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponsesReasoningPolicy {
-    /// Preserve encrypted reasoning and stored reasoning IDs; remove plaintext.
+    /// Preserve encrypted reasoning and stored IDs the provider can read.
     ///
     /// This is the default for every Responses model, regardless of its URL.
     #[default]
@@ -41,10 +41,11 @@ impl ResponsesReasoningPolicy {
             return true;
         }
 
-        let has_encrypted_content = matches!(
-            object.get("encrypted_content").and_then(Value::as_str),
-            Some(encrypted_content) if !encrypted_content.is_empty()
-        );
+        let encrypted_content = object.get("encrypted_content").and_then(Value::as_str);
+        if encrypted_content.is_some_and(switchyard_translation::is_anthropic_thinking_envelope) {
+            return false;
+        }
+        let has_encrypted_content = encrypted_content.is_some_and(|content| !content.is_empty());
         let has_stored_id = object
             .get("id")
             .and_then(Value::as_str)

@@ -3,6 +3,8 @@
 
 # Harbor Benchmarks
 
+For recorded results and their routing configs, see [Benchmarks](../docs/benchmarks.md).
+
 Use this guide to run Harbor Terminal-Bench Lite from a fresh Switchyard clone.
 It covers the two smoke paths most people need first:
 
@@ -338,7 +340,8 @@ DeepSWE uses Harbor's task format but its own runner, [Pier](https://github.com/
 (required since v1.1 for the separate-verifier/collect-hook pattern). It is not part of
 `run-baseline.sh`.
 
-See [DeepSWE v1.1 qualification settings](DEEPSWE_V11_QUALIFICATION.md) for the exact
+See [DeepSWE results](../docs/benchmarks.md#deepswe) for task completion and cost comparisons,
+and [DeepSWE v1.1 qualification settings](DEEPSWE_V11_QUALIFICATION.md) for the exact
 versions, timeouts, scoring rules, and routing profiles used for qualification.
 
 ```bash
@@ -380,12 +383,7 @@ pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
 instead. Binding port 443 needs elevated privileges on most Linux hosts (`sudo`, or
 `setcap 'cap_net_bind_service=+ep'` on the binary).
 
-Advisor-gate routing (GPT-5.6 Luna executes; GPT-5.6 Sol reviews its "done" claims, up to
-three per task) measured 57.5% +/- 3.2 on the full 113 tasks (k=3, closed-book). The profile
-keeps the routing parameters exactly as run and reaches both models through OpenRouter, so it
-needs only `OPENROUTER_API_KEY`. The measured runs had Codex at reasoning effort `max`
-(`model_reasoning_effort = "max"` in the agent's Codex config); the profile forces `max` on
-both models server-side regardless:
+Run the Advisor profile. It sets reasoning effort to `max` on both models:
 
 ```bash
 export OPENROUTER_API_KEY="..."
@@ -398,11 +396,7 @@ pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
   --ae OPENAI_API_KEY=unused
 ```
 
-Plan/execute routing uses GPT-5.6 Sol for repository inspection and planning, then hands the
-full trajectory to GPT-5.6 Luna after the first mutation. It measured 60.8% +/- 5.3 at
-$180.51 +/- 9.43 per run on the full closed-book benchmark (k=3). The profile preserves the
-exact planning prompt and routing policy, with provider settings adapted from NVIDIA Inference
-Hub to OpenRouter:
+Run the Plan/Execute profile:
 
 ```bash
 export OPENROUTER_API_KEY="..."
@@ -416,11 +410,7 @@ pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
   --ae OPENAI_API_KEY=unused
 ```
 
-The qualified stage-router profile (GPT-5.6 Luna efficient tier, GPT-5.6 Sol capable tier) solved
-76/113 tasks (67.3% strict) on the full closed-book benchmark. Its routing policy is published
-with OpenRouter provider settings so the file runs as-is with `OPENROUTER_API_KEY`. The header
-records the Switchyard commit, model ids, harness inputs, run id, and the one crashed task. The
-profile's public route id is `gpt-5.6-luna`, matching the qualification run:
+Run the Stage profile. Its public route ID is `gpt-5.6-luna`:
 
 ```bash
 export OPENROUTER_API_KEY="..."

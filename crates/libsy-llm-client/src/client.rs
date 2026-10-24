@@ -676,7 +676,7 @@ impl TranslatingLlmClient {
                 })?;
                 // Map a provider's failed generation to 502, even under HTTP 200.
                 // Redact forwarded credentials before returning the provider error.
-                let agg =
+                let mut agg =
                     observed_translation::decode_response(&body, wire_format).map_err(|error| {
                         match error {
                             TranslationError::UpstreamFailure { error } => {
@@ -692,6 +692,14 @@ impl TranslatingLlmClient {
                             error => LlmClientError::ResponseTranslation(error.to_string()),
                         }
                     })?;
+                // The gateway may report a buffered charge only in its response header.
+                if agg.usage.provider_cost.is_none() {
+                    agg.usage.provider_cost = upstream_headers
+                        .get("x-litellm-response-cost")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.trim().parse::<f64>().ok())
+                        .filter(|usd| usd.is_finite() && *usd >= 0.0);
+                }
                 (LlmResponse::Agg(agg), upstream_headers)
             }
         };
@@ -1035,8 +1043,10 @@ fn set_json_model(body: &mut Value, model: &str) {
 
 const CODEX_NAMESPACE_SEPARATOR: &str = "__";
 
-// Codex extends Responses with namespace containers and namespaced function
-// calls. OpenAI-compatible providers expect a flat Responses tool namespace.
+/// Rewrites a Responses body into the shape OpenAI-compatible providers accept.
+///
+/// Codex extends Responses with namespace containers and namespaced function calls, and
+/// OpenAI-compatible providers expect a flat Responses tool namespace.
 fn sanitize_openai_responses_provider_body(body: &mut Value) {
     let Value::Object(object) = body else {
         return;
@@ -3508,6 +3518,167 @@ mod tests {
         assert_eq!(body["output"][0]["type"], "function_call");
         assert_eq!(body["output"][0]["name"], "search");
         assert_eq!(body["output"][0]["namespace"], "mcp__open_websearch");
+        Ok(())
+    }
+
+    // A stage route can answer early steps of a Codex turn from Claude and a later step from
+    // GPT, and Codex replays Claude's reasoning items on every step. OpenAI returns 400 for two
+    // kinds: items with an ID but no `encrypted_content` when the request sets `store: false`,
+    // and items whose `encrypted_content` holds Anthropic thinking that Switchyard packed for
+    // the client. The Responses leg must drop both and keep GPT's own encrypted reasoning.
+    #[tokio::test]
+    async fn openai_responses_backend_drops_reasoning_the_provider_cannot_read()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "resp_1",
+                "model": "gpt",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "ok"}]
+                }],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+            })))
+            .mount(&server)
+            .await;
+
+        let mut claude_reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_b99feb9a-763d-4f7f-b6b2-2c0199b47ded",
+            "summary": [{"type": "summary_text", "text": "Read the files first."}],
+            "encrypted_content": null
+        });
+        // Build the item the way Switchyard does when it returns a Claude reply to a Responses
+        // client, so the test follows any change to that format.
+        let claude_reply = switchyard_translation::TranslationEngine::default()
+            .translate_response(
+                WireFormat::AnthropicMessages,
+                WireFormat::OpenAiResponses,
+                &json!({
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude",
+                    "content": [
+                        {"type": "thinking", "thinking": "Plan the edit.", "signature": "sig-abc"},
+                        {"type": "text", "text": "ok"}
+                    ],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }),
+                &switchyard_translation::TranslationPolicy::default(),
+            )?
+            .body;
+        let switchyard_reasoning = claude_reply["output"]
+            .as_array()
+            .and_then(|output| output.iter().find(|item| item["type"] == "reasoning"))
+            .cloned()
+            .ok_or("translated Claude reply should contain a reasoning item")?;
+        assert!(switchyard_translation::is_anthropic_thinking_envelope(
+            switchyard_reasoning["encrypted_content"]
+                .as_str()
+                .unwrap_or_default()
+        ));
+        let mut gpt_reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_gpt",
+            "summary": [],
+            "encrypted_content": "opaque-encrypted-reasoning"
+        });
+        let mut empty_reasoning =
+            json!({"type": "reasoning", "id": "rs_empty", "summary": [], "encrypted_content": ""});
+        let user = json!({"type": "message", "role": "user", "content": "fix the build"});
+        let call = json!({"type": "function_call", "call_id": "call_1", "name": "exec", "arguments": "{}"});
+        let output = json!({"type": "function_call_output", "call_id": "call_1", "output": "ok"});
+        let input = json!([
+            user,
+            claude_reasoning,
+            switchyard_reasoning,
+            call,
+            output,
+            gpt_reasoning,
+            empty_reasoning
+        ]);
+
+        for has_input_override in [false, true] {
+            let mut models = responses_map(&format!("{}/v1", server.uri()));
+            if has_input_override {
+                let Backend::OpenAiResponses(backend) = &mut models[0].default_backend else {
+                    return Err("expected Responses backend".into());
+                };
+                backend.omit_body_fields.insert("input".to_string());
+                backend
+                    .extra_body
+                    .insert("input".to_string(), input.clone());
+            }
+            let client = TranslatingLlmClient::new(&models)?;
+            for store in [json!(false), json!(true)] {
+                let raw = json!({"model": "client-facing", "store": store, "input": input.clone()});
+                client
+                    .call_rewrite_model_raw(
+                        raw,
+                        None,
+                        Some(&ModelId::from("gpt")),
+                        WireFormat::OpenAiResponses,
+                    )
+                    .await?;
+            }
+        }
+
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        let sent: Vec<Value> = received
+            .iter()
+            .map(|request| serde_json::from_slice::<Value>(&request.body))
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(sent.len(), 4);
+        for request in &sent {
+            assert!(
+                request["input"]
+                    .as_array()
+                    .ok_or("expected input array")?
+                    .iter()
+                    .all(|item| !item["encrypted_content"]
+                        .as_str()
+                        .is_some_and(switchyard_translation::is_anthropic_thinking_envelope)),
+                "provider cannot read translated Anthropic reasoning"
+            );
+        }
+        for item in [
+            &mut claude_reasoning,
+            &mut gpt_reasoning,
+            &mut empty_reasoning,
+        ] {
+            item["content"] = json!([]);
+        }
+        for requests in sent.as_chunks::<2>().0 {
+            // With `store: false`, only GPT's own encrypted reasoning survives.
+            assert_eq!(
+                requests[0]["input"],
+                json!([user, call, output, gpt_reasoning])
+            );
+            // With `store: true`, IDs can refer to stored reasoning, but OpenAI still cannot
+            // decrypt the Switchyard item.
+            assert_eq!(
+                requests[1]["input"],
+                json!([
+                    user,
+                    claude_reasoning,
+                    call,
+                    output,
+                    gpt_reasoning,
+                    empty_reasoning
+                ])
+            );
+        }
         Ok(())
     }
 

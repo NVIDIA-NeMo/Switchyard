@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1250 560" width="1250" height="560" role="img" aria-labelledby="title description">
   <title id="title">Switchyard task completion versus cost</title>
-  <desc id="description">The original classification, stage, escalation, Opus 4.8, and GLM 5.2 points preserve the positions shown in switchyard-cost-accuracy.png. Jev task routing is a separate exploratory recorded-run replay: 73 of 89 tasks completed (82.02%) at an estimated model cost of $92.12, including estimated Jev calls. The combined set includes 62 training tasks. On the reused 27-task test split, Jev solved 22 tasks versus 23 for its paired Opus baseline. The replay used a different evaluation setup and cost accounting from the other plotted runs; its adapted TOML profile needs a fresh evaluation.</desc>
+  <desc id="description">The original classification, stage, escalation, Opus 4.8, and GLM 5.2 points preserve the positions shown in the published comparison. Jev task routing is a separate exploratory recorded-run replay: 73 of 89 tasks completed (82.02%) at an estimated model cost of $92.12, including estimated Jev calls. The combined set includes 62 training tasks. On the reused 27-task test split, Jev solved 22 tasks versus 23 for its paired Opus baseline. The replay used a different evaluation setup and cost accounting from the other plotted runs; its adapted TOML profile needs a fresh evaluation.</desc>
   <defs>
     <linearGradient id="frontier" gradientUnits="userSpaceOnUse" x1="157" y1="24" x2="309" y2="176">
       <stop offset="0" stop-color="#5f8f15"/>
@@ -59,7 +59,7 @@
 
   <g id="jev-replay" data-total-cost="92.116074918" data-successes="73" data-tasks="89">
     <circle cx="563.754" cy="52.421" r="9" class="route"/>
-    <text x="583" y="45" class="label">Jev Task Router</text>
+    <text x="583" y="45" class="label">Jev Task Router (replay)</text>
     <text x="583" y="64" class="models">Opus 4.8 and GLM 5.2</text>
   </g>
 
