@@ -5,7 +5,7 @@ use std::sync::{Arc, mpsc};
 
 use serde_json::{Value, json};
 use switchyard_llm_client::RunObservation;
-use switchyard_protocol::{Request, Usage, text_request};
+use switchyard_protocol::{Metadata, Request, Usage, text_request};
 use switchyard_runner::Runner;
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -84,6 +84,10 @@ evidence = {{ description = "Compare a and b" }}
         .execute(
             Request {
                 llm_request: text_request(None, "Route this request"),
+                metadata: Some(Metadata {
+                    session_id: Some("session-1".into()),
+                    ..Metadata::default()
+                }),
                 ..Request::default()
             },
             Some(Arc::new(move |event| {
@@ -114,6 +118,7 @@ evidence = {{ description = "Compare a and b" }}
         context["evidence"],
         json!({"description": "Compare a and b"})
     );
+    assert_eq!(context["session"], "session-1");
     server.verify().await;
     Ok(())
 }
