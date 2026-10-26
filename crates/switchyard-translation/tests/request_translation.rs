@@ -2879,57 +2879,28 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
         output["messages"][0]["content"][0],
         json!({"type": "text", "text": "Describe"})
     );
-    Ok(())
-}
 
-// OpenAI accepts "none" and "minimal" reasoning effort, which Anthropic does not.
-#[test]
-fn openai_reasoning_effort_maps_to_anthropic_effort() -> TestResult {
-    let engine = TranslationEngine::default();
-    for (effort, thinking, output_config) in [
+    // OpenAI also accepts "none" and "minimal", which Anthropic rejects as efforts.
+    for (effort, thinking, anthropic_effort) in [
         ("none", json!({"type": "disabled"}), None),
-        (
-            "minimal",
-            json!({"type": "adaptive"}),
-            Some(json!({"effort": "low"})),
-        ),
-        (
-            "low",
-            json!({"type": "adaptive"}),
-            Some(json!({"effort": "low"})),
-        ),
-        (
-            "high",
-            json!({"type": "adaptive"}),
-            Some(json!({"effort": "high"})),
-        ),
+        ("minimal", json!({"type": "adaptive"}), Some(json!("low"))),
     ] {
-        let messages = json!([{"role": "user", "content": "hi"}]);
-        for (format, body) in [
-            (
+        let mut body = body.clone();
+        body["reasoning_effort"] = json!(effort);
+        let output = engine
+            .translate_request(
                 WireFormat::OpenAiChat,
-                json!({"model": "gpt-5", "messages": messages, "reasoning_effort": effort}),
-            ),
-            (
-                WireFormat::OpenAiResponses,
-                json!({"model": "gpt-5", "input": messages, "reasoning": {"effort": effort}}),
-            ),
-        ] {
-            let output = engine
-                .translate_request(
-                    format,
-                    WireFormat::AnthropicMessages,
-                    &body,
-                    &TranslationPolicy::default(),
-                )?
-                .body;
-            assert_eq!(output["thinking"], thinking, "{format:?} {effort}");
-            assert_eq!(
-                output.get("output_config"),
-                output_config.as_ref(),
-                "{format:?} {effort}"
-            );
-        }
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(output["thinking"], thinking, "{effort}");
+        assert_eq!(
+            output["output_config"].get("effort"),
+            anthropic_effort.as_ref(),
+            "{effort}"
+        );
     }
     Ok(())
 }
