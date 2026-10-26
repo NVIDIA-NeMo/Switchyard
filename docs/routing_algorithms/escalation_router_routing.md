@@ -191,7 +191,7 @@ verdict without new evidence resets the streak to zero.
 ## Run the route
 
 After installing the Rust server, as described in
-[Getting Started](../getting_started.md#install-the-server), export the provider
+[Local Evaluation](../operations/local_evaluation.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash
@@ -252,6 +252,8 @@ retained nor logged.
 ## Related
 
 - [Routing Overview](overview.md): compare all supported routing strategies.
+- [Model Selection](model_selection.md): choose the weak, strong, and judge
+  models, with measured pairs.
 - [LLM Classifier Routing](llm_classifier_routing.md): pick a tier up front
   instead of judging the run.
 - [Architecture](../architecture.md): the end-to-end request lifecycle and system

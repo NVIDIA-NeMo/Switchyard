@@ -29,7 +29,7 @@ sequenceDiagram
 ```
 
 This directory owns the service, tests and image build. The
-[Dynamo deployment example](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/vllm/deploy/gaie/switchyard)
+[Dynamo deployment example](https://github.com/ai-dynamo/dynamo/tree/main/examples/backends/sglang/deploy/gaie/switchyard)
 owns the Kubernetes manifests and model-pool bindings. It assumes the cluster, gateway
 controller, model workers and EPPs are already installed.
 

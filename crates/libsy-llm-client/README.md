@@ -154,6 +154,12 @@ async fn stream(
 runs. The terminal outcome either already contains the answer or supplies the selected model and
 ordered fallbacks for the client to try. `ClientRouter::single` is the single-provider case:
 
+Routing-time calls run concurrently. If an algorithm drops one of its waiting
+call futures, the corresponding HTTP work is dropped while other calls continue.
+Ending or dropping the run drops all outstanding call handlers. A returned
+response stream stays alive until its consumer finishes or drops it. These are
+local cancellation guarantees; a provider may continue generation after disconnect.
+
 ```rust
 use std::sync::Arc;
 use switchyard_libsy::{Algorithm, RuntimeModels};

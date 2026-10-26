@@ -4,19 +4,42 @@
 
 # NVIDIA NeMo Switchyard
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/NVIDIA-NeMo/Switchyard" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases"><img src="https://img.shields.io/github/v/release/NVIDIA-NeMo/Switchyard" alt="Latest GitHub release"></a>
+  <a href="https://pypi.org/project/nemo-switchyard/"><img src="https://img.shields.io/pypi/v/nemo-switchyard" alt="PyPI: nemo-switchyard"></a>
+  <a href="https://crates.io/crates/switchyard-libsy"><img src="https://img.shields.io/crates/v/switchyard-libsy?label=crates.io%20%28libsy%29" alt="crates.io: switchyard-libsy"></a>
+  <a href="https://crates.io/crates/switchyard-server"><img src="https://img.shields.io/crates/v/switchyard-server?label=crates.io%20%28server%29" alt="crates.io: switchyard-server"></a>
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/graphs/contributors"><img src="https://img.shields.io/github/contributors/NVIDIA-NeMo/Switchyard" alt="GitHub contributors"></a>
+</p>
+
 Switchyard is an open-source library that helps an AI agent choose which model handles each request. It combines efficient models with more capable models so you can balance task success, cost, and latency on your workload.
 
-Use Switchyard through a gateway integration, try it with a local proxy, or embed it in your own harness. You choose the model pool. Switchyard supplies the routing decision. Your gateway or application owns the surrounding service.
+Adopt Switchyard by embedding its Rust core, **libsy**, in your gateway or agent harness. You own the model clients, credentials, and service. Switchyard supplies the routing decision.
+
+<p align="center">
+  <a href="docs/getting_started.md">Quickstart</a> &emsp;·&emsp;
+  <a href="https://nvidia-nemo.github.io/Switchyard/">Documentation</a> &emsp;·&emsp;
+  <a href="docs/benchmarks.md">Benchmarks</a> &emsp;·&emsp;
+  <a href="#whats-new">What’s new</a> &emsp;·&emsp;
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/issues/1026">Roadmap</a> &emsp;·&emsp;
+  <a href="https://github.com/NVIDIA-NeMo/Switchyard/releases">Releases</a> &emsp;·&emsp;
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 ## How it works
 
-1. Configure the models your application can use and choose a routing algorithm.
+1. Configure the models an agent can use and choose a routing algorithm.
 2. The algorithm examines the request or the agent's recent tool activity. Some algorithms call a model to judge the task.
-3. Your gateway or application sends the request to the selected model. Routing can change as the agent continues its work.
+3. A gateway or agent sends the request to the selected model. Routing can change as the agent continues its work.
 
-Evaluate the complete agent, model pool, and routing configuration against your single-model baseline. A cheaper model call does not guarantee a cheaper successfully completed task.
+Evaluate the complete agent, model pool, and routing configuration against your single-model baseline. A cheaper model call does not guarantee a cheaper successfully completed task. The [tuning loop](docs/tuning/index.md) gives the steps for that evaluation, and [Troubleshooting](docs/operations/troubleshooting.md) lists the settings that disable routing without an error.
 
 ## How to use it
+
+- **[Through an existing gateway](#through-an-existing-gateway):** Use an available gateway integration.
+- **[Embed libsy in your harness](#embed-libsy-in-your-harness):** Add libsy to a service you operate.
+- **[Evaluate Switchyard locally](#evaluate-switchyard-locally):** Compare routing configurations with your own model pool using the demo server.
 
 ### Through an existing gateway
 
@@ -24,7 +47,7 @@ Evaluate the complete agent, model pool, and routing configuration against your 
 | --- | --- | --- |
 | **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
 | **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
-| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.8.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
+| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when the plugin
 is enabled, even for models outside its routes. Review the
@@ -33,16 +56,51 @@ before enabling the plugin.
 
 LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidance for credentials and service operation.
 
-### Try routing locally
+<a id="start-with-libsy"></a>
 
-[Try routing locally](docs/getting_started.md#server-path) with the standalone proxy for demos and evaluation.
+### Embed libsy in your harness
+
+`Algorithm::run_stream` hands model calls and the final routing outcome back to your application. In this development-API outline, comments mark the work your code supplies:
+
+```rust
+let mut steps = algorithm.run_stream(request, models, state);
+while let Some(step) = steps.next().await {
+    match step? {
+        Step::CallModel(call) => {
+            // Send call.request through your LLM client.
+            // Give the call future to call.respond(...).await.
+        }
+        Step::CallDecision(call) => {
+            // Send call.request through your decision-model client.
+            // Give its typed response future to call.respond(...).await.
+        }
+        Step::Done(outcome) => {
+            match outcome.response {
+                Some(response) => {
+                    // Return this answer; no final LLM call is needed.
+                }
+                None => {
+                    // Send outcome.request through your client for the final answer,
+                    // or pass it to your gateway to make that call later.
+                }
+            }
+        }
+    }
+}
+```
+
+- **Inputs:** supply an algorithm, model pool, request, and state.
+- **Calls:** your clients handle model calls. Stage returns a selection; other algorithms may return an answer.
+- **Start here:** [Rust quickstart](docs/getting_started.md) · [Python bindings](docs/reference/host_integration.md#python-bindings).
+
+### Evaluate Switchyard locally
+
+The standalone server is provided only for demos and local evaluation. It is not a supported production deployment path.
+
+[Evaluate routing locally](docs/operations/local_evaluation.md) with the standalone server and your own model pool, then [verify routing is active](docs/operations/local_evaluation.md#verify-routing-is-active).
 
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).
-
-### Embed the library in your harness
-
-[Embed the library in your harness](docs/getting_started.md#library-path) to run routing inside your Rust application. For Python, see the [embedding example](examples/libsy.py).
 
 ## Routing algorithms
 
@@ -55,15 +113,15 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 | **[Execution](docs/routing_algorithms/stage_router_routing.md)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. | `type = "stage_router"` |
 | **[Composite](docs/routing_algorithms/composite_routing.md)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. | `type = "composite"` |
 
-Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. For direct Python embedding, use `stage_router(picker="efficient_first", confidence_threshold=0.5)` for the same preset.
+Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. In Rust, use `StageRouterConfig::new(PickerMode::EfficientFirst, 0.5)` for the same preset.
 
 The [routing overview](docs/routing_algorithms/overview.md) retains the full catalogue, including [Plan/Execute](docs/routing_algorithms/plan_execute_routing.md), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md) strategies. Integration support varies: check the gateway guide before choosing an algorithm.
 
+[Prefill routing](docs/routing_algorithms/prefill_routing.md) is designed for fast, efficient model selection using a model's prefill activations and a classifier trained on your own evaluation data.
+
 ## Evaluation and reference
 
-![Task completion versus cost for Switchyard classification, stage, and escalation routing, compared with Opus 4.8 and GLM 5.2 single-model baselines.](assets/switchyard-cost-accuracy.png)
-
-Results depend on the benchmark, model pool, serving stack, and routing configuration.
+[Compare benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1 and DeepSWE.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
 
 ### Further reading
@@ -71,7 +129,7 @@ For latency and routing overhead testing, see [Soak Testing](docs/operations/soa
 - [Benchmark setup and profiles](benchmark/README.md): run your own baseline and routing comparisons.
 - [Core concepts](docs/core_concepts.md): clients, targets, routes, and model IDs.
 - [TOML schema](docs/reference/toml_schema.md): configuration fields and defaults.
-- [Architecture](docs/architecture.md): library and runtime components.
+- [Architecture](docs/architecture.md): libsy and runtime components.
 - [Installation](INSTALLATION.md): package and platform requirements.
 
 ## Components
@@ -84,7 +142,28 @@ releases. Pin the version you integrate.
 | `switchyard-libsy` | **Beta** | Routing embedded in your own gateway or harness. You own model calls, credentials, and retries. | Trial integrations. API will change before v1.0. |
 | `switchyard-llm-client` | **Alpha** | HTTP model calls and protocol translation alongside libsy. | Experiments and pilots. |
 | `switchyard-runner` | **Alpha** | Running configured routes inside another runtime, such as NeMo Relay. | Integration work and supervised pilots. |
-| `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy, including a local Codex service. | Demos, evaluation, and personal use on single-user machines. Not for production. |
+| `switchyard-server` | **Demo** | A standalone OpenAI- and Anthropic-compatible proxy. | Demos and local evaluation only; not a supported production path. |
+
+![Switchyard Components](docs/assets/switchyard-components.png)
+
+## What’s new
+
+Features and integrations recently merged into `main`.
+
+- **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
+  Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)
+
+- **2026-10-15 · Use decision models in composite routing**\
+  Use Mercury Decide to judge tasks and Stage routing to adjust model selection as tools run. [Example configuration →](dev-server/config.toml)
+
+- **2026-10-13 · Use Jev to choose between models**\
+  Configure Jev as a task judge with candidate descriptions and a probability cutoff. [Configuration guide →](docs/routing_algorithms/composite_routing.md#decision-model-classifier)
+
+- **2026-10-12 · Bring Switchyard to TypeScript and Pi**\
+  Select models in Node.js or try automatic routing through Pi’s virtual models. [TypeScript bindings →](bindings/typescript/README.md) · [Pi example →](examples/pi/README.md)
+
+- **2026-10-08 · Run Codex with Switchyard on macOS**\
+  Install a background router and Codex profile, then track usage and estimated savings from the menu bar. [Setup guide →](crates/switchyard-menubar/README.md)
 
 ## Community and license
 

@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Replace model IDs, addresses, and cloud authentication for your deployment.
+schema_version = 1
+
+# llama.cpp is active in this example. Discovery must be explicitly enabled.
+[llm_clients.local]
+format = "openai_chat"
+base_url = "http://localhost:8080/v1"
+context_discovery = "llama_cpp"
+
+# For Ollama or vLLM, replace the active local client block with ONE block below.
+# Also set context_window in routes.assistant to match the running service.
+#
+# Ollama:
+# [llm_clients.local]
+# format = "openai_chat"
+# base_url = "http://localhost:11434/v1"
+#
+# vLLM:
+# [llm_clients.local]
+# format = "openai_chat"
+# base_url = "http://localhost:8000/v1"
+
+[llm_clients.cloud]
+format = "openai_chat"
+base_url = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+
+[targets.local]
+# Use the llama.cpp alias, Ollama model tag, or vLLM served model name.
+id = "local-model"
+llm_client = "local"
+
+[targets.cloud]
+id = "cloud-model"
+llm_client = "cloud"
+
+[routes.assistant]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "local"
+cloud_target = "cloud"
+mode = "shadow"
+# Explicit context_window takes precedence and skips discovery.
+# Set this for Ollama/vLLM, or to set a deliberate limit with llama.cpp.
+# context_window = 32768

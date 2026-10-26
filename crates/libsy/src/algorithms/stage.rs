@@ -19,10 +19,11 @@ use async_trait::async_trait;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
+use super::util::affinity::ClassifyTrigger;
 use super::util::prompts::prepend_system_prompt;
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
-    record_decision_source, record_routing_decision,
+    record_routing_decision,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -41,7 +42,7 @@ struct TierPromptProcessor {
 }
 
 #[async_trait]
-impl Processor<State> for TierPromptProcessor {
+impl Processor for TierPromptProcessor {
     async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Decision {
             request, category, ..
@@ -65,12 +66,12 @@ impl Processor<State> for TierPromptProcessor {
 /// The classifiers themselves are composition-agnostic and write no state; only
 /// this router knows where each sits in its cascade.
 struct SourceStamp {
-    inner: Arc<dyn Classifier<State>>,
+    inner: Arc<dyn Classifier>,
     source: DecisionSource,
 }
 
 #[async_trait]
-impl Classifier<State> for SourceStamp {
+impl Classifier for SourceStamp {
     async fn score(
         &self,
         state: &mut State,
@@ -80,7 +81,6 @@ impl Classifier<State> for SourceStamp {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
-            record_decision_source(state, self.source);
             record_routing_decision(self.source, &winner.target);
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
@@ -96,7 +96,7 @@ struct FallOpen {
 }
 
 #[async_trait]
-impl Classifier<State> for FallOpen {
+impl Classifier for FallOpen {
     async fn score(
         &self,
         state: &mut State,
@@ -122,10 +122,11 @@ impl Classifier<State> for FallOpen {
 
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
-    /// Judge configuration. `recent_turn_window` is worth setting to this router's
-    /// `recent_window` so the judge reads the same span the signal scorer scored.
-    /// Note: `classify_trigger = new_session` and `message_hash_fallback` have no effect here —
-    /// the judge runs as a cascade classifier, not a standalone algorithm.
+    /// Judge configuration. Its `recent_turn_window` counts trailing messages, while
+    /// this router's `recent_window` counts tool results.
+    /// Note: `classify_trigger` and `message_hash_fallback` have no effect here. The judge
+    /// runs as a cascade classifier on every ambiguous turn, not as a standalone algorithm,
+    /// so no verdict is retained.
     pub config: TaskClassifierConfig,
 }
 
@@ -135,6 +136,8 @@ pub struct StageRouterConfig {
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
     pub confidence_threshold: f64,
+    /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
+    pub capable_first_threshold: f64,
     /// Trailing tool results the signals are computed over. `None` uses
     /// [`DEFAULT_RECENT_WINDOW`].
     pub recent_window: Option<usize>,
@@ -162,6 +165,7 @@ impl StageRouterConfig {
         Self {
             mode,
             confidence_threshold,
+            capable_first_threshold: 0.0,
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
             capable_hold_turns: 2,
@@ -177,15 +181,28 @@ impl StageRouterConfig {
 /// decide first, an optional capability judge takes the turns they cannot, and
 /// the picker's default tier closes the cascade so a turn is never left unrouted.
 pub struct StageRouter {
-    route: FallThrough<State>,
+    route: FallThrough,
 }
 
 impl StageRouter {
     /// Routes between the runtime `capable` and `efficient` models. The judge,
     /// when configured, is called through the runtime `judge` model.
     ///
-    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
+    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`, or if the
+    /// fallback judge is asked to retain verdicts: it runs on every ambiguous
+    /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
+        if let Some(fallback) = &config.llm_fallback
+            && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
+                || fallback.config.message_hash_fallback)
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "classify_trigger and message_hash_fallback have no effect on the \
+                          stage fallback judge, which runs on every ambiguous turn; remove \
+                          them, or use a composite route to judge once per user turn"
+                    .to_string(),
+            });
+        }
         Ok(Self {
             route: build_stage_route(config)?,
         })
@@ -209,20 +226,23 @@ impl Algorithm for StageRouter {
 
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
-pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough<State>> {
-    if !(0.0..=1.0).contains(&config.confidence_threshold) {
-        return Err(LibsyError::AlgorithmError {
-            message: format!(
-                "confidence_threshold must be between 0 and 1, got {}",
-                config.confidence_threshold
-            ),
-        });
+pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough> {
+    for (name, threshold) in [
+        ("confidence_threshold", config.confidence_threshold),
+        ("capable_first_threshold", config.capable_first_threshold),
+    ] {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!("{name} must be between 0 and 1, got {threshold}"),
+            });
+        }
     }
     config.tool_semantics.validate()?;
     let default_tier = config.mode.default_tier();
     let fall_open = FallOpen { default_tier };
 
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
+        .with_capable_first_threshold(config.capable_first_threshold)
         .with_capable_hold_turns(config.capable_hold_turns);
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
@@ -231,7 +251,7 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
         recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
         tool_semantics: config.tool_semantics,
     };
-    let mut router = FallThrough::<State>::new_with_state()
+    let mut router = FallThrough::new_with_state()
         .with_name(STAGE_ROUTER)
         .with_processor(Arc::new(signals))
         .with_classifier(Arc::new(classifier));
@@ -267,17 +287,16 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::*;
-    use crate::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_fall_open, set_fall_open};
+    use crate::algorithms::util::stage::{clear_fall_open, set_fall_open};
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
-    use crate::core::state::StateValue;
-    use crate::core::testing::{empty_driver, test_drive_with_models};
+    use crate::core::testing::test_drive_with_models;
     use switchyard_protocol::{Category, ModelId};
 
     /// A classifier that always picks `target`, standing in for a cascade member.
     struct Fixed(&'static str);
 
     #[async_trait]
-    impl Classifier<State> for Fixed {
+    impl Classifier for Fixed {
         async fn score(
             &self,
             _state: &mut State,
@@ -299,7 +318,7 @@ mod tests {
     struct Abstains;
 
     #[async_trait]
-    impl Classifier<State> for Abstains {
+    impl Classifier for Abstains {
         async fn score(
             &self,
             _state: &mut State,
@@ -310,19 +329,29 @@ mod tests {
         }
     }
 
-    async fn stamped(inner: Arc<dyn Classifier<State>>) -> Result<Option<String>> {
+    async fn stamped(inner: Arc<dyn Classifier>) -> Result<Option<String>> {
         let stamp = SourceStamp {
             inner,
             source: DecisionSource::LlmClassifier,
         };
-        let mut state = State::default();
+        let (driver, mut rx) = Driver::new("test", Arc::new(crate::RuntimeModels::default()));
         stamp
-            .score(&mut state, &mut Request::default(), &empty_driver())
+            .score(&mut State::default(), &mut Request::default(), &driver)
             .await?;
-        Ok(match state.extra.get(DECISION_SOURCE_KEY) {
-            Some(StateValue::String(source)) => Some(source.clone()),
-            _ => None,
-        })
+        driver
+            .finish(Ok(crate::RoutingOutcome::route_to(
+                "strong".into(),
+                Vec::new(),
+                Request::default(),
+            )))
+            .await?;
+        let Some(Ok(crate::Step::Done(outcome))) = rx.recv().await else {
+            panic!("expected Done step");
+        };
+        Ok(outcome
+            .metadata
+            .and_then(|metadata| metadata.evidence)
+            .and_then(|evidence| evidence.get("source")?.as_str().map(str::to_string)))
     }
 
     #[tokio::test]
@@ -391,6 +420,31 @@ mod tests {
     }
 
     #[test]
+    fn rejects_retaining_triggers_on_the_fallback_judge() {
+        for (trigger, message_hash_fallback) in [
+            (ClassifyTrigger::UserTurn, false),
+            (ClassifyTrigger::NewSession, false),
+            (ClassifyTrigger::UserTurn, true),
+        ] {
+            let mut config = config();
+            config.llm_fallback = Some(LlmFallback {
+                config: TaskClassifierConfig {
+                    classify_trigger: trigger,
+                    message_hash_fallback,
+                    ..Default::default()
+                },
+            });
+            assert!(
+                matches!(
+                    StageRouter::new(config),
+                    Err(LibsyError::AlgorithmError { .. })
+                ),
+                "{trigger:?} with message_hash_fallback = {message_hash_fallback}"
+            );
+        }
+    }
+
+    #[test]
     fn builds() -> Result<()> {
         let router = StageRouter::new(config())?;
         assert_eq!(router.name(), STAGE_ROUTER);
@@ -434,7 +488,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Processor<State> for TierDecider {
+    impl Processor for TierDecider {
         async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
             if matches!(event, Event::Request { .. }) {
                 let mut requests = self.requests.lock();

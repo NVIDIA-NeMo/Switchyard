@@ -344,7 +344,7 @@ fn client_error_reason(error: &LlmClientError) -> &'static str {
 }
 
 #[async_trait]
-impl<J, P> Classifier<State> for JudgeClassifier<J, P>
+impl<J, P> Classifier for JudgeClassifier<J, P>
 where
     J: Judge,
     P: JudgePolicy<Verdict = J::Verdict>,
@@ -588,7 +588,7 @@ mod tests {
 
         let serve = async {
             if let Some(Ok(Step::CallModel(call))) = steps.next().await {
-                let _ = call.respond(reply);
+                let _ = call.respond(std::future::ready(reply)).await;
             }
         };
         let (classification, ()) =
