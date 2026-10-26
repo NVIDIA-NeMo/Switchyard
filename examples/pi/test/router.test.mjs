@@ -41,9 +41,34 @@ function setup(t, answer = result()) {
     findOfType: t.mock.fn((type, provider, id) => ({ type, provider, id })),
     classify: t.mock.fn(async () => answer),
   };
+  const entries = [];
+  const flags = new Map();
+  const commands = new Map();
+  const handlers = new Map();
+  const ctx = {
+    modelRegistry: registry,
+    sessionManager: { getEntries: () => entries },
+    isIdle: t.mock.fn(() => true),
+    ui: { setStatus: t.mock.fn(), notify: t.mock.fn() },
+  };
   let definition;
-  extension({ registerVirtualModel: (value) => { definition = value; } });
-  return { definition, registry, path, route: (req) => definition.route(req, { modelRegistry: registry }) };
+  const reload = () => extension({
+    registerVirtualModel: (value) => { definition = value; },
+    registerFlag: (name, options) => {
+      if (!flags.has(name)) flags.set(name, options.default);
+    },
+    getFlag: (name) => flags.get(name),
+    registerCommand: (name, command) => commands.set(name, command),
+    on: (name, handler) => handlers.set(name, handler),
+    appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+  });
+  reload();
+  return {
+    definition, registry, path, ctx, entries, flags, reload,
+    command: (name) => commands.get(name).handler("", ctx),
+    start: () => handlers.get("session_start")({ type: "session_start" }, ctx),
+    route: (req) => definition.route(req, ctx),
+  };
 }
 
 function tool(id, name, args, text, isError = false) {
@@ -194,4 +219,62 @@ test("message and classifier adapters preserve content and model identities", as
       type: "choice", instructions: "Choose a model", criteria: { advantage: "Complex work", no_advantage: '{"task":"Simple work"}', unspecified: "null" },
     } },
   });
+});
+
+test("local-only routes user, tool, and direct requests without a classifier", async (t) => {
+  const { route, registry, path, flags, entries, ctx } = setup(t);
+  writeFileSync(path, JSON.stringify({ ...config, local_model: "local/coder" }));
+  flags.set("local-only", true);
+  for (const fields of [
+    {},
+    { reason: "continuation", messages: [...request().messages, ...tool("read", "read", {}, "private record")] },
+    { reason: "direct", state: undefined },
+    { reason: "retry" },
+  ]) {
+    assert.deepEqual(await route(request(fields)), {
+      model: { provider: "local", id: "coder" }, thinkingLevel: "off",
+    });
+  }
+  assert.equal(registry.findOfType.mock.callCount(), 0);
+  assert.equal(registry.classify.mock.callCount(), 0);
+  assert.deepEqual(entries, [{ type: "custom", customType: "switchyard.local-only", data: true }]);
+  assert.deepEqual(ctx.ui.setStatus.mock.calls.at(-1).arguments, ["switchyard-local-only", "local only"]);
+});
+
+test("local-only rejects missing or unavailable local models without cloud fallback", async (t) => {
+  const { route, registry, path, flags, reload } = setup(t);
+  flags.set("local-only", true);
+  await assert.rejects(route(request()), /Configure local_model/);
+  writeFileSync(path, JSON.stringify({ ...config, local_model: "local/coder" }));
+  reload();
+  for (const model of [undefined, { provider: "switchyard", id: "auto", api: "pi-virtual" }]) {
+    registry.find.mock.mockImplementationOnce(() => model);
+    await assert.rejects(route(request()), /not a physical model in the catalog/);
+  }
+  registry.find.mock.mockImplementationOnce(() => { throw new Error("local model unavailable"); });
+  await assert.rejects(route(request()), /local model unavailable/);
+  assert.equal(registry.findOfType.mock.callCount(), 0);
+  assert.equal(registry.classify.mock.callCount(), 0);
+});
+
+test("the idle-only local command retains the session restriction across reload and resume", async (t) => {
+  const { route, registry, path, entries, ctx, command, reload, start } = setup(t);
+  writeFileSync(path, JSON.stringify({ ...config, local_model: "local/coder" }));
+  ctx.isIdle.mock.mockImplementationOnce(() => false);
+  await command("local");
+  assert.deepEqual(entries, []);
+  assert.match(ctx.ui.notify.mock.calls.at(-1).arguments[0], /idle/);
+  await command("local");
+  assert.equal(entries.length, 1);
+  entries.push({ type: "custom", customType: "switchyard.local-only", data: false });
+  reload();
+  start();
+  assert.equal((await route(request({ reason: "direct", state: undefined }))).model.provider, "local");
+  assert.equal(registry.classify.mock.callCount(), 0);
+  assert.deepEqual(ctx.ui.setStatus.mock.calls.at(-1).arguments, ["switchyard-local-only", "local only"]);
+  // A fresh session has no restriction entry; editing router state cannot clear an existing one.
+  entries.length = 0;
+  start();
+  assert.equal((await route(request())).model.provider, "openai-codex");
+  assert.equal(registry.classify.mock.callCount(), 1);
 });

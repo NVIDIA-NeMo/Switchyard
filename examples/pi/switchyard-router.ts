@@ -7,10 +7,13 @@ import {
   CompositeRouter, type CompositeOptions, type CompositeState, type DecisionRequest,
   type DecisionResponse, type RoutingContent, type RoutingMessage,
 } from "@switchyard/libsy";
-import type {
-  ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, Message,
+import {
+  clampThinkingLevel, type ClassifierApi, type ClassifierContext, type ClassifierModel,
+  type ClassifierResult, type Message,
 } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+const LOCAL_ONLY_ENTRY = "switchyard.local-only";
 
 const POLICY = {
   classifier: {
@@ -38,15 +41,17 @@ function modelIdentity(reference: unknown) {
 function loadRouter() {
   const path = join(getAgentDir(), "switchyard-router.json");
   let classifier, capable, efficient;
+  let local: ReturnType<typeof modelIdentity> | undefined;
   try {
     const config = JSON.parse(readFileSync(path, "utf8"));
     classifier = modelIdentity(config.decision_model);
     capable = modelIdentity(config.capable_model);
     efficient = modelIdentity(config.efficient_model);
+    if (config.local_model !== undefined) local = modelIdentity(config.local_model);
   } catch (cause) {
     throw new Error(`Configure ${path} with decision_model, capable_model and efficient_model in provider/model form. See README for full example. ${(cause as Error).message}`, { cause });
   }
-  return { classifier, router: CompositeRouter.create({
+  return { classifier, local, router: CompositeRouter.create({
     ...POLICY,
     targets: { classifier: classifier.reference, capable: capable.reference, efficient: efficient.reference },
   }) };
@@ -117,13 +122,53 @@ function routingMessages(messages: readonly Message[]): RoutingMessage[] {
 export default function (pi: ExtensionAPI) {
   let loaded: ReturnType<typeof loadRouter> | undefined;
   let classifierModel: ClassifierModel<ClassifierApi> | undefined;
+
+  pi.registerFlag("local-only", {
+    description: "Require the configured local model for this session",
+    type: "boolean",
+    default: false,
+  });
+
+  function localOnly(ctx: ExtensionContext): boolean {
+    // Read every session entry so tree navigation cannot clear a restriction.
+    const retained = ctx.sessionManager.getEntries().some((entry) =>
+      entry.type === "custom" && entry.customType === LOCAL_ONLY_ENTRY && entry.data === true);
+    const enabled = retained || pi.getFlag("local-only") === true;
+    if (enabled && !retained) pi.appendEntry(LOCAL_ONLY_ENTRY, true);
+    ctx.ui.setStatus("switchyard-local-only", enabled ? "local only" : undefined);
+    return enabled;
+  }
+
+  pi.on("session_start", (_event, ctx) => { localOnly(ctx); });
+  pi.registerCommand("local", {
+    description: "Require the local model; start a new session to return to cloud routing",
+    async handler(_args, ctx) {
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Wait until the agent is idle before using /local.", "warning");
+        return;
+      }
+      if (!localOnly(ctx)) pi.appendEntry(LOCAL_ONLY_ENTRY, true);
+      localOnly(ctx);
+      ctx.ui.notify("Local-only routing enabled. Start a new session to return to cloud routing.");
+    },
+  });
+
   pi.registerVirtualModel<CompositeState>({
     provider: "switchyard",
     id: "auto",
     name: "Auto (Switchyard)",
     thinkingLevels: ["medium"],
     async route(request, ctx) {
-      const { router, classifier } = loaded ??= loadRouter();
+      const restricted = localOnly(ctx);
+      const { router, classifier, local } = loaded ??= loadRouter();
+      if (restricted) {
+        if (!local) throw new Error("Configure local_model before using local-only routing");
+        const model = ctx.modelRegistry.find(local.provider, local.id);
+        if (!model || model.api === "pi-virtual") {
+          throw new Error(`Local model ${local.reference} is not a physical model in the catalog`);
+        }
+        return { model, thinkingLevel: clampThinkingLevel(model, request.thinkingLevel) };
+      }
       const judge = classifierModel ??= ctx.modelRegistry.findOfType("classifier", classifier.provider, classifier.id);
       if (!judge) throw new Error(`Unknown classifier: ${classifier.reference}`);
       const selection = await router.route(routingMessages(request.messages), {

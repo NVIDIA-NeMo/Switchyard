@@ -1,6 +1,6 @@
 # Pi virtual model using Switchyard composite routing
 
-This extension registers `switchyard/auto`. Pi calls a Decision classifier on
+This extension registers `switchyard/auto`. In unrestricted mode, Pi calls a Decision classifier on
 user turns. Switchyard's composite algorithm uses that answer and recent tool
 activity to select a completion model. Thinking stays `medium`.
 
@@ -19,7 +19,8 @@ Create `<agent-dir>/switchyard-router.json`. The agent directory defaults to
 {
   "decision_model": "openrouter/inception/mercury-decide:free",
   "capable_model": "openai-codex/gpt-6.1-sol",
-  "efficient_model": "openai-codex/gpt-6-luna"
+  "efficient_model": "openai-codex/gpt-6-luna",
+  "local_model": "local/coder"
 }
 ```
 
@@ -35,6 +36,40 @@ straightforward fixes. Pick completion models that fit these roles.
 The extension reads the config on its first routing request and caches it.
 Reload the extension after editing the config. Pi owns credentials and all model
 calls, including classifier calls. Classifier and completion calls may cost money.
+
+## Local only demo
+
+`local_model` is optional. It names a physical model in Pi's catalog, with its
+endpoint and credentials configured through Pi as usual. The operator must bind
+that model to an approved local endpoint; this extension does not verify the
+endpoint or classify request content.
+
+Start with `--local-only` to use that model for the whole session:
+
+```bash
+pi -e ./examples/pi/switchyard-router.ts --model switchyard/auto --local-only
+```
+
+Or enter `/local` while Pi is idle. The status bar shows `local only`. The
+restriction is saved as session state, not prompt text, and survives reload,
+resume, compaction and tree navigation. Start a new blank session without
+`--local-only` to return to cloud routing. The command cannot remove the
+restriction from a conversation that may already contain private data. A
+restriction cannot recall a request that was already dispatched.
+
+Local-only requests select `local_model` before any capability-classifier lookup
+or call. Pi sends the original conversation to that model; local mode does not
+redact it. It also covers tool continuations, retries and direct requests such
+as compaction summaries. Thinking is clamped to the local model's supported
+levels. A missing or unavailable local model fails the request; there is no
+cloud fallback.
+
+This is a host-side routing demo in the maintained extension. It does not use
+Runner or TOML eligibility enforcement. It requires no detector, customer
+adapter script or policy service. It governs only requests using
+`switchyard/auto`; manually choosing another provider or making a tool's own
+network calls bypasses this path. The unrestricted composite router is
+unchanged.
 
 ## Local setup
 
