@@ -52,6 +52,7 @@ nav:
           - pi: integrations/pi.md
           - Oh My Pi: integrations/oh_my_pi.md
   - Reference:
+      - API and Model Compatibility: reference/compatibility.md
       - Protocols:
           - LLM:
               - Requests: reference/protocols/llm_requests.md
