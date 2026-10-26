@@ -99,6 +99,9 @@ The standalone server is provided only for demos and local evaluation. It is not
 
 [Evaluate routing locally](docs/operations/local_evaluation.md) with the standalone server and your own model pool, then [verify routing is active](docs/operations/local_evaluation.md#verify-routing-is-active).
 
+The [desktop and terminal quickstart](crates/switchyard-desktop/README.md) covers
+local installation, coding-tool connections, sessions, usage, recovery, and uninstall.
+
 Agent-specific guides are available for [pi](docs/integrations/pi.md) and
 [Oh My Pi](docs/integrations/oh_my_pi.md).
 
