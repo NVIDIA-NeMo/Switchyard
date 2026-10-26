@@ -1,8 +1,8 @@
 # Switchyard libsy for Node.js
 
-TypeScript bindings for composite routing. Rust builds a Decision request and uses
-the caller's answer with local tool signals to select a model. The caller handles
-classifier calls, completion requests, and branch state.
+TypeScript bindings for Switchyard routing. Load configured algorithms from TOML,
+or construct a Composite router directly. Your gateway handles model and decision
+calls, authentication, and branch state.
 
 Requires Node.js 22.19 or newer and the repository's Rust toolchain. The package
 is private. Its native addon is built for the local host. Linux is covered in CI.
@@ -19,8 +19,7 @@ npm --prefix bindings/typescript test
 ```
 
 The build uses Cargo's development profile and copies the addon and license files
-into the package. Rebuild after changing Rust code. Tests use local decision
-callbacks.
+into the package. Rebuild after changing Rust code. Tests use local callbacks.
 
 Install the built package in a local Node project:
 
@@ -28,7 +27,65 @@ Install the built package in a local Node project:
 npm install /absolute/path/to/Switchyard/bindings/typescript
 ```
 
-## API
+## Configured algorithms from TOML
+
+`AlgorithmFactory` uses Runner's deployment schema and algorithm builder without
+creating provider clients or reading credentials. Save this as `routes.toml`:
+
+```toml
+schema_version = 1
+[llm_clients.gateway]
+format = "openai_chat"
+base_url = "https://models.example/v1"
+[targets]
+efficient = { id = "host/small-model", llm_client = "gateway" }
+capable = { id = "host/large-model", llm_client = "gateway" }
+[routes.coding]
+id = "switchyard/coding"
+type = "stage_router"
+efficient_target = "efficient"
+capable_target = "capable"
+picker = "efficient_first"
+confidence_threshold = 0.5
+```
+
+```ts
+import { readFile } from "node:fs/promises";
+import { AlgorithmFactory } from "@switchyard/libsy";
+
+const routes = AlgorithmFactory.fromToml(await readFile("routes.toml", "utf8")).build();
+const algorithm = routes.get("switchyard/coding")!;
+const outcome = await algorithm.route({
+  model: "switchyard/coding",
+  messages: [{ role: "user", content: [{ type: "text", text: "Fix the parser" }] }],
+}, {
+  headers: { "x-switchyard-session-id": "task-123" },
+});
+console.log(outcome.selectedModelIds);
+```
+
+Keys use the route's public `id`, not its TOML table name. Reuse handles and pass
+`outcome.state` as `options.state` on the next request on the same branch. `headers`
+supplies routing metadata, such as session and subagent identity.
+
+Requests and model replies use Switchyard's normalized protocol, not raw OpenAI or
+Anthropic bodies. This Stage route needs no callbacks. Algorithms that request model
+calls use `options.call({ request, models })`. Try candidates in order, sending
+`{ ...request, model: target }`, and return `{ response, servedModel }`. `response` is
+normalized buffered response JSON; `servedModel` is the successful configured
+candidate ID, which may differ from the provider's `response.model`. Throw if all
+candidates fail. `options.decide` handles typed decision requests. A missing required
+callback fails with `ERR_CONFIG`.
+
+Rejected callbacks are reported as generic client errors. This binding does not
+preserve provider-specific error types.
+
+The result includes the rewritten request, ordered selected model IDs, metadata,
+state, and an optional buffered answer. When `response` is null, the host makes the
+answer call. Translation, target prompts, body settings, and response streaming
+remain host-owned; the factory does not apply those TOML settings.
+
+## Composite router
 
 ```ts
 import { CompositeRouter, type DecisionRequest, type DecisionResponse } from "@switchyard/libsy";
@@ -92,9 +149,9 @@ Treat `CompositeState` as opaque. It carries the judge's tier and stage holds.
 
 | Code | Meaning |
 | --- | --- |
-| `ERR_CONFIG` | Invalid composite options |
-| `ERR_INVALID_REQUEST` | Invalid messages, state, or decision response JSON |
-| `ERR_ROUTING` | The algorithm or classifier call failed |
+| `ERR_CONFIG` | Invalid configuration or a required callback is missing |
+| `ERR_INVALID_REQUEST` | Invalid request, headers, state, or callback response JSON |
+| `ERR_ROUTING` | The algorithm or a callback failed |
 | `ABORT_ERR` | Routing was cancelled; the error name is `AbortError` |
 
 A rejected `decide` call follows `classifier.fail_open`. With `false`, routing
@@ -102,6 +159,6 @@ fails with the original error as `cause`. With `true`, routing keeps the previou
 tier or uses the stage default. An answer without a usable advantage score also
 keeps that fallback tier.
 
-An aborted signal closes the Rust run and rejects promptly, including while
-`decide` is pending. Late callback results are ignored. Pass the same signal to
-your classifier client to cancel its work too.
+Both APIs accept an `AbortSignal`. An aborted signal closes the Rust run and
+rejects promptly, including while a callback is pending. Late callback results
+are ignored. Pass the same signal to your clients to cancel their work too.

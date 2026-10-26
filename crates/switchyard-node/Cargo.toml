@@ -25,6 +25,7 @@ serde.workspace = true
 serde_json.workspace = true
 switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
 
 [build-dependencies]
 napi-build = "2"

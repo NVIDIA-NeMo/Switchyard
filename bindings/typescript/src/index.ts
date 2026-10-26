@@ -6,6 +6,44 @@ import { createRequire } from "node:module";
 /** Opaque routing state. Store it unchanged and pass it back on the same branch. */
 export type CompositeState = { readonly [key: string]: unknown };
 
+/** Opaque algorithm state. Carry it unchanged between requests on the same branch. */
+export type RoutingState = CompositeState;
+
+/** A model call in Switchyard's normalized protocol, with ordered candidates. */
+export interface ModelCall {
+  request: Readonly<Record<string, unknown>>;
+  models: readonly string[];
+}
+
+/** A buffered response and the configured candidate that served it. */
+export interface ModelReply {
+  response: Readonly<Record<string, unknown>>;
+  servedModel: string;
+}
+
+export interface RoutingOptions {
+  /** Serve the model call and return a normalized, buffered response. */
+  call?(call: ModelCall): Promise<ModelReply>;
+  decide?(request: DecisionRequest): Promise<DecisionResponse>;
+  state?: RoutingState;
+  headers?: Readonly<Record<string, string>>;
+  signal?: AbortSignal;
+}
+
+/** Complete routing result. A null response leaves the answer call to the host. */
+export interface RoutingOutcome {
+  selectedModelIds: readonly string[];
+  request: Readonly<Record<string, unknown>>;
+  metadata: Readonly<Record<string, unknown>> | null;
+  response: Readonly<Record<string, unknown>> | null;
+  state: RoutingState;
+}
+
+/** A configured algorithm whose model calls are handled by the host. */
+export interface ConfiguredAlgorithm {
+  route(request: Readonly<Record<string, unknown>>, options?: RoutingOptions): Promise<RoutingOutcome>;
+}
+
 export interface CompositeOptions {
   targets: { capable: string; efficient: string; classifier: string };
   classifier: {
@@ -74,23 +112,6 @@ export interface DecisionAnswer {
   provider_confidence?: number | null;
 }
 
-interface ModelCall {
-  request: Readonly<Record<string, unknown>>;
-  models: readonly string[];
-}
-
-interface ModelReply {
-  response: Readonly<Record<string, unknown>>;
-  servedModel: string;
-}
-
-interface RoutingOptions {
-  call?(call: ModelCall): Promise<ModelReply>;
-  decide?(request: DecisionRequest): Promise<DecisionResponse>;
-  state?: CompositeState;
-  signal?: AbortSignal;
-}
-
 type NativeStep =
   | { kind: "decision"; request: string }
   | { kind: "model"; request: string; models: string[] }
@@ -107,7 +128,19 @@ interface NativeComposite {
   start(messages: string, state: string | null): NativeRun;
 }
 
-const native: { NativeComposite: new (options: string) => NativeComposite } =
+interface NativeConfiguredAlgorithm {
+  readonly id: string;
+  start(request: string, state: string | null, headers: string | null): NativeRun;
+}
+
+interface NativeAlgorithmFactory {
+  build(): NativeConfiguredAlgorithm[];
+}
+
+const native: {
+  NativeComposite: new (options: string) => NativeComposite;
+  NativeAlgorithmFactory: new (source: string) => NativeAlgorithmFactory;
+} =
   createRequire(import.meta.url)("./switchyard.node");
 
 function abortError(): Error {
@@ -188,6 +221,46 @@ async function driveRun(start: () => NativeRun, options: RoutingOptions): Promis
   } finally {
     signal?.removeEventListener("abort", onAbort);
     run?.close();
+  }
+}
+
+function configuredAlgorithm(algorithm: NativeConfiguredAlgorithm): ConfiguredAlgorithm {
+  return {
+    async route(request, options = {}) {
+      const step = await driveRun(() => algorithm.start(
+        json(request),
+        options.state === undefined ? null : json(options.state),
+        options.headers === undefined ? null : json(options.headers),
+      ), options);
+      const { selected_model_ids: selectedModelIds, ...outcome } = JSON.parse(step.outcome);
+      return { selectedModelIds, ...outcome };
+    },
+  };
+}
+
+/** Builds configured algorithms from deployment TOML without provider clients. */
+export class AlgorithmFactory {
+  readonly #native: NativeAlgorithmFactory;
+
+  private constructor(source: string) {
+    this.#native = new native.NativeAlgorithmFactory(source);
+  }
+
+  static fromToml(source: string): AlgorithmFactory {
+    try {
+      return new AlgorithmFactory(source);
+    } catch (error) {
+      throw publicError(error);
+    }
+  }
+
+  /** Builds a reusable algorithm handle for each public route ID. */
+  build(): Map<string, ConfiguredAlgorithm> {
+    try {
+      return new Map(this.#native.build().map((algorithm) => [algorithm.id, configuredAlgorithm(algorithm)]));
+    } catch (error) {
+      throw publicError(error);
+    }
   }
 }
 

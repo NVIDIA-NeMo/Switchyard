@@ -22,6 +22,7 @@ use switchyard_protocol::{
     AggLlmResponse, Category, DecisionResponse, LlmClientError, LlmRequest, LlmResponse, Metadata,
     ModelId, Request, Response,
 };
+use switchyard_runner::AlgorithmFactory;
 
 // The JS wrapper turns these prefixes into public Error codes.
 fn error(code: &str, message: impl std::fmt::Display) -> napi::Error {
@@ -34,6 +35,95 @@ fn routing_error(message: impl std::fmt::Display) -> napi::Error {
 
 fn parse<T: serde::de::DeserializeOwned>(json: &str) -> napi::Result<T> {
     serde_json::from_str(json).map_err(|err| error("ERR_INVALID_REQUEST", err))
+}
+
+#[napi]
+/// Constructs configured algorithms without provider clients or credentials.
+pub struct NativeAlgorithmFactory {
+    factory: AlgorithmFactory,
+}
+
+#[napi]
+impl NativeAlgorithmFactory {
+    /// Parses deployment TOML; routing configuration is checked by [`Self::build`].
+    #[napi(constructor)]
+    pub fn new(source: String) -> napi::Result<Self> {
+        Ok(Self {
+            factory: AlgorithmFactory::from_toml(&source)
+                .map_err(|err| error("ERR_CONFIG", err))?,
+        })
+    }
+
+    /// Builds reusable algorithm handles with their configured route IDs.
+    #[napi]
+    pub fn build(&self) -> napi::Result<Vec<NativeConfiguredAlgorithm>> {
+        let routes = self
+            .factory
+            .build()
+            .map_err(|err| error("ERR_CONFIG", err))?;
+        Ok(routes
+            .into_iter()
+            .map(|(id, configured)| NativeConfiguredAlgorithm {
+                id,
+                algorithm: configured.algorithm,
+                models: Arc::new(configured.models),
+            })
+            .collect())
+    }
+}
+
+#[napi]
+/// An algorithm and its ordered model groups, shared across runs.
+pub struct NativeConfiguredAlgorithm {
+    id: String,
+    algorithm: Arc<dyn Algorithm>,
+    models: Arc<RuntimeModels>,
+}
+
+#[napi]
+impl NativeConfiguredAlgorithm {
+    /// The public route ID from the deployment TOML.
+    #[napi(getter)]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Starts routing a normalized request with caller-owned state and model calls.
+    #[napi]
+    pub fn start(
+        &self,
+        request_json: String,
+        state_json: Option<String>,
+        headers_json: Option<String>,
+    ) -> napi::Result<NativeRun> {
+        let metadata = headers_json
+            .as_deref()
+            .map(|json| -> napi::Result<Metadata> {
+                let mut headers = http::HeaderMap::new();
+                for (name, value) in parse::<BTreeMap<String, String>>(json)? {
+                    headers.insert(
+                        http::HeaderName::from_bytes(name.as_bytes())
+                            .map_err(|err| error("ERR_INVALID_REQUEST", err))?,
+                        http::HeaderValue::from_str(&value)
+                            .map_err(|err| error("ERR_INVALID_REQUEST", err))?,
+                    );
+                }
+                Ok(Metadata::from_headers(&headers))
+            })
+            .transpose()?;
+        let request = Request {
+            llm_request: parse(&request_json)?,
+            metadata,
+            ..Default::default()
+        };
+        NativeRun::new(
+            self.algorithm.clone(),
+            request,
+            self.models.clone(),
+            state_json.as_deref(),
+            true,
+        )
+    }
 }
 
 #[derive(Deserialize)]

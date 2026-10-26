@@ -3777,6 +3777,7 @@ dependencies = [
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
+ "switchyard-runner",
  "tokio",
 ]
 
