@@ -177,11 +177,11 @@ impl Algorithm for SpeculativeToolCall {
             )]),
         };
         let normal_call = driver.call_model_streaming(request.clone(), vec![normal.clone()]);
-        let prediction = tokio::time::timeout(
+        let mut prediction = Box::pin(tokio::time::timeout(
             self.config.max_hold,
             driver.call_decision(question, judge.clone()),
-        );
-        tokio::pin!(normal_call, prediction);
+        ));
+        tokio::pin!(normal_call);
         let mut response = tokio::select! {
             result = &mut normal_call => match result {
                 Ok(response) => response,
@@ -197,6 +197,8 @@ impl Algorithm for SpeculativeToolCall {
                 }
             },
             result = &mut prediction => {
+                // A timed-out future still owns its call until dropped.
+                drop(prediction);
                 if let Ok(Ok(response)) = result
                     && let Some(selected) = self.prediction(&response, &candidates)
                 {
