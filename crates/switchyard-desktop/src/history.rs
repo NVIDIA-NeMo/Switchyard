@@ -19,6 +19,9 @@ pub struct Entry {
     pub session_id: Option<String>,
     #[serde(default)]
     pub turn_id: Option<String>,
+    /// The caller-set origin header, such as `codex` or `claude`, when the harness sent one.
+    #[serde(default)]
+    pub origin: Option<String>,
     #[serde(default)]
     pub route_id: String,
     #[serde(default)]
