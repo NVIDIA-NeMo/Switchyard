@@ -20,8 +20,8 @@
 <a href=#20 id=20 data-nosnippet>20</a>
 <a href=#21 id=21 data-nosnippet>21</a><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 <a href=#22 id=22 data-nosnippet>22</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">enum </span>Route {
-<a href=#23 id=23 data-nosnippet>23</a>    Local,
-<a href=#24 id=24 data-nosnippet>24</a>    Cloud,
+<a href=#23 id=23 data-nosnippet>23</a>    Efficient,
+<a href=#24 id=24 data-nosnippet>24</a>    Capable,
 <a href=#25 id=25 data-nosnippet>25</a>}
 <a href=#26 id=26 data-nosnippet>26</a>
 <a href=#27 id=27 data-nosnippet>27</a><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,13 +34,13 @@
 <a href=#34 id=34 data-nosnippet>34</a><span class="doccomment">/// Evidence gathered for one decision.
 <a href=#35 id=35 data-nosnippet>35</a></span><span class="attr">#[derive(Default)]
 <a href=#36 id=36 data-nosnippet>36</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span>Signals {
-<a href=#37 id=37 data-nosnippet>37</a>    <span class="doccomment">/// Local logprob score that the attempt is correct.
+<a href=#37 id=37 data-nosnippet>37</a>    <span class="doccomment">/// Efficient logprob score that the attempt is correct.
 <a href=#38 id=38 data-nosnippet>38</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) readout: <span class="prelude-ty">Option</span>&lt;f64&gt;,
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Local logprob score that the attempt is correct, read after a deliberation.
+<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Efficient logprob score that the attempt is correct, read after a deliberation.
 <a href=#40 id=40 data-nosnippet>40</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) deliberation: <span class="prelude-ty">Option</span>&lt;f64&gt;,
 <a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// Capable-tier evidence verdict.
-<a href=#42 id=42 data-nosnippet>42</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) cloud_judge: <span class="prelude-ty">Option</span>&lt;Tri&gt;,
-<a href=#43 id=43 data-nosnippet>43</a>    <span class="doccomment">/// Capable-tier answer verdict after `cloud_judge` affirms.
+<a href=#42 id=42 data-nosnippet>42</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) capable_judge: <span class="prelude-ty">Option</span>&lt;Tri&gt;,
+<a href=#43 id=43 data-nosnippet>43</a>    <span class="doccomment">/// Capable-tier answer verdict after `capable_judge` affirms.
 <a href=#44 id=44 data-nosnippet>44</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) evidence_confirm: <span class="prelude-ty">Option</span>&lt;Tri&gt;,
 <a href=#45 id=45 data-nosnippet>45</a>    <span class="doccomment">/// Capable-tier verdicts on the answer branch.
 <a href=#46 id=46 data-nosnippet>46</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) answer_verifier: <span class="prelude-ty">Option</span>&lt;Tri&gt;,
@@ -53,9 +53,9 @@
 <a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// Earlier tool errors veto the commit; no rung can change it.
 <a href=#54 id=54 data-nosnippet>54</a>    </span>Vetoed,
 <a href=#55 id=55 data-nosnippet>55</a>    Clean,
-<a href=#56 id=56 data-nosnippet>56</a>    <span class="doccomment">/// A bounded run that failed and ended clean: local rungs only.
+<a href=#56 id=56 data-nosnippet>56</a>    <span class="doccomment">/// A bounded run that failed and ended clean: efficient rungs only.
 <a href=#57 id=57 data-nosnippet>57</a>    </span>ShortRecovered,
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="doccomment">/// A long run with a clean tail: local rungs, then the capable-tier judge.
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="doccomment">/// A long run with a clean tail: efficient rungs, then the capable-tier judge.
 <a href=#59 id=59 data-nosnippet>59</a>    </span>ConfirmedRecovery,
 <a href=#60 id=60 data-nosnippet>60</a>}
 <a href=#61 id=61 data-nosnippet>61</a>
@@ -95,13 +95,13 @@
 <a href=#95 id=95 data-nosnippet>95</a>    verdict == <span class="prelude-val">Some</span>(Tri::Yes)
 <a href=#96 id=96 data-nosnippet>96</a>}
 <a href=#97 id=97 data-nosnippet>97</a>
-<a href=#98 id=98 data-nosnippet>98</a><span class="doccomment">/// The local rungs affirm: the readout at the branch dial, or deliberation.
-<a href=#99 id=99 data-nosnippet>99</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>locally_verified(branch: Branch, signals: <span class="kw-2">&amp;</span>Signals) -&gt; bool {
+<a href=#98 id=98 data-nosnippet>98</a><span class="doccomment">/// The efficient rungs affirm: the readout at the branch dial, or deliberation.
+<a href=#99 id=99 data-nosnippet>99</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>efficient_verified(branch: Branch, signals: <span class="kw-2">&amp;</span>Signals) -&gt; bool {
 <a href=#100 id=100 data-nosnippet>100</a>    <span class="kw">let </span>bar = dial(branch).map_or(READOUT, |dial| dial.min(READOUT));
 <a href=#101 id=101 data-nosnippet>101</a>    clears(signals.readout, bar) || clears(signals.deliberation, DELIBERATION)
 <a href=#102 id=102 data-nosnippet>102</a>}
 <a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a><span class="doccomment">/// Commits the local attempt or escalates.
+<a href=#104 id=104 data-nosnippet>104</a><span class="doccomment">/// Commits the efficient attempt or escalates.
 <a href=#105 id=105 data-nosnippet>105</a>///
 <a href=#106 id=106 data-nosnippet>106</a>/// Coding has no sandboxed checker here, so below a confident readout it commits
 <a href=#107 id=107 data-nosnippet>107</a>/// only on the capable tier's affirmation.
@@ -116,7 +116,7 @@
 <a href=#116 id=116 data-nosnippet>116</a>        Branch::Unknown =&gt; <span class="bool-val">false</span>,
 <a href=#117 id=117 data-nosnippet>117</a>        Branch::Coding =&gt; {
 <a href=#118 id=118 data-nosnippet>118</a>            (clean &amp;&amp; clears(signals.readout, CODING_CONFIDENT))
-<a href=#119 id=119 data-nosnippet>119</a>                || (locally_verified(branch, signals) &amp;&amp; affirms(signals.cloud_judge))
+<a href=#119 id=119 data-nosnippet>119</a>                || (efficient_verified(branch, signals) &amp;&amp; affirms(signals.capable_judge))
 <a href=#120 id=120 data-nosnippet>120</a>        }
 <a href=#121 id=121 data-nosnippet>121</a>        Branch::Answer =&gt; {
 <a href=#122 id=122 data-nosnippet>122</a>            affirms(signals.answer_verifier)
@@ -127,18 +127,22 @@
 <a href=#127 id=127 data-nosnippet>127</a>            clean
 <a href=#128 id=128 data-nosnippet>128</a>                &amp;&amp; (clears(signals.deliberation, DELIBERATION)
 <a href=#129 id=129 data-nosnippet>129</a>                    || clears(signals.readout, <span class="number">0.3</span>)
-<a href=#130 id=130 data-nosnippet>130</a>                    || (affirms(signals.cloud_judge) &amp;&amp; affirms(signals.evidence_confirm)))
+<a href=#130 id=130 data-nosnippet>130</a>                    || (affirms(signals.capable_judge) &amp;&amp; affirms(signals.evidence_confirm)))
 <a href=#131 id=131 data-nosnippet>131</a>        }
 <a href=#132 id=132 data-nosnippet>132</a>        Branch::Agentic =&gt; {
-<a href=#133 id=133 data-nosnippet>133</a>            locally_verified(branch, signals)
+<a href=#133 id=133 data-nosnippet>133</a>            efficient_verified(branch, signals)
 <a href=#134 id=134 data-nosnippet>134</a>                &amp;&amp; <span class="kw">match </span>agentic_run(caps, confirmed_min_clean_tail) {
 <a href=#135 id=135 data-nosnippet>135</a>                    AgenticRun::Clean | AgenticRun::ShortRecovered =&gt; <span class="bool-val">true</span>,
-<a href=#136 id=136 data-nosnippet>136</a>                    AgenticRun::ConfirmedRecovery =&gt; affirms(signals.cloud_judge),
+<a href=#136 id=136 data-nosnippet>136</a>                    AgenticRun::ConfirmedRecovery =&gt; affirms(signals.capable_judge),
 <a href=#137 id=137 data-nosnippet>137</a>                    AgenticRun::Vetoed =&gt; <span class="bool-val">false</span>,
 <a href=#138 id=138 data-nosnippet>138</a>                }
 <a href=#139 id=139 data-nosnippet>139</a>        }
-<a href=#140 id=140 data-nosnippet>140</a>        Branch::DefaultVerified =&gt; clean &amp;&amp; locally_verified(branch, signals),
+<a href=#140 id=140 data-nosnippet>140</a>        Branch::DefaultVerified =&gt; clean &amp;&amp; efficient_verified(branch, signals),
 <a href=#141 id=141 data-nosnippet>141</a>    };
-<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">if </span>commit { Route::Local } <span class="kw">else </span>{ Route::Cloud }
-<a href=#143 id=143 data-nosnippet>143</a>}
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="kw">if </span>commit {
+<a href=#143 id=143 data-nosnippet>143</a>        Route::Efficient
+<a href=#144 id=144 data-nosnippet>144</a>    } <span class="kw">else </span>{
+<a href=#145 id=145 data-nosnippet>145</a>        Route::Capable
+<a href=#146 id=146 data-nosnippet>146</a>    }
+<a href=#147 id=147 data-nosnippet>147</a>}
 </code></pre></div></section></main></body></html>
