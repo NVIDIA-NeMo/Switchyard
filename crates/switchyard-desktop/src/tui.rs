@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app shows usage, recent calls, and server actions from controller snapshots.
+//! The terminal app shows recorded usage and server status on the Overview page.
 //!
-//! The UI thread owns every view setting. One worker thread owns the controller and runs
-//! refreshes and actions, so moving around and filtering never wait for the log or a service.
+//! One worker thread owns the controller and refreshes its snapshots while the UI thread
+//! draws and reads input.
 
 use crate::controller::{Availability, Controller, Snapshot};
 use ratatui::{
@@ -27,19 +27,18 @@ const MIN_HEIGHT: u16 = 16;
 const TOAST_TIME: Duration = Duration::from_secs(4);
 const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
-/// Each key list has the key, a short label for the status bar, and a sentence for the help
-/// window. Both read these lists, so the status bar and the help window always agree.
+/// Each entry holds a key, its status-bar label, and a longer description.
 type Key = (&'static str, &'static str, &'static str);
 const GLOBAL_KEYS: &[Key] = &[
     (
         "1",
         "page",
-        "Switch pages. Tab, Shift-Tab, ← and → also switch pages.",
+        "Show Overview. Tab, Shift-Tab, ← and → also select Overview.",
     ),
     (
         "r",
         "refresh",
-        "Reload usage, calls, and server health now. F5 also refreshes.",
+        "Reload usage and server health now. F5 also refreshes.",
     ),
     (
         "q",
@@ -48,7 +47,7 @@ const GLOBAL_KEYS: &[Key] = &[
     ),
 ];
 
-/// Theme maps each kind of text to one style. NO_COLOR keeps only bold, dim, and reverse.
+/// Theme maps each kind of text to one style. NO_COLOR keeps the text modifiers.
 #[derive(Clone, Copy)]
 struct Theme {
     muted: Style,
@@ -142,7 +141,7 @@ struct App {
     tab: Tab,
     toast: Option<Toast>,
     busy: Option<Busy>,
-    /// A quit request waits for the running job, so a restart or update is never cut off.
+    /// A quit request waits for the active refresh to finish.
     quit: bool,
     refreshed: Option<Instant>,
     last_refresh: Instant,
@@ -150,8 +149,8 @@ struct App {
 }
 
 impl App {
-    fn new(theme: Theme, data: Snapshot) -> Self {
-        let mut app = Self {
+    fn new(theme: Theme) -> Self {
+        Self {
             theme,
             data: Snapshot::default(),
             tab: Tab::Overview,
@@ -161,18 +160,6 @@ impl App {
             refreshed: None,
             last_refresh: Instant::now(),
             width: 80,
-        };
-        app.apply_snapshot(Ok(data));
-        app
-    }
-
-    fn apply_snapshot(&mut self, snapshot: Result<Snapshot, String>) {
-        match snapshot {
-            Ok(data) => {
-                self.data = data;
-                self.refreshed = Some(Instant::now());
-            }
-            Err(error) => self.notify(error, true),
         }
     }
 
@@ -189,11 +176,33 @@ impl App {
 
     fn finish(&mut self, snapshot: Result<Box<Snapshot>, String>) {
         self.busy = None;
-        self.apply_snapshot(snapshot.map(|snapshot| *snapshot));
+        match snapshot {
+            Ok(data) => {
+                self.data = *data;
+                self.refreshed = Some(Instant::now());
+            }
+            Err(error) => {
+                // Overview keeps the error after the status message is dismissed.
+                self.data.errors = vec![error.clone()];
+                self.notify(error, true);
+            }
+        }
+    }
+
+    fn poll_results(&mut self, results: &mpsc::Receiver<Done>) -> Result<(), String> {
+        loop {
+            match results.try_recv() {
+                Ok(Done::Finished { snapshot }) => self.finish(snapshot),
+                Err(mpsc::TryRecvError::Empty) => return Ok(()),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("The terminal operation worker stopped unexpectedly.".into());
+                }
+            }
+        }
     }
 
     fn refresh_due(&self) -> bool {
-        // The placeholder snapshot after a failed start has no interval; 30 seconds is the default.
+        // The initial snapshot has no interval, so refreshes use 30 seconds until one succeeds.
         let seconds = match self.data.refresh_seconds {
             0 => 30,
             seconds => seconds,
@@ -257,8 +266,7 @@ fn block(theme: Theme, title: &str) -> Block<'static> {
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
-    // This destructuring has no `..`, so adding a snapshot field breaks the build until a page
-    // shows it. Each comment names the place that shows the field.
+    // This exhaustive destructuring requires an update when Snapshot gains a field.
     let Snapshot {
         data_state: _,
         metrics: _,
@@ -409,7 +417,6 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Line::default()
     };
     let room = usize::from(area.width).saturating_sub(left.width() + 2);
-    // Page keys do nothing while a window is open or the filter takes the keyboard.
     let global = true;
     let hints = fit_keys(theme, app.keys(), global, room);
     let [left_area, right_area] =
@@ -450,11 +457,7 @@ impl Drop for PasteMode {
 }
 
 pub fn run(mut controller: Controller) -> Result<(), String> {
-    let snapshot = controller.snapshot().unwrap_or_else(|error| Snapshot {
-        errors: vec![error],
-        ..Snapshot::default()
-    });
-    let mut app = App::new(Theme::new(color_enabled()), snapshot);
+    let mut app = App::new(Theme::new(color_enabled()));
     ratatui::crossterm::execute!(std::io::stdout(), event::EnableBracketedPaste)
         .map_err(|e| e.to_string())?;
     let _paste_mode = PasteMode;
@@ -472,10 +475,10 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
         }
     });
     let result = ratatui::run(|terminal| -> Result<(), String> {
+        // The initial refresh starts after terminal setup so a blocked read cannot delay drawing.
+        app.start(&jobs, Request::refresh())?;
         loop {
-            while let Ok(Done::Finished { snapshot }) = results.try_recv() {
-                app.finish(snapshot);
-            }
+            app.poll_results(&results)?;
             if app.quit && app.busy.is_none() {
                 return Ok(());
             }
@@ -514,4 +517,43 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
         let _ = ratatui::try_restore();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{App, KeyCode, KeyEvent, KeyModifiers, Request, Theme, draw, mpsc};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    // Esc dismisses the status message while Overview keeps the refresh error.
+    #[test]
+    fn refresh_errors_remain_in_overview_after_dismissing_the_toast() {
+        let mut app = App::new(Theme::new(false));
+        app.finish(Err("Could not read settings.".into()));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Could not read settings."), "{text}");
+    }
+
+    // An empty queue can still receive a result; a disconnected queue cannot finish the refresh.
+    #[test]
+    fn worker_disconnect_returns_an_error_with_a_refresh_in_flight() {
+        let mut app = App::new(Theme::new(false));
+        let (jobs, _inbox) = mpsc::channel();
+        app.start(&jobs, Request::refresh()).expect("refresh");
+        let (done, results) = mpsc::channel();
+        assert!(app.poll_results(&results).is_ok());
+        drop(done);
+        assert_eq!(
+            app.poll_results(&results),
+            Err("The terminal operation worker stopped unexpectedly.".into())
+        );
+    }
 }

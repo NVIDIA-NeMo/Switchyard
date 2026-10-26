@@ -1,18 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Both frontends call these operations so validation stays independent of widgets.
-//! Every change that an app makes to the server or to saved settings is an `Action`. The
-//! terminal app matches `ActionKind` without a wildcard arm, so adding an action breaks the
-//! build until the terminal app can run it.
+//! The terminal controller reloads settings and combines usage and server health into snapshots.
+//! It retains the log reader and health probe across refreshes.
 
 use crate::{config::Config, rollup};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-/// Snapshot holds everything that the apps show. The terminal app destructures it without
-/// `..`, so adding a field breaks the build until the terminal app shows it.
+/// Snapshot holds the terminal app's usage, server health, errors, and refresh interval.
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub data_state: DataState,
@@ -81,7 +78,7 @@ impl Controller {
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.reload()?;
         let mut errors = Vec::new();
-        // One local date keeps aggregate totals and frontend filters aligned across midnight.
+        // One local date keeps the daily and weekly usage totals aligned across midnight.
         let today = chrono::Local::now().date_naive();
         let mut usage_state = Availability::Available;
         let usage = self

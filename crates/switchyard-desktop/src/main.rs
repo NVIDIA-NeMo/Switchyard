@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app manages a local Switchyard server.
+//! The desktop app shows a local Switchyard server's status and recorded usage.
 //!
-//! It shows recorded traffic and compares list-price estimates with the
-//! configured baseline model.
+//! The printed summary compares list-price estimates with the configured baseline model.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -26,7 +25,8 @@ use config::Config;
 const USAGE: &str = "\
 Usage: switchyard-desktop [--tui | --print | --validate-toml] [FILE]
 
-This app shows usage and manages the server.
+This app opens the desktop window on macOS and Windows.
+Use --tui for the terminal app or --print for a usage summary.
 
   FILE            The app reads settings from FILE.
   --tui           Run the terminal app.
@@ -46,7 +46,7 @@ Savings compare spending on all calls with the cost of the answers at
 baseline_model's bundled rates or the table selected by pricing_file.
 Recorded spending remains visible when savings are unknown.";
 
-/// The command checks TOML syntax or opens the desktop window.
+/// The command selects the graphical app, terminal app, printed summary, or TOML validation.
 fn main() -> ExitCode {
     #[cfg(windows)]
     windows::attach_console();
