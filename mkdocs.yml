@@ -20,6 +20,10 @@ nav:
   - Get Started:
       - Getting Started: getting_started.md
       - Mechanics of Libsy: mechanics_of_libsy.md
+      - Switchyard Protocols:
+          - Overview: protocols/index.md
+          - LLM-Related Protocols: protocols/llm.md
+          - Decision Model-Related Protocols: protocols/decisions.md
       - Evaluate Locally: operations/local_evaluation.md
       - Known Issues: known_issues.md
   - Benchmarks: benchmarks.md

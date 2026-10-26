@@ -404,5 +404,7 @@ or undo side effects that have already occurred. See the [host integration
 guide](reference/host_integration.md#concurrent-calls-and-cancellation) for
 Python task cleanup.
 
-The [Rust API reference](reference/rust_api.md) links the complete crate
-documentation for these types.
+Next, [Switchyard Protocols](protocols/index.md) explains the request and response
+data inside these calls and how it maps to provider APIs. The
+[Rust API reference](reference/rust_api.md) links the complete crate documentation
+for these types.
