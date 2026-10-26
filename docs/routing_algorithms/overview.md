@@ -1,12 +1,50 @@
 # Routing Overview
 
-The `switchyard-server` binary loads a native TOML deployment. Each route's `id`
-becomes a model ID available through OpenAI Chat Completions, Anthropic Messages,
-and OpenAI Responses requests.
+Libsy algorithms choose models and can request intermediate model work. Your
+gateway or harness supplies the conversation, available models, and execution.
+Start with the behavior your workload needs, then choose an integration that
+can serve the algorithm's calls.
 
 Use this page to choose a routing strategy, then open its detailed page for
-configuration and tuning. For the vocabulary these pages use, see
-[Core Concepts](../core_concepts.md).
+configuration and tuning. [Mechanics of Libsy](../mechanics_of_libsy.md) explains
+the execution contract; [Switchyard Protocols](../protocols/index.md) explains
+the exchanged data.
+
+## Use an algorithm in your application
+
+Construct an algorithm and supply a model pool as shown in the
+**[Rust quickstart](../getting_started.md)**. The host handles the Step stream
+with its existing clients. For example, this constructs the signal-only Auto
+preset; it makes no network call:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::{PickerMode, StageRouter, StageRouterConfig};
+
+let algorithm = Arc::new(StageRouter::new(StageRouterConfig::new(
+    PickerMode::EfficientFirst, 0.5,
+))?);
+```
+
+| Behavior | Rust entry point | What your host must supply |
+|---|---|---|
+| Stage / Auto | <a href="../../rust/switchyard_libsy/struct.StageRouter.html"><code>StageRouter</code></a> | Capable and efficient model categories; tool history for signal-based decisions. |
+| Task, escalation, custom judge | <a href="../../rust/switchyard_libsy/struct.LlmTaskClassifier.html"><code>LlmTaskClassifier</code></a> | Answer categories plus a judge and support for routing-time calls. |
+| Composite | <a href="../../rust/switchyard_libsy/struct.CompositeRouter.html"><code>CompositeRouter</code></a> | A task judge, Stage model categories, history, and a deliberate state policy. |
+| Plan/Execute | <a href="../../rust/switchyard_libsy/struct.PlanExecute.html"><code>PlanExecute</code></a> | Capable and efficient categories, mutation history, and stable identity for retained handoff. |
+| Advisor | <a href="../../rust/switchyard_libsy/struct.AdvisorGate.html"><code>AdvisorGate</code></a> | Executor and advisor models, conversation history, and buffered review calls. |
+| Verification-gated | <a href="../../rust/switchyard_libsy/struct.Vgr.html"><code>Vgr</code></a> | Configured candidate and judge models; the verification and call work requested by the algorithm. |
+| Random | <a href="../../rust/switchyard_libsy/struct.Random.html"><code>Random</code></a> | The ordered candidate pool, plus optional weights and a seed. |
+| Fixed | <a href="../../rust/switchyard_libsy/struct.Passthrough.html"><code>Passthrough</code></a> | A selected target. |
+| Delegated work | <a href="../../rust/switchyard_libsy/struct.SubagentRouter.html"><code>SubagentRouter</code></a> | A parent algorithm, child models, and explicit delegated-agent identity. |
+
+Integration support varies. A host that only accepts a model selection cannot
+execute an algorithm that asks for intermediate calls or returns an answer.
+Use the [host integration guide](../reference/host_integration.md) and your
+gateway's own compatibility notes.
+
+The TOML examples below use the configured runner. They are also convenient
+inputs to the [local reference server](../operations/local_evaluation.md).
 
 ## Choose a strategy
 
@@ -88,7 +126,9 @@ These cases apply across strategies:
   `new_session` judges every request. Plan/Execute needs the first edit to stay
   in the request history. Execution keeps no capable hold. Send
   `x-switchyard-session-id`, or use a strategy that decides from the request
-  alone.
+  alone. These headers are the configured server's representation. An embedding
+  host supplies protocol metadata and follows the algorithm's state contract;
+  see [Composite sessions](composite_routing.md#sessions) for caller-managed state.
 - **Both tiers resolve to the same model, or the efficient model is the stronger
   one.** Routing then only adds cost. Run the
   [inverted-pair check](model_selection.md#check-for-an-inverted-pair) first.
@@ -194,7 +234,11 @@ measured model pairs.
 
 ## Common route shape
 
-A deployment has three layers. LLM clients describe how to reach a provider,
+This section describes **configured runner TOML**, rather than required libsy
+setup. It is used by serving integrations such as the Relay plugin and the
+local reference server.
+
+A configured deployment has three layers. LLM clients describe how to reach a provider,
 targets name models on those clients, and routes decide which target serves a
 request:
 

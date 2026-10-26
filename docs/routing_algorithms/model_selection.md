@@ -7,6 +7,13 @@ have measured results, and the mistakes we have seen in real runs.
 
 ## Roles
 
+For direct libsy integration, assign models to
+<a href="../../rust/switchyard_protocol/category/enum.Category.html"><code>Category</code></a>
+values in <a href="../../rust/switchyard_libsy/struct.RuntimeModels.html"><code>RuntimeModels</code></a>.
+The [model pool example](../mechanics_of_libsy.md#start-with-a-request) shows
+the host-owned IDs. The tables and commands below use **configured runner TOML**
+and the **local demo server** as one way to check that pool.
+
 Each strategy names its models by role. The TOML keys differ by route type:
 
 | Route `type` | Serves most turns | Takes the hard turns | Decides |

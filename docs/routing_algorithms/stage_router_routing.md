@@ -1,7 +1,8 @@
 # Stage Router
 
 **Execution** routing uses the stage router to choose a model from tool results
-and agent progress. Configure it with `type = "stage_router"`.
+and agent progress. It can finish with a model selection without making a model
+call. Your host makes the final answer call.
 
 Stage-router routing sends each request to either a **capable** model or a
 typically cheaper **efficient** one, depending on where the agent is in its run.
@@ -13,6 +14,28 @@ required `picker` for ambiguous turns, tune the split with
 Model-call fallback happens after the routing decision. Eligible context-window
 or availability failures can try the route's other completion target. See
 [Context-Window Handling](../operations/context_window.md).
+
+## Use from libsy
+
+Construct <a href="../../rust/switchyard_libsy/struct.StageRouter.html"><code>StageRouter</code></a>
+with <a href="../../rust/switchyard_libsy/struct.StageRouterConfig.html"><code>StageRouterConfig</code></a>.
+This excerpt uses the [quickstart dependencies](../getting_started.md#install):
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::{PickerMode, StageRouter, StageRouterConfig};
+
+let algorithm = Arc::new(StageRouter::new(StageRouterConfig::new(
+    PickerMode::EfficientFirst, 0.5,
+))?);
+```
+
+Provide capable and efficient model categories and include tool history in the
+request. An optional judge also requires a host able to fulfill routing-time
+calls. See [Mechanics](../mechanics_of_libsy.md#start-with-a-request) for the
+model pool and Step loop. Stable session metadata retains capable holds across turns.
+
+The configuration section below uses **runner TOML**, with `type = "stage_router"`.
 
 ## How it works
 
@@ -194,10 +217,9 @@ A route with a `1.0` threshold remains valid without a classifier. In that case,
 ordinary sub-threshold turns fall back to the picker's default tier; hard
 overrides and capable-hold behavior still apply.
 
-The signal-vs-classifier split is dataset-dependent. Measure it in production:
-`/v1/stats` reports decision counts by source and selected target, plus aggregate
-scorer metrics. Response headers and structured decision logs explain individual
-selections.
+The signal-vs-classifier split is dataset-dependent. Measure it with your host's
+observations and the [Stage telemetry instruments](../reference/opentelemetry.md#algorithm-specific-metrics).
+In the local demo, `/v1/stats` reports decision counts by source and selected target.
 
 ### Calibrating the threshold from run data
 
@@ -387,7 +409,11 @@ and can cause sustained 429s at scale.
 
 ## Observability
 
-When a model serves the request, the response identifies it with this routing
+An embedded host can inspect the outcome and collect the
+[Stage metrics](../reference/opentelemetry.md#algorithm-specific-metrics).
+The header and HTTP counters below are supplied by the **local reference server**.
+
+When a model serves the request through that server, the response identifies it with this routing
 header:
 
 | Header | Content |

@@ -4,6 +4,28 @@ Plan/execute routing uses a capable model to inspect and plan a coding task,
 then switches to an efficient model after the first recognized edit or write
 tool call. It does not make a classifier call.
 
+## Use from libsy
+
+Construct <a href="../../rust/switchyard_libsy/struct.PlanExecute.html"><code>PlanExecute</code></a>
+with <a href="../../rust/switchyard_libsy/struct.PlanExecuteConfig.html"><code>PlanExecuteConfig</code></a>:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::{PlanExecute, PlanExecuteConfig};
+
+let algorithm = Arc::new(PlanExecute::new(PlanExecuteConfig::default())?);
+```
+
+Supply capable and efficient model categories and the complete relevant tool
+history. Reuse the algorithm instance to retain detected handoffs under stable
+session identity. The host makes the final model call and uses the returned
+request, including planning or handoff instructions. See
+[Mechanics](../mechanics_of_libsy.md#stepdone) for outcome handling.
+
+## Configured runner
+
+The equivalent TOML configuration is:
+
 ```toml
 schema_version = 1
 

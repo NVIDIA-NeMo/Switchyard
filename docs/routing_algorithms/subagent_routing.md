@@ -1,9 +1,17 @@
 # Sub-Agent-Aware Routing
 
 Sub-agent-aware routing leaves parent-agent traffic with its configured routing
-algorithm while routing delegated sub-agent work separately. It is available on
-`passthrough`, `stage_router`, and `composite` routes through the optional
-`subagents` table.
+algorithm while routing delegated sub-agent work separately. In libsy,
+<a href="../../rust/switchyard_libsy/struct.SubagentRouter.html"><code>SubagentRouter</code></a>
+wraps a parent algorithm. Its
+<a href="../../rust/switchyard_libsy/struct.SubagentRouterConfig.html"><code>SubagentRouterConfig</code></a>
+defines the child policy. Your host supplies delegated-agent identity in
+<a href="../../rust/switchyard_protocol/metadata/struct.Metadata.html"><code>Metadata</code></a>
+and dispatches the requested calls through the same execution path.
+
+The **configured runner** exposes this wrapper on `passthrough`, `stage_router`,
+and `composite` routes through the optional `subagents` table. The example below
+uses that TOML configuration; these route restrictions describe the runner.
 
 ```toml
 schema_version = 1

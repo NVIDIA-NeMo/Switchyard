@@ -7,7 +7,27 @@ Use it for A/B tests, benchmark baselines, and controlled traffic splits. Use a
 content-aware routing algorithm instead when the request itself should determine
 the target.
 
+## Use from libsy
+
+<a href="../../rust/switchyard_libsy/struct.Random.html"><code>Random</code></a>
+selects from the host's ordered candidate pool. This constructs a weighted router;
+it makes no provider call:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::Random;
+
+let algorithm = Arc::new(Random::new(Some(vec![3.0, 7.0]), Some(42))?);
+```
+
+Put the two candidates in the Any category in the same order as the weights.
+The router returns a selection; your host owns the final answer call. It retains
+no per-conversation affinity. See [model pools and outcomes](../mechanics_of_libsy.md).
+
 ## Configure a random route
+
+The following example uses **configured runner TOML**. You can try it with the
+local reference server or use it in a compatible configured integration.
 
 This example sends approximately 30% of requests to a strong model and 70% to a
 weak model:

@@ -6,6 +6,14 @@
 
 Prefill router runs the request through `pytorch` and `transformers` to get hidden states. It uses those states as input to a classifier which you have to train. For each model the classifier predicts if it will succeed at the task. This is a variation on using embeddings as input to the classifier.
 
+The [prefill-router crate](../../crates/prefill-router/src/algorithm.rs) provides the
+libsy algorithm wrapper. An embedding host runs it through the same Step exchange
+as other algorithms and owns the final answer call. Encoder inference runs in
+the router's backend, so this path also requires its local model assets and
+runtime dependencies. The [runner configuration](../reference/toml_schema.md#prefill_router)
+is a separate way to select it; the demo server requires its `prefill-router`
+feature. Check the crate's current asset contract before integrating it.
+
 This makes it different from the other routers in that it both requires running inference (with `transformers`) and training a classifier for the specific models you intend to use and the specific workload you will send it. This makes it much more complex to deploy than the other routers, but potentially better if you know your workload.
 
 # How do I use Prefill Router?

@@ -27,6 +27,18 @@ route's configuration to change as more pairings are added.
 
 ## Configuration
 
+For direct embedding, construct
+<a href="../../rust/switchyard_libsy/struct.CompositeRouter.html"><code>CompositeRouter</code></a>
+from <a href="../../rust/switchyard_libsy/struct.CompositeRouterConfig.html"><code>CompositeRouterConfig</code></a>.
+Its judge is a <a href="../../rust/switchyard_libsy/enum.CompositeJudgeConfig.html"><code>CompositeJudgeConfig</code></a>;
+its Stage settings use
+<a href="../../rust/switchyard_libsy/struct.StageRouterConfig.html"><code>StageRouterConfig</code></a>.
+Supply a judge and the capable/efficient pool. Your host serves judge calls and
+dispatches the selected answer request. Use the [session contract](#sessions)
+to retain the selected tier between turns.
+
+The following example uses **configured runner TOML**:
+
 ```toml
 [routes.switchyard]
 id = "switchyard"

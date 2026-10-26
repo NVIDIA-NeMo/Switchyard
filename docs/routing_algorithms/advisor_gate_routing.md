@@ -15,6 +15,23 @@ the stronger model only on verdicts at the moments that decide task success.
 
 ## How it works
 
+For embedding, construct
+<a href="../../rust/switchyard_libsy/struct.AdvisorGate.html"><code>AdvisorGate</code></a>
+with <a href="../../rust/switchyard_libsy/struct.AdvisorGateConfig.html"><code>AdvisorGateConfig</code></a>:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::{AdvisorGate, AdvisorGateConfig};
+
+let algorithm = Arc::new(AdvisorGate::new(AdvisorGateConfig::default())?);
+```
+
+Supply the executor and advisor through the model categories required by the
+<a href="../../rust/switchyard_libsy/struct.AdvisorGate.html">algorithm reference</a>.
+The host fulfills executor and review calls, then reuses the answer returned in
+the [final outcome](../mechanics_of_libsy.md#stepdone). The HTTP headers and
+statistics described below belong to the demo server's integration.
+
 Every request routes to the executor. The gate buffers each executor turn,
 decides whether it needs review, and only then releases it to the client.
 
@@ -79,6 +96,9 @@ counts (the client never saw those turns, so terminal usage accounting alone
 would miss them).
 
 ## Configuration
+
+The following settings use **configured runner TOML**. Direct embeddings use
+the Rust configuration above.
 
 ```toml
 [targets.executor]

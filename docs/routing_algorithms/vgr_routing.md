@@ -12,6 +12,17 @@ turn on the efficient tier. An efficient endpoint failure triggers capable fallb
 
 ## Configure a route
 
+For direct embedding, construct
+<a href="../../rust/switchyard_libsy/struct.Vgr.html"><code>Vgr</code></a>
+with <a href="../../rust/switchyard_libsy/struct.VgrConfig.html"><code>VgrConfig</code></a>.
+Your host must fulfill its requested model calls, retain the relevant agent
+history, and reuse any answer supplied in the final outcome. The algorithm can
+buffer candidate work while judging it. See
+[Mechanics](../mechanics_of_libsy.md#stepdone) for the response handoff.
+
+The deployment and discovery settings below use **configured runner TOML** and
+the **demo server**; a custom libsy host owns its model catalog and HTTP API.
+
 Declare efficient, capable, and optional verifier targets using the normal deployment
 schema, then reference their target names:
 

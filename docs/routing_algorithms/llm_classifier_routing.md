@@ -1,8 +1,8 @@
 # LLM Classifier Routing
 
 **Task** routing uses the LLM classifier's `capability` mode to judge whether
-an efficient model can handle the task or a capable model is needed. Configure
-it with `type = "llm_classifier"` and `mode = "capability"`.
+an efficient model can handle the task or a capable model is needed. Your
+host fulfills the judge call before dispatching the selected answer model.
 
 The same classifier also supports [escalation](escalation_router_routing.md)
 and [custom routing](#custom-multi-target-routing) across two or more targets.
@@ -10,7 +10,44 @@ and [custom routing](#custom-multi-target-routing) across two or more targets.
 For a task-level decision-model example with structured instructions, see the
 [Jev routing profile](../../benchmark/routing-profiles/tb21-jev-opus-glm.toml).
 
+## Use from libsy
+
+<a href="../../rust/switchyard_libsy/struct.LlmTaskClassifier.html"><code>LlmTaskClassifier</code></a>
+accepts <a href="../../rust/switchyard_libsy/enum.LlmClassifierConfig.html"><code>LlmClassifierConfig</code></a>.
+For capability routing, supply
+<a href="../../rust/switchyard_libsy/struct.TaskClassifierConfig.html"><code>TaskClassifierConfig</code></a>
+with either an LLM or a decision judge. This constructs an LLM-judge router:
+
+```rust
+use std::sync::Arc;
+use switchyard_libsy::{
+    CapabilityJudgeConfig, ClassifyTrigger, LlmCapabilityConfig,
+    LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
+};
+
+let algorithm = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+    config: TaskClassifierConfig {
+        judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+            base_threshold: 0.5,
+            ..Default::default()
+        }),
+        fail_open: true,
+        classify_trigger: ClassifyTrigger::UserTurn,
+        message_hash_fallback: false,
+        recent_turn_window: None,
+    },
+})?);
+```
+
+Provide Judge, Capable, and Efficient model categories. Your host must execute
+the requested judge work and then handle the selected request. Supply stable
+session metadata when retaining a verdict across tool continuations. A decision
+judge uses the [typed decision protocol](../protocols/decisions.md) rather than
+an LLM conversation. See [Mechanics](../mechanics_of_libsy.md) for both call kinds.
+
 ## Configure a classifier route
+
+The following examples use **runner TOML**, with `type = "llm_classifier"`.
 
 This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing

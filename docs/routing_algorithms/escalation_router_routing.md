@@ -13,6 +13,17 @@ going well.
 
 ## Configure an escalation route
 
+In libsy, this is
+<a href="../../rust/switchyard_libsy/enum.LlmClassifierConfig.html#variant.Escalation"><code>LlmClassifierConfig::Escalation</code></a>
+passed to <a href="../../rust/switchyard_libsy/struct.LlmTaskClassifier.html#method.new"><code>LlmTaskClassifier::new</code></a>.
+Configure <a href="../../rust/switchyard_libsy/struct.EscalationJudgeConfig.html"><code>EscalationJudgeConfig</code></a>
+and a judge contract. Your host needs Judge, Efficient, and Capable categories
+and must serve the answer and review calls. Routing can return the already
+generated answer: [reuse it in the final outcome](../mechanics_of_libsy.md#stepdone).
+Keep stable session identity for the escalation latch.
+
+The following example uses **configured runner TOML**:
+
 ```toml
 schema_version = 1
 
