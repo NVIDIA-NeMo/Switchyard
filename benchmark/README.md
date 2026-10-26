@@ -336,6 +336,9 @@ Only reuse the image when you know it already contains the current Rust `switchy
 
 ## DeepSWE v1.1
 
+For a paired comparison of both stage-router pickers and fixed-model baselines, see
+[the stage-router evaluation plan](STAGE_ROUTER_EVALUATION.md).
+
 DeepSWE uses Harbor's task format but its own runner, [Pier](https://github.com/datacurve-ai/pier)
 (required since v1.1 for the separate-verifier/collect-hook pattern). It is not part of
 `run-baseline.sh`.
