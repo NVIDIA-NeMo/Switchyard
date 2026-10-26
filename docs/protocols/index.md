@@ -4,10 +4,11 @@
 `run_stream`. This section explains the data inside that work: an LLM conversation
 or a set of typed questions for a decision model.
 
-Both use **provider-neutral Rust types** from `switchyard-protocol`. These types
-form Switchyard's intermediate representation, or **IR**. Your application
-converts its inputs into the IR, passes them to libsy, and converts model calls
-and responses at its provider boundary.
+Both use **provider-neutral Rust types** from the
+<a href="../rust/switchyard_protocol/"><code>switchyard-protocol</code> crate</a>. These types
+define Switchyard's protocols. Your application converts its inputs into these
+types, passes them to libsy, and converts model calls and responses at its
+provider boundary.
 
 ## Why use a neutral protocol?
 
@@ -32,17 +33,20 @@ Switchyard protocol types <--> libsy algorithm
 Your model client and provider API
 ```
 
-The protocol crate defines data and client contracts. Conversion and network
-calls happen in your application or in optional Switchyard crates.
+The protocol crate defines the data exchanged with libsy. Conversion and network
+calls happen in your application or in optional Switchyard crates. When handling
+`run_stream`, your application can use any client and return the protocol response
+through `call.respond`. The crate also provides optional client traits that help
+Switchyard's supplied clients and execution helpers work together.
 
 ## Two kinds of model interaction
 
-| Interaction | Request and response | Used when | Read next |
+| Interaction | Protocol fields and types | Used when | Read next |
 |---|---|---|---|
-| LLM conversation | `Request` contains `LlmRequest`; `Response` contains `LlmResponse` | Your application starts a run or serves `Step::CallModel`. Content can include text, tools, reasoning, and media. | [LLM-Related Protocols](llm.md) |
-| Typed decision | `DecisionRequest` and `DecisionResponse` | Your application serves `Step::CallDecision`. Named questions ask for a Boolean estimate, a choice, or a rubric score. | [Decision Model-Related Protocols](decisions.md) |
+| LLM conversation | <a href="../rust/switchyard_protocol/envelope/struct.Request.html#structfield.llm_request"><code>Request.llm_request: LlmRequest</code></a>; <a href="../rust/switchyard_protocol/envelope/struct.Response.html#structfield.llm_response"><code>Response.llm_response: LlmResponse</code></a> | Your application starts a run or serves `Step::CallModel`. Content can include text, tools, reasoning, and media. | [LLM-Related Protocols](llm.md) |
+| Typed decision | <a href="../rust/switchyard_protocol/decision/struct.DecisionRequest.html"><code>CallDecision.request: DecisionRequest</code></a>; the work future returns <a href="../rust/switchyard_protocol/decision/struct.DecisionResponse.html"><code>libsy::Result&lt;DecisionResponse&gt;</code></a> | Your application serves `Step::CallDecision`. Named questions ask for a Boolean estimate, a choice, or a rubric score. | [Decision Model-Related Protocols](decisions.md) |
 
-The LLM envelope also carries optional correlation `Metadata`. That application
+The LLM envelopes also carry `metadata: Option<Metadata>`. That application
 metadata is separate from the provider's conversation content. Decision calls
 use their own request and response types directly.
 
@@ -56,4 +60,4 @@ use their own request and response types directly.
 
 The two pages below explain these boundaries and show the field mappings. For
 complete type and method definitions, open the
-<a href="../../rust/switchyard_protocol/">protocol crate reference</a>.
+<a href="../rust/switchyard_protocol/">protocol crate reference</a>.
